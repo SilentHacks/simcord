@@ -4,30 +4,40 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "0 6 * * 1" # weekly run against discord.py master
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check src tests examples
+      - run: ruff format --check src tests examples
+
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-        discord-py: ["release"]
-        include:
-          - python-version: "3.12"
-            discord-py: "master"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install
-        run: |
-          pip install -e .[pytest]
-          if [ "${{ matrix.discord-py }}" = "master" ]; then
-            pip install -U "discord.py @ git+https://github.com/Rapptz/discord.py"
-          fi
-      - name: Test
-        run: pytest -q
+      - run: pip install -e .[pytest] coverage[toml]
+      - run: coverage run -m pytest tests examples -q
+      - run: coverage report
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[docs]
+      - run: mkdocs build --strict

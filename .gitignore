@@ -22,3 +22,4 @@ htmlcov/
 # Local agent/planning files (not part of the project)
 PLAN.md
 .claude/
+site/

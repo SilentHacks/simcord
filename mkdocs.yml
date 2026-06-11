@@ -1,0 +1,30 @@
+site_name: discord-py-test
+site_description: Offline testing framework for discord.py bots
+site_url: https://silenthacks.github.io/discord-py-test/
+repo_url: https://github.com/SilentHacks/discord-py-test
+repo_name: SilentHacks/discord-py-test
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.sections
+  palette:
+    - scheme: slate
+      primary: indigo
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Guides:
+      - Messages & prefix commands: guides/messages.md
+      - Slash commands & interactions: guides/interactions.md
+      - Permissions: guides/permissions.md
+  - Architecture: architecture.md
+  - Parity matrix: parity-matrix.md
+  - Migrating from dpytest: migrating-from-dpytest.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight

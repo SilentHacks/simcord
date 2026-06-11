@@ -8,8 +8,10 @@ connects to Discord). Simulate users sending messages, invoking slash commands a
 buttons, then assert on exactly what your bot did.
 
 > ⚠️ Alpha software. The core surface (messages, prefix commands, slash commands,
-> components, permissions) works; the long tail of the Discord API is still being filled in.
-> Unimplemented routes always fail loudly — this library never silently fakes success.
+> components, modals, permissions, reactions, threads, DMs) works; see the
+> [parity matrix](https://silenthacks.github.io/discord-py-test/parity-matrix/) for the
+> long tail. Unimplemented routes always fail loudly — this library never silently fakes
+> success.
 
 ## Why
 
@@ -20,106 +22,83 @@ a real server. `discord-py-test` runs all of discord.py's real machinery — its
 cache, command frameworks and views — against a faithful fake of Discord's REST API and
 gateway, entirely in-process.
 
-- **Real semantics**: permission checks with authentic error codes (`50013 Missing
-  Permissions`…), interaction lifecycle rules (`40060` on double-ack), the works.
+- **Real semantics**: server-side permission checks with authentic error codes
+  (`50013 Missing Permissions`…), interaction lifecycle rules (`40060` on double-ack),
+  role hierarchy, timeouts, ephemeral visibility, validation limits.
 - **Real bugs caught**: invoking a slash command that was never synced fails your test,
-  just like it fails in production.
-- **Fast and deterministic**: no sleeps, no network, reproducible IDs. Thousands of tests
-  per minute.
+  just like it fails in production. Clicking a disabled button is impossible, just like
+  in the client.
+- **Fast and deterministic**: no sleeps, no network, reproducible IDs. The framework
+  tracks the bot's tasks and settles after every action.
 
 ## Install
 
 ```bash
-pip install discord-py-test
+pip install discord-py-test[pytest]
 ```
 
 Requires Python 3.10+ and discord.py 2.7+.
 
 ## Quickstart
 
+Tell the bundled pytest plugin how to build your bot:
+
 ```python
 # conftest.py
-import pytest_asyncio
-import discord_py_test as dpt
-from mybot import create_bot  # however your project builds its commands.Bot
+import pytest
+from mybot import create_bot   # however your project builds its commands.Bot
 
-@pytest_asyncio.fixture
-async def env():
-    async with dpt.run(create_bot()) as env:   # fake login + READY, no network
-        env.create_guild()
-        yield env
+@pytest.fixture
+def dpt_bot():
+    return create_bot()
 ```
 
+Then write tests against the `dpt_env` fixture:
+
 ```python
-# test_bot.py
 import discord
 
-async def test_ping(env):
-    channel = env.guild.create_text_channel("general")
-    alice = env.guild.add_member(env.create_user("alice"))
+async def test_ping(dpt_env):
+    channel = dpt_env.create_guild().create_text_channel("general")
+    alice = dpt_env.guild.add_member(dpt_env.create_user("alice"))
 
     await alice.send(channel, "!ping")                    # full gateway round trip
 
     assert channel.last_message.content == "Pong!"
 
-async def test_ban_slash_command(env):
-    channel = env.guild.create_text_channel("mod")
-    mods = env.guild.create_role("Mods", permissions=discord.Permissions(ban_members=True))
-    mod = env.guild.add_member(env.create_user("mod"), roles=[mods])
-    target = env.guild.add_member(env.create_user("spammer"))
+async def test_ban_slash_command(dpt_env):
+    guild = dpt_env.create_guild()
+    channel = guild.create_text_channel("mod")
+    mods = guild.create_role("Mods", permissions=discord.Permissions(ban_members=True))
+    mod = guild.add_member(dpt_env.create_user("mod"), roles=[mods])
+    target = guild.add_member(dpt_env.create_user("spammer"))
 
     result = await mod.slash(channel, "ban", user=target, reason="spam")
 
     assert result.ephemeral
     assert result.response.content == f"Banned {target.mention}: spam"
-    assert env.guild.get_ban(target) is not None
-
-async def test_confirm_button(env):
-    channel = env.guild.create_text_channel("general")
-    alice = env.guild.add_member(env.create_user("alice"))
-
-    result = await alice.slash(channel, "delete-data")
-    await alice.click(result.response.message, label="Confirm")
-
-    assert result.response.content == "Deleted all data."
+    assert guild.get_ban(target) is not None
 ```
+
+Buttons, selects, modals, context menus, autocomplete, reactions, threads, DMs, fault
+injection and more: see the [documentation](https://silenthacks.github.io/discord-py-test/).
+Prefer explicit control? `async with discord_py_test.run(bot) as env:` works in any async
+test framework.
 
 ## How it works
 
-discord.py has two narrow seams: every REST call funnels through
-`HTTPClient.request`, and every gateway event enters through
-`ConnectionState.parsers`. `discord-py-test` replaces the first with a fake routed to an
-in-memory backend (a single source of truth for guilds, channels, members, messages,
-commands and interactions) and injects Discord-shaped payloads through the second.
-Everything between those seams — which is everything your bot touches — is real
-discord.py code running unmodified.
-
-Builders (`env.create_guild()`, `guild.add_member()`) arrange the world omnipotently;
-actors (`alice.send(...)`, `alice.slash(...)`, `alice.click(...)`) are permission-checked
-and can only do what a real human could do. After every action the framework waits for
-your bot to finish reacting — no `asyncio.sleep` guesswork.
-
-## Status / roadmap
-
-Supported today: text channels & messages (embeds, attachments, replies, edits/deletes),
-prefix commands, the permissions model (roles + channel overwrites), slash commands with
-typed options and resolved data, deferred responses and followups, ephemeral visibility,
-buttons, string selects, modals, kick/ban, member join/leave events.
-
-Planned: threads, reactions, webhooks, autocomplete drivers, more channel types,
-voice state, a pytest plugin with built-in fixtures, and a public parity matrix.
+discord.py has two narrow seams: every REST call funnels through `HTTPClient.request`,
+and every gateway event enters through `ConnectionState.parsers`. `discord-py-test`
+replaces the first with a fake routed to an in-memory backend (a single source of truth
+for guilds, channels, members, messages, commands and interactions) and injects
+Discord-shaped payloads through the second. Everything between those seams — which is
+everything your bot touches — is real discord.py code running unmodified. Details in the
+[architecture docs](https://silenthacks.github.io/discord-py-test/architecture/).
 
 ## Contributing
 
-```bash
-git clone https://github.com/SilentHacks/discord-py-test
-cd discord-py-test
-python -m venv .venv && .venv/bin/pip install -e .[pytest]
-.venv/bin/pytest
-```
-
-Bug reports with a failing test are gold. If your bot hits an unimplemented route, the
-error message names it — please open an issue.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports with a failing test are gold; if your
+bot hits an unimplemented route, the error names it — please open a parity gap issue.
 
 ## License
 
