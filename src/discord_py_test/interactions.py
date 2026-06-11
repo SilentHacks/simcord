@@ -98,6 +98,8 @@ def build_options(
     command_name: str,
     spec: dict[str, Any],
     provided: dict[str, Any],
+    *,
+    partial: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build the wire `options` array and `resolved` block from python values."""
     from .actors import MemberActor as _MemberActor
@@ -149,9 +151,10 @@ def build_options(
             wire_value = value
         built.append({"name": name, "type": option_type, "value": wire_value})
 
-    for name, option in declared.items():
-        if option.get("required") and name not in provided:
-            raise SetupError(f"Command '{command_name}' requires option '{name}'")
+    if not partial:  # autocomplete fires before all required options are filled
+        for name, option in declared.items():
+            if option.get("required") and name not in provided:
+                raise SetupError(f"Command '{command_name}' requires option '{name}'")
     return built, resolved
 
 

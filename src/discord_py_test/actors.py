@@ -164,7 +164,7 @@ class MemberActor:
         )
         return next(c for c in registered if c["name"] == name and c.get("type", 1) == type)
 
-    async def slash(self, channel: ChannelHandle, name: str, **options: Any) -> InteractionResult:
+    async def slash(self, channel: ChannelHandle, name: str, /, **options: Any) -> InteractionResult:
         """Invoke a synced slash command (use spaces for subcommands: "config set")."""
         self._check(channel, "use_application_commands")
         root, nesting = self._resolve_command(name)
@@ -216,12 +216,12 @@ class MemberActor:
         return await self._dispatch_interaction(2, channel, data)
 
     async def autocomplete(
-        self, channel: ChannelHandle, name: str, option: str, value: str, **filled: Any
+        self, channel: ChannelHandle, name: str, option: str, value: str, /, **filled: Any
     ) -> list[dict[str, Any]]:
         """Type into an autocomplete option; returns the choices the bot offered."""
         root, nesting = self._resolve_command(name)
         leaf, _ = _interactions.walk_to_subcommand(root, nesting)
-        leaf_options, _resolved = _interactions.build_options(self, name, leaf, filled)
+        leaf_options, _resolved = _interactions.build_options(self, name, leaf, filled, partial=True)
         declared = {o["name"]: o for o in (leaf.get("options") or [])}
         if option not in declared:
             raise SetupError(f"Command '{name}' has no option '{option}'")

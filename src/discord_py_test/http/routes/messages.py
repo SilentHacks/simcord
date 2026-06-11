@@ -61,7 +61,10 @@ def delete_message(ctx: RequestContext) -> Any:
     backend.delete_message(channel_id, message.id)
 
 
-@route("PUT", "/channels/{channel_id}/pins/{message_id}")
+# Pins use Discord's current paginated endpoints (under /messages/pins).
+
+
+@route("PUT", "/channels/{channel_id}/messages/pins/{message_id}")
 def pin_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
@@ -70,7 +73,7 @@ def pin_message(ctx: RequestContext) -> Any:
     backend.set_pinned(channel_id, ctx.int_arg("message_id"), True)
 
 
-@route("DELETE", "/channels/{channel_id}/pins/{message_id}")
+@route("DELETE", "/channels/{channel_id}/messages/pins/{message_id}")
 def unpin_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
@@ -79,13 +82,14 @@ def unpin_message(ctx: RequestContext) -> Any:
     backend.set_pinned(channel_id, ctx.int_arg("message_id"), False)
 
 
-@route("GET", "/channels/{channel_id}/pins")
+@route("GET", "/channels/{channel_id}/messages/pins")
 def get_pins(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
     backend.get_channel(channel_id)
-    return [
-        dict(serializers.message_payload(backend, m))
+    items = [
+        {"message": dict(serializers.message_payload(backend, m)), "pinned_at": backend.now_iso()}
         for m in backend.messages[channel_id].values()
         if m.pinned
     ]
+    return {"items": items, "has_more": False}

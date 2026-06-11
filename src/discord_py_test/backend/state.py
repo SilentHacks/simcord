@@ -186,11 +186,19 @@ class Backend:
 
     def create_role(self, guild_id: int, name: str, *, permissions: int = 0, **fields: Any) -> Role:
         guild = self.get_guild(guild_id)
+        position = fields.pop("position", None)
+        if position is None:
+            # New roles insert just above @everyone, pushing existing roles up
+            # (so the bot's integration role stays on top), as on real Discord.
+            position = 1
+            for existing in guild.roles.values():
+                if existing.position >= 1:
+                    existing.position += 1
         role = Role(
             id=self.snowflake(),
             name=name,
             permissions=permissions,
-            position=len(guild.roles),
+            position=position,
             **fields,
         )
         guild.roles[role.id] = role

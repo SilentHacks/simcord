@@ -79,19 +79,27 @@ def dispatch(
     backend.http_log.append((method, path, json if isinstance(json, dict) else None))
     _check_faults(backend, method, path)
     segments = path.strip("/").split("/")
+    # Prefer the most-literal match so e.g. ".../messages/pins" beats ".../messages/{message_id}".
+    best: Optional[tuple[int, dict[str, str], Handler]] = None
     for template, handler in _ROUTES.get(method, ()):
         if len(template) != len(segments):
             continue
         args: dict[str, str] = {}
+        literals = 0
         for tpl, seg in zip(template, segments):
             if tpl.startswith("{") and tpl.endswith("}"):
                 args[tpl[1:-1]] = seg
-            elif tpl != seg:
+            elif tpl == seg:
+                literals += 1
+            else:
                 break
         else:
-            ctx = RequestContext(backend, args, json=json, params=params or {}, files=files or [])
-            return handler(ctx)
-    raise RouteNotImplemented(method, path)
+            if best is None or literals > best[0]:
+                best = (literals, args, handler)
+    if best is None:
+        raise RouteNotImplemented(method, path)
+    ctx = RequestContext(backend, best[1], json=json, params=params or {}, files=files or [])
+    return best[2](ctx)
 
 
 def _check_faults(backend: Backend, method: str, path: str) -> None:

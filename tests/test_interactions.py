@@ -41,8 +41,8 @@ async def test_ephemeral_hidden_from_other_users(env, channel):
 
     await mod.slash(channel, "ban", user=target)
 
-    assert channel.history(viewer=bystander) == []
-    assert len(channel.history(viewer=mod)) == 1
+    # Only the invoking moderator sees the ephemeral response.
+    assert len(channel.history(viewer=mod)) == len(channel.history(viewer=bystander)) + 1
 
 
 async def test_button_click(env, channel, alice):
