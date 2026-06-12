@@ -9,10 +9,11 @@ from typing import Any
 import discord
 
 from . import _dpy_internals
+from . import intents as _intents
 from .backend import Backend, serializers
 from .backend.errors import SetupError
 from .builders import GuildHandle, UserHandle
-from .gateway import FakeGateway
+from .gateway import FakeGateway, FakeWebSocket
 from .http import FakeHTTPClient, FakeWebhookAdapter
 
 
@@ -30,10 +31,22 @@ class Env:
     environments on one loop would corrupt each other's task bookkeeping.
     """
 
-    def __init__(self, bot: discord.Client, *, strict_sync: bool = True, check_errors: bool = True) -> None:
+    def __init__(
+        self,
+        bot: discord.Client,
+        *,
+        strict_sync: bool = True,
+        check_errors: bool = True,
+        approved_intents: discord.Intents | None = None,
+    ) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
         self.check_errors = check_errors
+        #: Simulates the developer-portal privileged-intent toggles. ``None``
+        #: (the default) means everything is approved; pass an Intents with
+        #: e.g. ``members=False`` to make start() fail with
+        #: :class:`discord.PrivilegedIntentsRequired`, as a real connect would.
+        self.approved_intents = approved_intents
         self.backend = Backend()
         self._errors: list[BaseException] = []
         self._errors_inspected = False
@@ -78,11 +91,21 @@ class Env:
         _dpy_internals.set_guild_ready_timeout(self.bot, 0.0)
         self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
 
-        gateway = FakeGateway(_dpy_internals.get_state(self.bot))
+        gateway = FakeGateway(self.backend, _dpy_internals.get_state(self.bot))
         self.backend.subscribers.append(gateway.feed)
+        # The upstream half of the gateway: answers REQUEST_GUILD_MEMBERS so
+        # member chunking (startup, Guild.chunk, query_members) works.
+        _dpy_internals.install_websocket(self.bot, FakeWebSocket(self.backend, gateway))
 
         try:
             self._capture_errors()
+            # Simulated developer-portal check: a real IDENTIFY with an
+            # unapproved privileged intent is rejected with close code 4014,
+            # which discord.py surfaces as PrivilegedIntentsRequired.
+            if self.approved_intents is not None and _intents.missing_privileged_intents(
+                self.bot.intents, self.approved_intents
+            ):
+                raise discord.PrivilegedIntentsRequired(shard_id=None)
             # Runs the real login flow: identity, application info, setup_hook
             # (where bots typically load extensions and sync their command tree).
             await self.bot.login("dpt.fake.token")
@@ -284,12 +307,13 @@ class Env:
         """Human-readable record of everything that happened, in order.
 
         One line per gateway event injected and REST call the bot made — the
-        "what did the bot actually do" dump. The pytest plugin attaches this to
-        failing tests automatically.
+        "what did the bot actually do" dump, including events DROPPED (missing
+        intent) or CENSORED (missing message_content) by intent simulation.
+        The pytest plugin attaches this to failing tests automatically.
         """
         lines = []
         for kind, name, payload in self.backend.transcript:
-            lines.append(f"{kind:<7} {name:<28} {_summarize(payload)}")
+            lines.append(f"{kind:<8} {name:<28} {_summarize(payload)}")
         return "\n".join(lines)
 
     def raise_errors(self) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import discord
+from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
 from discord.state import ConnectionState
 from discord.ui.view import View
@@ -37,6 +38,11 @@ def verify() -> None:
         (ConnectionState, "parse_ready"),
         (ConnectionState, "parse_message_create"),
         (ConnectionState, "parse_interaction_create"),
+        # Intent simulation and member chunking rely on these:
+        (ConnectionState, "intents"),
+        (ConnectionState, "parse_guild_members_chunk"),
+        (DiscordWebSocket, "request_chunks"),
+        (discord.Client, "_get_websocket"),
     ):
         if not hasattr(cls, attr):
             problems.append(f"{cls.__name__}.{attr}")
@@ -70,6 +76,17 @@ def install_http(client: discord.Client, http: HTTPClient) -> None:
     if tree is not None:
         # CommandTree captures its own HTTP reference at construction time.
         tree._http = http
+
+
+def install_websocket(client: discord.Client, ws: Any) -> None:
+    """Install the fake upstream gateway as ``client.ws``.
+
+    ``Client._get_websocket`` (which ConnectionState uses for chunk requests)
+    returns ``self.ws``, so this one assignment routes REQUEST_GUILD_MEMBERS
+    — startup chunking, ``Guild.chunk()``, ``Guild.query_members()`` — to the
+    fake, instead of crashing on the ``None`` ws of a never-connected client.
+    """
+    client.ws = ws
 
 
 def set_guild_ready_timeout(client: discord.Client, timeout: float) -> None:

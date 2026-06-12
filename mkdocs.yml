@@ -51,6 +51,7 @@ nav:
       - Slash commands: guides/interactions.md
       - Components & modals: guides/components.md
       - Permissions: guides/permissions.md
+      - Intents: guides/intents.md
       - Threads, reactions & DMs: guides/threads-reactions-dms.md
       - Time control: guides/time-control.md
       - Fixtures & configuration: guides/fixtures.md
