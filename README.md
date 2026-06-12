@@ -122,12 +122,12 @@ everything your bot touches — is real discord.py code running unmodified.
 
 ```
 test ──► builders/actors ──► virtual backend (single source of truth)
-                                 │                       │
+                                   │                     │
                   gateway payloads ▼                     ▼ REST responses
                   ConnectionState.parsers        FakeHTTPClient route table
-                                 │                       ▲
-                                 ▼                       │
-                        your real, unmodified bot
+                                   │                     ▲
+                                   ▼                     │
+                                  your real, unmodified bot
 ```
 
 Details in the [architecture docs](https://silenthacks.github.io/discord-py-test/architecture/).
