@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...backend import errors, serializers
+from ...backend import serializers
 from ..router import RequestContext, route
 
 
@@ -40,9 +40,9 @@ def application_info(ctx: RequestContext) -> Any:
 
 @route("POST", "/users/@me/channels")
 def create_dm(ctx: RequestContext) -> Any:
+    # Real Discord happily opens the DM channel even for a bot recipient; the
+    # 50007 only surfaces when a message is actually sent (see send_message).
     recipient_id = int(ctx.body()["recipient_id"])
-    recipient = ctx.backend.get_user(recipient_id)
-    if recipient.bot:
-        raise errors.cannot_dm_bot()
+    ctx.backend.get_user(recipient_id)
     channel = ctx.backend.get_dm_channel(recipient_id)
     return dict(serializers.channel_payload(ctx.backend, channel))

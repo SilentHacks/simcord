@@ -40,13 +40,22 @@ assert channel.pinned_messages() != []
 
 ## Error capture
 
-Unhandled command errors (`on_command_error`) are collected into `env.errors`, so the
-classic "the bot silently failed" bug is assertable:
+Unhandled errors from command handlers, app-command callbacks and event listeners are
+collected into `env.errors`, so the classic "the bot silently failed" bug is assertable:
 
 ```python
 await alice.send(channel, "!broken")
 assert isinstance(env.errors[-1].original, discord.Forbidden)
 assert env.errors[-1].original.code == 50013
+```
+
+To assert the opposite — that the bot ran cleanly — call `env.raise_errors()`. It
+re-raises everything captured as an `ExceptionGroup` (even a single error), and does
+nothing if there were none:
+
+```python
+await alice.send(channel, "!ping")
+env.raise_errors()  # fails the test if the bot raised anything
 ```
 
 ## Validation limits

@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from .backend import serializers
-from .backend.models import EPHEMERAL_FLAG, Message
+from .backend.errors import BackendError
+from .backend.models import EPHEMERAL_FLAG, Interaction, Message
 
 if TYPE_CHECKING:
     from .env import Env
@@ -65,51 +66,53 @@ class ResponseMessage:
 class InteractionResult:
     """Everything that happened in response to a simulated interaction."""
 
-    def __init__(self, env: Env, record: dict[str, Any]) -> None:
+    def __init__(self, env: Env, interaction: Interaction) -> None:
         self._env = env
-        self.record = record
+        self._interaction = interaction
 
     @property
     def acknowledged(self) -> bool:
-        return self.record["responded"]
+        return self._interaction.responded
 
     @property
     def deferred(self) -> bool:
-        return self.record["response_kind"] == "deferred"
+        return self._interaction.deferred
 
     @property
     def ephemeral(self) -> bool:
-        return self.record["ephemeral"]
+        return self._interaction.ephemeral
 
     @property
     def modal(self) -> dict[str, Any] | None:
         """The raw modal payload, if the bot responded with a modal."""
-        return self.record["modal"]
+        return self._interaction.modal
 
     @property
     def autocomplete_choices(self) -> list[dict[str, Any]] | None:
-        return self.record["autocomplete_choices"]
+        return self._interaction.autocomplete_choices
 
     @property
     def response(self) -> ResponseMessage | None:
-        if self.record["message_id"] is None:
+        interaction = self._interaction
+        if interaction.message_id is None:
             return None
-        message = self._env.backend.get_message(self.record["channel_id"], self.record["message_id"])
+        message = self._env.backend.get_message(interaction.channel_id, interaction.message_id)
         return ResponseMessage(self._env, message)
 
     @property
     def followups(self) -> list[ResponseMessage]:
         out = []
-        for message_id in self.record["followup_ids"]:
+        for message_id in self._interaction.followup_ids:
             try:
-                message = self._env.backend.get_message(self.record["channel_id"], message_id)
-            except Exception:
-                continue  # deleted followup
+                message = self._env.backend.get_message(self._interaction.channel_id, message_id)
+            except BackendError:
+                continue  # deleted followup (Unknown Message)
             out.append(ResponseMessage(self._env, message))
         return out
 
     def __repr__(self) -> str:
         return (
-            f"<InteractionResult acknowledged={self.acknowledged} kind={self.record['response_kind']!r} "
+            f"<InteractionResult acknowledged={self.acknowledged} "
+            f"kind={self._interaction.response_kind!r} "
             f"response={self.response!r} followups={len(self.followups)}>"
         )

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
-from .backend.models import EPHEMERAL_FLAG, Channel, Guild, Overwrite, Role, User
+from .backend.models import Channel, Guild, Overwrite, Role, User
 from .results import to_discord_message
 
 if TYPE_CHECKING:
@@ -211,12 +211,10 @@ class ChannelHandle:
         hidden — exactly what that user would see in their client.
         """
         out = []
+        viewer_id = viewer.id if viewer is not None else None
         for message in sorted(self._env.backend.messages.get(self.id, {}).values(), key=lambda m: m.id):
-            if message.flags & EPHEMERAL_FLAG:
-                meta = message.interaction_metadata or {}
-                viewer_id = str(viewer.id) if viewer is not None else None
-                if viewer_id != str((meta.get("user") or {}).get("id")):
-                    continue
+            if not message.visible_to(viewer_id):
+                continue
             out.append(to_discord_message(self._env, message))
         return out
 

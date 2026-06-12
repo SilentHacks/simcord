@@ -7,7 +7,9 @@ from discord.ext import commands
 class Events(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        channel = discord.utils.get(member.guild.text_channels, name="general")
+        # Target a dedicated welcome channel so this global listener doesn't
+        # silently inject messages into every test's shared channel.
+        channel = discord.utils.get(member.guild.text_channels, name="welcome")
         if channel is not None:
             await channel.send(f"Welcome {member.mention}!")
 

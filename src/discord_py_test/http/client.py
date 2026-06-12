@@ -100,6 +100,10 @@ class FakeHTTPClient(HTTPClient):
                 params=kwargs.get("params"),
                 files=file_list,
             )
+        except router.RouteNotImplemented:
+            # Surface unimplemented routes loudly: don't disguise them as an
+            # HTTPException a broad `except discord.HTTPException` could swallow.
+            raise
         except BackendError as exc:
             _raise_for(exc)
 
@@ -148,5 +152,7 @@ class FakeWebhookAdapter:
                 params=params,
                 files=file_list,
             )
+        except router.RouteNotImplemented:
+            raise
         except BackendError as exc:
             _raise_for(exc)

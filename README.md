@@ -37,7 +37,7 @@ gateway, entirely in-process.
 pip install discord-py-test[pytest]
 ```
 
-Requires Python 3.10+ and discord.py 2.7+.
+Requires Python 3.11+ and discord.py 2.7+.
 
 ## Quickstart
 

@@ -72,9 +72,13 @@ def already_acknowledged() -> BackendError:
     return BackendError(400, 40060, "Interaction has already been acknowledged")
 
 
+def cannot_edit_other_user() -> BackendError:
+    return BackendError(403, 50005, "Cannot edit a message authored by another user")
+
+
 def invalid_form_body(detail: str) -> BackendError:
     return BackendError(400, 50035, f"Invalid Form Body: {detail}")
 
 
 def cannot_dm_bot() -> BackendError:
-    return BackendError(400, 50007, "Cannot send messages to this user")
+    return BackendError(403, 50007, "Cannot send messages to this user")

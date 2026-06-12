@@ -14,9 +14,6 @@ from .builders import GuildHandle, UserHandle
 from .gateway import FakeGateway
 from .http import FakeHTTPClient, FakeWebhookAdapter
 
-# Coroutines that are long-lived background machinery, not work to settle on.
-_BACKGROUND_COROS = ("__timeout_task_impl",)
-
 
 class Env:
     """A running test environment around a single bot.
@@ -26,6 +23,10 @@ class Env:
         async with dpt.run(bot) as env:
             guild = env.create_guild()
             ...
+
+    Only one ``Env`` may be live per event loop at a time: ``start()``
+    monkeypatches ``loop.create_task`` to track the bot's tasks, and nesting two
+    environments on one loop would corrupt each other's task bookkeeping.
     """
 
     def __init__(self, bot: discord.Client, *, strict_sync: bool = True) -> None:
@@ -67,42 +68,57 @@ class Env:
         gateway = FakeGateway(_dpy_internals.get_state(self.bot))
         self.backend.subscribers.append(gateway.feed)
 
-        self._capture_errors()
-        # Runs the real login flow: identity, application info, setup_hook
-        # (where bots typically load extensions and sync their command tree).
-        await self.bot.login("dpt.fake.token")
-        gateway.feed(
-            "READY",
-            {
-                "v": 10,
-                "user": dict(serializers.user_payload(self.backend.bot_user)),
-                "guilds": [],
-                "session_id": "dpt-session",
-                "resume_gateway_url": "wss://dpt.invalid",
-                "shard": [0, 1],
-                "application": {"id": str(self.backend.application_id), "flags": 0},
-            },
-        )
-        await self.settle()
+        try:
+            self._capture_errors()
+            # Runs the real login flow: identity, application info, setup_hook
+            # (where bots typically load extensions and sync their command tree).
+            await self.bot.login("dpt.fake.token")
+            gateway.feed(
+                "READY",
+                {
+                    "v": 10,
+                    "user": dict(serializers.user_payload(self.backend.bot_user)),
+                    "guilds": [],
+                    "session_id": "dpt-session",
+                    "resume_gateway_url": "wss://dpt.invalid",
+                    "shard": [0, 1],
+                    "application": {"id": str(self.backend.application_id), "flags": 0},
+                },
+            )
+            await self.settle()
+        except BaseException:
+            # Setup (e.g. setup_hook) blew up: undo the global monkeypatches so
+            # we don't leak the patched loop.create_task / webhook adapter into
+            # whatever runs next on this loop.
+            await self.shutdown()
+            raise
 
     async def shutdown(self) -> None:
         if self._adapter_token is not None:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
+            self._adapter_token = None
         if self._loop is not None and self._orig_create_task is not None:
             self._loop.create_task = self._orig_create_task  # type: ignore[method-assign]
+            self._orig_create_task = None
         current = asyncio.current_task()
         to_cancel = [t for t in self._tasks if t is not current and not t.done()]
         for task in to_cancel:
             task.cancel()
         await asyncio.gather(*to_cancel, return_exceptions=True)
 
-    async def settle(self, timeout: float = 5.0, idle: float = 0.05) -> None:
+    async def settle(self, timeout: float = 5.0, idle: float = 0.05) -> None:  # noqa: ASYNC109
+        # `timeout` is deliberate public API: settle() polls for quiescence and
+        # decides between "parked on a future" and "still working", so it can't
+        # be replaced by wrapping the body in asyncio.timeout().
         """Wait until the bot has finished reacting to injected events.
 
-        Waits for all tracked tasks to complete. Tasks that make no progress
-        within ``idle`` seconds (e.g. a handler blocked in ``wait_for`` for a
-        future user action) are left running; if nothing completes by
-        ``timeout`` a ``TimeoutError`` with the pending tasks is raised.
+        Waits for all tracked tasks to complete. A task that completes no work
+        within an ``idle`` window is only abandoned if it is genuinely parked on
+        a future (e.g. blocked in ``wait_for`` for a later user action) — if the
+        loop still has timers scheduled to fire before ``timeout`` (e.g. an
+        ``asyncio.sleep`` in a cooldown or backoff), we keep waiting for them.
+        If pending tasks neither finish nor park before ``timeout``, a
+        ``TimeoutError`` with the pending tasks is raised.
         """
         assert self._loop is not None
         deadline = self._loop.time() + timeout
@@ -114,25 +130,67 @@ class Env:
             pending = [
                 t
                 for t in self._tasks
-                if getattr(t.get_coro(), "__qualname__", "").split(".")[-1] not in _BACKGROUND_COROS
+                if getattr(t.get_coro(), "__qualname__", "").split(".")[-1]
+                not in _dpy_internals.BACKGROUND_CORO_NAMES
             ]
             if not pending:
                 return
             done, _ = await asyncio.wait(pending, timeout=idle, return_when=asyncio.FIRST_COMPLETED)
-            if not done:
-                if self._loop.time() > deadline:
-                    raise TimeoutError(f"bot did not settle; pending tasks: {pending}")
-                return  # remaining tasks are blocked waiting on future input
+            if done:
+                continue  # progress made — re-evaluate what is still pending
+            if self._loop.time() > deadline:
+                raise TimeoutError(f"bot did not settle; pending tasks: {pending}")
+            next_timer = self._next_scheduled_timer()
+            if next_timer is None or next_timer > deadline:
+                # No imminent timer: the remaining tasks are parked on futures
+                # waiting for input we will never deliver. Leave them running.
+                return
+            # A timer (e.g. asyncio.sleep) is due before the deadline; loop and
+            # wait for the work it will wake up.
+
+    def _next_scheduled_timer(self) -> float | None:
+        """The earliest live ``call_later`` deadline on the loop, if any.
+
+        Used by :meth:`settle` to tell ``asyncio.sleep``-style pauses (which
+        schedule a timer) apart from tasks parked indefinitely on a future
+        (which do not). Best-effort: relies on the standard loop's internals
+        and degrades to ``None`` if they are unavailable.
+        """
+        scheduled = getattr(self._loop, "_scheduled", None)
+        if not scheduled:
+            return None
+        times = [h.when() for h in scheduled if not h.cancelled()]
+        return min(times) if times else None
 
     # -------------------------------------------------------- error capture
 
     def _capture_errors(self) -> None:
+        from discord.ext import commands
+
         async def on_command_error(_ctx: Any, error: BaseException) -> None:
-            self.errors.append(error)
+            # CommandNotFound just means the message wasn't a command — that is
+            # not a bot bug, so don't pollute env.errors with it.
+            if not isinstance(error, commands.CommandNotFound):
+                self.errors.append(error)
 
         add_listener = getattr(self.bot, "add_listener", None)
         if add_listener is not None:
             add_listener(on_command_error, "on_command_error")
+
+        # Exceptions raised inside plain event listeners (e.g. on_member_join)
+        # go to Client.on_error, which by default only logs them. Capture them
+        # too so listener bugs surface in env.errors instead of vanishing.
+        original_on_error = self.bot.on_error
+
+        async def on_error(event_method: str, /, *args: Any, **kwargs: Any) -> None:
+            import sys
+
+            exc = sys.exc_info()[1]
+            if exc is not None:
+                self.errors.append(exc)
+            await original_on_error(event_method, *args, **kwargs)
+
+        self.bot.on_error = on_error  # type: ignore[method-assign]
 
         tree = getattr(self.bot, "tree", None)
         if tree is not None:
@@ -167,6 +225,24 @@ class Env:
     def http_log(self) -> list[tuple[str, str, dict[str, Any] | None]]:
         """Every REST call the bot made: (method, path, json body)."""
         return self.backend.http_log
+
+    def raise_errors(self) -> None:
+        """Re-raise everything the bot raised during the test, as a group.
+
+        Exceptions from command handlers, app-command callbacks and event
+        listeners are captured into :attr:`errors` rather than propagating into
+        your test (that is what lets a bot keep running after one handler
+        fails). Call this to assert the bot ran cleanly: it raises an
+        ``ExceptionGroup`` of everything captured — even a single error — and
+        does nothing if there were none.
+        """
+        captured = list(self.errors)
+        if not captured:
+            return
+        message = f"bot raised {len(captured)} error(s) during the test"
+        if all(isinstance(exc, Exception) for exc in captured):
+            raise ExceptionGroup(message, captured)  # type: ignore[arg-type]
+        raise BaseExceptionGroup(message, captured)
 
     def inject_error(
         self,

@@ -25,9 +25,13 @@ async def test_ready_and_cache_population():
 
 async def test_unknown_route_is_loud(env, channel):
     ch = env.bot.get_channel(channel.id)
+    # The signal must not masquerade as a discord.HTTPException, or a bot's
+    # broad `except discord.HTTPException` would silently swallow it.
     try:
         await ch.create_invite()
-    except discord.HTTPException as exc:
+    except discord.HTTPException:
+        raise AssertionError("RouteNotImplemented must not be a discord.HTTPException") from None
+    except dpt.BackendError as exc:
         assert "does not implement" in str(exc)
     else:
         raise AssertionError("expected a loud RouteNotImplemented error")

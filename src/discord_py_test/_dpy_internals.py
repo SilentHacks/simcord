@@ -12,7 +12,14 @@ from typing import Any
 import discord
 from discord.http import HTTPClient
 from discord.state import ConnectionState
+from discord.ui.view import View
 from discord.webhook.async_ import async_context
+
+#: discord.py coroutine qualnames that are long-lived background machinery
+#: (not work to settle on). Their leaf names are matched against running tasks
+#: in :meth:`Env.settle`; keep them here so a discord.py rename is caught by
+#: ``verify()`` rather than by users' tests hanging mysteriously.
+BACKGROUND_CORO_NAMES = ("__timeout_task_impl",)
 
 
 def verify() -> None:
@@ -33,6 +40,11 @@ def verify() -> None:
     ):
         if not hasattr(cls, attr):
             problems.append(f"{cls.__name__}.{attr}")
+    # The background-coro names are matched by leaf qualname; confirm they still
+    # exist on View so a rename surfaces here instead of in settle().
+    for name in BACKGROUND_CORO_NAMES:
+        if not any(attr.endswith(name) for attr in dir(View)):
+            problems.append(f"View.*{name}")
     if problems:
         raise ImportError(
             "This discord.py version changed internals discord-py-test depends on: "

@@ -59,13 +59,31 @@ async def test_content_limit_enforced(env, channel):
 
 
 async def test_user_edits_and_deletes_own_message(env, channel, alice):
-    baseline = len(channel.history())  # alice's join may have triggered a welcome message
     message = await alice.send(channel, "first try")
     await alice.edit(message, "second try")
     assert channel.last_message.content == "second try"
 
     await alice.delete(message)
-    assert len(channel.history()) == baseline
+    assert channel.history() == []
+
+
+async def test_bot_cannot_edit_another_users_message(env, channel, alice):
+    message = await alice.send(channel, "alice's message")
+    ch = env.bot.get_channel(channel.id)
+    fetched = await ch.fetch_message(message.id)
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await fetched.edit(content="hijacked by the bot")
+    assert exc_info.value.code == 50005
+
+
+async def test_cannot_dm_a_bot(env):
+    # The DM channel opens fine; the failure surfaces only on send (50007).
+    other_bot = env.backend.make_user("OtherBot", bot=True)
+    user = await env.bot.fetch_user(other_bot.id)
+    dm = await user.create_dm()
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await dm.send("hello fellow bot")
+    assert exc_info.value.code == 50007
 
 
 async def test_user_cannot_edit_others_messages(env, channel, alice):

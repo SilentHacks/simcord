@@ -33,6 +33,29 @@ async def test_deferred_response_and_followup(env, channel, alice):
     assert result.followups[0].content == "Done after a while"
 
 
+async def test_settle_waits_through_async_sleep(env, channel, alice):
+    # A handler that pauses (asyncio.sleep) before replying must still be fully
+    # settled: assertions should see the followup, not stale pre-sleep state.
+    result = await alice.slash(channel, "paced")
+    assert result.followups[0].content == "paced reply"
+
+
+async def test_deferred_component_update_edits_in_place(env, channel, alice):
+    result = await alice.slash(channel, "defer-edit")
+    original = result.response
+    assert original.content == "click me"
+
+    clicked = await alice.click(original, custom_id="slow_edit")
+
+    # The clicked message is edited in place — not replaced by a new message.
+    assert clicked.response is not None
+    assert clicked.response.id == original.id
+    assert clicked.response.content == "edited in place"
+    history = channel.history()
+    assert len(history) == 1
+    assert history[0].content == "edited in place"
+
+
 async def test_ephemeral_hidden_from_other_users(env, channel):
     mod_role = env.guild.create_role("Mods", permissions=discord.Permissions(ban_members=True))
     mod = env.guild.add_member(env.create_user("mod"), roles=[mod_role])

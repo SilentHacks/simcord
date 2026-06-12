@@ -20,6 +20,7 @@ from .cdn import CdnStore
 from .models import (
     Channel,
     Guild,
+    Interaction,
     Member,
     Message,
     Overwrite,
@@ -70,7 +71,7 @@ class Backend:
         self.commands: dict[
             int | None, dict[tuple[str, int], dict[str, Any]]
         ] = {}  # scope -> (name, type) -> command
-        self.interactions: dict[int, dict[str, Any]] = {}
+        self.interactions: dict[int, Interaction] = {}
         self.interaction_tokens: dict[str, int] = {}
         self.cdn = CdnStore()
         self.subscribers: list[EventListener] = []
@@ -88,7 +89,15 @@ class Backend:
         return (ms << 22) | (self._counter % 4096)
 
     def now_iso(self) -> str:
-        return datetime.datetime.now(datetime.timezone.utc).isoformat()
+        """The current virtual time as an ISO timestamp.
+
+        Driven by the same virtual clock as :meth:`snowflake` (epoch + counter
+        ms) rather than the wall clock, so a message's ``created_at`` (which
+        discord.py derives from its snowflake) and its serialized ``timestamp``
+        agree, and timestamps stay deterministic across runs.
+        """
+        ms = _VIRTUAL_EPOCH_MS + self._counter
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat()
 
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
         for listener in self.subscribers:
@@ -185,6 +194,33 @@ class Backend:
         payload["guild_id"] = str(guild_id)
         self.emit("GUILD_MEMBER_UPDATE", payload)
 
+    def edit_member(self, guild_id: int, user_id: int, changes: Mapping[str, Any]) -> Member:
+        """Apply validated field changes (nick/roles/timeout/…) and announce the update.
+
+        ``changes`` maps :class:`Member` attribute names to values; callers
+        validate permissions and hierarchy before calling, so this only writes
+        and emits — keeping the mutation and its GUILD_MEMBER_UPDATE atomic.
+        """
+        member = self.get_member(guild_id, user_id)
+        for attr, value in changes.items():
+            setattr(member, attr, value)
+        self.announce_member_update(guild_id, user_id)
+        return member
+
+    def add_member_role(self, guild_id: int, user_id: int, role_id: int) -> None:
+        """Give a member a role (if absent) and announce the update."""
+        member = self.get_member(guild_id, user_id)
+        if role_id not in member.role_ids:
+            member.role_ids.append(role_id)
+        self.announce_member_update(guild_id, user_id)
+
+    def remove_member_role(self, guild_id: int, user_id: int, role_id: int) -> None:
+        """Take a role from a member (if present) and announce the update."""
+        member = self.get_member(guild_id, user_id)
+        if role_id in member.role_ids:
+            member.role_ids.remove(role_id)
+        self.announce_member_update(guild_id, user_id)
+
     # ----------------------------------------------------------------- roles
 
     def create_role(self, guild_id: int, name: str, *, permissions: int = 0, **fields: Any) -> Role:
@@ -217,9 +253,19 @@ class Backend:
             raise errors.unknown_role()
         return role
 
+    def edit_role(self, guild_id: int, role_id: int, changes: Mapping[str, Any]) -> Role:
+        """Apply validated field changes to a role and announce the update."""
+        role = self.get_role(guild_id, role_id)
+        for attr, value in changes.items():
+            setattr(role, attr, value)
+        self.emit("GUILD_ROLE_UPDATE", {"guild_id": str(guild_id), "role": serializers.role_payload(role)})
+        return role
+
     def delete_role(self, guild_id: int, role_id: int) -> None:
         guild = self.get_guild(guild_id)
         self.get_role(guild_id, role_id)
+        if role_id == guild_id:  # the @everyone role shares the guild id and can't be deleted
+            raise errors.invalid_form_body("Cannot delete the @everyone role")
         del guild.roles[role_id]
         for member in guild.members.values():
             if role_id in member.role_ids:
@@ -279,6 +325,31 @@ class Backend:
         channel = self.get_channel(channel_id)
         self.emit("CHANNEL_UPDATE", serializers.channel_payload(self, channel))
 
+    def edit_channel(
+        self, channel_id: int, changes: Mapping[str, Any], *, overwrites: list[Overwrite] | None = None
+    ) -> Channel:
+        """Apply field/overwrite changes to a channel and announce the update."""
+        channel = self.get_channel(channel_id)
+        for attr, value in changes.items():
+            setattr(channel, attr, value)
+        if overwrites is not None:
+            channel.overwrites = overwrites
+        self.announce_channel_update(channel.id)
+        return channel
+
+    def set_overwrite(self, channel_id: int, overwrite: Overwrite) -> None:
+        """Add or replace a single permission overwrite and announce the update."""
+        channel = self.get_channel(channel_id)
+        channel.overwrites = [o for o in channel.overwrites if o.target_id != overwrite.target_id]
+        channel.overwrites.append(overwrite)
+        self.announce_channel_update(channel.id)
+
+    def delete_overwrite(self, channel_id: int, target_id: int) -> None:
+        """Remove a permission overwrite and announce the update."""
+        channel = self.get_channel(channel_id)
+        channel.overwrites = [o for o in channel.overwrites if o.target_id != target_id]
+        self.announce_channel_update(channel.id)
+
     def get_dm_channel(self, user_id: int) -> Channel:
         self.get_user(user_id)
         channel_id = self.dm_channels.get(user_id)
@@ -335,6 +406,7 @@ class Backend:
         flags: int = 0,
         reference: dict[str, Any] | None = None,
         interaction_metadata: dict[str, Any] | None = None,
+        webhook_id: int | None = None,
         broadcast: bool = True,
     ) -> Message:
         channel = self.get_channel(channel_id)
@@ -353,9 +425,10 @@ class Backend:
             attachments=attachments or [],
             reference=reference,
             interaction_metadata=interaction_metadata,
+            webhook_id=webhook_id,
             mention_user_ids=[int(m) for m in _USER_MENTION.findall(content or "")],
             mention_role_ids=[int(m) for m in _ROLE_MENTION.findall(content or "")],
-            mention_everyone="@everyone" in (content or ""),
+            mention_everyone=self._mentions_everyone(channel, author_id, content or ""),
         )
         self.messages[channel_id][message.id] = message
         channel.last_message_id = message.id
@@ -371,6 +444,15 @@ class Backend:
                     )
             self.emit("MESSAGE_CREATE", payload)
         return message
+
+    def _mentions_everyone(self, channel: Channel, author_id: int, content: str) -> bool:
+        """An @everyone only actually pings if the author may mention everyone."""
+        if "@everyone" not in content and "@here" not in content:
+            return False
+        if channel.guild_id is None:
+            return False
+        perms = self.compute_permissions(channel.guild_id, author_id, channel.id)
+        return bool(perms & permissions.flag("mention_everyone"))
 
     def get_message(self, channel_id: int, message_id: int) -> Message:
         message = self.messages.get(channel_id, {}).get(message_id)
@@ -497,31 +579,21 @@ class Backend:
 
     # ----------------------------------------------------------- interactions
 
-    def new_interaction(
-        self, type: int, channel_id: int, user_id: int, guild_id: int | None
-    ) -> dict[str, Any]:
+    def new_interaction(self, type: int, channel_id: int, user_id: int, guild_id: int | None) -> Interaction:
         interaction_id = self.snowflake()
-        record: dict[str, Any] = {
-            "id": interaction_id,
-            "token": f"dpt_interaction_{interaction_id}",
-            "type": type,
-            "channel_id": channel_id,
-            "guild_id": guild_id,
-            "user_id": user_id,
-            "responded": False,
-            "response_kind": None,  # 'message' | 'deferred' | 'update' | 'modal' | 'autocomplete' | 'pong'
-            "message_id": None,
-            "source_message_id": None,
-            "ephemeral": False,
-            "followup_ids": [],
-            "modal": None,
-            "autocomplete_choices": None,
-        }
+        record = Interaction(
+            id=interaction_id,
+            token=f"dpt_interaction_{interaction_id}",
+            type=type,
+            channel_id=channel_id,
+            guild_id=guild_id,
+            user_id=user_id,
+        )
         self.interactions[interaction_id] = record
-        self.interaction_tokens[record["token"]] = interaction_id
+        self.interaction_tokens[record.token] = interaction_id
         return record
 
-    def interaction_by_token(self, token: str) -> dict[str, Any]:
+    def interaction_by_token(self, token: str) -> Interaction:
         interaction_id = self.interaction_tokens.get(token)
         if interaction_id is None:
             raise errors.unknown_webhook()
@@ -557,4 +629,24 @@ class Backend:
         if target_id == guild.owner_id or guild.top_role_position(target_id) >= guild.top_role_position(
             actor_id
         ):
+            raise errors.missing_permissions()
+
+    def require_role_assignable(self, guild_id: int, actor_id: int, role_id: int) -> None:
+        """A role can only be assigned/edited if it sits below the actor's top role."""
+        guild = self.get_guild(guild_id)
+        if actor_id == guild.owner_id:
+            return
+        role = self.get_role(guild_id, role_id)
+        if role.position >= guild.top_role_position(actor_id):
+            raise errors.missing_permissions()
+
+    def require_can_grant(self, guild_id: int, actor_id: int, role_permissions: int) -> None:
+        """You cannot grant a role permissions you do not hold yourself (unless admin)."""
+        guild = self.get_guild(guild_id)
+        if actor_id == guild.owner_id:
+            return
+        actor_perms = self.compute_permissions(guild_id, actor_id)
+        if actor_perms & permissions.flag("administrator"):
+            return
+        if role_permissions & ~actor_perms:
             raise errors.missing_permissions()

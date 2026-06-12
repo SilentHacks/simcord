@@ -25,7 +25,7 @@ def _is_timed_out(guild: Guild, user_id: int) -> bool:
     if member is None or member.timed_out_until is None:
         return False
     until = datetime.datetime.fromisoformat(member.timed_out_until)
-    return until > datetime.datetime.now(datetime.timezone.utc)
+    return until > datetime.datetime.now(datetime.UTC)
 
 
 def compute(guild: Guild, user_id: int, channel: Channel | None = None) -> int:

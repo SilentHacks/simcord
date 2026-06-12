@@ -219,6 +219,8 @@ def message_payload(
             payload["referenced_message"] = message_payload(backend, referenced)
     if message.interaction_metadata is not None:
         payload["interaction_metadata"] = dict(message.interaction_metadata)
+    if message.webhook_id is not None:
+        payload["webhook_id"] = str(message.webhook_id)
     return cast("message_types.Message", payload)
 
 

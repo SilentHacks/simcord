@@ -25,7 +25,11 @@ test ──► builders/actors ──► virtual backend (single source of truth
 
 - **One store, two projections.** REST responses and gateway events are generated from
   the same state, so when the bot sends a message it also sees its own `MESSAGE_CREATE` —
-  caches and listeners behave exactly as in production.
+  caches and listeners behave exactly as in production. To keep this honest, every state
+  write lives on `Backend` and emits its own gateway event there; route handlers only
+  parse the request, permission-check it (via `ctx.require_*_permissions`), call one
+  `Backend` method, and serialize the result — so a mutation can never be announced
+  inconsistently or forgotten as more routes are added.
 - **Loud gaps.** An unimplemented route raises `RouteNotImplemented` naming the route.
   A testing tool must never silently fake success.
 - **Authentic errors.** Backend failures surface as genuine `discord.Forbidden` /

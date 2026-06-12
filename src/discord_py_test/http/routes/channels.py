@@ -17,14 +17,12 @@ def get_channel(ctx: RequestContext) -> Any:
 @route("PATCH", "/channels/{channel_id}")
 def edit_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "manage_channels")
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_channels")
     body = ctx.body()
-    for key in ("name", "topic", "nsfw", "rate_limit_per_user"):
-        if key in body:
-            setattr(channel, key, body[key])
+    changes = {key: body[key] for key in ("name", "topic", "nsfw", "rate_limit_per_user") if key in body}
+    overwrites = None
     if "permission_overwrites" in body:
-        channel.overwrites = [
+        overwrites = [
             Overwrite(
                 target_id=int(o["id"]),
                 type=int(o["type"]),
@@ -33,15 +31,14 @@ def edit_channel(ctx: RequestContext) -> Any:
             )
             for o in body["permission_overwrites"]
         ]
-    backend.announce_channel_update(channel.id)
+    channel = backend.edit_channel(channel.id, changes, overwrites=overwrites)
     return dict(serializers.channel_payload(backend, channel))
 
 
 @route("DELETE", "/channels/{channel_id}")
 def delete_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "manage_channels")
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_channels")
     payload = dict(serializers.channel_payload(backend, channel))
     backend.delete_channel(channel.id)
     return payload
@@ -49,31 +46,23 @@ def delete_channel(ctx: RequestContext) -> Any:
 
 @route("PUT", "/channels/{channel_id}/permissions/{target_id}")
 def edit_overwrite(ctx: RequestContext) -> Any:
-    backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "manage_roles")
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_roles")
     body = ctx.body()
-    target_id = ctx.int_arg("target_id")
-    channel.overwrites = [o for o in channel.overwrites if o.target_id != target_id]
-    channel.overwrites.append(
+    ctx.backend.set_overwrite(
+        channel.id,
         Overwrite(
-            target_id=target_id,
+            target_id=ctx.int_arg("target_id"),
             type=int(body["type"]),
             allow=int(body.get("allow", 0)),
             deny=int(body.get("deny", 0)),
-        )
+        ),
     )
-    backend.announce_channel_update(channel.id)
 
 
 @route("DELETE", "/channels/{channel_id}/permissions/{target_id}")
 def delete_overwrite(ctx: RequestContext) -> Any:
-    backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "manage_roles")
-    target_id = ctx.int_arg("target_id")
-    channel.overwrites = [o for o in channel.overwrites if o.target_id != target_id]
-    backend.announce_channel_update(channel.id)
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_roles")
+    ctx.backend.delete_overwrite(channel.id, ctx.int_arg("target_id"))
 
 
 @route("POST", "/channels/{channel_id}/typing")
@@ -93,9 +82,8 @@ def typing(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/threads")
 def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
     body = ctx.body()
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "create_public_threads")
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -109,10 +97,9 @@ def create_thread(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/messages/{message_id}/threads")
 def create_thread_from_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
     message = backend.get_message(channel.id, ctx.int_arg("message_id"))
     body = ctx.body()
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "create_public_threads")
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -126,8 +113,7 @@ def create_thread_from_message(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/webhooks")
 def create_webhook(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel.id, "manage_webhooks")
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_webhooks")
     webhook = backend.create_webhook(channel.id, ctx.body().get("name") or "Webhook", backend.bot_user.id)
     return serializers.webhook_payload(backend, webhook)
 

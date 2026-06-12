@@ -4,11 +4,12 @@ import pytest
 import discord_py_test as dpt
 
 
-async def test_member_join_event(env, channel, alice):
+async def test_member_join_event(env, alice):
+    welcome = env.guild.create_text_channel("welcome")
     bob = env.guild.add_member(env.create_user("bob"))
     await env.settle()
 
-    assert channel.last_message.content == f"Welcome {bob.mention}!"
+    assert welcome.last_message.content == f"Welcome {bob.mention}!"
 
 
 async def test_member_leave_event(env, channel, alice):
@@ -46,6 +47,24 @@ async def test_role_management(env, channel, alice):
     await member.remove_roles(role)
     await env.settle()
     assert role not in guild.get_member(alice.id).roles
+
+
+async def test_bot_cannot_assign_role_above_itself(env, channel, alice):
+    high_role = env.guild.create_role("Admin", position=100)
+    guild = env.bot.get_guild(env.guild.id)
+    member = guild.get_member(alice.id)
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await member.add_roles(guild.get_role(high_role.id))
+    assert exc_info.value.code == 50013
+
+
+async def test_bot_cannot_grant_permissions_it_lacks(env, channel):
+    # The bot's integration role has all perms except administrator, so it
+    # cannot create a role that grants administrator.
+    guild = env.bot.get_guild(env.guild.id)
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await guild.create_role(name="God", permissions=discord.Permissions(administrator=True))
+    assert exc_info.value.code == 50013
 
 
 async def test_role_hierarchy_enforced(env, channel):

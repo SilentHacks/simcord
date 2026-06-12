@@ -1,5 +1,7 @@
 """Slash commands exercising groups, autocomplete, deferral, views and modals."""
 
+import asyncio
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -15,6 +17,15 @@ class ConfirmView(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="Cancelled.", view=None)
+
+
+class DeferEditView(discord.ui.View):
+    @discord.ui.button(label="Slow Edit", custom_id="slow_edit")
+    async def slow_edit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        # defer() on a component is a deferred *update* (type 6): the later
+        # edit_original_response edits this very message in place.
+        await interaction.response.defer()
+        await interaction.edit_original_response(content="edited in place", view=None)
 
 
 class ColorView(discord.ui.View):
@@ -52,6 +63,16 @@ class Interactions(commands.Cog):
     async def slow(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await interaction.followup.send("Done after a while")
+
+    @app_commands.command(name="paced", description="Pauses before replying")
+    async def paced(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        await asyncio.sleep(0.2)  # cooldown/backoff-style pause; settle must wait it out
+        await interaction.followup.send("paced reply")
+
+    @app_commands.command(name="defer-edit", description="Button that defers then edits in place")
+    async def defer_edit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("click me", view=DeferEditView())
 
     @app_commands.command(name="delete-data", description="Delete your data")
     async def delete_data(self, interaction: discord.Interaction) -> None:

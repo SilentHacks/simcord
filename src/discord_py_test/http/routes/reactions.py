@@ -16,10 +16,8 @@ def _emoji(ctx: RequestContext) -> str:
 @route("PUT", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me")
 def add_own_reaction(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel_id = ctx.int_arg("channel_id")
-    channel = backend.get_channel(channel_id)
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel_id, "add_reactions")
-    backend.add_reaction(channel_id, ctx.int_arg("message_id"), _emoji(ctx), backend.bot_user.id)
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "add_reactions")
+    backend.add_reaction(channel.id, ctx.int_arg("message_id"), _emoji(ctx), backend.bot_user.id)
 
 
 @route("DELETE", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me")
@@ -33,10 +31,8 @@ def remove_own_reaction(ctx: RequestContext) -> Any:
 @route("DELETE", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/{user_id}")
 def remove_user_reaction(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel_id = ctx.int_arg("channel_id")
-    channel = backend.get_channel(channel_id)
-    backend.require_permissions(channel.guild_id, backend.bot_user.id, channel_id, "manage_messages")
-    backend.remove_reaction(channel_id, ctx.int_arg("message_id"), _emoji(ctx), ctx.int_arg("user_id"))
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    backend.remove_reaction(channel.id, ctx.int_arg("message_id"), _emoji(ctx), ctx.int_arg("user_id"))
 
 
 @route("GET", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}")

@@ -34,9 +34,28 @@ class Message:
     mention_everyone: bool = False
     reference: dict[str, Any] | None = None
     interaction_metadata: dict[str, Any] | None = None
+    webhook_id: int | None = None
+
+    @property
+    def is_ephemeral(self) -> bool:
+        return bool(self.flags & EPHEMERAL_FLAG)
 
     def reaction_for(self, emoji: str) -> Reaction | None:
         for reaction in self.reactions:
             if reaction.emoji == emoji:
                 return reaction
         return None
+
+    def visible_to(self, user_id: int | None) -> bool:
+        """Whether ``user_id`` could see this message in their Discord client.
+
+        Non-ephemeral messages are visible to everyone; an ephemeral message is
+        visible only to the interaction invoker recorded in its
+        ``interaction_metadata`` (and to nobody when ``user_id`` is ``None``).
+        """
+        if not self.is_ephemeral:
+            return True
+        if user_id is None:
+            return False
+        meta = self.interaction_metadata or {}
+        return str((meta.get("user") or {}).get("id")) == str(user_id)
