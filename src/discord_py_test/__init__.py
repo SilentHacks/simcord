@@ -23,7 +23,9 @@ from . import _dpy_internals
 _dpy_internals.verify()
 
 from .actors import MemberActor  # noqa: E402
-from .backend import Backend  # noqa: E402
+from .backend import Backend  # noqa: E402, F401  — importable for advanced use, but NOT public API:
+
+# Backend's methods and payload shapes are internal and may change in any release.
 from .backend.errors import BackendError, SetupError  # noqa: E402
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle  # noqa: E402
 from .env import Env, run  # noqa: E402
@@ -33,7 +35,6 @@ from .results import InteractionResult, ResponseMessage  # noqa: E402
 __version__ = "0.1.0"
 
 __all__ = (
-    "Backend",
     "BackendError",
     "ChannelHandle",
     "Env",

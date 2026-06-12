@@ -32,7 +32,73 @@ if your bot needs it.
 | Voice state | 🚧 | Planned (state only — never audio) |
 | Scheduled events, polls, invites, emojis, stickers | 🚧 | Planned |
 | Audit logs, auto-mod | 🚧 | Planned |
+| View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
-| View timeout fast-forward (`advance_time`) | ❌ | Under design; use short real timeouts meanwhile |
 | Multiple bots in one Env | ❌ | The backend broadcasts to N clients, but `Env` currently drives one bot |
 | Sharding simulation | ❌ | Single virtual shard |
+
+## Implemented routes
+
+This section is generated from the route table (`python -m discord_py_test.parity`),
+so it is exact by construction.
+
+<!-- routes:begin (generated — do not edit by hand) -->
+
+52 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
+
+| Method | Route |
+| --- | --- |
+| `GET` | `/applications/{application_id}/commands` |
+| `PUT` | `/applications/{application_id}/commands` |
+| `GET` | `/applications/{application_id}/guilds/{guild_id}/commands` |
+| `PUT` | `/applications/{application_id}/guilds/{guild_id}/commands` |
+| `GET` | `/channels/{channel_id}` |
+| `PATCH` | `/channels/{channel_id}` |
+| `DELETE` | `/channels/{channel_id}` |
+| `GET` | `/channels/{channel_id}/messages` |
+| `POST` | `/channels/{channel_id}/messages` |
+| `GET` | `/channels/{channel_id}/messages/pins` |
+| `PUT` | `/channels/{channel_id}/messages/pins/{message_id}` |
+| `DELETE` | `/channels/{channel_id}/messages/pins/{message_id}` |
+| `GET` | `/channels/{channel_id}/messages/{message_id}` |
+| `PATCH` | `/channels/{channel_id}/messages/{message_id}` |
+| `DELETE` | `/channels/{channel_id}/messages/{message_id}` |
+| `GET` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` |
+| `PUT` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me` |
+| `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me` |
+| `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/{user_id}` |
+| `POST` | `/channels/{channel_id}/messages/{message_id}/threads` |
+| `PUT` | `/channels/{channel_id}/permissions/{target_id}` |
+| `DELETE` | `/channels/{channel_id}/permissions/{target_id}` |
+| `POST` | `/channels/{channel_id}/threads` |
+| `POST` | `/channels/{channel_id}/typing` |
+| `GET` | `/channels/{channel_id}/webhooks` |
+| `POST` | `/channels/{channel_id}/webhooks` |
+| `GET` | `/guilds/{guild_id}` |
+| `GET` | `/guilds/{guild_id}/bans` |
+| `GET` | `/guilds/{guild_id}/bans/{user_id}` |
+| `PUT` | `/guilds/{guild_id}/bans/{user_id}` |
+| `DELETE` | `/guilds/{guild_id}/bans/{user_id}` |
+| `GET` | `/guilds/{guild_id}/members/{user_id}` |
+| `PATCH` | `/guilds/{guild_id}/members/{user_id}` |
+| `DELETE` | `/guilds/{guild_id}/members/{user_id}` |
+| `PUT` | `/guilds/{guild_id}/members/{user_id}/roles/{role_id}` |
+| `DELETE` | `/guilds/{guild_id}/members/{user_id}/roles/{role_id}` |
+| `GET` | `/guilds/{guild_id}/roles` |
+| `POST` | `/guilds/{guild_id}/roles` |
+| `PATCH` | `/guilds/{guild_id}/roles/{role_id}` |
+| `DELETE` | `/guilds/{guild_id}/roles/{role_id}` |
+| `POST` | `/interactions/{interaction_id}/{token}/callback` |
+| `GET` | `/oauth2/applications/@me` |
+| `GET` | `/users/@me` |
+| `POST` | `/users/@me/channels` |
+| `GET` | `/users/{user_id}` |
+| `POST` | `/webhooks/{webhook_id}/{token}` |
+| `GET` | `/webhooks/{webhook_id}/{token}/messages/@original` |
+| `PATCH` | `/webhooks/{webhook_id}/{token}/messages/@original` |
+| `DELETE` | `/webhooks/{webhook_id}/{token}/messages/@original` |
+| `GET` | `/webhooks/{webhook_id}/{token}/messages/{message_id}` |
+| `PATCH` | `/webhooks/{webhook_id}/{token}/messages/{message_id}` |
+| `DELETE` | `/webhooks/{webhook_id}/{token}/messages/{message_id}` |
+
+<!-- routes:end -->

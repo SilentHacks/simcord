@@ -61,6 +61,7 @@ EventListener = Callable[[str, Mapping[str, Any]], None]
 class Backend:
     def __init__(self) -> None:
         self._counter = 0
+        self._clock_offset_ms = 0
         self.users: dict[int, User] = {}
         self.guilds: dict[int, Guild] = {}
         self.channels: dict[int, Channel] = {}
@@ -76,6 +77,9 @@ class Backend:
         self.cdn = CdnStore()
         self.subscribers: list[EventListener] = []
         self.http_log: list[tuple[str, str, dict[str, Any] | None]] = []
+        #: Interleaved record of everything that crossed either seam, in order:
+        #: ("HTTP", "METHOD /path", body) and ("GATEWAY", event, payload).
+        self.transcript: list[tuple[str, str, Any]] = []
         self.faults: list[dict[str, Any]] = []
         self.application_id: int = self.snowflake()
         self.bot_user: User = self.make_user("TestBot", bot=True)
@@ -85,7 +89,7 @@ class Backend:
     def snowflake(self) -> int:
         """Deterministic, monotonic snowflakes with valid embedded timestamps."""
         self._counter += 1
-        ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._counter
+        ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter
         return (ms << 22) | (self._counter % 4096)
 
     def now_iso(self) -> str:
@@ -96,10 +100,20 @@ class Backend:
         discord.py derives from its snowflake) and its serialized ``timestamp``
         agree, and timestamps stay deterministic across runs.
         """
-        ms = _VIRTUAL_EPOCH_MS + self._counter
+        ms = _VIRTUAL_EPOCH_MS + self._clock_offset_ms + self._counter
         return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat()
 
+    def advance_clock(self, seconds: float) -> None:
+        """Advance the virtual wall clock (snowflake timestamps, now_iso).
+
+        Cooldowns and other age math in discord.py are computed from message/
+        interaction timestamps, so fast-forwarding time must move this clock as
+        well as the event loop's (:meth:`Env.advance_time` does both).
+        """
+        self._clock_offset_ms += int(seconds * 1000)
+
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
+        self.transcript.append(("GATEWAY", event, payload))
         for listener in self.subscribers:
             listener(event, payload)
 

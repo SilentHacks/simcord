@@ -28,6 +28,20 @@ class DeferEditView(discord.ui.View):
         await interaction.edit_original_response(content="edited in place", view=None)
 
 
+class ExpiringView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=180)
+        self.message: discord.Message | None = None
+
+    async def on_timeout(self) -> None:
+        if self.message is not None:
+            await self.message.edit(content="Offer expired.", view=None)
+
+    @discord.ui.button(label="Claim", custom_id="claim")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Claimed!", view=None)
+
+
 class ColorView(discord.ui.View):
     @discord.ui.select(
         custom_id="color",
@@ -63,6 +77,12 @@ class Interactions(commands.Cog):
     async def slow(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await interaction.followup.send("Done after a while")
+
+    @app_commands.command(name="offer", description="Time-limited offer with a button")
+    async def offer(self, interaction: discord.Interaction) -> None:
+        view = ExpiringView()
+        await interaction.response.send_message("Claim within 3 minutes!", view=view)
+        view.message = await interaction.original_response()
 
     @app_commands.command(name="paced", description="Pauses before replying")
     async def paced(self, interaction: discord.Interaction) -> None:

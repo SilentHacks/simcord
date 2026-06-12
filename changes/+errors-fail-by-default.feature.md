@@ -1,0 +1,1 @@
+Uninspected bot errors now fail the test: `dpt.run` re-raises captured errors as an `ExceptionGroup` at teardown unless the test read `env.errors` or called `env.raise_errors()`. Opt out with `dpt.run(bot, check_errors=False)`.

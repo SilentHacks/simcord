@@ -93,6 +93,7 @@ def dispatch(
     files: list[Any] | None = None,
 ) -> Any:
     backend.http_log.append((method, path, json if isinstance(json, dict) else None))
+    backend.transcript.append(("HTTP", f"{method} {path}", json if isinstance(json, dict) else None))
     _check_faults(backend, method, path)
     segments = path.strip("/").split("/")
     # Prefer the most-literal match so e.g. ".../messages/pins" beats ".../messages/{message_id}".
