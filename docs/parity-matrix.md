@@ -1,3 +1,8 @@
+---
+title: "Parity matrix"
+description: "What SimCord's virtual Discord implements today — messages, slash commands, components, permissions, threads and more — plus the exact list of supported REST routes. Anything unimplemented fails loudly."
+---
+
 # Parity matrix
 
 What the virtual Discord implements today. Anything not listed fails **loudly** with a

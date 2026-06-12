@@ -1,3 +1,8 @@
+---
+title: "Architecture"
+description: "How SimCord works: it swaps discord.py's two transport seams — the REST client and the gateway parser — for an in-memory backend, while every model, converter, check and view runs as real, unmodified discord.py code."
+---
+
 # Architecture
 
 discord.py has two narrow seams:

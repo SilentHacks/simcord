@@ -1,3 +1,8 @@
+---
+title: "Migrating from dpytest"
+description: "Move your discord.py tests from dpytest to SimCord. A direct concept-by-concept mapping, plus the key differences: no global state, explicit actors, plain-Python assertions and stricter realism."
+---
+
 # Migrating from dpytest
 
 [dpytest](https://github.com/CraftSpider/dpytest) pioneered this approach — faking the
@@ -27,3 +32,10 @@ real error codes) and replaces its module-global API with explicit objects.
   state, with pytest's normal introspection — no verification builder DSL.
 - **Strictness.** Unsynced slash commands, disabled buttons, hidden channels and
   oversized payloads fail your tests, because they fail on Discord.
+
+## Next
+
+- [Quickstart](quickstart.md) — wire SimCord into your project.
+- [Core concepts](concepts.md) — the builders/actors/queries model that replaces dpytest's
+  globals.
+- [Recipes](cookbook.md) — patterns for the tests you're porting.
