@@ -62,8 +62,8 @@ async def test_check_errors_opt_out():
 async def test_transcript_records_both_seams(env, channel, alice):
     await alice.send(channel, "!ping")
     text = env.transcript()
-    assert "GATEWAY MESSAGE_CREATE" in text
-    assert "HTTP    POST /channels/" in text
+    assert "GATEWAY  MESSAGE_CREATE" in text
+    assert "HTTP     POST /channels/" in text
     assert "Pong!" in text
 
 

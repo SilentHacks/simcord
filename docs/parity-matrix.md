@@ -13,6 +13,7 @@ if your bot needs it.
 | Area | Status | Notes |
 | --- | --- | --- |
 | Login / READY / setup_hook | ✅ | Real discord.py login flow, application info |
+| Gateway intents | ✅ | Server-side gating, `message_content` censoring, member chunking, 4014 — see the [Intents guide](guides/intents.md) |
 | Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`) |
 | Embeds, attachments, replies, mentions | ✅ | In-memory CDN; `attachment.read()` works |
 | Pins | ✅ | Current paginated endpoints |
