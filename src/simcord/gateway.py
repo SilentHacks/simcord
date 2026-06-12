@@ -151,6 +151,7 @@ class FakeWebSocket:
         if limit:
             members = members[:limit]
         chunks = [members[i : i + _CHUNK_SIZE] for i in range(0, len(members), _CHUNK_SIZE)] or [[]]
+        payloads: list[dict[str, Any]] = []
         for index, chunk in enumerate(chunks):
             payload: dict[str, Any] = {
                 "guild_id": str(guild_id),
@@ -175,8 +176,20 @@ class FakeWebSocket:
                 payload["not_found"] = not_found
             if nonce:
                 payload["nonce"] = nonce
-            # Deliver asynchronously, like a real gateway round-trip: discord.py
-            # registers its waiter only *after* request_chunks returns, so a
-            # synchronous response would resolve into thin air and the caller
-            # (query_members / chunk_guild) would wait forever.
-            asyncio.get_running_loop().call_soon(self._gateway.deliver, "GUILD_MEMBERS_CHUNK", payload)
+            payloads.append(payload)
+        # Deliver asynchronously, like a real gateway round-trip. discord.py
+        # registers its ChunkRequest waiter only *after* request_chunks returns
+        # — and under asyncio.wait_for (used by query_members/chunk_guild) that
+        # registration is itself deferred to a freshly scheduled task. A plain
+        # call_soon can therefore fire *before* the waiter exists, resolving
+        # into thin air and hanging the caller (observed on Python 3.11, whose
+        # wait_for schedules the inner task one tick later than 3.12+). Yielding
+        # one loop iteration before delivering guarantees the waiter is in place
+        # regardless of interpreter version.
+        asyncio.ensure_future(self._deliver_chunks(payloads))
+
+    async def _deliver_chunks(self, payloads: list[dict[str, Any]]) -> None:
+        # Let the caller's ChunkRequest waiter register before we answer.
+        await asyncio.sleep(0)
+        for payload in payloads:
+            self._gateway.deliver("GUILD_MEMBERS_CHUNK", payload)
