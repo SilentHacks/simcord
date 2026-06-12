@@ -3,15 +3,15 @@
 ## Install
 
 ```bash
-pip install discord-py-test[pytest]
+pip install simcord[pytest]
 ```
 
 Requires Python 3.11+ and discord.py 2.7+.
 
 ## Wire it into your project
 
-The bundled pytest plugin provides a `dpt_env` fixture. Tell it how to build your bot by
-defining a `dpt_bot` fixture:
+The bundled pytest plugin provides a `simcord_env` fixture. Tell it how to build your bot by
+defining a `simcord_bot` fixture:
 
 ```python
 # conftest.py
@@ -19,12 +19,12 @@ import pytest
 from mybot import create_bot   # however your project constructs its Bot
 
 @pytest.fixture
-def dpt_bot():
+def simcord_bot():
     return create_bot()
 ```
 
-That's it — `dpt_env` now hands you a fully logged-in bot attached to a virtual Discord.
-(If you prefer explicit control, use `async with discord_py_test.run(bot) as env:` directly.)
+That's it — `simcord_env` now hands you a fully logged-in bot attached to a virtual Discord.
+(If you prefer explicit control, use `async with simcord.run(bot) as env:` directly.)
 
 !!! tip "Your bot's `setup_hook` runs for real"
     Login is the real discord.py flow, so extension loading and `tree.sync()` in your
@@ -36,12 +36,12 @@ That's it — `dpt_env` now hands you a fully logged-in bot attached to a virtua
 ```python
 import discord
 
-async def test_ban(dpt_env):
-    guild = dpt_env.create_guild()
+async def test_ban(simcord_env):
+    guild = simcord_env.create_guild()
     channel = guild.create_text_channel("mod")
     mods = guild.create_role("Mods", permissions=discord.Permissions(ban_members=True))
-    mod = guild.add_member(dpt_env.create_user("mod"), roles=[mods])
-    target = guild.add_member(dpt_env.create_user("spammer"))
+    mod = guild.add_member(simcord_env.create_user("mod"), roles=[mods])
+    target = guild.add_member(simcord_env.create_user("spammer"))
 
     result = await mod.slash(channel, "ban", user=target, reason="spam")
 
@@ -64,7 +64,7 @@ async def test_ban(dpt_env):
 ## Testing failure paths
 
 ```python
-async def test_handles_api_outage(dpt_env):
-    dpt_env.inject_error("POST", "/channels/*/messages", status=500)
+async def test_handles_api_outage(simcord_env):
+    simcord_env.inject_error("POST", "/channels/*/messages", status=500)
     ...
 ```

@@ -6,12 +6,12 @@ labels: bug
 
 **What happened?**
 
-**Minimal failing test** (the perfect bug report is a test using `discord_py_test`):
+**Minimal failing test** (the perfect bug report is a test using `simcord`):
 
 ```python
 ```
 
-**Versions**: discord-py-test, discord.py, Python
+**Versions**: simcord, discord.py, Python
 
-**Checked the [parity matrix](https://silenthacks.github.io/discord-py-test/parity-matrix/)?**
+**Checked the [parity matrix](https://silenthacks.github.io/simcord/parity-matrix/)?**
 If the feature is listed as unimplemented, please use the parity gap template instead.

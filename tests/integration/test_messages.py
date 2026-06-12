@@ -2,7 +2,7 @@ import discord
 import pytest
 from discord.ext import commands
 
-import discord_py_test as dpt
+import simcord as dpt
 
 
 async def test_prefix_command_round_trip(env, channel, alice):

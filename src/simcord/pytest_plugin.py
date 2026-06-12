@@ -1,19 +1,19 @@
 """pytest plugin: ready-made fixtures for discord-py-test.
 
-Define a ``dpt_bot`` fixture in your conftest that builds your bot, and the
-``dpt_env`` fixture hands you a running environment::
+Define a ``simcord_bot`` fixture in your conftest that builds your bot, and the
+``simcord_env`` fixture hands you a running environment::
 
     # conftest.py
     import pytest
     from mybot import create_bot
 
     @pytest.fixture
-    def dpt_bot():
+    def simcord_bot():
         return create_bot()
 
     # test_bot.py
-    async def test_ping(dpt_env):
-        channel = dpt_env.create_guild().create_text_channel("general")
+    async def test_ping(simcord_env):
+        channel = simcord_env.create_guild().create_text_channel("general")
         ...
 
 Requires the ``pytest`` extra (``pip install discord-py-test[pytest]``).
@@ -45,15 +45,15 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture
-def dpt_bot():
+def simcord_bot():
     raise pytest.UsageError(
-        "Define a `dpt_bot` fixture in your conftest.py that returns your bot to use the `dpt_env` fixture."
+        "Define a `simcord_bot` fixture in your conftest.py that returns your bot to use the `simcord_env` fixture."
     )
 
 
 if pytest_asyncio is not None:
 
     @pytest_asyncio.fixture
-    async def dpt_env(dpt_bot):
-        async with run(dpt_bot) as env:
+    async def simcord_env(simcord_bot):
+        async with run(simcord_bot) as env:
             yield env

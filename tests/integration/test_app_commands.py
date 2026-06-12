@@ -1,6 +1,6 @@
 import pytest
 
-import discord_py_test as dpt
+import simcord as dpt
 
 
 async def test_subcommand_group(env, channel, alice):

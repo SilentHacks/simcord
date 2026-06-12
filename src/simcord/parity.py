@@ -2,7 +2,7 @@
 
 The route table is the source of truth for what is implemented; the docs page
 embeds the generated section between markers so it cannot rot. Regenerate with
-``python -m discord_py_test.parity docs/parity-matrix.md``; a unit test asserts
+``python -m simcord.parity docs/parity-matrix.md``; a unit test asserts
 the committed page is in sync.
 """
 

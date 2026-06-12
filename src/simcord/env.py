@@ -19,7 +19,7 @@ from .http import FakeHTTPClient, FakeWebhookAdapter
 class Env:
     """A running test environment around a single bot.
 
-    Use via :func:`discord_py_test.run`::
+    Use via :func:`simcord.run`::
 
         async with dpt.run(bot) as env:
             guild = env.create_guild()

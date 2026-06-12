@@ -6,7 +6,7 @@ discord.py has two narrow seams:
    responses go through the async webhook adapter — also a single `request` method).
 2. **Every gateway event** enters through `ConnectionState.parsers[event](payload)`.
 
-`discord-py-test` replaces the transports behind seam 1 with fakes routed into an
+`simcord` replaces the transports behind seam 1 with fakes routed into an
 in-memory backend, and injects Discord-shaped payloads through seam 2. Everything
 between the seams — models, converters, the command tree, checks, views, the cache —
 is real discord.py code running unmodified.

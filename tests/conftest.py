@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-import discord_py_test as dpt
+import simcord as dpt
 
 # Make `fixtures.sample_bot` importable both from pytest and as bot extensions.
 sys.path.insert(0, str(Path(__file__).parent))

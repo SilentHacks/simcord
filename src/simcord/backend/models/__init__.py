@@ -2,7 +2,7 @@
 
 These are deliberately independent of discord.py's model classes: the backend
 plays the role of Discord's servers, and only ever speaks to the bot through
-wire-format payloads produced by :mod:`discord_py_test.backend.serializers`.
+wire-format payloads produced by :mod:`simcord.backend.serializers`.
 """
 
 from .channel import Channel, Overwrite, ThreadMetadata

@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 
-import discord_py_test as dpt
+import simcord as dpt
 
 
 async def test_ready_and_cache_population():

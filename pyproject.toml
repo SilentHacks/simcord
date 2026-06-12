@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "discord-py-test"
+name = "simcord"
 version = "0.1.0"
-description = "Offline testing framework for discord.py bots: a virtual Discord backend, no network, no ToS worries."
+description = "SimCord — discord.py testing framework. Simulate Discord, test your bot offline: no network, no token, no ToS."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "SilentHacks" }]
-keywords = ["discord", "discord.py", "testing", "pytest", "mock"]
+keywords = ["discord", "discord.py", "testing", "pytest", "mock", "bot testing", "integration testing", "simulator", "unit testing", "mock discord"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: Pytest",
@@ -39,23 +39,23 @@ dev = [
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.26"]
 
 [project.entry-points.pytest11]
-discord_py_test = "discord_py_test.pytest_plugin"
+simcord = "simcord.pytest_plugin"
 
 [project.urls]
-Homepage = "https://github.com/SilentHacks/discord-py-test"
-Documentation = "https://silenthacks.github.io/discord-py-test/"
-Issues = "https://github.com/SilentHacks/discord-py-test/issues"
-Changelog = "https://github.com/SilentHacks/discord-py-test/blob/master/CHANGELOG.md"
+Homepage = "https://github.com/SilentHacks/simcord"
+Documentation = "https://silenthacks.github.io/simcord/"
+Issues = "https://github.com/SilentHacks/simcord/issues"
+Changelog = "https://github.com/SilentHacks/simcord/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/discord_py_test"]
+packages = ["src/simcord"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["discord_py_test"]
+source = ["simcord"]
 branch = true
 
 [tool.coverage.report]
@@ -86,12 +86,12 @@ typeCheckingMode = "basic"
 reportPrivateUsage = false
 
 [tool.towncrier]
-package = "discord_py_test"
+package = "simcord"
 directory = "changes"
 filename = "CHANGELOG.md"
 underlines = ["", "", ""]
 title_format = "## {version} ({project_date})"
-issue_format = "[#{issue}](https://github.com/SilentHacks/discord-py-test/issues/{issue})"
+issue_format = "[#{issue}](https://github.com/SilentHacks/simcord/issues/{issue})"
 
 [[tool.towncrier.type]]
 directory = "feature"

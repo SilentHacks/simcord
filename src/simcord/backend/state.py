@@ -553,7 +553,7 @@ class Backend:
         webhook_user = self.make_user(name, bot=True)
         webhook = Webhook(
             id=webhook_id,
-            token=f"dpt_webhook_{webhook_id}",
+            token=f"simcord_webhook_{webhook_id}",
             channel_id=channel_id,
             guild_id=channel.guild_id,
             name=name,
@@ -597,7 +597,7 @@ class Backend:
         interaction_id = self.snowflake()
         record = Interaction(
             id=interaction_id,
-            token=f"dpt_interaction_{interaction_id}",
+            token=f"simcord_interaction_{interaction_id}",
             type=type,
             channel_id=channel_id,
             guild_id=guild_id,

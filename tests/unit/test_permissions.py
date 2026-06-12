@@ -4,8 +4,8 @@ import discord
 from hypothesis import given
 from hypothesis import strategies as st
 
-from discord_py_test.backend import permissions
-from discord_py_test.backend.models import Channel, Guild, Member, Overwrite, Role
+from simcord.backend import permissions
+from simcord.backend.models import Channel, Guild, Member, Overwrite, Role
 
 ALL = discord.Permissions.all().value
 ADMIN = discord.Permissions.administrator.flag

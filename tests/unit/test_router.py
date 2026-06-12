@@ -1,8 +1,8 @@
 import pytest
 
-from discord_py_test.backend import Backend
-from discord_py_test.http import router
-from discord_py_test.http import routes as _routes  # noqa: F401  — registers handlers
+from simcord.backend import Backend
+from simcord.http import router
+from simcord.http import routes as _routes  # noqa: F401  — registers handlers
 
 
 def test_unknown_route_raises_with_route_name():

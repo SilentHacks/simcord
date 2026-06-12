@@ -2,7 +2,7 @@
 
 What the virtual Discord implements today. Anything not listed fails **loudly** with a
 `RouteNotImplemented` error naming the route — please open a
-[parity gap issue](https://github.com/SilentHacks/discord-py-test/issues/new?template=parity-gap.md)
+[parity gap issue](https://github.com/SilentHacks/simcord/issues/new?template=parity-gap.md)
 if your bot needs it.
 
 | Area | Status | Notes |
@@ -39,7 +39,7 @@ if your bot needs it.
 
 ## Implemented routes
 
-This section is generated from the route table (`python -m discord_py_test.parity`),
+This section is generated from the route table (`python -m simcord.parity`),
 so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->

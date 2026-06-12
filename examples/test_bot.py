@@ -1,24 +1,24 @@
-"""Example test suite using the bundled pytest plugin's `dpt_env` fixture."""
+"""Example test suite using the bundled pytest plugin's `simcord_env` fixture."""
 
 import discord
 
 
-async def test_ping(dpt_env):
-    channel = dpt_env.create_guild().create_text_channel("general")
-    alice = dpt_env.guild.add_member(dpt_env.create_user("alice"))
+async def test_ping(simcord_env):
+    channel = simcord_env.create_guild().create_text_channel("general")
+    alice = simcord_env.guild.add_member(simcord_env.create_user("alice"))
 
     await alice.send(channel, "!ping")
 
     assert channel.last_message.content == "Pong!"
 
 
-async def test_ban_requires_permission(dpt_env):
-    guild = dpt_env.create_guild()
+async def test_ban_requires_permission(simcord_env):
+    guild = simcord_env.create_guild()
     channel = guild.create_text_channel("mod")
     mods = guild.create_role("Mods", permissions=discord.Permissions(ban_members=True))
-    mod = guild.add_member(dpt_env.create_user("mod"), roles=[mods])
-    rando = guild.add_member(dpt_env.create_user("rando"))
-    target = guild.add_member(dpt_env.create_user("spammer"))
+    mod = guild.add_member(simcord_env.create_user("mod"), roles=[mods])
+    rando = guild.add_member(simcord_env.create_user("rando"))
+    target = guild.add_member(simcord_env.create_user("spammer"))
 
     denied = await rando.slash(channel, "ban", user=target)
     assert denied.response.content == "You can't do that."

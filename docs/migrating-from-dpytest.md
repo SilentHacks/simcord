@@ -1,15 +1,15 @@
 # Migrating from dpytest
 
 [dpytest](https://github.com/CraftSpider/dpytest) pioneered this approach — faking the
-HTTP layer and injecting gateway events. `discord-py-test` covers the modern surface
+HTTP layer and injecting gateway events. `simcord` covers the modern surface
 dpytest never did (slash commands, components, modals, autocomplete, permissions with
 real error codes) and replaces its module-global API with explicit objects.
 
 ## Concept mapping
 
-| dpytest | discord-py-test |
+| dpytest | simcord |
 | --- | --- |
-| `dpytest.configure(bot)` | `async with dpt.run(bot) as env:` (or the `dpt_env` fixture) |
+| `dpytest.configure(bot)` | `async with dpt.run(bot) as env:` (or the `simcord_env` fixture) |
 | `dpytest.message("!ping")` | `await alice.send(channel, "!ping")` |
 | `dpytest.verify().message().content("Pong!")` | `assert channel.last_message.content == "Pong!"` |
 | `dpytest.get_config().guilds[0]` | `env.guild` / `env.create_guild()` |

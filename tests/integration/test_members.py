@@ -1,7 +1,7 @@
 import discord
 import pytest
 
-import discord_py_test as dpt
+import simcord as dpt
 
 
 async def test_member_join_event(env, alice):

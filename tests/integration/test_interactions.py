@@ -2,7 +2,7 @@ import discord
 import pytest
 from discord.ext import commands
 
-import discord_py_test as dpt
+import simcord as dpt
 
 
 async def test_slash_command_with_permissions(env, channel):

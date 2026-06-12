@@ -7,8 +7,8 @@ Thanks for helping make Discord bot testing better!
 The project uses [uv](https://docs.astral.sh/uv/):
 
 ```bash
-git clone https://github.com/SilentHacks/discord-py-test
-cd discord-py-test
+git clone https://github.com/SilentHacks/simcord
+cd simcord
 uv sync --extra dev
 uv run pytest tests examples
 uv run ruff check src tests examples && uv run ruff format --check src tests examples
@@ -17,14 +17,14 @@ uv run pyright src
 
 ## Project layout
 
-- `src/discord_py_test/backend/` — the virtual Discord: dataclass models, wire-format
+- `src/simcord/backend/` — the virtual Discord: dataclass models, wire-format
   serializers (annotated against `discord.types`), the permissions engine, error catalog,
   in-memory CDN, and the central `Backend` store.
-- `src/discord_py_test/http/` — the route table and per-resource REST handlers, plus the
+- `src/simcord/http/` — the route table and per-resource REST handlers, plus the
   fake `HTTPClient`/webhook adapter.
-- `src/discord_py_test/gateway.py` — feeds payloads into discord.py's real parsers.
-- `src/discord_py_test/{env,builders,actors,results,interactions}.py` — the public API.
-- `src/discord_py_test/_dpy_internals.py` — **every** touch of a private discord.py API,
+- `src/simcord/gateway.py` — feeds payloads into discord.py's real parsers.
+- `src/simcord/{env,builders,actors,results,interactions}.py` — the public API.
+- `src/simcord/_dpy_internals.py` — **every** touch of a private discord.py API,
   behind an import-time self-check. New private-API usage goes here, nowhere else.
 
 ## Guidelines
@@ -36,7 +36,7 @@ uv run pyright src
 - **Never fake success silently.** Unimplemented routes must raise `RouteNotImplemented`.
 - Every new route or feature needs an integration test in `tests/integration/` driving
   the sample bot (`tests/fixtures/sample_bot/`) through it, plus a parity-matrix update:
-  run `uv run python -m discord_py_test.parity docs/parity-matrix.md` to regenerate the
+  run `uv run python -m simcord.parity docs/parity-matrix.md` to regenerate the
   route inventory (a unit test enforces it), and update the curated feature table by hand.
   Pure backend logic (permissions, routing) gets unit tests in `tests/unit/`.
 - New state mutations live on `Backend`, paired with their gateway emit; route handlers
@@ -48,5 +48,5 @@ uv run pyright src
 
 ## Reporting bugs
 
-A failing test using `discord_py_test` is the perfect bug report. If your bot hits an
+A failing test using `simcord` is the perfect bug report. If your bot hits an
 unimplemented route, the error message names it — include that in the issue.

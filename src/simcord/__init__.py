@@ -7,7 +7,7 @@ them.
 
 Typical usage::
 
-    import discord_py_test as dpt
+    import simcord as dpt
 
     async with dpt.run(bot) as env:
         guild = env.create_guild()

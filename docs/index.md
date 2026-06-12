@@ -1,6 +1,6 @@
-# discord-py-test
+# SimCord
 
-Offline testing framework for [discord.py](https://github.com/Rapptz/discord.py) bots.
+**The discord.py testing framework** — simulate Discord, test your bot offline.
 
 Run your **real, unmodified bot** against a virtual, in-memory Discord — no network, no
 tokens, and no Terms of Service concerns, because nothing ever connects to Discord.
@@ -22,8 +22,8 @@ async def test_ping(env):
 Unit tests cover business logic, but Discord bot bugs live in the glue: converters,
 checks, permissions, forgotten `tree.sync()` calls, double-acknowledged interactions,
 oversized embeds. Until now the only way to test that layer was manually, in a real
-server. `discord-py-test` runs all of discord.py's real machinery — parsers, cache,
-command frameworks, views — against a faithful fake of Discord's REST API and gateway,
+server. SimCord runs all of discord.py's real machinery — parsers, cache,
+command frameworks, views — against a faithful mock of Discord's REST API and gateway,
 entirely in-process.
 
 - **Real semantics**: permission checks with authentic error codes
@@ -35,6 +35,6 @@ entirely in-process.
 - **Debuggable failures**: failing tests automatically include a transcript of every
   gateway event and REST call, and unhandled bot errors fail tests by default.
 - **Honest about gaps**: anything not implemented fails loudly with the route name —
-  the framework never silently fakes success. See the [parity matrix](parity-matrix.md).
+  SimCord never silently fakes success. See the [parity matrix](parity-matrix.md).
 
 Start with the [quickstart](quickstart.md).
