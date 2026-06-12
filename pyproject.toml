@@ -45,7 +45,7 @@ discord_py_test = "discord_py_test.pytest_plugin"
 Homepage = "https://github.com/SilentHacks/discord-py-test"
 Documentation = "https://silenthacks.github.io/discord-py-test/"
 Issues = "https://github.com/SilentHacks/discord-py-test/issues"
-Changelog = "https://github.com/SilentHacks/discord-py-test/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/SilentHacks/discord-py-test/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/discord_py_test"]
