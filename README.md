@@ -1,7 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/simcord.webp" width="48" height="48" alt="" style="vertical-align: middle;">
-<h1 style="display: inline-block; margin: 0; vertical-align: middle;">SimCord</h1>
+<img src="docs/assets/simcord-transparent.webp" width="48" height="48" alt="" style="vertical-align: middle;"> <h1 style="display: inline-block; margin: 0; vertical-align: middle;">SimCord</h1>
 
 **The discord.py testing framework — simulate Discord, test your bot offline.**
 

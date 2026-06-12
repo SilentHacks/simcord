@@ -8,8 +8,8 @@ copyright: Copyright &copy; SilentHacks — MIT licensed
 
 theme:
   name: material
-  favicon: assets/simcord.webp
-  logo: assets/simcord.webp
+  favicon: assets/simcord-transparent.webp
+  logo: assets/simcord-transparent.webp
   icon:
     repo: fontawesome/brands/github
   features:
