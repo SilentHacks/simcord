@@ -27,6 +27,11 @@ class General(commands.Cog):
         created = await ctx.message.create_thread(name="discussion")
         await created.send("Let's talk here")
 
+    @commands.command()
+    @commands.cooldown(rate=1, per=60.0, type=commands.BucketType.user)
+    async def daily(self, ctx: commands.Context) -> None:
+        await ctx.send("Claimed!")
+
     @commands.command(name="announce-to-locked")
     async def announce(self, ctx: commands.Context, *, text: str) -> None:
         locked = discord.utils.get(ctx.guild.text_channels, name="locked")

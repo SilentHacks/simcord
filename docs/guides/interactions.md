@@ -64,3 +64,17 @@ assert [c["value"] for c in choices] == ["python", "pytest"]
 ```python
 assert len(channel.history(viewer=mod)) == len(channel.history(viewer=bystander)) + 1
 ```
+
+## Time control
+
+`env.advance_time(seconds)` fast-forwards the virtual clock without real waiting: view
+timeouts fire (`on_timeout` runs, your message edit happens), command cooldowns reset,
+and `asyncio.sleep` chains complete in order. Both the event-loop clock and message
+timestamps advance together, so everything discord.py derives time from stays
+consistent.
+
+```python
+result = await alice.slash(channel, "offer")   # sends a View(timeout=180)
+await env.advance_time(180)                    # instant — the view times out
+assert "expired" in channel.last_message.content
+```

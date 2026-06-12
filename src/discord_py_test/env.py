@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import discord
@@ -29,15 +30,19 @@ class Env:
     environments on one loop would corrupt each other's task bookkeeping.
     """
 
-    def __init__(self, bot: discord.Client, *, strict_sync: bool = True) -> None:
+    def __init__(self, bot: discord.Client, *, strict_sync: bool = True, check_errors: bool = True) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
+        self.check_errors = check_errors
         self.backend = Backend()
-        self.errors: list[BaseException] = []
+        self._errors: list[BaseException] = []
+        self._errors_inspected = False
         self._guilds: list[GuildHandle] = []
         self._tasks: list[asyncio.Task[Any]] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._orig_create_task: Any = None
+        self._orig_monotonic: Any = None
+        self._time_offset = 0.0
         self._adapter_token: Any = None
         self._started = False
 
@@ -60,6 +65,14 @@ class Env:
             return task
 
         loop.create_task = tracking_create_task  # type: ignore[method-assign]
+
+        # Virtual clock: time.monotonic() = real monotonic + offset, so
+        # advance_time() can fast-forward view timeouts, cooldown buckets and
+        # asyncio timers without real waiting. One patch covers everything:
+        # BaseEventLoop.time() and discord.py's deadline checks both read
+        # time.monotonic at call time. Restored on shutdown.
+        self._orig_monotonic = time.monotonic
+        time.monotonic = lambda: self._orig_monotonic() + self._time_offset
 
         _dpy_internals.install_http(self.bot, FakeHTTPClient(self.backend, loop))
         _dpy_internals.set_guild_ready_timeout(self.bot, 0.0)
@@ -100,6 +113,9 @@ class Env:
         if self._loop is not None and self._orig_create_task is not None:
             self._loop.create_task = self._orig_create_task  # type: ignore[method-assign]
             self._orig_create_task = None
+        if self._orig_monotonic is not None:
+            time.monotonic = self._orig_monotonic
+            self._orig_monotonic = None
         current = asyncio.current_task()
         to_cancel = [t for t in self._tasks if t is not current and not t.done()]
         for task in to_cancel:
@@ -162,7 +178,45 @@ class Env:
         times = [h.when() for h in scheduled if not h.cancelled()]
         return min(times) if times else None
 
+    async def advance_time(self, seconds: float) -> None:
+        """Fast-forward the virtual clock, firing every timer that becomes due.
+
+        View timeouts, cooldown resets, ``asyncio.sleep`` chains — anything the
+        bot scheduled against the loop's clock — fire as if ``seconds`` of real
+        time had passed, without waiting. Timers are consumed in order (a chain
+        of three 60s sleeps completes within ``advance_time(180)``), and the
+        bot's reactions are settled after each step.
+        """
+        assert self._loop is not None
+        await self.settle()
+        # Cooldowns and age math derive from message/interaction timestamps, so
+        # the backend's virtual wall clock must advance in step with the loop's.
+        self.backend.advance_clock(seconds)
+        remaining = float(seconds)
+        while remaining > 0:
+            next_timer = self._next_scheduled_timer()
+            now = self._loop.time()
+            if next_timer is None or next_timer - now > remaining:
+                self._time_offset += remaining
+                break
+            step = max(next_timer - now, 0.0)
+            self._time_offset += step
+            remaining -= step
+            # The earliest timer is now due: let it fire and the bot react.
+            await asyncio.sleep(0)
+            await self.settle()
+
     # -------------------------------------------------------- error capture
+
+    @property
+    def errors(self) -> list[BaseException]:
+        """Errors the bot raised (command handlers, app commands, listeners).
+
+        Reading this marks the errors as inspected: ``dpt.run`` then trusts the
+        test's own assertions instead of failing it at teardown.
+        """
+        self._errors_inspected = True
+        return self._errors
 
     def _capture_errors(self) -> None:
         from discord.ext import commands
@@ -171,7 +225,7 @@ class Env:
             # CommandNotFound just means the message wasn't a command — that is
             # not a bot bug, so don't pollute env.errors with it.
             if not isinstance(error, commands.CommandNotFound):
-                self.errors.append(error)
+                self._errors.append(error)
 
         add_listener = getattr(self.bot, "add_listener", None)
         if add_listener is not None:
@@ -187,7 +241,7 @@ class Env:
 
             exc = sys.exc_info()[1]
             if exc is not None:
-                self.errors.append(exc)
+                self._errors.append(exc)
             await original_on_error(event_method, *args, **kwargs)
 
         self.bot.on_error = on_error  # type: ignore[method-assign]
@@ -197,7 +251,7 @@ class Env:
             original = tree.on_error
 
             async def on_tree_error(interaction: Any, error: BaseException) -> None:
-                self.errors.append(error)
+                self._errors.append(error)
                 await original(interaction, error)
 
             tree.on_error = on_tree_error
@@ -226,6 +280,18 @@ class Env:
         """Every REST call the bot made: (method, path, json body)."""
         return self.backend.http_log
 
+    def transcript(self) -> str:
+        """Human-readable record of everything that happened, in order.
+
+        One line per gateway event injected and REST call the bot made — the
+        "what did the bot actually do" dump. The pytest plugin attaches this to
+        failing tests automatically.
+        """
+        lines = []
+        for kind, name, payload in self.backend.transcript:
+            lines.append(f"{kind:<7} {name:<28} {_summarize(payload)}")
+        return "\n".join(lines)
+
     def raise_errors(self) -> None:
         """Re-raise everything the bot raised during the test, as a group.
 
@@ -236,7 +302,8 @@ class Env:
         ``ExceptionGroup`` of everything captured — even a single error — and
         does nothing if there were none.
         """
-        captured = list(self.errors)
+        self._errors_inspected = True
+        captured = list(self._errors)
         if not captured:
             return
         message = f"bot raised {len(captured)} error(s) during the test"
@@ -272,8 +339,32 @@ class Env:
         )
 
 
+def _summarize(payload: Any, limit: int = 140) -> str:
+    """One-line gist of a payload: author/content for messages, else trimmed repr."""
+    if not isinstance(payload, dict):
+        return "" if payload is None else repr(payload)[:limit]
+    parts = []
+    author = payload.get("author")
+    if isinstance(author, dict) and author.get("username"):
+        parts.append(f"author={author['username']}")
+    for key in ("content", "name", "custom_id", "user_id", "channel_id"):
+        if payload.get(key):
+            parts.append(f"{key}={payload[key]!r}")
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("name"):
+        parts.append(f"command={data['name']!r}")
+    text = " ".join(parts) or repr(payload)
+    return text[:limit]
+
+
 class run:
-    """``async with dpt.run(bot) as env:`` — attach, fake-login, READY."""
+    """``async with dpt.run(bot) as env:`` — attach, fake-login, READY.
+
+    On exit, if the bot raised errors the test never inspected (via
+    ``env.errors`` or ``env.raise_errors()``), they are re-raised as an
+    ``ExceptionGroup`` so bot bugs cannot pass silently. Opt out with
+    ``dpt.run(bot, check_errors=False)``.
+    """
 
     def __init__(self, bot: discord.Client, **options: Any) -> None:
         self._env = Env(bot, **options)
@@ -282,5 +373,9 @@ class run:
         await self._env.start()
         return self._env
 
-    async def __aexit__(self, *exc_info: Any) -> None:
-        await self._env.shutdown()
+    async def __aexit__(self, exc_type: Any, *exc_info: Any) -> None:
+        env = self._env
+        await env.shutdown()
+        # Don't mask an exception already propagating out of the test body.
+        if exc_type is None and env.check_errors and not env._errors_inspected:
+            env.raise_errors()

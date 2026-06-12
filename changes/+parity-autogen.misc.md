@@ -1,0 +1,1 @@
+The parity matrix's route inventory is now generated from the route table (`python -m discord_py_test.parity`) and guarded by a sync test, so it is exact by construction. Also: `Backend` is no longer in `__all__` (still importable, documented as internal/unstable), and CI now enforces a coverage floor.

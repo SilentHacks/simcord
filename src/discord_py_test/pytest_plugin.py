@@ -23,12 +23,25 @@ from __future__ import annotations
 
 import pytest
 
-from .env import run
+from .env import Env, run
 
 try:
     import pytest_asyncio
 except ImportError:  # pragma: no cover - plugin is inert without the extra
     pytest_asyncio = None
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Attach the env transcript to failing tests — "what the bot did"."""
+    report = yield
+    if report.when == "call" and report.failed:
+        envs = [v for v in getattr(item, "funcargs", {}).values() if isinstance(v, Env)]
+        for env in envs:
+            text = env.transcript()
+            if text:
+                report.sections.append(("discord-py-test transcript", text))
+    return report
 
 
 @pytest.fixture

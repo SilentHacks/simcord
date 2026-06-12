@@ -36,6 +36,37 @@ async def test_raise_errors_is_a_noop_when_clean(env, channel, alice):
     env.raise_errors()  # nothing captured → does not raise
 
 
+async def test_uninspected_errors_fail_at_teardown():
+    from fixtures.sample_bot import create_bot
+
+    with pytest.raises(ExceptionGroup):
+        async with dpt.run(create_bot()) as env:
+            guild = env.create_guild()
+            channel = guild.create_text_channel("general")
+            alice = guild.add_member(env.create_user("alice"))
+            env.inject_error("POST", "/channels/*/messages", status=500, message="boom")
+            await alice.send(channel, "!ping")  # bot's reply fails; never inspected
+
+
+async def test_check_errors_opt_out():
+    from fixtures.sample_bot import create_bot
+
+    async with dpt.run(create_bot(), check_errors=False) as env:
+        guild = env.create_guild()
+        channel = guild.create_text_channel("general")
+        alice = guild.add_member(env.create_user("alice"))
+        env.inject_error("POST", "/channels/*/messages", status=500, message="boom")
+        await alice.send(channel, "!ping")  # captured error tolerated
+
+
+async def test_transcript_records_both_seams(env, channel, alice):
+    await alice.send(channel, "!ping")
+    text = env.transcript()
+    assert "GATEWAY MESSAGE_CREATE" in text
+    assert "HTTP    POST /channels/" in text
+    assert "Pong!" in text
+
+
 async def test_unimplemented_route_attaches_parity_note(env, channel):
     ch = env.bot.get_channel(channel.id)
     with pytest.raises(dpt.BackendError) as exc_info:

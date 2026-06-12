@@ -49,14 +49,13 @@ assert isinstance(env.errors[-1].original, discord.Forbidden)
 assert env.errors[-1].original.code == 50013
 ```
 
-To assert the opposite — that the bot ran cleanly — call `env.raise_errors()`. It
-re-raises everything captured as an `ExceptionGroup` (even a single error), and does
-nothing if there were none:
+**Errors fail tests by default**: if the bot raised errors during a test and the test
+never inspected `env.errors` (or called `env.raise_errors()`), `dpt.run` re-raises them
+as an `ExceptionGroup` at teardown — a bot bug can't pass silently. Reading `env.errors`
+counts as inspecting (your assertions take over); opt out entirely with
+`dpt.run(bot, check_errors=False)`.
 
-```python
-await alice.send(channel, "!ping")
-env.raise_errors()  # fails the test if the bot raised anything
-```
+You can also assert cleanliness explicitly at any point with `env.raise_errors()`.
 
 ## Validation limits
 
