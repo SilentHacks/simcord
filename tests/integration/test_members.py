@@ -1,7 +1,7 @@
 import discord
 import pytest
 
-import simcord as dpt
+import simcord
 
 
 async def test_member_join_event(env, alice):
@@ -29,7 +29,7 @@ async def test_timeout_via_slash(env, channel):
     cached = env.bot.get_guild(env.guild.id).get_member(target.id)
     assert cached.is_timed_out()
     # Timed-out members can't speak — exactly as on Discord.
-    with pytest.raises(dpt.BackendError) as exc_info:
+    with pytest.raises(simcord.BackendError) as exc_info:
         await target.send(channel, "I'm back!")
     assert exc_info.value.code == 50013
 

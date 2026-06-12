@@ -23,7 +23,7 @@ unnecessary. See the [architecture](architecture.md).
 
 ## How is it different from dpytest?
 
-[dpytest](https://github.com/CraftSpider/dpytest) pioneered this approach. SimCord covers
+[dpytest](https://github.com/CraftSpider/dpytest) started this approach. SimCord covers
 the **modern interaction surface** dpytest doesn't — slash commands, context menus,
 components, modals, autocomplete — and enforces **real permissions with authentic Discord
 error codes**. It also replaces dpytest's module-global API with explicit

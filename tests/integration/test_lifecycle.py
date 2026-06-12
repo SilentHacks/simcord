@@ -1,14 +1,14 @@
 import discord
 from discord.ext import commands
 
-import simcord as dpt
+import simcord
 
 
 async def test_ready_and_cache_population():
     intents = discord.Intents.default()
     intents.members = True  # without it discord.py (correctly) won't cache members
     bot = commands.Bot(command_prefix="!", intents=intents)
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         assert bot.user is not None
         assert bot.user.bot
         guild = env.create_guild("My Server")
@@ -31,7 +31,7 @@ async def test_unknown_route_is_loud(env, channel):
         await ch.create_invite()
     except discord.HTTPException:
         raise AssertionError("RouteNotImplemented must not be a discord.HTTPException") from None
-    except dpt.BackendError as exc:
+    except simcord.BackendError as exc:
         assert "does not implement" in str(exc)
     else:
         raise AssertionError("expected a loud RouteNotImplemented error")

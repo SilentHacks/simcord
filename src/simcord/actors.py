@@ -156,7 +156,7 @@ class MemberActor:
             raise SetupError(
                 f"Command '{name}' exists in the command tree but was never synced — "
                 "did you forget `await bot.tree.sync()`? "
-                "(Pass strict_sync=False to dpt.run to auto-register unsynced commands.)"
+                "(Pass strict_sync=False to simcord.run to auto-register unsynced commands.)"
             )
         cmd, scope = in_tree
         guild_id = None if scope is None else self.guild.id

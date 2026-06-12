@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CDN_BASE = "https://cdn.dpt.invalid"
+CDN_BASE = "https://cdn.simcord.invalid"
 
 
 class CdnStore:

@@ -1,4 +1,4 @@
-"""discord-py-test: offline testing framework for discord.py bots.
+"""simcord: offline testing framework for discord.py bots.
 
 Run your real, unmodified bot against a virtual in-memory Discord — no
 network, no tokens, no Terms of Service concerns — and test prefix commands,
@@ -7,9 +7,9 @@ them.
 
 Typical usage::
 
-    import simcord as dpt
+    import simcord
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))

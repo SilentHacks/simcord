@@ -6,7 +6,7 @@ description: "Complete SimCord API reference: run, Env, the builder handles (Gui
 # API reference
 
 The complete public API, generated from the source. Everything here is importable from the
-top-level `simcord` package (conventionally aliased `import simcord as dpt`).
+top-level `simcord` package.
 
 !!! tip "New here?"
     Read [Core concepts](concepts.md) first — it explains how these objects relate

@@ -68,7 +68,7 @@ class FakeHTTPClient(HTTPClient):
         pass
 
     async def ws_connect(self, url: str, *, compress: int = 0) -> Any:
-        raise RuntimeError("discord-py-test never opens a real gateway connection")
+        raise RuntimeError("simcord never opens a real gateway connection")
 
     async def get_from_cdn(self, url: str) -> bytes:
         blob = self.backend.cdn.get(url)

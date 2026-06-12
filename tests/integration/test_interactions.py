@@ -2,7 +2,7 @@ import discord
 import pytest
 from discord.ext import commands
 
-import simcord as dpt
+import simcord
 
 
 async def test_slash_command_with_permissions(env, channel):
@@ -81,7 +81,7 @@ async def test_button_click(env, channel, alice):
 
 async def test_cannot_click_missing_button(env, channel, alice):
     result = await alice.slash(channel, "delete-data")
-    with pytest.raises(dpt.SetupError, match="could not interact"):
+    with pytest.raises(simcord.SetupError, match="could not interact"):
         await alice.click(result.response.message, label="Nope")
 
 
@@ -92,11 +92,11 @@ async def test_unsynced_command_is_caught():
     async def ghost(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("boo")
 
-    async with dpt.run(bot) as env:  # no sync in setup_hook
+    async with simcord.run(bot) as env:  # no sync in setup_hook
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))
-        with pytest.raises(dpt.SetupError, match="never synced"):
+        with pytest.raises(simcord.SetupError, match="never synced"):
             await alice.slash(channel, "ghost")
 
 
@@ -119,7 +119,7 @@ async def test_strict_sync_opt_out():
     async def ghost(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("boo")
 
-    async with dpt.run(bot, strict_sync=False) as env:
+    async with simcord.run(bot, strict_sync=False) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))

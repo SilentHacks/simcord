@@ -1,6 +1,6 @@
 import pytest
 
-import simcord as dpt
+import simcord
 
 
 async def test_subcommand_group(env, channel, alice):
@@ -9,7 +9,7 @@ async def test_subcommand_group(env, channel, alice):
 
 
 async def test_unknown_subcommand_is_caught(env, channel, alice):
-    with pytest.raises(dpt.SetupError, match="no subcommand path"):
+    with pytest.raises(simcord.SetupError, match="no subcommand path"):
         await alice.slash(channel, "config unset", key="lang")
 
 
@@ -45,5 +45,5 @@ async def test_select_menu(env, channel, alice):
 
 async def test_select_invalid_value_rejected(env, channel, alice):
     result = await alice.slash(channel, "color")
-    with pytest.raises(dpt.SetupError, match="does not exist"):
+    with pytest.raises(simcord.SetupError, match="does not exist"):
         await alice.select(result.response.message, ["purple"], custom_id="color")

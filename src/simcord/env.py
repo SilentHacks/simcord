@@ -22,7 +22,7 @@ class Env:
 
     Use via :func:`simcord.run`::
 
-        async with dpt.run(bot) as env:
+        async with simcord.run(bot) as env:
             guild = env.create_guild()
             ...
 
@@ -108,15 +108,15 @@ class Env:
                 raise discord.PrivilegedIntentsRequired(shard_id=None)
             # Runs the real login flow: identity, application info, setup_hook
             # (where bots typically load extensions and sync their command tree).
-            await self.bot.login("dpt.fake.token")
+            await self.bot.login("simcord.fake.token")
             gateway.feed(
                 "READY",
                 {
                     "v": 10,
                     "user": dict(serializers.user_payload(self.backend.bot_user)),
                     "guilds": [],
-                    "session_id": "dpt-session",
-                    "resume_gateway_url": "wss://dpt.invalid",
+                    "session_id": "simcord-session",
+                    "resume_gateway_url": "wss://simcord.invalid",
                     "shard": [0, 1],
                     "application": {"id": str(self.backend.application_id), "flags": 0},
                 },
@@ -235,7 +235,7 @@ class Env:
     def errors(self) -> list[BaseException]:
         """Errors the bot raised (command handlers, app commands, listeners).
 
-        Reading this marks the errors as inspected: ``dpt.run`` then trusts the
+        Reading this marks the errors as inspected: ``simcord.run`` then trusts the
         test's own assertions instead of failing it at teardown.
         """
         self._errors_inspected = True
@@ -382,12 +382,12 @@ def _summarize(payload: Any, limit: int = 140) -> str:
 
 
 class run:
-    """``async with dpt.run(bot) as env:`` — attach, fake-login, READY.
+    """``async with simcord.run(bot) as env:`` — attach, fake-login, READY.
 
     On exit, if the bot raised errors the test never inspected (via
     ``env.errors`` or ``env.raise_errors()``), they are re-raised as an
     ``ExceptionGroup`` so bot bugs cannot pass silently. Opt out with
-    ``dpt.run(bot, check_errors=False)``.
+    ``simcord.run(bot, check_errors=False)``.
     """
 
     def __init__(self, bot: discord.Client, **options: Any) -> None:

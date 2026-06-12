@@ -4,7 +4,7 @@ import discord
 import pytest
 from discord.ext import commands
 
-import simcord as dpt
+import simcord
 
 
 def make_bot(**intent_overrides):
@@ -30,7 +30,7 @@ async def test_prefix_commands_fail_without_message_content():
     async def ping(ctx):
         await ctx.send("Pong!")
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))
@@ -51,7 +51,7 @@ async def test_message_content_intent_reveals_content():
     async def ping(ctx):
         await ctx.send("Pong!")
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))
@@ -67,7 +67,7 @@ async def test_censoring_exemptions_dm_and_mention():
     async def capture(message):
         seen.append(message)
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))
@@ -91,7 +91,7 @@ async def test_member_events_dropped_without_members_intent():
     async def capture(member):
         joins.append(member)
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         guild.add_member(env.create_user("alice"))
         await env.settle()
@@ -109,7 +109,7 @@ async def test_member_events_delivered_with_members_intent():
     async def capture(member):
         joins.append(member)
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         alice = guild.add_member(env.create_user("alice"))
         await env.settle()
@@ -125,7 +125,7 @@ async def test_typing_dropped_without_typing_intent():
     async def capture(channel, user, when):
         typed.append(user)
 
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))
@@ -141,7 +141,7 @@ async def test_typing_dropped_without_typing_intent():
 async def test_unapproved_privileged_intents_raise_like_a_real_connect():
     bot = make_bot(members=True)
     with pytest.raises(discord.PrivilegedIntentsRequired):
-        async with dpt.run(bot, approved_intents=discord.Intents.default()):
+        async with simcord.run(bot, approved_intents=discord.Intents.default()):
             pass  # pragma: no cover — start() must raise
 
 
@@ -149,7 +149,7 @@ async def test_approved_privileged_intents_connect_fine():
     bot = make_bot(members=True)
     approved = discord.Intents.default()
     approved.members = True
-    async with dpt.run(bot, approved_intents=approved) as env:
+    async with simcord.run(bot, approved_intents=approved) as env:
         assert env.bot.user is not None
 
 
@@ -175,7 +175,7 @@ def _readd_populated_guild(env, guild, *names):
 
 async def test_populated_guild_create_is_chunked_with_members_intent():
     bot = make_bot(members=True)
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         (alice,) = _readd_populated_guild(env, guild, "alice")
         await env.settle()
@@ -187,7 +187,7 @@ async def test_populated_guild_create_is_chunked_with_members_intent():
 
 async def test_presences_intent_inlines_members_instead_of_chunking():
     bot = make_bot(presences=True, members=True)
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         (alice,) = _readd_populated_guild(env, guild, "alice")
         await env.settle()
@@ -199,7 +199,7 @@ async def test_presences_intent_inlines_members_instead_of_chunking():
 
 async def test_query_members_by_prefix_and_ids():
     bot = make_bot(members=True)
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         alice = guild.add_member(env.create_user("alice"))
         bob = guild.add_member(env.create_user("bob"), nick="albert")
@@ -216,7 +216,7 @@ async def test_query_members_by_prefix_and_ids():
 
 async def test_explicit_guild_chunk():
     bot = make_bot(members=True)
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         alice = guild.add_member(env.create_user("alice"))
         await env.settle()
@@ -227,7 +227,7 @@ async def test_explicit_guild_chunk():
 async def test_chunk_apis_keep_their_real_client_side_guards():
     """Without the members intent, discord.py's own guard fires — same as prod."""
     bot = make_bot()
-    async with dpt.run(bot) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         await env.settle()
         with pytest.raises(discord.ClientException):

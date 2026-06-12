@@ -2,7 +2,7 @@ import discord
 import pytest
 from discord.ext import commands
 
-import simcord as dpt
+import simcord
 
 
 async def test_inject_error(env, channel, alice):
@@ -40,7 +40,7 @@ async def test_uninspected_errors_fail_at_teardown():
     from fixtures.sample_bot import create_bot
 
     with pytest.raises(ExceptionGroup):
-        async with dpt.run(create_bot()) as env:
+        async with simcord.run(create_bot()) as env:
             guild = env.create_guild()
             channel = guild.create_text_channel("general")
             alice = guild.add_member(env.create_user("alice"))
@@ -51,7 +51,7 @@ async def test_uninspected_errors_fail_at_teardown():
 async def test_check_errors_opt_out():
     from fixtures.sample_bot import create_bot
 
-    async with dpt.run(create_bot(), check_errors=False) as env:
+    async with simcord.run(create_bot(), check_errors=False) as env:
         guild = env.create_guild()
         channel = guild.create_text_channel("general")
         alice = guild.add_member(env.create_user("alice"))
@@ -69,7 +69,7 @@ async def test_transcript_records_both_seams(env, channel, alice):
 
 async def test_unimplemented_route_attaches_parity_note(env, channel):
     ch = env.bot.get_channel(channel.id)
-    with pytest.raises(dpt.BackendError) as exc_info:
+    with pytest.raises(simcord.BackendError) as exc_info:
         await ch.create_invite()
     notes = getattr(exc_info.value, "__notes__", [])
     assert any("parity matrix" in note for note in notes)

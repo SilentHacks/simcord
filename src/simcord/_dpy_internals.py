@@ -27,8 +27,8 @@ def verify() -> None:
     """Sanity-check the discord.py internals this framework relies on."""
     if discord.version_info.major != 2 or discord.version_info.minor < 7:
         raise ImportError(
-            f"discord-py-test requires discord.py 2.7+; found {discord.__version__}. "
-            "Check https://github.com/SilentHacks/discord-py-test for supported versions."
+            f"simcord requires discord.py 2.7+; found {discord.__version__}. "
+            "Check https://github.com/SilentHacks/simcord for supported versions."
         )
     problems = []
     for cls, attr in (
@@ -53,9 +53,9 @@ def verify() -> None:
             problems.append(f"View.*{name}")
     if problems:
         raise ImportError(
-            "This discord.py version changed internals discord-py-test depends on: "
+            "This discord.py version changed internals simcord depends on: "
             + ", ".join(problems)
-            + ". Please report this at https://github.com/SilentHacks/discord-py-test/issues."
+            + ". Please report this at https://github.com/SilentHacks/simcord/issues."
         )
 
 

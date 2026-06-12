@@ -84,9 +84,9 @@ async def main():
         assert channel.last_message.content == "Pong!"
 ```
 
-!!! note "The `dpt` alias"
-    The package is conventionally imported as `dpt` (`import simcord as dpt`) so calls read
-    as `dpt.run(...)`. Use whichever you prefer — they're the same module.
+!!! note "Import style"
+    The package can be imported directly (`import simcord`) so calls read
+    as `simcord.run(...)`. Use whichever style you prefer — it's the same module.
 
 ## Configuration options
 

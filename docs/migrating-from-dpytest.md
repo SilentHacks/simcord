@@ -5,7 +5,7 @@ description: "Move your discord.py tests from dpytest to SimCord. A direct conce
 
 # Migrating from dpytest
 
-[dpytest](https://github.com/CraftSpider/dpytest) pioneered this approach — faking the
+[dpytest](https://github.com/CraftSpider/dpytest) started this approach — faking the
 HTTP layer and injecting gateway events. `simcord` covers the modern surface
 dpytest never did (slash commands, components, modals, autocomplete, permissions with
 real error codes) and replaces its module-global API with explicit objects.
@@ -14,7 +14,7 @@ real error codes) and replaces its module-global API with explicit objects.
 
 | dpytest | simcord |
 | --- | --- |
-| `dpytest.configure(bot)` | `async with dpt.run(bot) as env:` (or the `simcord_env` fixture) |
+| `dpytest.configure(bot)` | `async with simcord.run(bot) as env:` (or the `simcord_env` fixture) |
 | `dpytest.message("!ping")` | `await alice.send(channel, "!ping")` |
 | `dpytest.verify().message().content("Pong!")` | `assert channel.last_message.content == "Pong!"` |
 | `dpytest.get_config().guilds[0]` | `env.guild` / `env.create_guild()` |
@@ -24,7 +24,7 @@ real error codes) and replaces its module-global API with explicit objects.
 
 ## Key differences
 
-- **No global state.** Everything hangs off the `Env` returned by `dpt.run`; multiple
+- **No global state.** Everything hangs off the `Env` returned by `simcord.run`; multiple
   environments can coexist.
 - **Explicit actors.** Messages are sent *by someone, from somewhere* — which is what
   makes permission-sensitive bugs testable.

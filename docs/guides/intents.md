@@ -25,7 +25,7 @@ bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
 async def ping(ctx):
     await ctx.send("Pong!")
 
-async with dpt.run(bot) as env:
+async with simcord.run(bot) as env:
     guild = env.create_guild()
     channel = guild.create_text_channel("general")
     alice = guild.add_member(env.create_user("alice"))
@@ -108,6 +108,6 @@ unapproved portal, pass `approved_intents`:
 bot = commands.Bot(command_prefix="!", intents=intents_with_members)
 
 with pytest.raises(discord.PrivilegedIntentsRequired):
-    async with dpt.run(bot, approved_intents=discord.Intents.default()):
+    async with simcord.run(bot, approved_intents=discord.Intents.default()):
         ...
 ```

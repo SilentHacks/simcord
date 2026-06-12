@@ -21,12 +21,12 @@ from ..backend.models import Channel
 
 class RouteNotImplemented(BackendError):
     def __init__(self, method: str, path: str) -> None:
-        super().__init__(501, 0, f"discord-py-test does not implement '{method} {path}' yet.")
+        super().__init__(501, 0, f"simcord does not implement '{method} {path}' yet.")
         self.method = method
         self.path = path
         self.add_note(
             "See the parity matrix in the docs; please open an issue if your bot needs this route: "
-            "https://github.com/SilentHacks/discord-py-test/issues"
+            "https://github.com/SilentHacks/simcord/issues"
         )
 
 
