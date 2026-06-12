@@ -13,5 +13,5 @@ labels: bug
 
 **Versions**: simcord, discord.py, Python
 
-**Checked the [parity matrix](https://silenthacks.github.io/simcord/parity-matrix/)?**
+**Checked the [parity matrix](https://simcord.readthedocs.io/parity-matrix/)?**
 If the feature is listed as unimplemented, please use the parity gap template instead.

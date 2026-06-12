@@ -43,7 +43,7 @@ simcord = "simcord.pytest_plugin"
 
 [project.urls]
 Homepage = "https://github.com/SilentHacks/simcord"
-Documentation = "https://silenthacks.github.io/simcord/"
+Documentation = "https://simcord.readthedocs.io/"
 Issues = "https://github.com/SilentHacks/simcord/issues"
 Changelog = "https://github.com/SilentHacks/simcord/blob/master/CHANGELOG.md"
 

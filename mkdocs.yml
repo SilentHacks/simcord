@@ -1,6 +1,6 @@
 site_name: SimCord
 site_description: "SimCord — discord.py testing framework: simulate Discord, test your bot offline with no network or token"
-site_url: https://silenthacks.github.io/simcord/
+site_url: https://simcord.readthedocs.io/
 repo_url: https://github.com/SilentHacks/simcord
 repo_name: SilentHacks/simcord
 

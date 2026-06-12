@@ -9,13 +9,13 @@ no test server, no Terms of Service concerns. SimCord is the missing testing lib
 for discord.py bots.
 
 [![CI](https://github.com/SilentHacks/simcord/actions/workflows/ci.yml/badge.svg)](https://github.com/SilentHacks/simcord/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-silenthacks.github.io-blue)](https://silenthacks.github.io/simcord/)
+[![Docs](https://app.readthedocs.org/projects/simcord/badge/?version=latest)](https://simcord.readthedocs.io/)
 [![PyPI](https://img.shields.io/pypi/v/simcord)](https://pypi.org/project/simcord/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/simcord/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.7%2B-5865F2)](https://github.com/Rapptz/discord.py)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Quickstart](#quickstart) · [Documentation](https://silenthacks.github.io/simcord/) · [Parity matrix](https://silenthacks.github.io/simcord/parity-matrix/) · [Contributing](CONTRIBUTING.md)
+[Quickstart](#quickstart) · [Documentation](https://simcord.readthedocs.io/) · [Parity matrix](https://simcord.readthedocs.io/parity-matrix/) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -37,7 +37,7 @@ async def test_ping(simcord_env):
 
 > ⚠️ **Alpha.** The core surface (messages, prefix commands, slash commands, components,
 > modals, permissions, reactions, threads, DMs, time control) works; see the
-> [parity matrix](https://silenthacks.github.io/simcord/parity-matrix/) for the
+> [parity matrix](https://simcord.readthedocs.io/parity-matrix/) for the
 > long tail. Unimplemented routes always fail loudly — SimCord never silently fakes
 > success.
 
@@ -110,7 +110,7 @@ async def test_offer_expires(simcord_env):
 ```
 
 Buttons, selects, modals, context menus, autocomplete, reactions, threads, DMs, fault
-injection and more: see the [documentation](https://silenthacks.github.io/simcord/).
+injection and more: see the [documentation](https://simcord.readthedocs.io/).
 Prefer explicit control? `async with simcord.run(bot) as env:` works in any async
 test framework.
 
@@ -133,7 +133,7 @@ test ──► builders/actors ──► virtual backend (single source of truth
                                   your real, unmodified bot
 ```
 
-Details in the [architecture docs](https://silenthacks.github.io/simcord/architecture/).
+Details in the [architecture docs](https://simcord.readthedocs.io/architecture/).
 
 ## discord.py testing — common use cases
 
