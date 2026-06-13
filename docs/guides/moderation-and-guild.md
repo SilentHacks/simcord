@@ -5,7 +5,7 @@ description: "Test the extended Discord surface with SimCord — audit logs, pol
 
 # Audit logs, polls, events, voice & more
 
-SimCord 0.6.0 covers the extended guild surface most real bots reach for. Every feature is
+SimCord covers the extended guild surface most real bots reach for. Every feature is
 driven through real discord.py code paths and is permission-checked exactly as on Discord.
 
 ## Audit logs
@@ -100,12 +100,42 @@ assert channel.history() == []
 
 Keywords follow Discord's wildcard rules: a bare `badword` matches only as a whole word,
 while `*badword*` matches it as a substring anywhere (and `badword*` / `*badword` match as
-a prefix / suffix). Exempt roles and channels are honored; rules in a guild without auto-mod
-have zero effect.
+a prefix / suffix). Mention-spam rules (`AutoModRuleTriggerType.mention_spam` with a
+`mention_limit`) block a message whose user/role mention count exceeds the limit. Exempt
+roles and channels are honored; rules in a guild without auto-mod have zero effect.
 
-## Channel kinds
+## Bulk message deletion
 
-Builders can create the channel kinds these features need:
+`TextChannel.purge()` and `delete_messages()` remove up to 100 messages with one
+`MESSAGE_DELETE_BULK` event and a bulk-delete audit entry:
+
+```python
+channel = env.bot.get_channel(general.id)
+await channel.delete_messages(recent_messages)   # 2–100 at once
+```
+
+## Reaction clearing
+
+```python
+message = await channel.fetch_message(mid)
+await message.clear_reactions()        # MESSAGE_REACTION_REMOVE_ALL
+await message.clear_reaction("👍")     # MESSAGE_REACTION_REMOVE_EMOJI
+```
+
+## Guilds & channels at runtime
+
+The bot can create and edit guilds and channels mid-test, not just the omnipotent
+builder — both go through the same backend, so `CHANNEL_CREATE` / `GUILD_UPDATE` reach
+the cache:
+
+```python
+guild = env.bot.get_guild(env.guild.id)
+await guild.create_text_channel("runtime")       # POST /guilds/{id}/channels
+await guild.edit(name="Renamed")                  # GUILD_UPDATE, audit-logged
+members = [m async for m in guild.fetch_members(limit=None)]
+```
+
+Builders still create the channel kinds your test needs up front:
 
 ```python
 env.guild.create_voice_channel("General Voice", user_limit=10)
@@ -114,6 +144,31 @@ env.guild.create_category("Community")
 env.guild.create_forum_channel("help")
 ```
 
-These are test-setup constructs created directly through the builder; SimCord does
-not yet implement the bot-facing `guild.create_*_channel()` API path, so create
-the channels your bot needs up front rather than having the bot create them.
+## Forum posts
+
+A forum post is a thread with a mandatory starter message:
+
+```python
+forum = env.bot.get_channel(help_forum.id)
+await forum.edit(available_tags=[discord.ForumTag(name="bug")])
+thread, message = await forum.create_thread(name="It crashes", content="stack trace…")
+```
+
+## Webhooks
+
+Beyond create + execute, webhooks can be fetched, edited and deleted (by id or token),
+and listed per guild:
+
+```python
+hook = await channel.create_webhook(name="Announcer")
+await hook.edit(name="News")
+await hook.delete()
+hooks = await guild.webhooks()
+```
+
+## Stage request-to-speak
+
+```python
+await guild.get_member(alice.id).edit(suppress=False)  # invite alice to speak
+await guild.me.request_to_speak()                       # the bot raises its hand
+```
