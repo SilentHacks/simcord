@@ -291,9 +291,7 @@ class MemberActor:
         lo = menu.get("min_values", 1)
         hi = menu.get("max_values", 1)
         if not lo <= len(values) <= hi:
-            raise SetupError(
-                f"Select expects between {lo} and {hi} value(s), got {len(values)}"
-            )
+            raise SetupError(f"Select expects between {lo} and {hi} value(s), got {len(values)}")
 
         data: dict[str, Any] = {"custom_id": menu["custom_id"], "component_type": menu_type}
         if menu_type == ComponentType.STRING_SELECT:

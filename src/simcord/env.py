@@ -57,6 +57,7 @@ class Env:
         self._orig_monotonic: Any = None
         self._time_offset = 0.0
         self._adapter_token: Any = None
+        self._gateway_feed: Any = None
         self._started = False
 
     # ------------------------------------------------------------- lifecycle
@@ -65,8 +66,40 @@ class Env:
         if self._started:
             raise SetupError("Env already started")
         self._started = True
-        loop = asyncio.get_running_loop()
-        self._loop = loop
+        self._loop = asyncio.get_running_loop()
+        await self._attach_bot(self.bot)
+
+    async def restart_bot(self, bot: discord.Client | None = None) -> None:
+        """Simulate a bot restart while the virtual world persists.
+
+        Detaches the current bot, attaches ``bot`` (or the same instance if
+        omitted), and replays ``GUILD_CREATE`` for every existing guild so the
+        new client's cache repopulates exactly as on a first run — letting tests
+        prove that persistent views (``bot.add_view`` in ``setup_hook``)
+        re-attach to messages they never saw created.
+
+        Pass a freshly built client for a faithful restart: re-running the same
+        instance re-executes ``setup_hook`` (which typically reloads extensions
+        and would fail). The virtual clock is preserved — the world does not
+        rewind.
+        """
+        await self.settle()
+        await self._detach_bot()
+        self.bot = bot or self.bot
+        self._errors = []
+        self._errors_inspected = False
+        await self._attach_bot(self.bot)
+        for handle in self._guilds:
+            guild = self.backend.get_guild(handle.id)
+            self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
+        await self.settle()
+
+    async def _attach_bot(self, bot: discord.Client) -> None:
+        """Install the fakes onto ``bot`` and bring it to READY. Shared by
+        :meth:`start` and :meth:`restart_bot`."""
+        self.bot = bot
+        loop = self._loop
+        assert loop is not None
 
         # Track every task spawned while the env is live so settle() can wait
         # for the bot to finish reacting without guessing with sleeps.
@@ -83,19 +116,21 @@ class Env:
         # advance_time() can fast-forward view timeouts, cooldown buckets and
         # asyncio timers without real waiting. One patch covers everything:
         # BaseEventLoop.time() and discord.py's deadline checks both read
-        # time.monotonic at call time. Restored on shutdown.
+        # time.monotonic at call time. Restored on shutdown. The offset survives
+        # restarts so the world's clock does not rewind.
         self._orig_monotonic = time.monotonic
         time.monotonic = lambda: self._orig_monotonic() + self._time_offset
 
-        _dpy_internals.install_http(self.bot, FakeHTTPClient(self.backend, loop))
-        _dpy_internals.set_guild_ready_timeout(self.bot, 0.0)
+        _dpy_internals.install_http(bot, FakeHTTPClient(self.backend, loop))
+        _dpy_internals.set_guild_ready_timeout(bot, 0.0)
         self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
 
-        gateway = FakeGateway(self.backend, _dpy_internals.get_state(self.bot))
+        gateway = FakeGateway(self.backend, _dpy_internals.get_state(bot))
+        self._gateway_feed = gateway.feed
         self.backend.subscribers.append(gateway.feed)
         # The upstream half of the gateway: answers REQUEST_GUILD_MEMBERS so
         # member chunking (startup, Guild.chunk, query_members) works.
-        _dpy_internals.install_websocket(self.bot, FakeWebSocket(self.backend, gateway))
+        _dpy_internals.install_websocket(bot, FakeWebSocket(self.backend, gateway))
 
         try:
             self._capture_errors()
@@ -103,12 +138,12 @@ class Env:
             # unapproved privileged intent is rejected with close code 4014,
             # which discord.py surfaces as PrivilegedIntentsRequired.
             if self.approved_intents is not None and _intents.missing_privileged_intents(
-                self.bot.intents, self.approved_intents
+                bot.intents, self.approved_intents
             ):
                 raise discord.PrivilegedIntentsRequired(shard_id=None)
             # Runs the real login flow: identity, application info, setup_hook
             # (where bots typically load extensions and sync their command tree).
-            await self.bot.login("simcord.fake.token")
+            await bot.login("simcord.fake.token")
             gateway.feed(
                 "READY",
                 {
@@ -126,10 +161,21 @@ class Env:
             # Setup (e.g. setup_hook) blew up: undo the global monkeypatches so
             # we don't leak the patched loop.create_task / webhook adapter into
             # whatever runs next on this loop.
-            await self.shutdown()
+            await self._detach_bot()
             raise
 
     async def shutdown(self) -> None:
+        await self._detach_bot()
+
+    async def _detach_bot(self) -> None:
+        """Undo the current bot's patches and stop tracking it. Leaves the
+        backend (the virtual world) intact so a restart can re-attach to it."""
+        if self._gateway_feed is not None:
+            try:
+                self.backend.subscribers.remove(self._gateway_feed)
+            except ValueError:
+                pass
+            self._gateway_feed = None
         if self._adapter_token is not None:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
             self._adapter_token = None
@@ -144,6 +190,7 @@ class Env:
         for task in to_cancel:
             task.cancel()
         await asyncio.gather(*to_cancel, return_exceptions=True)
+        self._tasks = []
 
     async def settle(self, timeout: float = 5.0, idle: float = 0.05) -> None:  # noqa: ASYNC109
         # `timeout` is deliberate public API: settle() polls for quiescence and

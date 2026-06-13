@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 
 import simcord
+from fixtures.sample_bot import create_bot
 
 
 async def test_ready_and_cache_population():
@@ -21,6 +22,28 @@ async def test_ready_and_cache_population():
         assert bot.get_channel(channel.id) is not None
         assert cached.get_member(user.id) is not None
         assert cached.me is not None  # the bot is a member of its guilds
+
+
+async def test_persistent_view_survives_restart(env, channel, alice):
+    result = await alice.slash(channel, "panel")
+    panel = result.response.message
+
+    # A brand-new bot instance, built from the same factory, must re-attach its
+    # persistent view (registered in setup_hook) to a message it never created.
+    await env.restart_bot(create_bot())
+
+    click = await alice.click(panel, custom_id="persistent:ping")
+    assert click.response.content == "pong"
+
+
+async def test_restart_preserves_world(env, channel, alice):
+    await alice.send(channel, "before restart")
+
+    await env.restart_bot(create_bot())
+
+    cached = env.bot.get_guild(env.guild.id)
+    assert cached is not None and cached.get_channel(channel.id) is not None
+    assert channel.history()[-1].content == "before restart"
 
 
 async def test_unknown_route_is_loud(env, channel):

@@ -95,9 +95,17 @@ def set_guild_ready_timeout(client: discord.Client, timeout: float) -> None:
 
 
 def set_webhook_adapter(adapter: Any) -> Any:
-    """Interaction responses go through this context-local adapter, not HTTPClient."""
-    return async_context.set(adapter)
+    """Interaction responses go through this context-local adapter, not HTTPClient.
+
+    Returns the previous adapter so it can be restored with
+    :func:`reset_webhook_adapter`. We restore by value rather than with a
+    ``ContextVar`` token because a restart sets and clears the adapter across
+    different async contexts, and a token can only be reset in its own context.
+    """
+    previous = async_context.get()
+    async_context.set(adapter)
+    return previous
 
 
-def reset_webhook_adapter(token: Any) -> None:
-    async_context.reset(token)
+def reset_webhook_adapter(previous: Any) -> None:
+    async_context.set(previous)
