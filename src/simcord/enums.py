@@ -99,6 +99,7 @@ class AuditLogAction(IntEnum):
     is the full reference.
     """
 
+    GUILD_UPDATE = 1
     CHANNEL_CREATE = 10
     CHANNEL_UPDATE = 11
     CHANNEL_DELETE = 12
@@ -112,6 +113,7 @@ class AuditLogAction(IntEnum):
     ROLE_CREATE = 30
     ROLE_UPDATE = 31
     ROLE_DELETE = 32
+    MESSAGE_BULK_DELETE = 73
     SCHEDULED_EVENT_CREATE = 100
     SCHEDULED_EVENT_UPDATE = 101
     SCHEDULED_EVENT_DELETE = 102

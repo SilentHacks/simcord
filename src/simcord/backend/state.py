@@ -520,6 +520,25 @@ class Backend:
             payload["guild_id"] = str(channel.guild_id)
         self.emit("MESSAGE_DELETE", payload)
 
+    def bulk_delete_messages(self, channel_id: int, message_ids: Iterable[int]) -> list[int]:
+        """Delete several messages at once, announcing a single MESSAGE_DELETE_BULK.
+
+        Ids that are not present are skipped (real Discord tolerates this), and
+        only the ids that actually existed are reported and announced — so the
+        bot's cache and the returned set agree.
+        """
+        channel = self.get_channel(channel_id)
+        store = self.messages.get(channel_id, {})
+        deleted = [mid for mid in message_ids if store.pop(mid, None) is not None]
+        payload: dict[str, Any] = {
+            "ids": [str(mid) for mid in deleted],
+            "channel_id": str(channel_id),
+        }
+        if channel.guild_id is not None:
+            payload["guild_id"] = str(channel.guild_id)
+        self.emit("MESSAGE_DELETE_BULK", payload)
+        return deleted
+
     def set_pinned(self, channel_id: int, message_id: int, pinned: bool) -> None:
         message = self.get_message(channel_id, message_id)
         message.pinned = pinned

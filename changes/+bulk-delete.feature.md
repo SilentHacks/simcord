@@ -1,0 +1,1 @@
+Implemented bulk message deletion (`TextChannel.delete_messages` / `purge`): `POST /channels/{id}/messages/bulk-delete` removes 2–100 messages at once, emits a single `MESSAGE_DELETE_BULK`, and records a `MESSAGE_BULK_DELETE` audit-log entry.

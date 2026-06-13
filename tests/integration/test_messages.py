@@ -110,3 +110,52 @@ async def test_unreact(env, channel, alice):
     await alice.unreact(message, "🔥")
     refetched = await env.bot.get_channel(channel.id).fetch_message(message.id)
     assert refetched.reactions == []
+
+
+async def test_bulk_delete_messages(env, channel):
+    ch = env.bot.get_channel(channel.id)
+    messages = [await ch.send(f"msg {i}") for i in range(4)]
+
+    await ch.delete_messages(messages)
+    await env.settle()
+
+    assert channel.history() == []
+    assert "MESSAGE_DELETE_BULK" in env.transcript()
+    bulk = [e for e in env.guild.audit_log() if e.action_type == 73]
+    assert bulk and bulk[-1].options.get("count") == "4"
+
+
+async def test_bulk_delete_dispatches_event(env, channel):
+    seen: list[int] = []
+
+    @env.bot.listen()
+    async def on_bulk_message_delete(messages):
+        seen.append(len(messages))
+
+    ch = env.bot.get_channel(channel.id)
+    messages = [await ch.send(f"m{i}") for i in range(3)]
+    await ch.delete_messages(messages)
+    await env.settle()
+
+    assert seen == [3]
+
+
+async def test_bulk_delete_below_minimum_rejected(env, channel):
+    # discord.py uses single delete below 2, so reaching the bulk route with one
+    # id is a malformed call; the backend rejects it with 50035.
+    ch = env.bot.get_channel(channel.id)
+    message = await ch.send("only one")
+    with pytest.raises(discord.HTTPException) as exc_info:
+        await env.bot.http.delete_messages(channel.id, [message.id])
+    assert exc_info.value.code == 50035
+
+
+async def test_bulk_delete_requires_manage_messages(env):
+    locked = env.guild.create_text_channel(
+        "locked", overwrites={env.guild.default_role: discord.PermissionOverwrite(manage_messages=False)}
+    )
+    ch = env.bot.get_channel(locked.id)
+    messages = [await ch.send(f"m{i}") for i in range(2)]
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await ch.delete_messages(messages)
+    assert exc_info.value.code == 50013

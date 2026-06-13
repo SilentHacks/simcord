@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...backend import errors, serializers
-from ...enums import ChannelType
+from ...enums import AuditLogAction, ChannelType
 from .._helpers import bot_message, message_response
 from ..router import RequestContext, route
 
@@ -72,6 +72,27 @@ def edit_message(ctx: RequestContext) -> Any:
         raise errors.cannot_edit_other_user()
     message = backend.edit_message(channel_id, message.id, ctx.body())
     return message_response(ctx, message)
+
+
+@route("POST", "/channels/{channel_id}/messages/bulk-delete")
+def bulk_delete_messages(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ids = [int(m) for m in ctx.body().get("messages") or []]
+    # Discord's bulk-delete endpoint only accepts 2-100 messages; discord.py
+    # uses single delete below that, so a route hit outside this range is a
+    # malformed call.
+    if not 2 <= len(ids) <= 100:
+        raise errors.invalid_form_body("messages: Must be between 2 and 100 in length")
+    deleted = backend.bulk_delete_messages(channel.id, ids)
+    if channel.guild_id is not None and deleted:
+        backend.record_audit_log(
+            channel.guild_id,
+            AuditLogAction.MESSAGE_BULK_DELETE,
+            target_id=channel.id,
+            options={"count": str(len(deleted))},
+            reason=ctx.reason,
+        )
 
 
 @route("DELETE", "/channels/{channel_id}/messages/{message_id}")
