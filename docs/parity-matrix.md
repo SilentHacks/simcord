@@ -28,13 +28,14 @@ if your bot needs it.
 | Autocomplete | ✅ | |
 | Interaction lifecycle | ✅ | Defer, followups, `@original` ops, `40060` on double-ack |
 | Ephemeral semantics | ✅ | Visibility-aware history and component access |
-| Buttons / string selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
+| Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
+| User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
+| Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced |
 | Roles (create/edit/delete) | ✅ | |
 | Channels (edit/delete, overwrites) | ✅ | Text channels; categories/forums planned |
 | Webhooks | ✅ | Create + execute (channel webhooks) |
 | Fault injection / HTTP log | ✅ | `env.inject_error`, `env.http_log` |
-| User/role/channel selects | 🚧 | String selects only so far |
 | Voice state | 🚧 | Planned (state only — never audio) |
 | Scheduled events, polls, invites, emojis, stickers | 🚧 | Planned |
 | Audit logs, auto-mod | 🚧 | Planned |

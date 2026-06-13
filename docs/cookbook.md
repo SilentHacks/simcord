@@ -134,6 +134,37 @@ async def test_offer_expires(simcord_env):
     assert "expired" in channel.last_message.content
 ```
 
+## An entity select picks members
+
+```python
+async def test_assign_select(simcord_env):
+    guild = simcord_env.create_guild()
+    channel = guild.create_text_channel("general")
+    alice = guild.add_member(simcord_env.create_user("alice"))
+    bob = guild.add_member(simcord_env.create_user("bob"))
+
+    result = await alice.slash(channel, "assign")   # posts a UserSelect
+    picked = await alice.select(result.response.message, [alice, bob], custom_id="who")
+    assert picked.response.content == "Picked alice, bob"
+```
+
+## A persistent view survives a restart
+
+```python
+async def test_panel_survives_restart(simcord_env):
+    guild = simcord_env.create_guild()
+    channel = guild.create_text_channel("general")
+    alice = guild.add_member(simcord_env.create_user("alice"))
+
+    result = await alice.slash(channel, "panel")    # posts a persistent View
+    panel = result.response.message
+
+    await simcord_env.restart_bot(create_bot())     # a fresh bot instance
+
+    clicked = await alice.click(panel, custom_id="persistent:ping")
+    assert clicked.response.content == "pong"
+```
+
 ## The bot survives an API outage
 
 ```python

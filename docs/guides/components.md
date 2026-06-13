@@ -46,9 +46,19 @@ assert picked.response.content == "You picked green"
 
 Selecting a value that isn't an option fails with a `SetupError` listing the valid options.
 
-!!! note "String selects today"
-    String selects are fully supported. User / role / channel / mentionable selects are on
-    the [parity matrix](../parity-matrix.md) roadmap.
+For **entity selects** (user / role / channel / mentionable), pass the handles a real user
+could pick instead of strings — `actor.select` builds the resolved data so the bot's callback
+receives real `discord.Member` / `Role` / channel objects:
+
+```python
+result = await alice.slash(channel, "assign")
+await alice.select(result.response.message, [alice, bob], custom_id="who")   # UserSelect
+await alice.select(result.response.message, [helper_role], custom_id="role") # RoleSelect
+await alice.select(result.response.message, [general], custom_id="chan")     # ChannelSelect
+```
+
+Passing the wrong handle kind for a select, or more values than its `max_values`, fails with
+a `SetupError`.
 
 ## Submitting modals
 
@@ -103,6 +113,26 @@ assert channel.last_message.components == []   # bot disabled the buttons on tim
 ```
 
 See [Time control](time-control.md) for the details.
+
+## Persistent views across a restart
+
+Persistent views (`timeout=None` with a fixed `custom_id`, registered with `bot.add_view` in
+`setup_hook`) must keep working after the bot restarts. `env.restart_bot(new_bot)` simulates
+that: it detaches the current bot, attaches a freshly built one, and replays the world so the
+new client repopulates its cache — without rebuilding the guilds, channels or messages.
+
+```python
+result = await alice.slash(channel, "panel")   # posts a persistent View
+panel = result.response.message
+
+await env.restart_bot(create_bot())             # a brand-new instance
+
+clicked = await alice.click(panel, custom_id="panel:refresh")
+assert clicked.response.content == "Refreshed"  # the new bot re-attached its view
+```
+
+Pass a freshly built client — re-running the same instance would re-execute `setup_hook`
+(reloading extensions). The virtual clock is preserved, so the world's time does not rewind.
 
 ## Next
 
