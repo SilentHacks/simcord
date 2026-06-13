@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from ...enums import ChannelType, OverwriteType
 
@@ -38,6 +39,13 @@ class Channel:
     rate_limit_per_user: int = 0
     last_message_id: int | None = None
     recipient_ids: list[int] = field(default_factory=list)  # DM channels
+    # Voice/stage-only fields
+    bitrate: int = 64000
+    user_limit: int = 0
+    rtc_region: str | None = None
+    # Forum-only fields
+    available_tags: list[dict[str, Any]] = field(default_factory=list)
+    default_reaction_emoji: dict[str, Any] | None = None
     # Thread-only fields
     owner_id: int | None = None
     thread_metadata: ThreadMetadata | None = None

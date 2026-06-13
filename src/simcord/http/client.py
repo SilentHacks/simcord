@@ -99,6 +99,7 @@ class FakeHTTPClient(HTTPClient):
                 json=json,
                 params=kwargs.get("params"),
                 files=file_list,
+                reason=kwargs.get("reason"),
             )
         except router.RouteNotImplemented:
             # Surface unimplemented routes loudly: don't disguise them as an
@@ -151,6 +152,7 @@ class FakeWebhookAdapter:
                 json=json,
                 params=params,
                 files=file_list,
+                reason=kwargs.get("reason"),
             )
         except router.RouteNotImplemented:
             raise

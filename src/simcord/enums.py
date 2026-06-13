@@ -78,8 +78,43 @@ class ChannelType(IntEnum):
 
     TEXT = 0
     DM = 1
+    VOICE = 2
+    CATEGORY = 4
+    NEWS = 5
     PUBLIC_THREAD = 11
     PRIVATE_THREAD = 12
+    STAGE_VOICE = 13
+    FORUM = 15
+
+
+#: Channel kinds members can be voice-connected to.
+VOICE_CHANNEL_TYPES = (ChannelType.VOICE, ChannelType.STAGE_VOICE)
+
+
+class AuditLogAction(IntEnum):
+    """Audit-log action types (the subset SimCord records).
+
+    Only actions the backend actually performs are listed — SimCord never
+    fabricates audit entries for things it cannot do. ``discord.AuditLogAction``
+    is the full reference.
+    """
+
+    CHANNEL_CREATE = 10
+    CHANNEL_UPDATE = 11
+    CHANNEL_DELETE = 12
+    MEMBER_KICK = 20
+    MEMBER_BAN = 22
+    MEMBER_UNBAN = 23
+    MEMBER_UPDATE = 24
+    MEMBER_ROLE_UPDATE = 25
+    MEMBER_MOVE = 26
+    MEMBER_DISCONNECT = 27
+    ROLE_CREATE = 30
+    ROLE_UPDATE = 31
+    ROLE_DELETE = 32
+    SCHEDULED_EVENT_CREATE = 100
+    SCHEDULED_EVENT_UPDATE = 101
+    SCHEDULED_EVENT_DELETE = 102
 
 
 class MessageType(IntEnum):

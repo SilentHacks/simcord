@@ -37,6 +37,8 @@ class RequestContext:
     json: Any | None = None
     params: dict[str, Any] = field(default_factory=dict)
     files: list[Any] = field(default_factory=list)
+    #: The ``X-Audit-Log-Reason`` discord.py attached to this call, if any.
+    reason: str | None = None
 
     def int_arg(self, name: str) -> int:
         return int(self.args[name])
@@ -91,6 +93,7 @@ def dispatch(
     json: Any | None = None,
     params: dict[str, Any] | None = None,
     files: list[Any] | None = None,
+    reason: str | None = None,
 ) -> Any:
     backend.http_log.append((method, path, json if isinstance(json, dict) else None))
     backend.transcript.append(("HTTP", f"{method} {path}", json if isinstance(json, dict) else None))
@@ -115,7 +118,7 @@ def dispatch(
                 best = (literals, args, handler)
     if best is None:
         raise RouteNotImplemented(method, path)
-    ctx = RequestContext(backend, best[1], json=json, params=params or {}, files=files or [])
+    ctx = RequestContext(backend, best[1], json=json, params=params or {}, files=files or [], reason=reason)
     return best[2](ctx)
 
 

@@ -82,3 +82,23 @@ def invalid_form_body(detail: str) -> BackendError:
 
 def cannot_dm_bot() -> BackendError:
     return BackendError(403, 50007, "Cannot send messages to this user")
+
+
+def unknown_invite() -> BackendError:
+    return BackendError(404, 10006, "Unknown Invite")
+
+
+def unknown_emoji() -> BackendError:
+    return BackendError(404, 10014, "Unknown Emoji")
+
+
+def unknown_sticker() -> BackendError:
+    return BackendError(404, 10060, "Unknown Sticker")
+
+
+def unknown_scheduled_event() -> BackendError:
+    return BackendError(404, 10070, "Unknown Guild Scheduled Event")
+
+
+def unknown_auto_mod_rule() -> BackendError:
+    return BackendError(404, 10000, "Unknown Auto Moderation Rule")

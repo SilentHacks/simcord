@@ -13,8 +13,20 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
-from .backend.models import Channel, Guild, Overwrite, Role, User
-from .enums import OverwriteType
+from .backend.models import (
+    AuditLogEntry,
+    Channel,
+    Guild,
+    GuildEmoji,
+    Invite,
+    Overwrite,
+    Role,
+    ScheduledEvent,
+    Sticker,
+    User,
+    VoiceState,
+)
+from .enums import ChannelType, OverwriteType
 from .results import to_discord_message
 
 if TYPE_CHECKING:
@@ -123,6 +135,7 @@ class GuildHandle:
         *,
         overwrites: dict[RoleHandle | MemberActor, discord.PermissionOverwrite] | None = None,
         topic: str | None = None,
+        category: ChannelHandle | None = None,
     ) -> ChannelHandle:
         model_overwrites = []
         for target, overwrite in (overwrites or {}).items():
@@ -135,8 +148,88 @@ class GuildHandle:
                     deny=deny.value,
                 )
             )
-        channel = self._env.backend.create_channel(self.id, name, overwrites=model_overwrites, topic=topic)
+        channel = self._env.backend.create_channel(
+            self.id,
+            name,
+            overwrites=model_overwrites,
+            topic=topic,
+            parent_id=category.id if category else None,
+        )
         return ChannelHandle(self._env, self, channel)
+
+    def create_voice_channel(
+        self,
+        name: str,
+        *,
+        category: ChannelHandle | None = None,
+        user_limit: int = 0,
+        bitrate: int = 64000,
+    ) -> ChannelHandle:
+        channel = self._env.backend.create_channel(
+            self.id,
+            name,
+            type=ChannelType.VOICE,
+            user_limit=user_limit,
+            bitrate=bitrate,
+            parent_id=category.id if category else None,
+        )
+        return ChannelHandle(self._env, self, channel)
+
+    def create_stage_channel(self, name: str, *, category: ChannelHandle | None = None) -> ChannelHandle:
+        channel = self._env.backend.create_channel(
+            self.id, name, type=ChannelType.STAGE_VOICE, parent_id=category.id if category else None
+        )
+        return ChannelHandle(self._env, self, channel)
+
+    def create_category(self, name: str) -> ChannelHandle:
+        channel = self._env.backend.create_channel(self.id, name, type=ChannelType.CATEGORY)
+        return ChannelHandle(self._env, self, channel)
+
+    def create_forum_channel(self, name: str) -> ChannelHandle:
+        channel = self._env.backend.create_channel(self.id, name, type=ChannelType.FORUM)
+        return ChannelHandle(self._env, self, channel)
+
+    def create_scheduled_event(
+        self,
+        name: str,
+        *,
+        start_time: str,
+        entity_type: int = 2,
+        channel: ChannelHandle | None = None,
+        description: str | None = None,
+        end_time: str | None = None,
+        location: str | None = None,
+    ) -> ScheduledEvent:
+        """Create a scheduled event directly (omnipotent setup)."""
+        return self._env.backend.create_scheduled_event(
+            self.id,
+            name=name,
+            entity_type=entity_type,
+            scheduled_start_time=start_time,
+            channel_id=channel.id if channel else None,
+            description=description,
+            scheduled_end_time=end_time,
+            entity_metadata={"location": location} if location else None,
+        )
+
+    def create_emoji(self, name: str, *, animated: bool = False) -> GuildEmoji:
+        return self._env.backend.create_emoji(self.id, name, self._env.backend.bot_user.id, animated=animated)
+
+    def create_sticker(self, name: str, *, description: str | None = None, tags: str = "") -> Sticker:
+        return self._env.backend.create_sticker(
+            self.id, name, self._env.backend.bot_user.id, description=description, tags=tags
+        )
+
+    def audit_log(self) -> list[AuditLogEntry]:
+        """The guild's recorded audit-log entries, oldest first."""
+        return list(self._guild.audit_log_entries)
+
+    def voice_states(self) -> dict[int, VoiceState]:
+        """Current voice states keyed by user id."""
+        return dict(self._guild.voice_states)
+
+    def invites(self) -> list[Invite]:
+        return [inv for inv in self._env.backend.invites.values() if inv.guild_id == self.id]
 
     def create_role(
         self, name: str, *, permissions: discord.Permissions | None = None, **fields: Any

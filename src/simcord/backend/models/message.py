@@ -14,6 +14,28 @@ class Reaction:
 
 
 @dataclass
+class PollAnswer:
+    answer_id: int
+    text: str | None = None
+    emoji: str | None = None  # unicode emoji or "name:id" for custom
+
+
+@dataclass
+class Poll:
+    question: str
+    answers: list[PollAnswer]
+    expiry: str
+    allow_multiselect: bool = False
+    layout_type: int = 1
+    finalized: bool = False
+    #: answer_id -> set of user ids who picked it.
+    votes: dict[int, set[int]] = field(default_factory=dict)
+
+    def answer(self, answer_id: int) -> PollAnswer | None:
+        return next((a for a in self.answers if a.answer_id == answer_id), None)
+
+
+@dataclass
 class Message:
     id: int
     channel_id: int
@@ -35,6 +57,7 @@ class Message:
     reference: dict[str, Any] | None = None
     interaction_metadata: dict[str, Any] | None = None
     webhook_id: int | None = None
+    poll: Poll | None = None
 
     @property
     def is_ephemeral(self) -> bool:

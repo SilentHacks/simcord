@@ -100,6 +100,28 @@ def unpin_message(ctx: RequestContext) -> Any:
     ctx.backend.set_pinned(channel.id, ctx.int_arg("message_id"), False)
 
 
+@route("POST", "/channels/{channel_id}/polls/{message_id}/expire")
+def expire_poll(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    channel_id = ctx.int_arg("channel_id")
+    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    if message.author_id != backend.bot_user.id:
+        raise errors.cannot_edit_other_user()
+    message = backend.expire_poll(channel_id, message.id)
+    return dict(serializers.message_payload(backend, message))
+
+
+@route("GET", "/channels/{channel_id}/polls/{message_id}/answers/{answer_id}")
+def get_poll_answer_voters(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    message = backend.get_message(ctx.int_arg("channel_id"), ctx.int_arg("message_id"))
+    answer_id = ctx.int_arg("answer_id")
+    voters = message.poll.votes.get(answer_id, set()) if message.poll else set()
+    limit = int(ctx.params.get("limit", 25))
+    users = [serializers.user_payload(backend.users[uid]) for uid in voters if uid in backend.users]
+    return {"users": users[:limit]}
+
+
 @route("GET", "/channels/{channel_id}/messages/pins")
 def get_pins(ctx: RequestContext) -> Any:
     backend = ctx.backend

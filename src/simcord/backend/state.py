@@ -19,16 +19,24 @@ from ..enums import AppCommandType, ChannelType, MessageType
 from . import errors, permissions, serializers
 from .cdn import CdnStore
 from .models import (
+    AuditLogEntry,
+    AutoModRule,
     Channel,
     Guild,
+    GuildEmoji,
     Interaction,
+    Invite,
     Member,
     Message,
     Overwrite,
+    Poll,
     Reaction,
     Role,
+    ScheduledEvent,
+    Sticker,
     ThreadMetadata,
     User,
+    VoiceState,
     Webhook,
 )
 
@@ -70,6 +78,7 @@ class Backend:
         self.webhooks: dict[int, Webhook] = {}
         self.webhook_tokens: dict[str, int] = {}
         self.dm_channels: dict[int, int] = {}  # user id -> channel id
+        self.invites: dict[str, Invite] = {}  # code -> invite
         self.commands: dict[
             int | None, dict[tuple[str, int], dict[str, Any]]
         ] = {}  # scope -> (name, type) -> command
@@ -102,6 +111,11 @@ class Backend:
         agree, and timestamps stay deterministic across runs.
         """
         ms = _VIRTUAL_EPOCH_MS + self._clock_offset_ms + self._counter
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat()
+
+    def iso_after(self, seconds: float) -> str:
+        """An ISO timestamp ``seconds`` into the virtual future (for expiries)."""
+        ms = _VIRTUAL_EPOCH_MS + self._clock_offset_ms + self._counter + int(seconds * 1000)
         return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat()
 
     def advance_clock(self, seconds: float) -> None:
@@ -422,11 +436,19 @@ class Backend:
         reference: dict[str, Any] | None = None,
         interaction_metadata: dict[str, Any] | None = None,
         webhook_id: int | None = None,
+        poll: Poll | None = None,
         broadcast: bool = True,
     ) -> Message:
         channel = self.get_channel(channel_id)
         if content and len(content) > 2000:
             raise errors.invalid_form_body("content must be 2000 or fewer in length")
+        if self._auto_mod_blocks(channel, author_id, content or ""):
+            # Blocked by an auto-moderation rule: the execution event already
+            # fired; build the message object for the caller but never store or
+            # broadcast it, so it appears nowhere — exactly as on real Discord.
+            return Message(
+                id=self.snowflake(), channel_id=channel_id, author_id=author_id, content=content or ""
+            )
         message = Message(
             id=self.snowflake(),
             channel_id=channel_id,
@@ -441,6 +463,7 @@ class Backend:
             reference=reference,
             interaction_metadata=interaction_metadata,
             webhook_id=webhook_id,
+            poll=poll,
             mention_user_ids=[int(m) for m in _USER_MENTION.findall(content or "")],
             mention_role_ids=[int(m) for m in _ROLE_MENTION.findall(content or "")],
             mention_everyone=self._mentions_everyone(channel, author_id, content or ""),
@@ -564,6 +587,427 @@ class Backend:
         self.webhooks[webhook.id] = webhook
         self.webhook_tokens[webhook.token] = webhook.id
         return webhook
+
+    # ------------------------------------------------------------ audit logs
+
+    def record_audit_log(
+        self,
+        guild_id: int,
+        action_type: int,
+        *,
+        target_id: int | None = None,
+        changes: list[dict[str, Any]] | None = None,
+        options: dict[str, Any] | None = None,
+        reason: str | None = None,
+        user_id: int | None = None,
+    ) -> AuditLogEntry:
+        """Record a privileged action in the guild's audit log and announce it.
+
+        Called from route handlers (the API-call path), never from the backend
+        mutation methods themselves — so omnipotent test/builder setup does not
+        generate audit entries, exactly as real Discord only logs API actions.
+        """
+        guild = self.get_guild(guild_id)
+        entry = AuditLogEntry(
+            id=self.snowflake(),
+            action_type=int(action_type),
+            user_id=user_id if user_id is not None else self.bot_user.id,
+            target_id=target_id,
+            reason=reason,
+            changes=list(changes or []),
+            options=dict(options or {}),
+        )
+        guild.audit_log_entries.append(entry)
+        payload = dict(serializers.audit_log_entry_payload(entry))
+        payload["guild_id"] = str(guild_id)
+        self.emit("GUILD_AUDIT_LOG_ENTRY_CREATE", payload)
+        return entry
+
+    # ------------------------------------------------------------ poll voting
+
+    def add_poll_vote(self, channel_id: int, message_id: int, answer_id: int, user_id: int) -> None:
+        message = self.get_message(channel_id, message_id)
+        poll = message.poll
+        if poll is None or poll.answer(answer_id) is None:
+            raise errors.invalid_form_body("poll answer does not exist")
+        if not poll.allow_multiselect:
+            for other_id, voters in poll.votes.items():
+                if other_id != answer_id and user_id in voters:
+                    voters.discard(user_id)
+                    self._emit_poll_vote("MESSAGE_POLL_VOTE_REMOVE", message, other_id, user_id)
+        voters = poll.votes.setdefault(answer_id, set())
+        if user_id in voters:
+            return
+        voters.add(user_id)
+        self._emit_poll_vote("MESSAGE_POLL_VOTE_ADD", message, answer_id, user_id)
+
+    def remove_poll_vote(self, channel_id: int, message_id: int, answer_id: int, user_id: int) -> None:
+        message = self.get_message(channel_id, message_id)
+        poll = message.poll
+        if poll is None:
+            raise errors.invalid_form_body("message has no poll")
+        voters = poll.votes.get(answer_id, set())
+        if user_id not in voters:
+            return
+        voters.discard(user_id)
+        self._emit_poll_vote("MESSAGE_POLL_VOTE_REMOVE", message, answer_id, user_id)
+
+    def _emit_poll_vote(self, event: str, message: Message, answer_id: int, user_id: int) -> None:
+        channel = self.get_channel(message.channel_id)
+        payload: dict[str, Any] = {
+            "user_id": str(user_id),
+            "channel_id": str(message.channel_id),
+            "message_id": str(message.id),
+            "answer_id": answer_id,
+        }
+        if channel.guild_id is not None:
+            payload["guild_id"] = str(channel.guild_id)
+        self.emit(event, payload)
+
+    def expire_poll(self, channel_id: int, message_id: int) -> Message:
+        message = self.get_message(channel_id, message_id)
+        if message.poll is not None and not message.poll.finalized:
+            message.poll.finalized = True
+            self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
+        return message
+
+    def expire_due_polls(self) -> None:
+        """Finalize any polls whose expiry has passed (driven by the virtual clock)."""
+        now = self.now_iso()
+        for channel_messages in self.messages.values():
+            for message in channel_messages.values():
+                if message.poll is not None and not message.poll.finalized and message.poll.expiry <= now:
+                    self.expire_poll(message.channel_id, message.id)
+
+    # ------------------------------------------------------- scheduled events
+
+    def create_scheduled_event(
+        self,
+        guild_id: int,
+        *,
+        name: str,
+        entity_type: int,
+        scheduled_start_time: str,
+        creator_id: int | None = None,
+        channel_id: int | None = None,
+        description: str | None = None,
+        scheduled_end_time: str | None = None,
+        entity_metadata: dict[str, str] | None = None,
+    ) -> ScheduledEvent:
+        guild = self.get_guild(guild_id)
+        event = ScheduledEvent(
+            id=self.snowflake(),
+            guild_id=guild_id,
+            name=name,
+            creator_id=creator_id if creator_id is not None else self.bot_user.id,
+            scheduled_start_time=scheduled_start_time,
+            entity_type=entity_type,
+            channel_id=channel_id,
+            description=description,
+            scheduled_end_time=scheduled_end_time,
+            entity_metadata=entity_metadata,
+        )
+        guild.scheduled_events[event.id] = event
+        self.emit("GUILD_SCHEDULED_EVENT_CREATE", serializers.scheduled_event_payload(self, event))
+        return event
+
+    def get_scheduled_event(self, guild_id: int, event_id: int) -> ScheduledEvent:
+        event = self.get_guild(guild_id).scheduled_events.get(event_id)
+        if event is None:
+            raise errors.unknown_scheduled_event()
+        return event
+
+    def edit_scheduled_event(
+        self, guild_id: int, event_id: int, changes: Mapping[str, Any]
+    ) -> ScheduledEvent:
+        event = self.get_scheduled_event(guild_id, event_id)
+        for attr, value in changes.items():
+            setattr(event, attr, value)
+        self.emit("GUILD_SCHEDULED_EVENT_UPDATE", serializers.scheduled_event_payload(self, event))
+        return event
+
+    def delete_scheduled_event(self, guild_id: int, event_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        event = self.get_scheduled_event(guild_id, event_id)
+        del guild.scheduled_events[event_id]
+        self.emit("GUILD_SCHEDULED_EVENT_DELETE", serializers.scheduled_event_payload(self, event))
+
+    def set_scheduled_event_subscription(
+        self, guild_id: int, event_id: int, user_id: int, subscribed: bool
+    ) -> None:
+        event = self.get_scheduled_event(guild_id, event_id)
+        if subscribed:
+            event.user_ids.add(user_id)
+        else:
+            event.user_ids.discard(user_id)
+        self.emit(
+            "GUILD_SCHEDULED_EVENT_USER_ADD" if subscribed else "GUILD_SCHEDULED_EVENT_USER_REMOVE",
+            {
+                "guild_scheduled_event_id": str(event_id),
+                "user_id": str(user_id),
+                "guild_id": str(guild_id),
+            },
+        )
+
+    # ------------------------------------------------------------ voice state
+
+    def set_voice_state(
+        self, guild_id: int, user_id: int, channel_id: int | None, **flags: Any
+    ) -> VoiceState:
+        """Upsert a member's voice state (or disconnect when ``channel_id`` is None)."""
+        guild = self.get_guild(guild_id)
+        state = guild.voice_states.get(user_id)
+        if state is None:
+            state = VoiceState(
+                user_id=user_id,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                session_id=f"session_{user_id}",
+            )
+        state.channel_id = channel_id
+        for attr, value in flags.items():
+            setattr(state, attr, value)
+        if channel_id is None:
+            guild.voice_states.pop(user_id, None)
+        else:
+            guild.voice_states[user_id] = state
+        self.emit("VOICE_STATE_UPDATE", serializers.voice_state_payload(self, state))
+        return state
+
+    # ---------------------------------------------------------------- invites
+
+    def create_invite(
+        self,
+        channel_id: int,
+        inviter_id: int,
+        *,
+        max_uses: int = 0,
+        max_age: int = 86400,
+        temporary: bool = False,
+    ) -> Invite:
+        channel = self.get_channel(channel_id)
+        invite = Invite(
+            code=f"sc{self.snowflake() % 100000000:08d}",
+            guild_id=channel.guild_id,  # type: ignore[arg-type]
+            channel_id=channel_id,
+            inviter_id=inviter_id,
+            created_at=self.now_iso(),
+            max_uses=max_uses,
+            max_age=max_age,
+            temporary=temporary,
+            expires_at=self.iso_after(max_age) if max_age else None,
+        )
+        self.invites[invite.code] = invite
+        self.emit("INVITE_CREATE", serializers.invite_payload(self, invite, with_inviter=True))
+        return invite
+
+    def get_invite(self, code: str) -> Invite:
+        invite = self.invites.get(code)
+        if invite is None:
+            raise errors.unknown_invite()
+        return invite
+
+    def delete_invite(self, code: str) -> Invite:
+        invite = self.get_invite(code)
+        del self.invites[code]
+        self.emit(
+            "INVITE_DELETE",
+            {
+                "code": code,
+                "channel_id": str(invite.channel_id),
+                "guild_id": str(invite.guild_id),
+            },
+        )
+        return invite
+
+    # ------------------------------------------------------- emojis / stickers
+
+    def create_emoji(
+        self, guild_id: int, name: str, user_id: int, *, animated: bool = False, role_ids: Iterable[int] = ()
+    ) -> GuildEmoji:
+        guild = self.get_guild(guild_id)
+        emoji = GuildEmoji(
+            id=self.snowflake(), name=name, user_id=user_id, animated=animated, role_ids=list(role_ids)
+        )
+        guild.emojis[emoji.id] = emoji
+        self._emit_emojis_update(guild_id)
+        return emoji
+
+    def get_emoji(self, guild_id: int, emoji_id: int) -> GuildEmoji:
+        emoji = self.get_guild(guild_id).emojis.get(emoji_id)
+        if emoji is None:
+            raise errors.unknown_emoji()
+        return emoji
+
+    def edit_emoji(self, guild_id: int, emoji_id: int, changes: Mapping[str, Any]) -> GuildEmoji:
+        emoji = self.get_emoji(guild_id, emoji_id)
+        for attr, value in changes.items():
+            setattr(emoji, attr, value)
+        self._emit_emojis_update(guild_id)
+        return emoji
+
+    def delete_emoji(self, guild_id: int, emoji_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        self.get_emoji(guild_id, emoji_id)
+        del guild.emojis[emoji_id]
+        self._emit_emojis_update(guild_id)
+
+    def _emit_emojis_update(self, guild_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        self.emit(
+            "GUILD_EMOJIS_UPDATE",
+            {
+                "guild_id": str(guild_id),
+                "emojis": [serializers.guild_emoji_payload(self, e) for e in guild.emojis.values()],
+            },
+        )
+
+    def create_sticker(
+        self, guild_id: int, name: str, user_id: int, *, description: str | None = None, tags: str = ""
+    ) -> Sticker:
+        guild = self.get_guild(guild_id)
+        sticker = Sticker(
+            id=self.snowflake(),
+            name=name,
+            guild_id=guild_id,
+            user_id=user_id,
+            description=description,
+            tags=tags,
+        )
+        guild.stickers[sticker.id] = sticker
+        self._emit_stickers_update(guild_id)
+        return sticker
+
+    def get_sticker(self, guild_id: int, sticker_id: int) -> Sticker:
+        sticker = self.get_guild(guild_id).stickers.get(sticker_id)
+        if sticker is None:
+            raise errors.unknown_sticker()
+        return sticker
+
+    def edit_sticker(self, guild_id: int, sticker_id: int, changes: Mapping[str, Any]) -> Sticker:
+        sticker = self.get_sticker(guild_id, sticker_id)
+        for attr, value in changes.items():
+            setattr(sticker, attr, value)
+        self._emit_stickers_update(guild_id)
+        return sticker
+
+    def delete_sticker(self, guild_id: int, sticker_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        self.get_sticker(guild_id, sticker_id)
+        del guild.stickers[sticker_id]
+        self._emit_stickers_update(guild_id)
+
+    def _emit_stickers_update(self, guild_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        self.emit(
+            "GUILD_STICKERS_UPDATE",
+            {
+                "guild_id": str(guild_id),
+                "stickers": [serializers.sticker_payload(self, s) for s in guild.stickers.values()],
+            },
+        )
+
+    # ------------------------------------------------------- auto-moderation
+
+    def create_auto_mod_rule(self, guild_id: int, creator_id: int, body: Mapping[str, Any]) -> AutoModRule:
+        guild = self.get_guild(guild_id)
+        rule = AutoModRule(
+            id=self.snowflake(),
+            guild_id=guild_id,
+            name=body["name"],
+            creator_id=creator_id,
+            event_type=int(body["event_type"]),
+            trigger_type=int(body["trigger_type"]),
+            trigger_metadata=dict(body.get("trigger_metadata") or {}),
+            actions=list(body.get("actions") or []),
+            enabled=bool(body.get("enabled", True)),
+            exempt_roles=[int(r) for r in body.get("exempt_roles") or []],
+            exempt_channels=[int(c) for c in body.get("exempt_channels") or []],
+        )
+        guild.auto_mod_rules[rule.id] = rule
+        self.emit("AUTO_MODERATION_RULE_CREATE", serializers.auto_mod_rule_payload(self, rule))
+        return rule
+
+    def get_auto_mod_rule(self, guild_id: int, rule_id: int) -> AutoModRule:
+        rule = self.get_guild(guild_id).auto_mod_rules.get(rule_id)
+        if rule is None:
+            raise errors.unknown_auto_mod_rule()
+        return rule
+
+    def edit_auto_mod_rule(self, guild_id: int, rule_id: int, changes: Mapping[str, Any]) -> AutoModRule:
+        rule = self.get_auto_mod_rule(guild_id, rule_id)
+        for attr, value in changes.items():
+            setattr(rule, attr, value)
+        self.emit("AUTO_MODERATION_RULE_UPDATE", serializers.auto_mod_rule_payload(self, rule))
+        return rule
+
+    def delete_auto_mod_rule(self, guild_id: int, rule_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        rule = self.get_auto_mod_rule(guild_id, rule_id)
+        del guild.auto_mod_rules[rule_id]
+        self.emit("AUTO_MODERATION_RULE_DELETE", serializers.auto_mod_rule_payload(self, rule))
+
+    def _auto_mod_blocks(self, channel: Channel, author_id: int, content: str) -> bool:
+        """Evaluate enabled keyword rules; emit executions; return whether to block.
+
+        Only non-bot messages in guild channels are evaluated, and only when the
+        guild actually has rules — so guilds without auto-mod see no behaviour
+        change.
+        """
+        if channel.guild_id is None or author_id == self.bot_user.id or not content:
+            return False
+        guild = self.guilds.get(channel.guild_id)
+        if guild is None or not guild.auto_mod_rules:
+            return False
+        member = guild.members.get(author_id)
+        role_ids = set(member.role_ids) if member else set()
+        blocked = False
+        for rule in guild.auto_mod_rules.values():
+            if not rule.enabled or rule.trigger_type != 1:
+                continue
+            if channel.id in rule.exempt_channels or role_ids & set(rule.exempt_roles):
+                continue
+            keyword = self._match_keyword(rule, content)
+            if keyword is None:
+                continue
+            for action in rule.actions:
+                self._emit_auto_mod_execution(rule, channel, author_id, content, keyword, action)
+                if int(action.get("type", 0)) == 1:  # BLOCK_MESSAGE
+                    blocked = True
+        return blocked
+
+    @staticmethod
+    def _match_keyword(rule: AutoModRule, content: str) -> str | None:
+        lowered = content.lower()
+        for keyword in rule.trigger_metadata.get("keyword_filter") or []:
+            bare = keyword.strip("*").lower()
+            if bare and bare in lowered:
+                return keyword
+        return None
+
+    def _emit_auto_mod_execution(
+        self,
+        rule: AutoModRule,
+        channel: Channel,
+        user_id: int,
+        content: str,
+        keyword: str,
+        action: dict[str, Any],
+    ) -> None:
+        self.emit(
+            "AUTO_MODERATION_ACTION_EXECUTION",
+            {
+                "guild_id": str(channel.guild_id),
+                "action": action,
+                "rule_id": str(rule.id),
+                "rule_trigger_type": rule.trigger_type,
+                "user_id": str(user_id),
+                "channel_id": str(channel.id),
+                "content": content,
+                "matched_keyword": keyword,
+                "matched_content": keyword,
+            },
+        )
 
     # --------------------------------------------------- application commands
 
