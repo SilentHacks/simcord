@@ -406,6 +406,7 @@ class Backend:
         type: int = ChannelType.PUBLIC_THREAD,
         auto_archive_duration: int = 1440,
         message_id: int | None = None,
+        applied_tags: Iterable[int] = (),
     ) -> Channel:
         parent = self.get_channel(parent_id)
         guild = self.get_guild(parent.guild_id)  # type: ignore[arg-type]
@@ -417,6 +418,7 @@ class Backend:
             guild_id=parent.guild_id,
             parent_id=parent_id,
             owner_id=owner_id,
+            applied_tags=list(applied_tags),
             thread_metadata=ThreadMetadata(
                 auto_archive_duration=auto_archive_duration, archive_timestamp=now, create_timestamp=now
             ),

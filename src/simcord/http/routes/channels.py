@@ -6,7 +6,8 @@ from typing import Any
 
 from ...backend import errors, serializers
 from ...backend.models import Overwrite, Webhook
-from ...enums import AuditLogAction, OverwriteType
+from ...enums import AuditLogAction, ChannelType, OverwriteType
+from .._helpers import bot_message
 from ..router import RequestContext, route
 
 
@@ -20,7 +21,13 @@ def edit_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_channels")
     body = ctx.body()
-    changes = {key: body[key] for key in ("name", "topic", "nsfw", "rate_limit_per_user") if key in body}
+    editable = ("name", "topic", "nsfw", "rate_limit_per_user", "available_tags")
+    changes = {key: body[key] for key in editable if key in body}
+    if "available_tags" in changes:
+        # Discord assigns an id to each newly created forum tag.
+        changes["available_tags"] = [
+            {**tag, "id": tag.get("id") or str(backend.snowflake())} for tag in changes["available_tags"]
+        ]
     overwrites = None
     if "permission_overwrites" in body:
         overwrites = [
@@ -109,6 +116,8 @@ def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
     body = ctx.body()
+    if channel.type == ChannelType.FORUM:
+        return _create_forum_post(ctx, channel.id, body)
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -117,6 +126,28 @@ def create_thread(ctx: RequestContext) -> Any:
         auto_archive_duration=int(body.get("auto_archive_duration", 1440)),
     )
     return dict(serializers.thread_payload(backend, thread))
+
+
+def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """A forum post is a public thread plus its mandatory starter message.
+
+    discord.py's ``ForumChannel.create_thread`` posts here with the message
+    nested under ``message`` and the chosen tags under ``applied_tags``; the
+    response carries the thread fields with the starter ``message`` embedded.
+    """
+    backend = ctx.backend
+    thread = backend.create_thread(
+        forum_id,
+        body["name"],
+        backend.bot_user.id,
+        type=ChannelType.PUBLIC_THREAD,
+        auto_archive_duration=int(body.get("auto_archive_duration") or 1440),
+        applied_tags=[int(t) for t in body.get("applied_tags") or []],
+    )
+    message = bot_message(ctx, thread.id, body=body.get("message") or {})
+    payload = dict(serializers.thread_payload(backend, thread))
+    payload["message"] = serializers.message_payload(backend, message)
+    return payload
 
 
 @route("POST", "/channels/{channel_id}/messages/{message_id}/threads")

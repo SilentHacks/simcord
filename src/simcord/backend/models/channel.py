@@ -50,6 +50,7 @@ class Channel:
     owner_id: int | None = None
     thread_metadata: ThreadMetadata | None = None
     message_count: int = 0
+    applied_tags: list[int] = field(default_factory=list)  # forum-post threads
 
     @property
     def is_thread(self) -> bool:
