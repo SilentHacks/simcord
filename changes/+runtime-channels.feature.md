@@ -1,1 +1,0 @@
-Added runtime channel management: bots can now `Guild.create_text_channel()` / `create_voice_channel()` / etc. (`POST /guilds/{id}/channels`) and `Guild.fetch_channels()` (`GET /guilds/{id}/channels`), reusing the same backend path as test-setup builders and recording a `CHANNEL_CREATE` audit entry.

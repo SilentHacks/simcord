@@ -1,1 +1,0 @@
-Scheduled events now auto-transition on the virtual clock: `advance_time()` moves an event from scheduled to active at its start time and to completed at its end time (emitting `GUILD_SCHEDULED_EVENT_UPDATE`), in addition to the existing manual status edits.

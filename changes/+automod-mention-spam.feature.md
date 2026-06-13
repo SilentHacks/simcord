@@ -1,1 +1,0 @@
-Auto-moderation now evaluates mention-spam rules (`trigger_type` 5): a message whose user/role mention count exceeds `mention_total_limit` fires `AUTO_MODERATION_ACTION_EXECUTION` and is blocked, alongside the existing keyword triggers.

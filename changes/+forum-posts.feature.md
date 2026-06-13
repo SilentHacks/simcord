@@ -1,1 +1,0 @@
-Forum channels are now usable end to end: `ForumChannel.create_thread(name=..., content=...)` creates a post (a public thread with its starter message) and `applied_tags`, and forum tags can be configured via `ForumChannel.edit(available_tags=...)`.

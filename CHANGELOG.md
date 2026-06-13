@@ -4,6 +4,23 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 0.7.0 (2026-06-13)
+
+### Features
+
+- Added `Guild.edit()` (`PATCH /guilds/{id}`) — name, description, verification level, default notifications, explicit-content filter, AFK channel/timeout, system channel and preferred locale — and runtime guild creation `Client.create_guild()` (`POST /guilds`); guild edits record a `GUILD_UPDATE` audit entry.
+- Added application command permission fetching: `AppCommand.fetch_permissions(guild)` reads per-guild overrides seeded by `GuildHandle.set_command_permissions(...)`, and returns `NotFound` when a command is unchanged from the guild default.
+- Added reaction clearing: `Message.clear_reactions()` (`DELETE /channels/{id}/messages/{id}/reactions`, emits `MESSAGE_REACTION_REMOVE_ALL`) and `Message.clear_reaction(emoji)` (`DELETE .../reactions/{emoji}`, emits `MESSAGE_REACTION_REMOVE_EMOJI`).
+- Added runtime channel management: bots can now `Guild.create_text_channel()` / `create_voice_channel()` / etc. (`POST /guilds/{id}/channels`) and `Guild.fetch_channels()` (`GET /guilds/{id}/channels`), reusing the same backend path as test-setup builders and recording a `CHANNEL_CREATE` audit entry.
+- Added stage voice-state editing (`PATCH /guilds/{id}/voice-states/@me` and `/{user_id}`): `Member.request_to_speak()` and `Member.edit(suppress=...)` now work, emitting `VOICE_STATE_UPDATE`.
+- Added the list-guild-members endpoint (`GET /guilds/{id}/members`) so `Guild.fetch_members()` pages through the full member list.
+- Auto-moderation now evaluates mention-spam rules (`trigger_type` 5): a message whose user/role mention count exceeds `mention_total_limit` fires `AUTO_MODERATION_ACTION_EXECUTION` and is blocked, alongside the existing keyword triggers.
+- Completed webhook management: fetch/edit/delete a webhook by id or token (`GET`/`PATCH`/`DELETE /webhooks/{id}` and the `/{token}` variants) and list a guild's webhooks (`GET /guilds/{id}/webhooks`), emitting `WEBHOOKS_UPDATE`.
+- Forum channels are now usable end to end: `ForumChannel.create_thread(name=..., content=...)` creates a post (a public thread with its starter message) and `applied_tags`, and forum tags can be configured via `ForumChannel.edit(available_tags=...)`.
+- Implemented bulk message deletion (`TextChannel.delete_messages` / `purge`): `POST /channels/{id}/messages/bulk-delete` removes 2–100 messages at once, emits a single `MESSAGE_DELETE_BULK`, and records a `MESSAGE_BULK_DELETE` audit-log entry.
+- Scheduled events now auto-transition on the virtual clock: `advance_time()` moves an event from scheduled to active at its start time and to completed at its end time (emitting `GUILD_SCHEDULED_EVENT_UPDATE`), in addition to the existing manual status edits.
+
+
 ## 0.6.0 (2026-06-13)
 
 ### Features
