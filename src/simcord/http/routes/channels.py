@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...backend import serializers
-from ...backend.models import Overwrite
+from ...backend import errors, serializers
+from ...backend.models import Overwrite, Webhook
 from ...enums import AuditLogAction, OverwriteType
 from ..router import RequestContext, route
 
@@ -153,3 +153,72 @@ def get_channel_webhooks(ctx: RequestContext) -> Any:
         for w in backend.webhooks.values()
         if w.channel_id == channel_id
     ]
+
+
+@route("GET", "/guilds/{guild_id}/webhooks")
+def get_guild_webhooks(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    backend.get_guild(guild_id)
+    ctx.require_guild_permissions(guild_id, "manage_webhooks")
+    return [
+        serializers.webhook_payload(backend, w) for w in backend.webhooks.values() if w.guild_id == guild_id
+    ]
+
+
+def _require_token(webhook: Webhook, token: str) -> None:
+    """Token-scoped webhook ops authenticate by token, not bot permissions."""
+    if webhook.token != token:
+        raise errors.unknown_webhook()
+
+
+@route("GET", "/webhooks/{webhook_id}")
+def get_webhook(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
+    ctx.require_channel_permissions(webhook.channel_id, "manage_webhooks")
+    return serializers.webhook_payload(backend, webhook)
+
+
+@route("GET", "/webhooks/{webhook_id}/{token}")
+def get_webhook_with_token(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
+    _require_token(webhook, ctx.args["token"])
+    return serializers.webhook_payload(backend, webhook, include_token=False)
+
+
+@route("PATCH", "/webhooks/{webhook_id}")
+def edit_webhook(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
+    ctx.require_channel_permissions(webhook.channel_id, "manage_webhooks")
+    return serializers.webhook_payload(backend, backend.edit_webhook(webhook.id, ctx.body()))
+
+
+@route("PATCH", "/webhooks/{webhook_id}/{token}")
+def edit_webhook_with_token(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
+    _require_token(webhook, ctx.args["token"])
+    # A token cannot move the webhook between channels.
+    changes = {key: value for key, value in ctx.body().items() if key != "channel_id"}
+    return serializers.webhook_payload(
+        backend, backend.edit_webhook(webhook.id, changes), include_token=False
+    )
+
+
+@route("DELETE", "/webhooks/{webhook_id}")
+def delete_webhook(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
+    ctx.require_channel_permissions(webhook.channel_id, "manage_webhooks")
+    backend.delete_webhook(webhook.id)
+
+
+@route("DELETE", "/webhooks/{webhook_id}/{token}")
+def delete_webhook_with_token(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
+    _require_token(webhook, ctx.args["token"])
+    backend.delete_webhook(webhook.id)

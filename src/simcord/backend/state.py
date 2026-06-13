@@ -641,6 +641,35 @@ class Backend:
         self.webhook_tokens[webhook.token] = webhook.id
         return webhook
 
+    def get_webhook(self, webhook_id: int) -> Webhook:
+        webhook = self.webhooks.get(webhook_id)
+        if webhook is None:
+            raise errors.unknown_webhook()
+        return webhook
+
+    def edit_webhook(self, webhook_id: int, changes: Mapping[str, Any]) -> Webhook:
+        """Edit a webhook's name and/or channel, announcing WEBHOOKS_UPDATE."""
+        webhook = self.get_webhook(webhook_id)
+        if changes.get("name") is not None:
+            webhook.name = changes["name"]
+        if changes.get("channel_id") is not None:
+            webhook.channel_id = int(changes["channel_id"])
+        self._emit_webhooks_update(webhook.channel_id)
+        return webhook
+
+    def delete_webhook(self, webhook_id: int) -> None:
+        webhook = self.get_webhook(webhook_id)
+        del self.webhooks[webhook_id]
+        self.webhook_tokens.pop(webhook.token, None)
+        self._emit_webhooks_update(webhook.channel_id)
+
+    def _emit_webhooks_update(self, channel_id: int) -> None:
+        channel = self.get_channel(channel_id)
+        payload: dict[str, Any] = {"channel_id": str(channel_id)}
+        if channel.guild_id is not None:
+            payload["guild_id"] = str(channel.guild_id)
+        self.emit("WEBHOOKS_UPDATE", payload)
+
     # ------------------------------------------------------------ audit logs
 
     def record_audit_log(

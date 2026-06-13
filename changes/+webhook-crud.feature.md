@@ -1,0 +1,1 @@
+Completed webhook management: fetch/edit/delete a webhook by id or token (`GET`/`PATCH`/`DELETE /webhooks/{id}` and the `/{token}` variants) and list a guild's webhooks (`GET /guilds/{id}/webhooks`), emitting `WEBHOOKS_UPDATE`.

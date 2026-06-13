@@ -119,3 +119,50 @@ async def test_webhook_create_and_execute(env, channel):
     last = channel.last_message
     assert last.content == "Webhook says hi"
     assert last.author.id != env.bot.user.id  # authored by the webhook's synthetic user
+
+
+async def test_webhook_fetch_edit_delete(env, channel):
+    cached = env.bot.get_channel(channel.id)
+    webhook = await cached.create_webhook(name="Announcer")
+    await env.settle()
+
+    fetched = await env.bot.fetch_webhook(webhook.id)
+    assert fetched.name == "Announcer"
+
+    await webhook.edit(name="Renamed")
+    assert (await env.bot.fetch_webhook(webhook.id)).name == "Renamed"
+
+    await webhook.delete()
+    with pytest.raises(discord.NotFound):
+        await env.bot.fetch_webhook(webhook.id)
+
+
+async def test_webhook_fetch_with_token(env, channel):
+    cached = env.bot.get_channel(channel.id)
+    created = await cached.create_webhook(name="Announcer")
+
+    # A token-only webhook (no bot auth) authenticates by its token.
+    partial = discord.Webhook.partial(created.id, created.token, client=env.bot)
+    fetched = await partial.fetch()
+    assert fetched.name == "Announcer"
+
+
+async def test_guild_webhooks_listing(env, channel):
+    cached = env.bot.get_channel(channel.id)
+    await cached.create_webhook(name="Announcer")
+    guild = env.bot.get_guild(env.guild.id)
+
+    hooks = await guild.webhooks()
+    assert [h.name for h in hooks] == ["Announcer"]
+
+
+async def test_webhook_edit_requires_manage_webhooks(env, channel):
+    cached = env.bot.get_channel(channel.id)
+    webhook = await cached.create_webhook(name="Announcer")
+    mask = ~discord.Permissions(manage_webhooks=True).value
+    for role in env.backend.get_guild(env.guild.id).roles.values():
+        role.permissions &= mask
+
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await webhook.edit(name="Renamed")
+    assert exc_info.value.code == 50013
