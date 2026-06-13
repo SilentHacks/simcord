@@ -351,6 +351,66 @@ class MemberActor:
             InteractionType.MODAL_SUBMIT, channel, {"custom_id": spec["custom_id"], "components": components}
         )
 
+    # ------------------------------------------------------------------ polls
+
+    async def vote(self, message: MessageLike, *, answer: int) -> None:
+        """Cast (or move) this user's vote to ``answer`` (a 1-based answer id)."""
+        backend = self._env.backend
+        stored = backend.get_message(_channel_id_of(message), message.id)
+        backend.require_permissions(self.guild.id, self.id, stored.channel_id, "view_channel")
+        backend.add_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        await self._env.settle()
+
+    async def remove_vote(self, message: MessageLike, *, answer: int) -> None:
+        """Retract this user's vote for ``answer``."""
+        backend = self._env.backend
+        stored = backend.get_message(_channel_id_of(message), message.id)
+        backend.remove_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        await self._env.settle()
+
+    # ------------------------------------------------------------------ voice
+
+    async def join_voice(
+        self, channel: ChannelHandle, *, self_mute: bool = False, self_deaf: bool = False
+    ) -> None:
+        """Connect to a voice/stage channel (state only — no audio)."""
+        self._check(channel, "connect")
+        self._env.backend.set_voice_state(
+            self.guild.id, self.id, channel.id, self_mute=self_mute, self_deaf=self_deaf
+        )
+        await self._env.settle()
+
+    async def leave_voice(self) -> None:
+        """Disconnect from voice."""
+        self._env.backend.set_voice_state(self.guild.id, self.id, None)
+        await self._env.settle()
+
+    async def set_voice(self, *, self_mute: bool | None = None, self_deaf: bool | None = None) -> None:
+        """Update self-mute/self-deaf while connected."""
+        state = self._env.backend.get_guild(self.guild.id).voice_states.get(self.id)
+        if state is None:
+            raise SetupError("This user is not connected to a voice channel")
+        flags: dict[str, Any] = {}
+        if self_mute is not None:
+            flags["self_mute"] = self_mute
+        if self_deaf is not None:
+            flags["self_deaf"] = self_deaf
+        self._env.backend.set_voice_state(self.guild.id, self.id, state.channel_id, **flags)
+        await self._env.settle()
+
+    # -------------------------------------------------------- scheduled events
+
+    async def subscribe_event(self, event: Any) -> None:
+        """Mark interest in a scheduled event (accepts an id or a handle with ``.id``)."""
+        event_id = event if isinstance(event, int) else event.id
+        self._env.backend.set_scheduled_event_subscription(self.guild.id, event_id, self.id, True)
+        await self._env.settle()
+
+    async def unsubscribe_event(self, event: Any) -> None:
+        event_id = event if isinstance(event, int) else event.id
+        self._env.backend.set_scheduled_event_subscription(self.guild.id, event_id, self.id, False)
+        await self._env.settle()
+
     # -------------------------------------------------------------- plumbing
 
     def _visible_message(self, message: MessageLike) -> Any:

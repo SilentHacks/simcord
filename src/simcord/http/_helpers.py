@@ -5,8 +5,28 @@ from __future__ import annotations
 from typing import Any
 
 from ..backend import errors, serializers
-from ..backend.models import EPHEMERAL_FLAG, Interaction, Message
+from ..backend.models import EPHEMERAL_FLAG, Interaction, Message, Poll, PollAnswer
 from .router import RequestContext
+
+
+def poll_from_wire(backend: Any, wire: dict[str, Any]) -> Poll:
+    """Build a :class:`Poll` from the create payload discord.py sends."""
+    answers = []
+    for index, answer in enumerate(wire.get("answers") or [], start=1):
+        media = answer.get("poll_media") or {}
+        emoji = media.get("emoji")
+        emoji_str = None
+        if isinstance(emoji, dict):
+            emoji_str = f"{emoji.get('name')}:{emoji['id']}" if emoji.get("id") else emoji.get("name")
+        answers.append(PollAnswer(answer_id=index, text=media.get("text"), emoji=emoji_str))
+    duration_hours = float(wire.get("duration") or 24)
+    return Poll(
+        question=(wire.get("question") or {}).get("text") or "",
+        answers=answers,
+        expiry=backend.iso_after(duration_hours * 3600),
+        allow_multiselect=bool(wire.get("allow_multiselect")),
+        layout_type=int(wire.get("layout_type", 1)),
+    )
 
 
 def bot_message(
@@ -44,6 +64,7 @@ def bot_message(
         }
     embeds = body.get("embeds") or ([body["embed"]] if body.get("embed") else [])
     _validate_embeds(embeds)
+    poll = poll_from_wire(backend, body["poll"]) if body.get("poll") else None
     return backend.create_message(
         channel_id,
         author_id if author_id is not None else backend.bot_user.id,
@@ -55,6 +76,7 @@ def bot_message(
         reference=reference,
         interaction_metadata=interaction_metadata,
         webhook_id=webhook_id,
+        poll=poll,
         broadcast=not flags & EPHEMERAL_FLAG,
     )
 

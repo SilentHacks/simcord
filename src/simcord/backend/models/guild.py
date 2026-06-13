@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .auditlog import AuditLogEntry
+from .automod import AutoModRule
+from .expression import GuildEmoji, Sticker
 from .member import Member
 from .role import Role
+from .scheduled_event import ScheduledEvent
+from .voice import VoiceState
 
 
 @dataclass
@@ -16,6 +21,12 @@ class Guild:
     channel_ids: list[int] = field(default_factory=list)
     thread_ids: list[int] = field(default_factory=list)
     bans: dict[int, str | None] = field(default_factory=dict)  # user id -> reason
+    audit_log_entries: list[AuditLogEntry] = field(default_factory=list)  # append-only, oldest first
+    scheduled_events: dict[int, ScheduledEvent] = field(default_factory=dict)
+    voice_states: dict[int, VoiceState] = field(default_factory=dict)  # by user id
+    emojis: dict[int, GuildEmoji] = field(default_factory=dict)
+    stickers: dict[int, Sticker] = field(default_factory=dict)
+    auto_mod_rules: dict[int, AutoModRule] = field(default_factory=dict)
 
     @property
     def everyone_role(self) -> Role:

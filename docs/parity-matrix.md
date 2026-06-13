@@ -33,12 +33,16 @@ if your bot needs it.
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced |
 | Roles (create/edit/delete) | ✅ | |
-| Channels (edit/delete, overwrites) | ✅ | Text channels; categories/forums planned |
+| Channels (edit/delete, overwrites) | ✅ | Text, voice, stage, category & forum kinds |
 | Webhooks | ✅ | Create + execute (channel webhooks) |
 | Fault injection / HTTP log | ✅ | `env.inject_error`, `env.http_log` |
-| Voice state | 🚧 | Planned (state only — never audio) |
-| Scheduled events, polls, invites, emojis, stickers | 🚧 | Planned |
-| Audit logs, auto-mod | 🚧 | Planned |
+| Audit logs | ✅ | Recorded for ban/kick/role/member/channel/event actions; `guild.audit_logs()`, filtering |
+| Polls | ✅ | Message-level poll object; `actor.vote`, expiry (route + `advance_time`), vote events |
+| Scheduled events | ✅ | CRUD + subscribe/unsubscribe; stage/voice/external |
+| Voice state | ✅ | State only — never audio; join/leave/move/mute, `VOICE_STATE_UPDATE` |
+| Invites | ✅ | Create/list/fetch/delete, gateway events |
+| Emojis & stickers | ✅ | Guild expression CRUD, update events |
+| Auto-moderation | ✅ | Rule CRUD + keyword execution (block/alert) on send |
 | View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
 | Multiple bots in one Env | ❌ | The backend broadcasts to N clients, but `Env` currently drives one bot |
@@ -51,7 +55,7 @@ so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->
 
-52 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
+81 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
 
 | Method | Route |
 | --- | --- |
@@ -62,6 +66,8 @@ so it is exact by construction.
 | `GET` | `/channels/{channel_id}` |
 | `PATCH` | `/channels/{channel_id}` |
 | `DELETE` | `/channels/{channel_id}` |
+| `GET` | `/channels/{channel_id}/invites` |
+| `POST` | `/channels/{channel_id}/invites` |
 | `GET` | `/channels/{channel_id}/messages` |
 | `POST` | `/channels/{channel_id}/messages` |
 | `GET` | `/channels/{channel_id}/messages/pins` |
@@ -77,15 +83,29 @@ so it is exact by construction.
 | `POST` | `/channels/{channel_id}/messages/{message_id}/threads` |
 | `PUT` | `/channels/{channel_id}/permissions/{target_id}` |
 | `DELETE` | `/channels/{channel_id}/permissions/{target_id}` |
+| `GET` | `/channels/{channel_id}/polls/{message_id}/answers/{answer_id}` |
+| `POST` | `/channels/{channel_id}/polls/{message_id}/expire` |
 | `POST` | `/channels/{channel_id}/threads` |
 | `POST` | `/channels/{channel_id}/typing` |
 | `GET` | `/channels/{channel_id}/webhooks` |
 | `POST` | `/channels/{channel_id}/webhooks` |
 | `GET` | `/guilds/{guild_id}` |
+| `GET` | `/guilds/{guild_id}/audit-logs` |
+| `GET` | `/guilds/{guild_id}/auto-moderation/rules` |
+| `POST` | `/guilds/{guild_id}/auto-moderation/rules` |
+| `GET` | `/guilds/{guild_id}/auto-moderation/rules/{rule_id}` |
+| `PATCH` | `/guilds/{guild_id}/auto-moderation/rules/{rule_id}` |
+| `DELETE` | `/guilds/{guild_id}/auto-moderation/rules/{rule_id}` |
 | `GET` | `/guilds/{guild_id}/bans` |
 | `GET` | `/guilds/{guild_id}/bans/{user_id}` |
 | `PUT` | `/guilds/{guild_id}/bans/{user_id}` |
 | `DELETE` | `/guilds/{guild_id}/bans/{user_id}` |
+| `GET` | `/guilds/{guild_id}/emojis` |
+| `POST` | `/guilds/{guild_id}/emojis` |
+| `GET` | `/guilds/{guild_id}/emojis/{emoji_id}` |
+| `PATCH` | `/guilds/{guild_id}/emojis/{emoji_id}` |
+| `DELETE` | `/guilds/{guild_id}/emojis/{emoji_id}` |
+| `GET` | `/guilds/{guild_id}/invites` |
 | `GET` | `/guilds/{guild_id}/members/{user_id}` |
 | `PATCH` | `/guilds/{guild_id}/members/{user_id}` |
 | `DELETE` | `/guilds/{guild_id}/members/{user_id}` |
@@ -95,7 +115,20 @@ so it is exact by construction.
 | `POST` | `/guilds/{guild_id}/roles` |
 | `PATCH` | `/guilds/{guild_id}/roles/{role_id}` |
 | `DELETE` | `/guilds/{guild_id}/roles/{role_id}` |
+| `GET` | `/guilds/{guild_id}/scheduled-events` |
+| `POST` | `/guilds/{guild_id}/scheduled-events` |
+| `GET` | `/guilds/{guild_id}/scheduled-events/{event_id}` |
+| `PATCH` | `/guilds/{guild_id}/scheduled-events/{event_id}` |
+| `DELETE` | `/guilds/{guild_id}/scheduled-events/{event_id}` |
+| `GET` | `/guilds/{guild_id}/scheduled-events/{event_id}/users` |
+| `GET` | `/guilds/{guild_id}/stickers` |
+| `POST` | `/guilds/{guild_id}/stickers` |
+| `GET` | `/guilds/{guild_id}/stickers/{sticker_id}` |
+| `PATCH` | `/guilds/{guild_id}/stickers/{sticker_id}` |
+| `DELETE` | `/guilds/{guild_id}/stickers/{sticker_id}` |
 | `POST` | `/interactions/{interaction_id}/{token}/callback` |
+| `GET` | `/invites/{code}` |
+| `DELETE` | `/invites/{code}` |
 | `GET` | `/oauth2/applications/@me` |
 | `GET` | `/users/@me` |
 | `POST` | `/users/@me/channels` |

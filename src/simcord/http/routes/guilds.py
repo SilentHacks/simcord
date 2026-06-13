@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...backend import errors, serializers
+from ...enums import AuditLogAction
 from ..router import RequestContext, route
 
 
@@ -35,6 +36,8 @@ def edit_member(ctx: RequestContext) -> Any:
     # to the backend so the write and its GUILD_MEMBER_UPDATE stay atomic — a
     # partial edit that 403s halfway would desync the bot's cache.
     changes: dict[str, Any] = {}
+    log: list[tuple[int, dict[str, Any], dict[str, Any]]] = []  # (action_type, changes, options)
+    old_nick, old_timeout, old_roles = member.nick, member.timed_out_until, list(member.role_ids)
     if "nick" in body:
         perm = "change_nickname" if user_id == bot_id else "manage_nicknames"
         ctx.require_guild_permissions(guild_id, perm)
@@ -53,9 +56,60 @@ def edit_member(ctx: RequestContext) -> Any:
         changes["timed_out_until"] = body["communication_disabled_until"]
     for key in ("mute", "deaf"):
         if key in body:
+            ctx.require_guild_permissions(guild_id, "moderate_members" if key == "deaf" else "mute_members")
             changes[key] = body[key]
 
     member = backend.edit_member(guild_id, user_id, changes)
+
+    # Voice channel move/disconnect (server-side); reflect server mute/deaf too.
+    if "channel_id" in body:
+        target_channel = body["channel_id"]
+        if target_channel is None:
+            backend.set_voice_state(guild_id, user_id, None)
+            log.append((AuditLogAction.MEMBER_DISCONNECT, {}, {}))
+        else:
+            backend.set_voice_state(
+                guild_id, user_id, int(target_channel), mute=member.mute, deaf=member.deaf
+            )
+            log.append((AuditLogAction.MEMBER_MOVE, {}, {"channel_id": str(target_channel), "count": "1"}))
+    elif user_id in guild.voice_states and ("mute" in body or "deaf" in body):
+        backend.set_voice_state(
+            guild_id, user_id, guild.voice_states[user_id].channel_id, mute=member.mute, deaf=member.deaf
+        )
+
+    member_changes: list[dict[str, Any]] = []
+    if "nick" in changes and old_nick != member.nick:
+        member_changes.append({"key": "nick", "old_value": old_nick, "new_value": member.nick})
+    if "timed_out_until" in changes and old_timeout != member.timed_out_until:
+        member_changes.append(
+            {
+                "key": "communication_disabled_until",
+                "old_value": old_timeout,
+                "new_value": member.timed_out_until,
+            }
+        )
+    if member_changes:
+        log.append((AuditLogAction.MEMBER_UPDATE, {"_changes": member_changes}, {}))
+    if "role_ids" in changes:
+        added = [r for r in member.role_ids if r not in old_roles]
+        removed = [r for r in old_roles if r not in member.role_ids]
+        options: dict[str, Any] = {}
+        if added:
+            options["$add"] = [{"id": str(r), "name": backend.get_role(guild_id, r).name} for r in added]
+        if removed:
+            options["$remove"] = [{"id": str(r), "name": backend.get_role(guild_id, r).name} for r in removed]
+        if options:
+            log.append((AuditLogAction.MEMBER_ROLE_UPDATE, {}, options))
+
+    for action_type, extra, options in log:
+        backend.record_audit_log(
+            guild_id,
+            action_type,
+            target_id=user_id,
+            changes=extra.get("_changes", []),
+            options=options,
+            reason=ctx.reason,
+        )
     return dict(serializers.member_payload(backend, guild, member))
 
 
@@ -69,6 +123,13 @@ def add_member_role(ctx: RequestContext) -> Any:
     role = backend.get_role(guild_id, ctx.int_arg("role_id"))
     backend.require_role_assignable(guild_id, backend.bot_user.id, role.id)
     backend.add_member_role(guild_id, user_id, role.id)
+    backend.record_audit_log(
+        guild_id,
+        AuditLogAction.MEMBER_ROLE_UPDATE,
+        target_id=user_id,
+        options={"$add": [{"id": str(role.id), "name": role.name}]},
+        reason=ctx.reason,
+    )
 
 
 @route("DELETE", "/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
@@ -80,7 +141,15 @@ def remove_member_role(ctx: RequestContext) -> Any:
     ctx.require_guild_permissions(guild_id, "manage_roles")
     backend.get_member(guild_id, user_id)
     backend.require_role_assignable(guild_id, backend.bot_user.id, role_id)
+    role = backend.get_role(guild_id, role_id)
     backend.remove_member_role(guild_id, user_id, role_id)
+    backend.record_audit_log(
+        guild_id,
+        AuditLogAction.MEMBER_ROLE_UPDATE,
+        target_id=user_id,
+        options={"$remove": [{"id": str(role.id), "name": role.name}]},
+        reason=ctx.reason,
+    )
 
 
 @route("DELETE", "/guilds/{guild_id}/members/{user_id}")
@@ -91,6 +160,7 @@ def kick(ctx: RequestContext) -> Any:
     ctx.require_guild_permissions(guild_id, "kick_members")
     backend.require_hierarchy(guild_id, backend.bot_user.id, user_id)
     backend.remove_member(guild_id, user_id)
+    backend.record_audit_log(guild_id, AuditLogAction.MEMBER_KICK, target_id=user_id, reason=ctx.reason)
 
 
 @route("PUT", "/guilds/{guild_id}/bans/{user_id}")
@@ -101,13 +171,14 @@ def ban(ctx: RequestContext) -> Any:
     ctx.require_guild_permissions(guild_id, "ban_members")
     backend.require_hierarchy(guild_id, backend.bot_user.id, user_id)
     guild = backend.get_guild(guild_id)
-    guild.bans[user_id] = None
+    guild.bans[user_id] = ctx.reason
     if user_id in guild.members:
         backend.remove_member(guild_id, user_id)
     backend.emit(
         "GUILD_BAN_ADD",
         {"guild_id": str(guild_id), "user": serializers.user_payload(backend.get_user(user_id))},
     )
+    backend.record_audit_log(guild_id, AuditLogAction.MEMBER_BAN, target_id=user_id, reason=ctx.reason)
 
 
 @route("DELETE", "/guilds/{guild_id}/bans/{user_id}")
@@ -124,6 +195,7 @@ def unban(ctx: RequestContext) -> Any:
         "GUILD_BAN_REMOVE",
         {"guild_id": str(guild_id), "user": serializers.user_payload(backend.get_user(user_id))},
     )
+    backend.record_audit_log(guild_id, AuditLogAction.MEMBER_UNBAN, target_id=user_id, reason=ctx.reason)
 
 
 def _ban_payload(ctx: RequestContext, user_id: int, reason: Any) -> dict[str, Any]:
@@ -162,6 +234,13 @@ def create_role(ctx: RequestContext) -> Any:
         mentionable=bool(body.get("mentionable", False)),
         color=int(body.get("color") or 0),
     )
+    backend.record_audit_log(
+        guild_id,
+        AuditLogAction.ROLE_CREATE,
+        target_id=role.id,
+        changes=[{"key": "name", "new_value": role.name}],
+        reason=ctx.reason,
+    )
     return dict(serializers.role_payload(role))
 
 
@@ -186,14 +265,34 @@ def edit_role(ctx: RequestContext) -> Any:
     }
     if "permissions" in body and body["permissions"] is not None:
         changes["permissions"] = int(body["permissions"])
+    old = {key: getattr(backend.get_role(guild_id, role_id), key) for key in changes}
     role = backend.edit_role(guild_id, role_id, changes)
+    audit_changes = [
+        {"key": key, "old_value": old[key], "new_value": getattr(role, key)}
+        for key in changes
+        if old[key] != getattr(role, key)
+    ]
+    if audit_changes:
+        backend.record_audit_log(
+            guild_id, AuditLogAction.ROLE_UPDATE, target_id=role_id, changes=audit_changes, reason=ctx.reason
+        )
     return dict(serializers.role_payload(role))
 
 
 @route("DELETE", "/guilds/{guild_id}/roles/{role_id}")
 def delete_role(ctx: RequestContext) -> Any:
-    ctx.require_guild_permissions(ctx.int_arg("guild_id"), "manage_roles")
-    ctx.backend.delete_role(ctx.int_arg("guild_id"), ctx.int_arg("role_id"))
+    guild_id = ctx.int_arg("guild_id")
+    role_id = ctx.int_arg("role_id")
+    ctx.require_guild_permissions(guild_id, "manage_roles")
+    name = ctx.backend.get_role(guild_id, role_id).name
+    ctx.backend.delete_role(guild_id, role_id)
+    ctx.backend.record_audit_log(
+        guild_id,
+        AuditLogAction.ROLE_DELETE,
+        target_id=role_id,
+        changes=[{"key": "name", "old_value": name}],
+        reason=ctx.reason,
+    )
 
 
 @route("GET", "/guilds/{guild_id}/roles")

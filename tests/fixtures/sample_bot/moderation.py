@@ -24,6 +24,16 @@ class Moderation(commands.Cog):
         await user.timeout(datetime.timedelta(minutes=10))
         await interaction.response.send_message(f"Timed out {user.display_name}")
 
+    @app_commands.command(name="recent-bans", description="List recently banned users from the audit log")
+    async def recent_bans(self, interaction: discord.Interaction) -> None:
+        names = [
+            entry.target.name
+            async for entry in interaction.guild.audit_logs(limit=5, action=discord.AuditLogAction.ban)
+        ]
+        await interaction.response.send_message(
+            "Recent bans: " + (", ".join(names) if names else "none"), ephemeral=True
+        )
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Moderation())
