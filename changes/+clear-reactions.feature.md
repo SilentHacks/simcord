@@ -1,0 +1,1 @@
+Added reaction clearing: `Message.clear_reactions()` (`DELETE /channels/{id}/messages/{id}/reactions`, emits `MESSAGE_REACTION_REMOVE_ALL`) and `Message.clear_reaction(emoji)` (`DELETE .../reactions/{emoji}`, emits `MESSAGE_REACTION_REMOVE_EMOJI`).

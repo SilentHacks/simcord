@@ -35,6 +35,18 @@ def remove_user_reaction(ctx: RequestContext) -> Any:
     backend.remove_reaction(channel.id, ctx.int_arg("message_id"), _emoji(ctx), ctx.int_arg("user_id"))
 
 
+@route("DELETE", "/channels/{channel_id}/messages/{message_id}/reactions")
+def clear_reactions(ctx: RequestContext) -> Any:
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ctx.backend.clear_reactions(channel.id, ctx.int_arg("message_id"))
+
+
+@route("DELETE", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}")
+def clear_single_reaction(ctx: RequestContext) -> Any:
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ctx.backend.clear_reaction(channel.id, ctx.int_arg("message_id"), _emoji(ctx))
+
+
 @route("GET", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}")
 def get_reaction_users(ctx: RequestContext) -> Any:
     backend = ctx.backend

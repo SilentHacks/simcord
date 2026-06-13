@@ -579,6 +579,32 @@ class Backend:
             message.reactions.remove(reaction)
         self._emit_reaction("MESSAGE_REACTION_REMOVE", message, emoji, user_id)
 
+    def clear_reactions(self, channel_id: int, message_id: int) -> None:
+        """Remove every reaction from a message (MESSAGE_REACTION_REMOVE_ALL)."""
+        message = self.get_message(channel_id, message_id)
+        message.reactions.clear()
+        channel = self.get_channel(channel_id)
+        payload: dict[str, Any] = {"channel_id": str(channel_id), "message_id": str(message_id)}
+        if channel.guild_id is not None:
+            payload["guild_id"] = str(channel.guild_id)
+        self.emit("MESSAGE_REACTION_REMOVE_ALL", payload)
+
+    def clear_reaction(self, channel_id: int, message_id: int, emoji: str) -> None:
+        """Remove all of one emoji's reactions from a message (MESSAGE_REACTION_REMOVE_EMOJI)."""
+        message = self.get_message(channel_id, message_id)
+        reaction = message.reaction_for(emoji)
+        if reaction is not None:
+            message.reactions.remove(reaction)
+        channel = self.get_channel(channel_id)
+        payload: dict[str, Any] = {
+            "channel_id": str(channel_id),
+            "message_id": str(message_id),
+            "emoji": serializers.emoji_payload(emoji),
+        }
+        if channel.guild_id is not None:
+            payload["guild_id"] = str(channel.guild_id)
+        self.emit("MESSAGE_REACTION_REMOVE_EMOJI", payload)
+
     def _emit_reaction(self, event: str, message: Message, emoji: str, user_id: int) -> None:
         channel = self.get_channel(message.channel_id)
         payload: dict[str, Any] = {
