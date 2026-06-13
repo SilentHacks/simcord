@@ -15,15 +15,18 @@ if your bot needs it.
 | Login / READY / setup_hook | ✅ | Real discord.py login flow, application info |
 | Gateway intents | ✅ | Server-side gating, `message_content` censoring, member chunking, 4014 — see the [Intents guide](guides/intents.md) |
 | Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`) |
+| Bulk delete (`purge` / `delete_messages`) | ✅ | 2–100 messages, single `MESSAGE_DELETE_BULK`, audit-logged |
 | Embeds, attachments, replies, mentions | ✅ | In-memory CDN; `attachment.read()` works |
 | Pins | ✅ | Current paginated endpoints |
 | Typing | ✅ | Both directions |
-| Reactions | ✅ | Add/remove/list, gateway events |
+| Reactions | ✅ | Add/remove/list, clear-all & clear-emoji, gateway events |
 | DM channels | ✅ | User→bot and bot→user |
 | Threads | ✅ | Create (standalone & from message), messaging within |
+| Forum posts | ✅ | `ForumChannel.create_thread` (starter message + `applied_tags`); tag config via edit |
 | Prefix commands (`ext.commands`) | ✅ | Converters, checks, cooldowns, error handlers |
 | Permissions engine | ✅ | Overwrites, hierarchy, timeouts, owner/admin |
 | Slash commands | ✅ | Options, choices, resolved data, subcommand groups |
+| App command permissions | ✅ | `AppCommand.fetch_permissions`; seed via `guild.set_command_permissions` |
 | Context menus (user & message) | ✅ | |
 | Autocomplete | ✅ | |
 | Interaction lifecycle | ✅ | Defer, followups, `@original` ops, `40060` on double-ack |
@@ -31,18 +34,19 @@ if your bot needs it.
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
-| Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced |
+| Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing |
 | Roles (create/edit/delete) | ✅ | |
-| Channels (edit/delete, overwrites) | ✅ | Text, voice, stage, category & forum kinds |
-| Webhooks | ✅ | Create + execute (channel webhooks) |
+| Guilds (create/edit) | ✅ | `Client.create_guild`, `Guild.edit`; `GUILD_UPDATE` audit |
+| Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds |
+| Webhooks | ✅ | Create, execute, fetch/edit/delete (by id or token), guild listing |
 | Fault injection / HTTP log | ✅ | `env.inject_error`, `env.http_log` |
 | Audit logs | ✅ | Recorded for ban/kick/role/member/channel/event actions; `guild.audit_logs()`, filtering |
 | Polls | ✅ | Message-level poll object; `actor.vote`, expiry (route + `advance_time`), vote events |
-| Scheduled events | ✅ | CRUD + subscribe/unsubscribe; stage/voice/external |
-| Voice state | ✅ | State only — never audio; join/leave/move/mute, `VOICE_STATE_UPDATE` |
+| Scheduled events | ✅ | CRUD + subscribe/unsubscribe; auto status transitions via `advance_time` |
+| Voice state | ✅ | State only — never audio; join/leave/move/mute, request-to-speak, `VOICE_STATE_UPDATE` |
 | Invites | ✅ | Create/list/fetch/delete, gateway events |
 | Emojis & stickers | ✅ | Guild expression CRUD, update events |
-| Auto-moderation | ✅ | Rule CRUD + keyword execution (block/alert) on send |
+| Auto-moderation | ✅ | Rule CRUD + keyword & mention-spam execution (block/alert) on send |
 | View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
 | Multiple bots in one Env | ❌ | The backend broadcasts to N clients, but `Env` currently drives one bot |
@@ -55,7 +59,7 @@ so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->
 
-81 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
+99 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
 
 | Method | Route |
 | --- | --- |
@@ -63,6 +67,7 @@ so it is exact by construction.
 | `PUT` | `/applications/{application_id}/commands` |
 | `GET` | `/applications/{application_id}/guilds/{guild_id}/commands` |
 | `PUT` | `/applications/{application_id}/guilds/{guild_id}/commands` |
+| `GET` | `/applications/{application_id}/guilds/{guild_id}/commands/{command_id}/permissions` |
 | `GET` | `/channels/{channel_id}` |
 | `PATCH` | `/channels/{channel_id}` |
 | `DELETE` | `/channels/{channel_id}` |
@@ -70,13 +75,16 @@ so it is exact by construction.
 | `POST` | `/channels/{channel_id}/invites` |
 | `GET` | `/channels/{channel_id}/messages` |
 | `POST` | `/channels/{channel_id}/messages` |
+| `POST` | `/channels/{channel_id}/messages/bulk-delete` |
 | `GET` | `/channels/{channel_id}/messages/pins` |
 | `PUT` | `/channels/{channel_id}/messages/pins/{message_id}` |
 | `DELETE` | `/channels/{channel_id}/messages/pins/{message_id}` |
 | `GET` | `/channels/{channel_id}/messages/{message_id}` |
 | `PATCH` | `/channels/{channel_id}/messages/{message_id}` |
 | `DELETE` | `/channels/{channel_id}/messages/{message_id}` |
+| `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions` |
 | `GET` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` |
+| `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` |
 | `PUT` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me` |
 | `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me` |
 | `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/{user_id}` |
@@ -89,7 +97,9 @@ so it is exact by construction.
 | `POST` | `/channels/{channel_id}/typing` |
 | `GET` | `/channels/{channel_id}/webhooks` |
 | `POST` | `/channels/{channel_id}/webhooks` |
+| `POST` | `/guilds` |
 | `GET` | `/guilds/{guild_id}` |
+| `PATCH` | `/guilds/{guild_id}` |
 | `GET` | `/guilds/{guild_id}/audit-logs` |
 | `GET` | `/guilds/{guild_id}/auto-moderation/rules` |
 | `POST` | `/guilds/{guild_id}/auto-moderation/rules` |
@@ -100,12 +110,15 @@ so it is exact by construction.
 | `GET` | `/guilds/{guild_id}/bans/{user_id}` |
 | `PUT` | `/guilds/{guild_id}/bans/{user_id}` |
 | `DELETE` | `/guilds/{guild_id}/bans/{user_id}` |
+| `GET` | `/guilds/{guild_id}/channels` |
+| `POST` | `/guilds/{guild_id}/channels` |
 | `GET` | `/guilds/{guild_id}/emojis` |
 | `POST` | `/guilds/{guild_id}/emojis` |
 | `GET` | `/guilds/{guild_id}/emojis/{emoji_id}` |
 | `PATCH` | `/guilds/{guild_id}/emojis/{emoji_id}` |
 | `DELETE` | `/guilds/{guild_id}/emojis/{emoji_id}` |
 | `GET` | `/guilds/{guild_id}/invites` |
+| `GET` | `/guilds/{guild_id}/members` |
 | `GET` | `/guilds/{guild_id}/members/{user_id}` |
 | `PATCH` | `/guilds/{guild_id}/members/{user_id}` |
 | `DELETE` | `/guilds/{guild_id}/members/{user_id}` |
@@ -126,6 +139,9 @@ so it is exact by construction.
 | `GET` | `/guilds/{guild_id}/stickers/{sticker_id}` |
 | `PATCH` | `/guilds/{guild_id}/stickers/{sticker_id}` |
 | `DELETE` | `/guilds/{guild_id}/stickers/{sticker_id}` |
+| `PATCH` | `/guilds/{guild_id}/voice-states/@me` |
+| `PATCH` | `/guilds/{guild_id}/voice-states/{user_id}` |
+| `GET` | `/guilds/{guild_id}/webhooks` |
 | `POST` | `/interactions/{interaction_id}/{token}/callback` |
 | `GET` | `/invites/{code}` |
 | `DELETE` | `/invites/{code}` |
@@ -133,7 +149,13 @@ so it is exact by construction.
 | `GET` | `/users/@me` |
 | `POST` | `/users/@me/channels` |
 | `GET` | `/users/{user_id}` |
+| `GET` | `/webhooks/{webhook_id}` |
+| `PATCH` | `/webhooks/{webhook_id}` |
+| `DELETE` | `/webhooks/{webhook_id}` |
+| `GET` | `/webhooks/{webhook_id}/{token}` |
 | `POST` | `/webhooks/{webhook_id}/{token}` |
+| `PATCH` | `/webhooks/{webhook_id}/{token}` |
+| `DELETE` | `/webhooks/{webhook_id}/{token}` |
 | `GET` | `/webhooks/{webhook_id}/{token}/messages/@original` |
 | `PATCH` | `/webhooks/{webhook_id}/{token}/messages/@original` |
 | `DELETE` | `/webhooks/{webhook_id}/{token}/messages/@original` |
