@@ -16,8 +16,8 @@ import discord
 from . import interactions as _interactions
 from .backend import serializers
 from .backend.errors import SetupError
-from .builders import ChannelHandle, GuildHandle, UserHandle
-from .enums import AppCommandType, ComponentType, InteractionType
+from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
+from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
 from .results import InteractionResult, ResponseMessage, to_discord_message
 
 if TYPE_CHECKING:
@@ -273,29 +273,56 @@ class MemberActor:
     async def select(
         self,
         message: MessageLike,
-        values: Sequence[str],
+        values: Sequence[Any],
         *,
         custom_id: str | None = None,
     ) -> InteractionResult:
-        """Choose values in a string select menu."""
+        """Choose values in a select menu.
+
+        For a string select, ``values`` are the option strings. For user/role/
+        channel/mentionable selects, ``values`` are the matching handles
+        (:class:`UserHandle`/:class:`MemberActor`, :class:`RoleHandle`,
+        :class:`ChannelHandle`) — exactly the entities a real user could pick.
+        """
         stored = self._visible_message(message)
-        menu = _find_component(
-            stored.components, types=(ComponentType.STRING_SELECT,), custom_id=custom_id, label=None
-        )
-        valid = {o["value"] for o in menu.get("options") or []}
+        menu = _find_component(stored.components, types=SELECT_TYPES, custom_id=custom_id, label=None)
+        menu_type = menu["type"]
+
+        lo = menu.get("min_values", 1)
+        hi = menu.get("max_values", 1)
+        if not lo <= len(values) <= hi:
+            raise SetupError(
+                f"Select expects between {lo} and {hi} value(s), got {len(values)}"
+            )
+
+        data: dict[str, Any] = {"custom_id": menu["custom_id"], "component_type": menu_type}
+        if menu_type == ComponentType.STRING_SELECT:
+            valid = {o["value"] for o in menu.get("options") or []}
+            for value in values:
+                if value not in valid:
+                    error = SetupError(f"Select option {value!r} does not exist")
+                    error.add_note(f"Available options: {sorted(valid)}")
+                    raise error
+            data["values"] = list(values)
+        else:
+            self._check_select_handles(menu_type, values)
+            resolved: dict[str, dict[str, Any]] = {}
+            for value in values:
+                _interactions.resolve_handle(self._env.backend, value, resolved)
+            data["values"] = [str(value.id) for value in values]
+            data["resolved"] = resolved
+        return await self._component_interaction(stored, data)
+
+    @staticmethod
+    def _check_select_handles(menu_type: int, values: Sequence[Any]) -> None:
+        """Reject handles whose kind cannot appear in this entity-select type."""
+        allowed: tuple[type, ...] = _ENTITY_SELECT_HANDLES[ComponentType(menu_type)]
         for value in values:
-            if value not in valid:
-                error = SetupError(f"Select option {value!r} does not exist")
-                error.add_note(f"Available options: {sorted(valid)}")
-                raise error
-        return await self._component_interaction(
-            stored,
-            {
-                "custom_id": menu["custom_id"],
-                "component_type": ComponentType.STRING_SELECT,
-                "values": list(values),
-            },
-        )
+            if not isinstance(value, allowed):
+                names = " or ".join(t.__name__ for t in allowed)
+                raise SetupError(
+                    f"{ComponentType(menu_type).name} expects {names}, got {type(value).__name__}"
+                )
 
     async def submit_modal(self, shown: InteractionResult, values: dict[str, str]) -> InteractionResult:
         """Fill in and submit a modal the bot previously showed this user."""
@@ -384,6 +411,14 @@ def _channel_id_of(message: MessageLike) -> int:
     if isinstance(message, ResponseMessage):
         return message.channel_id
     return message.channel.id
+
+
+_ENTITY_SELECT_HANDLES: dict[ComponentType, tuple[type, ...]] = {
+    ComponentType.USER_SELECT: (UserHandle, MemberActor),
+    ComponentType.ROLE_SELECT: (RoleHandle,),
+    ComponentType.CHANNEL_SELECT: (ChannelHandle,),
+    ComponentType.MENTIONABLE_SELECT: (UserHandle, MemberActor, RoleHandle),
+}
 
 
 def _find_component(

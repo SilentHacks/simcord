@@ -96,6 +96,38 @@ def walk_to_subcommand(command: dict[str, Any], path: list[str]) -> tuple[dict[s
     return node, nesting
 
 
+def resolve_handle(
+    backend: Backend, value: Any, resolved: dict[str, dict[str, Any]]
+) -> None:
+    """Add a single handle's ``resolved`` payload, by kind, into ``resolved``.
+
+    Shared by slash-command option building and entity-select interactions so
+    the ``users``/``members``/``roles``/``channels`` payload shapes have a single
+    source of truth.
+    """
+    from .actors import MemberActor
+    from .builders import ChannelHandle, RoleHandle, UserHandle
+
+    wire_id = str(value.id)
+    if isinstance(value, (MemberActor, UserHandle)):
+        resolved.setdefault("users", {})[wire_id] = dict(
+            serializers.user_payload(backend.get_user(value.id))
+        )
+        if isinstance(value, MemberActor):
+            guild = backend.get_guild(value.guild.id)
+            resolved.setdefault("members", {})[wire_id] = dict(
+                serializers.member_payload(backend, guild, guild.members[value.id], with_user=False)
+            )
+    elif isinstance(value, RoleHandle):
+        resolved.setdefault("roles", {})[wire_id] = dict(serializers.role_payload(value._role))
+    elif isinstance(value, ChannelHandle):
+        resolved.setdefault("channels", {})[wire_id] = dict(
+            serializers.channel_payload(backend, backend.get_channel(value.id))
+        )
+    else:
+        raise SetupError(f"Don't know how to resolve {type(value).__name__} into interaction data")
+
+
 def build_options(
     actor: MemberActor,
     command_name: str,
@@ -105,9 +137,6 @@ def build_options(
     partial: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build the wire `options` array and `resolved` block from python values."""
-    from .actors import MemberActor as _MemberActor
-    from .builders import ChannelHandle, RoleHandle, UserHandle
-
     backend = actor._env.backend
     declared = {o["name"]: o for o in (spec.get("options") or []) if o.get("type") not in _SUBCOMMAND_TYPES}
     built: list[dict[str, Any]] = []
@@ -123,23 +152,7 @@ def build_options(
         wire_value: Any
         if option_type in _SNOWFLAKE_TYPES:
             wire_value = str(value.id)
-            if option_type in (OptionType.USER, OptionType.MENTIONABLE) and isinstance(
-                value, (_MemberActor, UserHandle)
-            ):
-                resolved.setdefault("users", {})[wire_value] = dict(
-                    serializers.user_payload(backend.get_user(value.id))
-                )
-                if isinstance(value, _MemberActor):
-                    guild = backend.get_guild(value.guild.id)
-                    resolved.setdefault("members", {})[wire_value] = dict(
-                        serializers.member_payload(backend, guild, guild.members[value.id], with_user=False)
-                    )
-            elif option_type == OptionType.CHANNEL and isinstance(value, ChannelHandle):
-                resolved.setdefault("channels", {})[wire_value] = dict(
-                    serializers.channel_payload(backend, backend.get_channel(value.id))
-                )
-            elif option_type in (OptionType.ROLE, OptionType.MENTIONABLE) and isinstance(value, RoleHandle):
-                resolved.setdefault("roles", {})[wire_value] = dict(serializers.role_payload(value._role))
+            resolve_handle(backend, value, resolved)
         else:
             expected = _SCALAR_TYPES.get(option_type)
             if expected is not None and not isinstance(value, expected):
