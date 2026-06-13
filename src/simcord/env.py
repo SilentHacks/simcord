@@ -284,8 +284,10 @@ class Env:
     def create_user(self, name: str) -> UserHandle:
         return UserHandle(self, self.backend.make_user(name))
 
-    def create_guild(self, name: str = "Test Guild") -> GuildHandle:
-        handle = GuildHandle(self, self.backend.create_guild(name))
+    def create_guild(self, name: str = "Test Guild", *, id: int | None = None) -> GuildHandle:
+        """Create a guild. Pass ``id`` to pin a known id — e.g. to match a bot that
+        syncs its commands to a hardcoded guild id, so ``strict_sync`` can stay on."""
+        handle = GuildHandle(self, self.backend.create_guild(name, id=id))
         self._guilds.append(handle)
         return handle
 

@@ -133,8 +133,8 @@ class Backend:
 
     # ---------------------------------------------------------------- guilds
 
-    def create_guild(self, name: str, *, owner_id: int | None = None) -> Guild:
-        guild_id = self.snowflake()
+    def create_guild(self, name: str, *, id: int | None = None, owner_id: int | None = None) -> Guild:
+        guild_id = id if id is not None else self.snowflake()
         if owner_id is None:
             # A synthetic owner: the bot must never own guilds by default,
             # since owners bypass every permission check.

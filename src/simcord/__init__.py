@@ -25,6 +25,13 @@ from . import _dpy_internals
 _dpy_internals.verify()
 
 from .actors import MemberActor  # noqa: E402
+from .asserts import (  # noqa: E402
+    assert_error,
+    assert_message,
+    assert_no_errors,
+    assert_responded,
+    assert_sent,
+)
 from .backend import Backend  # noqa: E402, F401  — importable for advanced use, but NOT public API:
 
 # Backend's methods and payload shapes are internal and may change in any release.
@@ -51,5 +58,10 @@ __all__ = (
     "RouteNotImplemented",
     "SetupError",
     "UserHandle",
+    "assert_error",
+    "assert_message",
+    "assert_no_errors",
+    "assert_responded",
+    "assert_sent",
     "run",
 )
