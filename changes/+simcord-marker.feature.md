@@ -1,1 +1,0 @@
-Added a `@pytest.mark.simcord(...)` marker whose keyword arguments are forwarded to `simcord.run()` (e.g. `strict_sync=False`, `check_errors=False`), so the bundled `simcord_env` fixture can be configured per-test without writing a custom fixture.

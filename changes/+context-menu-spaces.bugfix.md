@@ -1,1 +1,0 @@
-Fixed `member.context_menu(...)` failing to resolve context-menu commands whose names contain spaces (e.g. `"Report Member"`). The name is no longer split into a subcommand path — only slash commands nest.

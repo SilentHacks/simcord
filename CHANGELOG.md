@@ -4,6 +4,26 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 0.3.0 (2026-06-13)
+
+### Features
+
+- Added a `@pytest.mark.simcord(...)` marker whose keyword arguments are forwarded to `simcord.run()` (e.g. `strict_sync=False`, `check_errors=False`), so the bundled `simcord_env` fixture can be configured per-test without writing a custom fixture.
+
+### Bug fixes
+
+- Fixed `member.context_menu(...)` failing to resolve context-menu commands whose names contain spaces (e.g. `"Report Member"`). The name is no longer split into a subcommand path — only slash commands nest.
+
+### Documentation
+
+- Documented the `@pytest.mark.simcord(...)` marker in the fixtures guide as the way to override `simcord.run` options per test.
+
+### Miscellaneous
+
+- Replaced remaining bare wire-protocol integer literals (channel types, message types, permission-overwrite target types, application-command types, modal component types) with `IntEnum` members, so the backend reads as the protocol does instead of scattering magic numbers.
+- Typed the backend's permission-overwrite `type` field as the `OverwriteType` enum (and coerce it at the HTTP boundary), so overwrites carry a uniform enum value everywhere instead of a mix of enums and bare ints.
+
+
 ## 0.2.0 (2026-06-12)
 
 ### Features

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simcord"
-version = "0.2.0"
+version = "0.3.0"
 description = "SimCord — discord.py testing framework. Simulate Discord, test your bot offline: no network, no token, no ToS."
 readme = "README.md"
 license = "MIT"
