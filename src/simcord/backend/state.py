@@ -181,6 +181,14 @@ class Backend:
         except KeyError:
             raise errors.unknown_guild() from None
 
+    def edit_guild(self, guild_id: int, changes: Mapping[str, Any]) -> Guild:
+        """Apply validated field changes to a guild and announce the update."""
+        guild = self.get_guild(guild_id)
+        for attr, value in changes.items():
+            setattr(guild, attr, value)
+        self.emit("GUILD_UPDATE", serializers.guild_create_payload(self, guild))
+        return guild
+
     # --------------------------------------------------------------- members
 
     def add_member(

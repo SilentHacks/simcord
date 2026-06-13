@@ -1,4 +1,43 @@
 import discord
+import pytest
+
+
+async def test_bot_creates_text_channel_at_runtime(env):
+    guild = env.bot.get_guild(env.guild.id)
+    created = await guild.create_text_channel("runtime", topic="hello")
+    await env.settle()
+
+    cached = env.bot.get_channel(created.id)
+    assert cached is not None and cached.topic == "hello"
+    creates = [e for e in env.guild.audit_log() if e.action_type == 10]  # CHANNEL_CREATE
+    assert creates and creates[-1].target_id == created.id
+
+
+async def test_bot_creates_voice_channel_at_runtime(env):
+    guild = env.bot.get_guild(env.guild.id)
+    vc = await guild.create_voice_channel("Voice", bitrate=32000, user_limit=5)
+    await env.settle()
+
+    cached = env.bot.get_channel(vc.id)
+    assert isinstance(cached, discord.VoiceChannel)
+    assert cached.bitrate == 32000 and cached.user_limit == 5
+
+
+async def test_fetch_guild_channels(env, channel):
+    guild = env.bot.get_guild(env.guild.id)
+    fetched = await guild.fetch_channels()
+    assert channel.id in {c.id for c in fetched}
+
+
+async def test_create_channel_requires_manage_channels(env):
+    guild = env.bot.get_guild(env.guild.id)
+    mask = ~discord.Permissions(manage_channels=True).value
+    for role in env.backend.get_guild(env.guild.id).roles.values():
+        role.permissions &= mask
+
+    with pytest.raises(discord.Forbidden) as exc_info:
+        await guild.create_text_channel("nope")
+    assert exc_info.value.code == 50013
 
 
 async def test_dm_round_trip(env, channel, alice):

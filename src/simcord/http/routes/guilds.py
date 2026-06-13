@@ -5,13 +5,92 @@ from __future__ import annotations
 from typing import Any
 
 from ...backend import errors, serializers
-from ...enums import AuditLogAction
+from ...backend.models import Overwrite
+from ...enums import AuditLogAction, ChannelType, OverwriteType
 from ..router import RequestContext, route
+
+
+@route("POST", "/guilds")
+def create_guild(ctx: RequestContext) -> Any:
+    # A bot that creates a guild becomes its owner, exactly as on real Discord.
+    backend = ctx.backend
+    guild = backend.create_guild(ctx.body().get("name") or "Guild", owner_id=backend.bot_user.id)
+    return dict(serializers.guild_create_payload(backend, guild))
 
 
 @route("GET", "/guilds/{guild_id}")
 def get_guild(ctx: RequestContext) -> Any:
     return dict(serializers.guild_create_payload(ctx.backend, ctx.backend.get_guild(ctx.int_arg("guild_id"))))
+
+
+@route("PATCH", "/guilds/{guild_id}")
+def edit_guild(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "manage_guild")
+    body = ctx.body()
+    changes = {key: body[key] for key in ("name",) if key in body and body[key] is not None}
+    old = {key: getattr(backend.get_guild(guild_id), key) for key in changes}
+    guild = backend.edit_guild(guild_id, changes)
+    audit_changes = [
+        {"key": key, "old_value": old[key], "new_value": getattr(guild, key)}
+        for key in changes
+        if old[key] != getattr(guild, key)
+    ]
+    if audit_changes:
+        backend.record_audit_log(
+            guild_id,
+            AuditLogAction.GUILD_UPDATE,
+            target_id=guild_id,
+            changes=audit_changes,
+            reason=ctx.reason,
+        )
+    return dict(serializers.guild_create_payload(backend, guild))
+
+
+@route("POST", "/guilds/{guild_id}/channels")
+def create_guild_channel(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "manage_channels")
+    body = ctx.body()
+    overwrites = [
+        Overwrite(
+            target_id=int(o["id"]),
+            type=OverwriteType(int(o["type"])),
+            allow=int(o.get("allow", 0)),
+            deny=int(o.get("deny", 0)),
+        )
+        for o in body.get("permission_overwrites") or []
+    ]
+    fields: dict[str, Any] = {}
+    for key in ("topic", "nsfw", "rate_limit_per_user", "bitrate", "user_limit", "rtc_region"):
+        if body.get(key) is not None:
+            fields[key] = body[key]
+    if body.get("parent_id") is not None:
+        fields["parent_id"] = int(body["parent_id"])
+    channel = backend.create_channel(
+        guild_id,
+        body.get("name"),
+        type=int(body.get("type", ChannelType.TEXT)),
+        overwrites=overwrites,
+        **fields,
+    )
+    backend.record_audit_log(
+        guild_id,
+        AuditLogAction.CHANNEL_CREATE,
+        target_id=channel.id,
+        changes=[{"key": "name", "new_value": channel.name}],
+        reason=ctx.reason,
+    )
+    return dict(serializers.channel_payload(backend, channel))
+
+
+@route("GET", "/guilds/{guild_id}/channels")
+def get_guild_channels(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    guild = backend.get_guild(ctx.int_arg("guild_id"))
+    return [dict(serializers.channel_payload(backend, backend.channels[cid])) for cid in guild.channel_ids]
 
 
 @route("GET", "/guilds/{guild_id}/members/{user_id}")
