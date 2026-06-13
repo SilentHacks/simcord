@@ -10,10 +10,14 @@ The project uses [uv](https://docs.astral.sh/uv/):
 git clone https://github.com/SilentHacks/simcord
 cd simcord
 uv sync --extra dev
+uv run pre-commit install --install-hooks   # optional: run lint/format/pyright on commit
 uv run pytest tests examples
 uv run ruff check src tests examples && uv run ruff format --check src tests examples
 uv run pyright src
 ```
+
+The pre-commit hooks mirror the CI `lint` job (ruff on commit, pyright on push)
+using the project's own pinned tools, so a clean commit means a green CI lint.
 
 ## Project layout
 
