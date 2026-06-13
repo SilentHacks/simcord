@@ -128,6 +128,15 @@ async def test_entity_select_respects_max_values(env, channel, alice):
         await alice.select(result.response.message, [alice, *extras], custom_id="who")
 
 
+async def test_slash_wrong_handle_type_rejected(env, channel, alice):
+    role = env.guild.create_role("Helper")
+
+    # `ban`'s `user` option is a USER; a role handle can't fill it. The mismatch
+    # is caught at the call site, not deep inside discord.py's resolution.
+    with pytest.raises(simcord.SetupError, match="expects"):
+        await alice.slash(channel, "ban", user=role)
+
+
 async def test_unsynced_command_is_caught():
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
 

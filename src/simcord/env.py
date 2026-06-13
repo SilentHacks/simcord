@@ -81,14 +81,14 @@ class Env:
         Pass a freshly built client for a faithful restart: re-running the same
         instance re-executes ``setup_hook`` (which typically reloads extensions
         and would fail). The virtual clock is preserved — the world does not
-        rewind.
+        rewind. Errors the old bot raised are preserved too: a restart does not
+        launder away un-inspected bot bugs.
         """
+        if not self._started:
+            raise SetupError("Env not started; use restart_bot() only inside simcord.run()")
         await self.settle()
         await self._detach_bot()
-        self.bot = bot or self.bot
-        self._errors = []
-        self._errors_inspected = False
-        await self._attach_bot(self.bot)
+        await self._attach_bot(bot or self.bot)
         for handle in self._guilds:
             guild = self.backend.get_guild(handle.id)
             self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))

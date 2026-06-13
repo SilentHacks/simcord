@@ -131,6 +131,29 @@ def resolve_handle(
         raise SetupError(f"Don't know how to resolve {type(value).__name__} into interaction data")
 
 
+def _check_snowflake_handle(command_name: str, name: str, option_type: int, value: Any) -> None:
+    """Reject a handle whose kind cannot fill this snowflake option type.
+
+    Resolving dispatches on the value's Python type, so a mismatch (e.g. a role
+    handle in a ``USER`` option) would otherwise resolve into the wrong bucket
+    and fail deep inside discord.py. Catch it here, at the call site, instead.
+    """
+    from .actors import MemberActor
+    from .builders import ChannelHandle, RoleHandle, UserHandle
+
+    user = (MemberActor, UserHandle)
+    allowed: dict[int, tuple[type, ...]] = {
+        OptionType.USER: user,
+        OptionType.CHANNEL: (ChannelHandle,),
+        OptionType.ROLE: (RoleHandle,),
+        OptionType.MENTIONABLE: (*user, RoleHandle),
+    }
+    expected = allowed[OptionType(option_type)]
+    if not isinstance(value, expected):
+        names = " or ".join(t.__name__ for t in expected)
+        raise SetupError(f"Option '{name}' of '{command_name}' expects {names}, got {type(value).__name__}")
+
+
 def build_options(
     actor: MemberActor,
     command_name: str,
@@ -154,6 +177,7 @@ def build_options(
         option_type = option["type"]
         wire_value: Any
         if option_type in _SNOWFLAKE_TYPES:
+            _check_snowflake_handle(command_name, name, option_type, value)
             wire_value = str(value.id)
             resolve_handle(backend, value, resolved, user_id=actor.id)
         else:

@@ -1,4 +1,5 @@
 import discord
+import pytest
 from discord.ext import commands
 
 import simcord
@@ -44,6 +45,26 @@ async def test_restart_preserves_world(env, channel, alice):
     cached = env.bot.get_guild(env.guild.id)
     assert cached is not None and cached.get_channel(channel.id) is not None
     assert channel.history()[-1].content == "before restart"
+
+
+async def test_restart_preserves_errors(env, channel, alice):
+    # A bug the old bot hit must not be laundered away by a restart: the
+    # un-inspected error has to still be there to fail the test at teardown.
+    env.inject_error("POST", "/channels/*/messages", status=500, message="boom")
+    await alice.send(channel, "!ping")  # the reply fails and is captured
+    assert env.errors
+
+    before = list(env.errors)
+    await env.restart_bot(create_bot())
+
+    assert env.errors == before
+
+
+async def test_restart_before_start_is_rejected():
+    bot = create_bot()
+    env = simcord.Env(bot)
+    with pytest.raises(simcord.SetupError, match="not started"):
+        await env.restart_bot()
 
 
 async def test_unknown_route_is_loud(env, channel):
