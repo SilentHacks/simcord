@@ -116,7 +116,10 @@ def assert_responded(
     embed_title: str | None = None,
     ephemeral: bool | None = None,
 ) -> None:
-    """Assert the interaction produced a response message matching the given fields."""
+    """Assert the interaction produced a response message matching the given fields.
+
+    On failure the message includes the interaction's repr, which shows whether it
+    acknowledged, deferred, or opened a modal instead of sending a response."""
     response = result.response
     if response is None:
         raise AssertionError(f"interaction produced no response message\nactual: {result!r}")
@@ -146,6 +149,10 @@ def assert_error(
     captured = env.errors
 
     def matches(error: BaseException) -> bool:
+        # Match against the error and its unwrapped .original. Each criterion is
+        # checked across both candidates independently — in the common case the
+        # wrapped original satisfies all of them together (discord.py puts the
+        # type, code and message on the original, not the CommandInvokeError).
         candidates = [error]
         original = getattr(error, "original", None)
         if original is not None:
