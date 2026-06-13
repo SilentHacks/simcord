@@ -4,6 +4,19 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 0.6.0 (2026-06-13)
+
+### Features
+
+- Audit logs are now recorded for the privileged actions the backend performs — bans, kicks, member nick/timeout/role updates, role and channel edits/deletes, member voice moves, and scheduled-event CRUD. Read them through `guild.audit_logs()` (with `user`/`action`/`before`/`after` filtering), the `on_audit_log_entry_create` event, or `env.guild.audit_log()`. Reasons passed via discord.py's `reason=` are captured (and now also stored on the ban record itself). ([#15](https://github.com/SilentHacks/simcord/issues/15))
+- Polls are supported end to end: a bot sends `discord.Poll`, users cast and retract votes with `MemberActor.vote` / `remove_vote` (firing `MESSAGE_POLL_VOTE_ADD`/`REMOVE`), poll answer voters are fetchable, and polls finalize either via `Message.end_poll()` or when `env.advance_time` passes their deadline. ([#16](https://github.com/SilentHacks/simcord/issues/16))
+- Guild scheduled events are supported: create/list/fetch/edit/delete plus subscriber listing, with `GUILD_SCHEDULED_EVENT_*` events. `MemberActor.subscribe_event` / `unsubscribe_event` mark interest, and `GuildHandle.create_scheduled_event` sets one up directly. Stage/voice/external entity types are validated. ([#17](https://github.com/SilentHacks/simcord/issues/17))
+- Voice state is modeled (state only — never audio). Users join/leave/move with `MemberActor.join_voice`, `leave_voice` and `set_voice`; server mute/deaf and channel moves over `Member.edit`/`move_to` are reflected and audit-logged; all fire `VOICE_STATE_UPDATE` so `member.voice` and `on_voice_state_update` work. ([#18](https://github.com/SilentHacks/simcord/issues/18))
+- Invites, custom emojis and stickers are supported: create/list/fetch/delete invites (`INVITE_CREATE`/`INVITE_DELETE`) and guild expression CRUD (`GUILD_EMOJIS_UPDATE`/`GUILD_STICKERS_UPDATE`), with builder helpers `GuildHandle.create_emoji` / `create_sticker` for setup. ([#19](https://github.com/SilentHacks/simcord/issues/19))
+- Auto-moderation rules can be created, edited and deleted, and keyword rules are evaluated on message send: a matching `block_message` action drops the message and fires `AUTO_MODERATION_ACTION_EXECUTION`, honoring exempt roles and channels. ([#20](https://github.com/SilentHacks/simcord/issues/20))
+- New channel kinds can be created from builders: voice, stage, category and forum channels (`GuildHandle.create_voice_channel`, `create_stage_channel`, `create_category`, `create_forum_channel`), and `create_text_channel` accepts a `category=`. ([#21](https://github.com/SilentHacks/simcord/issues/21))
+
+
 ## 0.5.0 (2026-06-13)
 
 ### Features
