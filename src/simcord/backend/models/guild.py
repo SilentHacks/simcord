@@ -16,6 +16,15 @@ class Guild:
     id: int
     name: str
     owner_id: int
+    # Editable guild settings (discord.py's Guild.edit surface).
+    description: str | None = None
+    afk_channel_id: int | None = None
+    afk_timeout: int = 300
+    system_channel_id: int | None = None
+    verification_level: int = 0
+    default_message_notifications: int = 0
+    explicit_content_filter: int = 0
+    preferred_locale: str = "en-US"
     roles: dict[int, Role] = field(default_factory=dict)
     members: dict[int, Member] = field(default_factory=dict)
     channel_ids: list[int] = field(default_factory=list)

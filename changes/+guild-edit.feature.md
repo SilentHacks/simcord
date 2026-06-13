@@ -1,1 +1,1 @@
-Added `Guild.edit()` (`PATCH /guilds/{id}`) and runtime guild creation `Client.create_guild()` (`POST /guilds`); guild edits record a `GUILD_UPDATE` audit entry.
+Added `Guild.edit()` (`PATCH /guilds/{id}`) — name, description, verification level, default notifications, explicit-content filter, AFK channel/timeout, system channel and preferred locale — and runtime guild creation `Client.create_guild()` (`POST /guilds`); guild edits record a `GUILD_UPDATE` audit entry.

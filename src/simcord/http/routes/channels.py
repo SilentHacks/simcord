@@ -24,9 +24,12 @@ def edit_channel(ctx: RequestContext) -> Any:
     editable = ("name", "topic", "nsfw", "rate_limit_per_user", "available_tags")
     changes = {key: body[key] for key in editable if key in body}
     if "available_tags" in changes:
-        # Discord assigns an id to each newly created forum tag.
+        # Discord assigns an id to each newly created forum tag. discord.py's
+        # ForumTag.to_dict omits ``id`` for unsaved tags, so a missing/falsy id
+        # means "new" — mint a snowflake. Ids are normalised to str like every
+        # other snowflake in the payloads.
         changes["available_tags"] = [
-            {**tag, "id": tag.get("id") or str(backend.snowflake())} for tag in changes["available_tags"]
+            {**tag, "id": str(tag.get("id") or backend.snowflake())} for tag in changes["available_tags"]
         ]
     overwrites = None
     if "permission_overwrites" in body:
@@ -114,10 +117,14 @@ def typing(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/threads")
 def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
+    channel = backend.get_channel(ctx.int_arg("channel_id"))
     body = ctx.body()
     if channel.type == ChannelType.FORUM:
+        # A forum post is a message posted into the forum, so it is gated on
+        # send_messages there, not create_public_threads.
+        ctx.require_channel_permissions(channel.id, "send_messages")
         return _create_forum_post(ctx, channel.id, body)
+    ctx.require_channel_permissions(channel.id, "create_public_threads")
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -136,13 +143,19 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
     response carries the thread fields with the starter ``message`` embedded.
     """
     backend = ctx.backend
+    forum = backend.get_channel(forum_id)
+    applied_tags = [int(t) for t in body.get("applied_tags") or []]
+    available = {int(tag["id"]) for tag in forum.available_tags if tag.get("id") is not None}
+    unknown = [t for t in applied_tags if t not in available]
+    if unknown:
+        raise errors.invalid_form_body(f"applied_tags: Unknown tag(s) {unknown}")
     thread = backend.create_thread(
         forum_id,
         body["name"],
         backend.bot_user.id,
         type=ChannelType.PUBLIC_THREAD,
         auto_archive_duration=int(body.get("auto_archive_duration") or 1440),
-        applied_tags=[int(t) for t in body.get("applied_tags") or []],
+        applied_tags=applied_tags,
     )
     message = bot_message(ctx, thread.id, body=body.get("message") or {})
     payload = dict(serializers.thread_payload(backend, thread))

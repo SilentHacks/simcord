@@ -23,13 +23,36 @@ def get_guild(ctx: RequestContext) -> Any:
     return dict(serializers.guild_create_payload(ctx.backend, ctx.backend.get_guild(ctx.int_arg("guild_id"))))
 
 
+# Guild fields a bot can edit (`Guild.edit`), mapped 1:1 onto the backend model.
+# Nullable fields may be set to None to clear them; channel ids are coerced to int.
+_GUILD_EDITABLE = (
+    "name",
+    "description",
+    "preferred_locale",
+    "afk_timeout",
+    "verification_level",
+    "default_message_notifications",
+    "explicit_content_filter",
+    "afk_channel_id",
+    "system_channel_id",
+)
+_GUILD_CHANNEL_FIELDS = frozenset({"afk_channel_id", "system_channel_id"})
+
+
 @route("PATCH", "/guilds/{guild_id}")
 def edit_guild(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_guild")
     body = ctx.body()
-    changes = {key: body[key] for key in ("name",) if key in body and body[key] is not None}
+    changes: dict[str, Any] = {}
+    for key in _GUILD_EDITABLE:
+        if key not in body:
+            continue
+        value = body[key]
+        if key in _GUILD_CHANNEL_FIELDS and value is not None:
+            value = int(value)
+        changes[key] = value
     old = {key: getattr(backend.get_guild(guild_id), key) for key in changes}
     guild = backend.edit_guild(guild_id, changes)
     audit_changes = [

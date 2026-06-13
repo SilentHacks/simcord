@@ -27,6 +27,40 @@ async def test_guild_edit_name(env):
     assert any(c["key"] == "name" and c["new_value"] == "Renamed" for c in updates[-1].changes)
 
 
+async def test_guild_edit_settings(env, channel):
+    guild = env.bot.get_guild(env.guild.id)
+    system_channel = guild.get_channel(channel.id)
+    await guild.edit(
+        description="A test guild",
+        verification_level=discord.VerificationLevel.high,
+        default_notifications=discord.NotificationLevel.only_mentions,
+        explicit_content_filter=discord.ContentFilter.all_members,
+        afk_timeout=900,
+        preferred_locale=discord.Locale.american_english,
+        system_channel=system_channel,
+    )
+    await env.settle()
+
+    refetched = await env.bot.fetch_guild(env.guild.id)
+    assert refetched.description == "A test guild"
+    assert refetched.verification_level is discord.VerificationLevel.high
+    assert refetched.default_notifications is discord.NotificationLevel.only_mentions
+    assert refetched.explicit_content_filter is discord.ContentFilter.all_members
+    assert refetched.afk_timeout == 900
+    assert env.backend.get_guild(env.guild.id).system_channel_id == channel.id
+
+
+async def test_guild_edit_clears_nullable_field(env):
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.edit(description="temporary")
+    await env.settle()
+    assert env.backend.get_guild(env.guild.id).description == "temporary"
+
+    await guild.edit(description=None)
+    await env.settle()
+    assert env.backend.get_guild(env.guild.id).description is None
+
+
 async def test_guild_edit_requires_manage_guild(env):
     guild = env.bot.get_guild(env.guild.id)
     mask = ~discord.Permissions(manage_guild=True).value

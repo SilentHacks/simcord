@@ -112,3 +112,16 @@ async def test_mention_spam_allows_under_limit(env, channel, alice):
     await env.settle()
 
     assert len(channel.history()) == 1
+
+
+async def test_mention_spam_counts_unique_mentions(env, channel, alice):
+    # Discord's mention_total_limit counts unique mentions, so spamming the same
+    # user repeatedly stays under a limit of 2.
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.create_automod_rule(**_mention_spam_rule_kwargs(2))
+    await env.settle()
+
+    await alice.send(channel, f"{alice.mention} {alice.mention} {alice.mention}")
+    await env.settle()
+
+    assert len(channel.history()) == 1

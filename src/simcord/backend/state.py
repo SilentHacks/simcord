@@ -1103,8 +1103,8 @@ class Backend:
 
         Keyword rules (trigger_type 1) return the offending keyword; mention-spam
         rules (trigger_type 5) return an empty string (no keyword) when the
-        user+role mention count exceeds ``mention_total_limit``. Other trigger
-        types are not evaluated yet.
+        count of *unique* user+role mentions exceeds ``mention_total_limit``.
+        Other trigger types are not evaluated yet.
         """
         if rule.trigger_type == 1:
             return self._match_keyword(rule, content)
@@ -1112,7 +1112,8 @@ class Backend:
             limit = rule.trigger_metadata.get("mention_total_limit")
             if limit is None:
                 return None
-            mentions = len(_USER_MENTION.findall(content)) + len(_ROLE_MENTION.findall(content))
+            # Discord counts unique role/user mentions, so repeats don't stack.
+            mentions = len(set(_USER_MENTION.findall(content))) + len(set(_ROLE_MENTION.findall(content)))
             return "" if mentions > int(limit) else None
         return None
 
