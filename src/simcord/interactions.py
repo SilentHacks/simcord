@@ -111,9 +111,7 @@ def resolve_handle(
 
     wire_id = str(value.id)
     if isinstance(value, (MemberActor, UserHandle)):
-        resolved.setdefault("users", {})[wire_id] = dict(
-            serializers.user_payload(backend.get_user(value.id))
-        )
+        resolved.setdefault("users", {})[wire_id] = dict(serializers.user_payload(backend.get_user(value.id)))
         if isinstance(value, MemberActor):
             guild = backend.get_guild(value.guild.id)
             resolved.setdefault("members", {})[wire_id] = dict(
@@ -127,9 +125,7 @@ def resolve_handle(
         # Resolved channels carry the acting user's permissions in that channel,
         # which AppCommandChannel requires.
         if channel.guild_id is not None:
-            payload["permissions"] = str(
-                backend.compute_permissions(channel.guild_id, user_id, channel.id)
-            )
+            payload["permissions"] = str(backend.compute_permissions(channel.guild_id, user_id, channel.id))
         resolved.setdefault("channels", {})[wire_id] = payload
     else:
         raise SetupError(f"Don't know how to resolve {type(value).__name__} into interaction data")
