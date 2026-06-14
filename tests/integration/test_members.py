@@ -63,7 +63,7 @@ async def test_bot_cannot_grant_permissions_it_lacks(env, channel):
     # cannot create a role that grants administrator.
     guild = env.bot.get_guild(env.guild.id)
     with pytest.raises(discord.Forbidden) as exc_info:
-        await guild.create_role(name="God", permissions=discord.Permissions(administrator=True))
+        await guild.create_role(name="Admin", permissions=discord.Permissions(administrator=True))
     assert exc_info.value.code == 50013
 
 
