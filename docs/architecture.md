@@ -35,8 +35,10 @@ test ──► builders/actors ──► virtual backend (single source of truth
   parse the request, permission-check it (via `ctx.require_*_permissions`), call one
   `Backend` method, and serialize the result — so a mutation can never be announced
   inconsistently or forgotten as more routes are added.
-- **Loud gaps.** An unimplemented route raises `RouteNotImplemented` naming the route.
-  A testing tool must never silently fake success.
+- **Loud gaps.** An unimplemented route raises `RouteNotImplemented` naming the route,
+  and an edit handler sent a field it does not honour raises `UnsupportedField` rather
+  than silently dropping it. A testing tool must never silently fake success — neither at
+  the route level nor the field level.
 - **Authentic errors.** Backend failures surface as genuine `discord.Forbidden` /
   `NotFound` / `HTTPException` with real Discord JSON error codes, because user code
   branches on them.

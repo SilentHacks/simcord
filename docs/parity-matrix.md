@@ -5,10 +5,16 @@ description: "What SimCord's virtual Discord implements today — messages, slas
 
 # Parity matrix
 
-What the virtual Discord implements today. Anything not listed fails **loudly** with a
-`RouteNotImplemented` error naming the route — please open a
+What the virtual Discord implements today. Anything not listed fails **loudly** — an
+unimplemented route raises `RouteNotImplemented`, and an unrecognised request field
+raises `UnsupportedField` rather than being silently dropped — so a passing test never
+hides a parity gap. Please open a
 [parity gap issue](https://github.com/SilentHacks/simcord/issues/new?template=parity-gap.md)
-if your bot needs it.
+if your bot needs one.
+
+Both lists below are generated and verified in CI: implemented routes come from the route
+table, the not-yet-implemented list is derived from `discord.http.HTTPClient`, and
+serializer payloads are conformance-tested against discord.py's own model parsers.
 
 | Area | Status | Notes |
 | --- | --- | --- |
