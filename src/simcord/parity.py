@@ -83,7 +83,14 @@ def discordpy_rest_routes() -> dict[str, list[tuple[str, str]]]:
     for name, func in inspect.getmembers(HTTPClient, inspect.isfunction):
         if name.startswith("_") or name in _HTTP_INFRA:
             continue
-        found = _ROUTE_LITERAL.findall(inspect.getsource(func))
+        try:
+            source = inspect.getsource(func)
+        except (OSError, TypeError):
+            # discord.py installed without source (zipped/compiled): no route to
+            # read. test_route_extraction_is_healthy guards against this silently
+            # gutting the gap list.
+            continue
+        found = _ROUTE_LITERAL.findall(source)
         if found:
             out[name] = [(verb, _normalize(path)) for verb, path in found]
     return out

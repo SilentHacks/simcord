@@ -105,3 +105,37 @@ async def test_webhook_edit_supported_fields_apply(env, channel):
     await env.settle()
 
     assert env.backend.get_webhook(webhook.id).name == "renamed-hook"
+
+
+async def test_channel_edit_parent_applies(env, channel):
+    """Moving a channel into a category wires parent_id through (coerced to int).
+
+    Only ``parent_id`` reaches this handler: a position-carrying edit routes
+    through the (unimplemented) bulk-move endpoint, so it is not exercised here.
+    """
+    guild = env.bot.get_guild(env.guild.id)
+    category = await guild.create_category("Cat")
+    dpy_channel = env.bot.get_channel(channel.id)
+    await env.settle()
+
+    await dpy_channel.edit(category=category)
+    await env.settle()
+
+    backend_channel = env.backend.get_channel(channel.id)
+    assert backend_channel.parent_id == category.id
+    assert isinstance(backend_channel.parent_id, int)
+
+
+async def test_guild_edit_channel_pointers_apply(env):
+    """Guild.edit's rules/public-updates channel pointers are wired through."""
+    guild = env.bot.get_guild(env.guild.id)
+    rules = await guild.create_text_channel("rules")
+    updates = await guild.create_text_channel("mod-updates")
+    await env.settle()
+
+    await guild.edit(rules_channel=rules, public_updates_channel=updates)
+    await env.settle()
+
+    backend_guild = env.backend.get_guild(guild.id)
+    assert backend_guild.rules_channel_id == rules.id
+    assert backend_guild.public_updates_channel_id == updates.id

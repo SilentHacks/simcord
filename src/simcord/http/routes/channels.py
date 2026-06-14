@@ -23,6 +23,9 @@ def edit_channel(ctx: RequestContext) -> Any:
     body = ctx.body()
     # Scalar fields mapped 1:1 onto the Channel model. Voice fields only reach
     # this handler for voice/stage channels (discord.py omits them otherwise).
+    # parent_id arrives only when position is absent: discord.py routes any edit
+    # carrying a position through the bulk-move endpoint instead (an honest
+    # route-level gap), so position never reaches this per-channel handler.
     editable = (
         "name",
         "topic",
@@ -32,7 +35,6 @@ def edit_channel(ctx: RequestContext) -> Any:
         "bitrate",
         "user_limit",
         "rtc_region",
-        "position",
         "parent_id",
     )
     # Keys this handler honours but applies itself (not via the scalar `changes`).
