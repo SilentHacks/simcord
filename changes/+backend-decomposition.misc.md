@@ -1,1 +1,0 @@
-Split the monolithic `Backend` class into a shared `BackendBase` kernel plus coupling-aligned subsystem mixins under `simcord.backend.ops`. Pure structural refactor — the `Backend` public surface and all behaviour are unchanged.

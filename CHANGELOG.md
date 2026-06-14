@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 0.8.1 (2026-06-14)
+
+### Miscellaneous
+
+- Split the monolithic `Backend` class into a shared `BackendBase` kernel plus coupling-aligned subsystem mixins under `simcord.backend.ops`. Pure structural refactor — the `Backend` public surface and all behaviour are unchanged.
+
+
 ## 0.8.0 (2026-06-14)
 
 ### Features
