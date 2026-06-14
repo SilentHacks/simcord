@@ -187,3 +187,84 @@ so it is exact by construction.
 | `DELETE` | `/webhooks/{webhook_id}/{token}/messages/{message_id}` |
 
 <!-- routes:end -->
+
+## Not yet implemented
+
+These discord.py REST routes have no handler yet, derived by comparing simcord's
+route table against `discord.http.HTTPClient` (`python -m simcord.parity`), so the
+list stays honest as discord.py evolves.
+
+<!-- gaps:begin (generated — do not edit by hand) -->
+
+66 discord.py REST routes are not yet implemented; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
+
+| discord.py `HTTPClient` method | Route |
+| --- | --- |
+| `edit_application_info` | `PATCH /applications/@me` |
+| `upsert_global_command` | `POST /applications/{}/commands` |
+| `get_global_command` | `GET /applications/{}/commands/{}` |
+| `edit_global_command` | `PATCH /applications/{}/commands/{}` |
+| `delete_global_command` | `DELETE /applications/{}/commands/{}` |
+| `get_entitlements` | `GET /applications/{}/entitlements` |
+| `create_entitlement` | `POST /applications/{}/entitlements` |
+| `get_entitlement` | `GET /applications/{}/entitlements/{}` |
+| `delete_entitlement` | `DELETE /applications/{}/entitlements/{}` |
+| `consume_entitlement` | `POST /applications/{}/entitlements/{}/consume` |
+| `upsert_guild_command` | `POST /applications/{}/guilds/{}/commands` |
+| `get_guild_application_command_permissions` | `GET /applications/{}/guilds/{}/commands/permissions` |
+| `get_guild_command` | `GET /applications/{}/guilds/{}/commands/{}` |
+| `edit_guild_command` | `PATCH /applications/{}/guilds/{}/commands/{}` |
+| `delete_guild_command` | `DELETE /applications/{}/guilds/{}/commands/{}` |
+| `edit_application_command_permissions` | `PUT /applications/{}/guilds/{}/commands/{}/permissions` |
+| `get_skus` | `GET /applications/{}/skus` |
+| `logout` | `POST /auth/logout` |
+| `follow_webhook` | `POST /channels/{}/followers` |
+| `send_soundboard_sound` | `POST /channels/{}/send-soundboard-sound` |
+| `edit_voice_channel_status` | `PUT /channels/{}/voice-status` |
+| `get_template` | `GET /guilds/templates/{}` |
+| `create_from_template` | `POST /guilds/templates/{}` |
+| `delete_guild` | `DELETE /guilds/{}` |
+| `bulk_channel_update` | `PATCH /guilds/{}/channels` |
+| `edit_incident_actions` | `PUT /guilds/{}/incident-actions` |
+| `get_all_integrations` | `GET /guilds/{}/integrations` |
+| `create_integration` | `POST /guilds/{}/integrations` |
+| `edit_integration` | `PATCH /guilds/{}/integrations/{}` |
+| `delete_integration` | `DELETE /guilds/{}/integrations/{}` |
+| `sync_integration` | `POST /guilds/{}/integrations/{}/sync` |
+| `edit_my_member` | `PATCH /guilds/{}/members/@me` |
+| `edit_guild_mfa_level` | `POST /guilds/{}/mfa` |
+| `get_guild_onboarding` | `GET /guilds/{}/onboarding` |
+| `get_guild_preview` | `GET /guilds/{}/preview` |
+| `move_role_position` | `PATCH /guilds/{}/roles` |
+| `get_role_member_counts` | `GET /guilds/{}/roles/member-counts` |
+| `get_role` | `GET /guilds/{}/roles/{}` |
+| `get_soundboard_sounds` | `GET /guilds/{}/soundboard-sounds` |
+| `create_soundboard_sound` | `POST /guilds/{}/soundboard-sounds` |
+| `get_soundboard_sound` | `GET /guilds/{}/soundboard-sounds/{}` |
+| `edit_soundboard_sound` | `PATCH /guilds/{}/soundboard-sounds/{}` |
+| `delete_soundboard_sound` | `DELETE /guilds/{}/soundboard-sounds/{}` |
+| `guild_templates` | `GET /guilds/{}/templates` |
+| `create_template` | `POST /guilds/{}/templates` |
+| `sync_template` | `PUT /guilds/{}/templates/{}` |
+| `edit_template` | `PATCH /guilds/{}/templates/{}` |
+| `delete_template` | `DELETE /guilds/{}/templates/{}` |
+| `get_vanity_code` | `GET /guilds/{}/vanity-url` |
+| `change_vanity_code` | `PATCH /guilds/{}/vanity-url` |
+| `get_my_voice_state` | `GET /guilds/{}/voice-states/@me` |
+| `get_voice_state` | `GET /guilds/{}/voice-states/{}` |
+| `get_welcome_screen` | `GET /guilds/{}/welcome-screen` |
+| `edit_welcome_screen` | `PATCH /guilds/{}/welcome-screen` |
+| `edit_widget` | `PATCH /guilds/{}/widget` |
+| `get_widget` | `GET /guilds/{}/widget.json` |
+| `list_sku_subscriptions` | `GET /skus/{}/subscriptions` |
+| `get_sku_subscription` | `GET /skus/{}/subscriptions/{}` |
+| `get_soundboard_default_sounds` | `GET /soundboard-default-sounds` |
+| `list_premium_sticker_packs` | `GET /sticker-packs` |
+| `get_sticker_pack` | `GET /sticker-packs/{}` |
+| `get_sticker` | `GET /stickers/{}` |
+| `edit_profile` | `PATCH /users/@me` |
+| `get_guilds` | `GET /users/@me/guilds` |
+| `leave_guild` | `DELETE /users/@me/guilds/{}` |
+| `start_group` | `POST /users/{}/channels` |
+
+<!-- gaps:end -->
