@@ -80,6 +80,10 @@ def invalid_form_body(detail: str) -> BackendError:
     return BackendError(400, 50035, f"Invalid Form Body: {detail}")
 
 
+def cannot_execute_on_channel_type() -> BackendError:
+    return BackendError(400, 50024, "Cannot execute action on this channel type")
+
+
 def cannot_dm_bot() -> BackendError:
     return BackendError(403, 50007, "Cannot send messages to this user")
 

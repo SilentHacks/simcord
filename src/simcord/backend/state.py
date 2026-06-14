@@ -523,6 +523,16 @@ class Backend:
         self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
 
+    #: discord.MessageFlags.crossposted — set when an announcement is published.
+    CROSSPOSTED_FLAG = 1 << 1
+
+    def crosspost_message(self, channel_id: int, message_id: int) -> Message:
+        """Publish an announcement message: set the crossposted flag, announce it."""
+        message = self.get_message(channel_id, message_id)
+        message.flags |= self.CROSSPOSTED_FLAG
+        self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
+        return message
+
     def delete_message(self, channel_id: int, message_id: int) -> None:
         self.get_message(channel_id, message_id)
         del self.messages[channel_id][message_id]

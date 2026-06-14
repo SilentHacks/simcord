@@ -320,6 +320,80 @@ def unban(ctx: RequestContext) -> Any:
     backend.record_audit_log(guild_id, AuditLogAction.MEMBER_UNBAN, target_id=user_id, reason=ctx.reason)
 
 
+@route("POST", "/guilds/{guild_id}/bulk-ban")
+def bulk_ban(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "ban_members", "manage_guild")
+    guild = backend.get_guild(guild_id)
+    banned: list[int] = []
+    failed: list[int] = []
+    for user_id in (int(u) for u in ctx.body().get("user_ids") or []):
+        if user_id in guild.bans:
+            failed.append(user_id)
+            continue
+        try:
+            backend.require_hierarchy(guild_id, backend.bot_user.id, user_id)
+        except errors.BackendError:
+            failed.append(user_id)
+            continue
+        guild.bans[user_id] = ctx.reason
+        if user_id in guild.members:
+            backend.remove_member(guild_id, user_id)
+        backend.emit(
+            "GUILD_BAN_ADD",
+            {"guild_id": str(guild_id), "user": serializers.user_payload(backend.get_user(user_id))},
+        )
+        backend.record_audit_log(guild_id, AuditLogAction.MEMBER_BAN, target_id=user_id, reason=ctx.reason)
+        banned.append(user_id)
+    if not banned:
+        # Discord rejects a bulk ban that bans nobody (50013/all-failed); surface it.
+        raise errors.missing_permissions()
+    return {
+        "banned_users": [str(u) for u in banned],
+        "failed_users": [str(u) for u in failed],
+    }
+
+
+def _prunable(backend: Any, guild: Any) -> list[int]:
+    """Members eligible for prune: no roles beyond @everyone, never the bot or owner.
+
+    SimCord has no presence/last-activity history, so "inactive" is modelled as
+    "roleless" — documented in the moderation guide as a deliberate simplification.
+    """
+    return [
+        uid
+        for uid, member in guild.members.items()
+        if uid != backend.bot_user.id and uid != guild.owner_id and not member.role_ids
+    ]
+
+
+@route("GET", "/guilds/{guild_id}/prune")
+def estimate_prune(ctx: RequestContext) -> Any:
+    guild = ctx.backend.get_guild(ctx.int_arg("guild_id"))
+    return {"pruned": len(_prunable(ctx.backend, guild))}
+
+
+@route("POST", "/guilds/{guild_id}/prune")
+def prune_members(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "kick_members")
+    guild = backend.get_guild(guild_id)
+    body = ctx.body()
+    targets = _prunable(backend, guild)
+    for user_id in targets:
+        backend.remove_member(guild_id, user_id)
+    backend.record_audit_log(
+        guild_id,
+        AuditLogAction.MEMBER_PRUNE,
+        target_id=guild_id,
+        options={"delete_member_days": str(body.get("days", 7)), "members_removed": str(len(targets))},
+        reason=ctx.reason,
+    )
+    return {"pruned": len(targets) if body.get("compute_prune_count", True) else None}
+
+
 def _ban_payload(ctx: RequestContext, user_id: int, reason: Any) -> dict[str, Any]:
     return {"user": dict(serializers.user_payload(ctx.backend.get_user(user_id))), "reason": reason}
 

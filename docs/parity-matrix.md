@@ -14,7 +14,7 @@ if your bot needs it.
 | --- | --- | --- |
 | Login / READY / setup_hook | ✅ | Real discord.py login flow, application info |
 | Gateway intents | ✅ | Server-side gating, `message_content` censoring, member chunking, 4014 — see the [Intents guide](guides/intents.md) |
-| Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`) |
+| Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`); `publish` (announcement crosspost) |
 | Bulk delete (`purge` / `delete_messages`) | ✅ | 2–100 messages, single `MESSAGE_DELETE_BULK`, audit-logged |
 | Embeds, attachments, replies, mentions | ✅ | In-memory CDN; `attachment.read()` works |
 | Pins | ✅ | Current paginated endpoints |
@@ -34,7 +34,7 @@ if your bot needs it.
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
-| Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing |
+| Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive) |
 | Roles (create/edit/delete) | ✅ | |
 | Guilds (create/edit) | ✅ | `Client.create_guild`, `Guild.edit`; `GUILD_UPDATE` audit |
 | Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds |
@@ -59,7 +59,7 @@ so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->
 
-99 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
+103 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
 
 | Method | Route |
 | --- | --- |
@@ -82,6 +82,7 @@ so it is exact by construction.
 | `GET` | `/channels/{channel_id}/messages/{message_id}` |
 | `PATCH` | `/channels/{channel_id}/messages/{message_id}` |
 | `DELETE` | `/channels/{channel_id}/messages/{message_id}` |
+| `POST` | `/channels/{channel_id}/messages/{message_id}/crosspost` |
 | `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions` |
 | `GET` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` |
 | `DELETE` | `/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` |
@@ -110,6 +111,7 @@ so it is exact by construction.
 | `GET` | `/guilds/{guild_id}/bans/{user_id}` |
 | `PUT` | `/guilds/{guild_id}/bans/{user_id}` |
 | `DELETE` | `/guilds/{guild_id}/bans/{user_id}` |
+| `POST` | `/guilds/{guild_id}/bulk-ban` |
 | `GET` | `/guilds/{guild_id}/channels` |
 | `POST` | `/guilds/{guild_id}/channels` |
 | `GET` | `/guilds/{guild_id}/emojis` |
@@ -124,6 +126,8 @@ so it is exact by construction.
 | `DELETE` | `/guilds/{guild_id}/members/{user_id}` |
 | `PUT` | `/guilds/{guild_id}/members/{user_id}/roles/{role_id}` |
 | `DELETE` | `/guilds/{guild_id}/members/{user_id}/roles/{role_id}` |
+| `GET` | `/guilds/{guild_id}/prune` |
+| `POST` | `/guilds/{guild_id}/prune` |
 | `GET` | `/guilds/{guild_id}/roles` |
 | `POST` | `/guilds/{guild_id}/roles` |
 | `PATCH` | `/guilds/{guild_id}/roles/{role_id}` |

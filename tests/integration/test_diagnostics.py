@@ -70,7 +70,7 @@ async def test_transcript_records_both_seams(env, channel, alice):
 async def test_unimplemented_route_attaches_parity_note(env, channel):
     ch = env.bot.get_channel(channel.id)
     with pytest.raises(simcord.BackendError) as exc_info:
-        await ch.guild.estimate_pruned_members(days=7)
+        await ch.guild.integrations()
     notes = getattr(exc_info.value, "__notes__", [])
     assert any("parity matrix" in note for note in notes)
 

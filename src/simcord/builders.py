@@ -181,6 +181,12 @@ class GuildHandle:
         )
         return ChannelHandle(self._env, self, channel)
 
+    def create_news_channel(self, name: str, *, category: ChannelHandle | None = None) -> ChannelHandle:
+        channel = self._env.backend.create_channel(
+            self.id, name, type=ChannelType.NEWS, parent_id=category.id if category else None
+        )
+        return ChannelHandle(self._env, self, channel)
+
     def create_category(self, name: str) -> ChannelHandle:
         channel = self._env.backend.create_channel(self.id, name, type=ChannelType.CATEGORY)
         return ChannelHandle(self._env, self, channel)

@@ -1,0 +1,1 @@
+Add the high-frequency moderation and announcement calls: `Guild.bulk_ban`, `Guild.prune_members`/`Guild.estimate_pruned_members` (roleless members modelled as inactive), and `Message.publish` for announcement (news) channels, with a new `guild.create_news_channel(...)` builder.

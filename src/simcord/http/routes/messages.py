@@ -95,6 +95,18 @@ def bulk_delete_messages(ctx: RequestContext) -> Any:
         )
 
 
+@route("POST", "/channels/{channel_id}/messages/{message_id}/crosspost")
+def crosspost_message(ctx: RequestContext) -> Any:
+    backend = ctx.backend
+    channel_id = ctx.int_arg("channel_id")
+    channel = ctx.require_channel_permissions(channel_id, "send_messages")
+    if channel.type != ChannelType.NEWS:
+        # Only announcement (news) channels can crosspost; real Discord 50024s.
+        raise errors.cannot_execute_on_channel_type()
+    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    return message_response(ctx, backend.crosspost_message(channel_id, message.id))
+
+
 @route("DELETE", "/channels/{channel_id}/messages/{message_id}")
 def delete_message(ctx: RequestContext) -> Any:
     backend = ctx.backend

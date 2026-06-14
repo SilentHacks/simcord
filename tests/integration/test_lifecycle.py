@@ -72,7 +72,7 @@ async def test_unknown_route_is_loud(env, channel):
     # The signal must not masquerade as a discord.HTTPException, or a bot's
     # broad `except discord.HTTPException` would silently swallow it.
     try:
-        await ch.guild.estimate_pruned_members(days=7)
+        await ch.guild.integrations()
     except discord.HTTPException:
         raise AssertionError("RouteNotImplemented must not be a discord.HTTPException") from None
     except simcord.BackendError as exc:

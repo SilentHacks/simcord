@@ -104,6 +104,7 @@ class AuditLogAction(IntEnum):
     CHANNEL_UPDATE = 11
     CHANNEL_DELETE = 12
     MEMBER_KICK = 20
+    MEMBER_PRUNE = 21
     MEMBER_BAN = 22
     MEMBER_UNBAN = 23
     MEMBER_UPDATE = 24
