@@ -20,6 +20,16 @@ from ..backend.models import Channel
 
 
 class RouteNotImplemented(BackendError):
+    """An unimplemented route — a parity gap that must surface loudly.
+
+    Although it subclasses :class:`BackendError`, the transports catch it (and
+    :class:`UnsupportedField`) *before* the generic ``except BackendError`` that
+    maps backend failures onto Discord errors, so it is never disguised as an
+    ``HTTPException`` a broad ``except`` could swallow. For the same reason a
+    handler must never wrap a route lookup or :meth:`RequestContext.fields` in a
+    broad ``except BackendError`` — doing so would re-hide the parity gap.
+    """
+
     def __init__(self, method: str, path: str) -> None:
         super().__init__(501, 0, f"simcord does not implement '{method} {path}' yet.")
         self.method = method
@@ -37,7 +47,9 @@ class UnsupportedField(BackendError):
     an edit field would let a bot test pass while the real edit diverges. Like
     ``RouteNotImplemented`` it is *not* disguised as an ``HTTPException`` (the
     transports re-raise it), so a broad ``except discord.HTTPException`` cannot
-    swallow a parity gap.
+    swallow a parity gap. It does subclass :class:`BackendError`, so — as with
+    ``RouteNotImplemented`` — a handler must never wrap :meth:`RequestContext.fields`
+    in a broad ``except BackendError``, which would re-hide the gap.
     """
 
     def __init__(self, method: str, path: str, fields: list[str]) -> None:
