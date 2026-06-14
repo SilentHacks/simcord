@@ -44,7 +44,7 @@ def edit_emoji(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _EXPRESSION_PERM)
-    body = ctx.body()
+    body = ctx.fields("name", "roles")
     changes: dict[str, Any] = {}
     if "name" in body:
         changes["name"] = body["name"]
@@ -96,8 +96,7 @@ def edit_sticker(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _EXPRESSION_PERM)
-    body = ctx.body()
-    changes = {key: body[key] for key in ("name", "description", "tags") if key in body}
+    changes = ctx.fields("name", "description", "tags")
     sticker = backend.edit_sticker(guild_id, ctx.int_arg("sticker_id"), changes)
     return serializers.sticker_payload(backend, sticker)
 

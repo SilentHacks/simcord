@@ -62,7 +62,7 @@ def get_application_emoji(ctx: RequestContext) -> Any:
 @route("PATCH", "/applications/{application_id}/emojis/{emoji_id}")
 def edit_application_emoji(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    emoji = backend.edit_application_emoji(ctx.int_arg("emoji_id"), ctx.body().get("name"))
+    emoji = backend.edit_application_emoji(ctx.int_arg("emoji_id"), ctx.fields("name").get("name"))
     return serializers.guild_emoji_payload(backend, emoji)
 
 

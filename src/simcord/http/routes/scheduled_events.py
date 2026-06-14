@@ -66,7 +66,17 @@ def edit_scheduled_event(ctx: RequestContext) -> Any:
     event_id = ctx.int_arg("event_id")
     ctx.require_guild_permissions(guild_id, "manage_events")
     backend.get_scheduled_event(guild_id, event_id)
-    body = ctx.body()
+    body = ctx.fields(
+        "name",
+        "description",
+        "scheduled_start_time",
+        "scheduled_end_time",
+        "status",
+        "entity_type",
+        "privacy_level",
+        "channel_id",
+        "entity_metadata",
+    )
     field_map = {
         "name": "name",
         "description": "description",

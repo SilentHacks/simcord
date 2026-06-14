@@ -1,0 +1,107 @@
+"""Write-projection conformance: edit handlers must never silently drop a field.
+
+The route table fails loudly on an unimplemented *route*; this proves the same
+guarantee at the *field* level. An unrecognised edit field raises
+``UnsupportedField`` (which the transports deliberately do not disguise as an
+``HTTPException``, so a broad ``except`` cannot swallow a parity gap), while the
+fields a supported area implies are actually wired through to backend state.
+"""
+
+from __future__ import annotations
+
+import discord
+import pytest
+
+from simcord.http import router
+
+
+async def test_unsupported_edit_field_fails_loudly(env):
+    """A body key no handler honours raises UnsupportedField, naming the field."""
+    guild = env.bot.get_guild(env.guild.id)
+    vc = await guild.create_voice_channel("Voice")
+    await env.settle()
+
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(env.backend, "PATCH", f"/channels/{vc.id}", json={"made_up_field": 1})
+    assert "made_up_field" in exc.value.fields
+
+
+async def test_unsupported_field_is_not_swallowable_as_httpexception(env):
+    """The gap must survive a bot's broad ``except discord.HTTPException``."""
+    # UnsupportedField is a parity signal, not a Discord error response — so it
+    # must not be an HTTPException, exactly like RouteNotImplemented.
+    assert not issubclass(router.UnsupportedField, discord.HTTPException)
+
+    guild = env.bot.get_guild(env.guild.id)
+    vc = await guild.create_voice_channel("Voice")
+    await env.settle()
+
+    # discord.py's VoiceChannel.edit forwards video_quality_mode, which simcord
+    # does not model: the edit must raise loudly rather than appear to succeed.
+    with pytest.raises(router.UnsupportedField):
+        try:
+            await vc.edit(video_quality_mode=discord.VideoQualityMode.full)
+        except discord.HTTPException:  # pragma: no cover - would mean the gap was swallowed
+            pytest.fail("a parity gap was disguised as discord.HTTPException")
+
+
+async def test_voice_channel_edit_fields_apply(env):
+    """Fields a ✅ area implies are wired through, not silently dropped."""
+    guild = env.bot.get_guild(env.guild.id)
+    vc = await guild.create_voice_channel("Voice")
+    await env.settle()
+
+    await vc.edit(bitrate=96000, user_limit=7, rtc_region="us-east")
+    await env.settle()
+
+    backend_channel = env.backend.get_channel(vc.id)
+    assert backend_channel.bitrate == 96000
+    assert backend_channel.user_limit == 7
+    assert backend_channel.rtc_region == "us-east"
+
+
+async def test_text_channel_edit_supported_fields_apply(env, channel):
+    """Common TextChannel.edit fields all take effect (none falsely rejected)."""
+    dpy_channel = env.bot.get_channel(channel.id)
+    await dpy_channel.edit(name="renamed", topic="new topic", nsfw=True, slowmode_delay=10)
+    await env.settle()
+
+    backend_channel = env.backend.get_channel(channel.id)
+    assert backend_channel.name == "renamed"
+    assert backend_channel.topic == "new topic"
+    assert backend_channel.nsfw is True
+    assert backend_channel.rate_limit_per_user == 10
+
+
+async def test_role_edit_supported_fields_apply(env):
+    """Role.edit's full supported field set is honoured."""
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Mods")
+    await env.settle()
+
+    await role.edit(
+        name="Admins",
+        colour=discord.Colour(0x00FF00),
+        hoist=True,
+        mentionable=True,
+        permissions=discord.Permissions(manage_messages=True),
+    )
+    await env.settle()
+
+    backend_role = env.backend.get_role(guild.id, role.id)
+    assert backend_role.name == "Admins"
+    assert backend_role.hoist is True
+    assert backend_role.mentionable is True
+    assert backend_role.permissions == discord.Permissions(manage_messages=True).value
+
+
+async def test_webhook_edit_supported_fields_apply(env, channel):
+    """Webhook.edit(name=...) is honoured (avatar would reject loudly)."""
+    dpy_channel = env.bot.get_channel(channel.id)
+    webhook = await dpy_channel.create_webhook(name="hook")
+    await env.settle()
+
+    await webhook.edit(name="renamed-hook")
+    await env.settle()
+
+    assert env.backend.get_webhook(webhook.id).name == "renamed-hook"

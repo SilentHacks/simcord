@@ -339,8 +339,10 @@ def guild_create_payload(backend: BackendBase, guild: Guild) -> guild_types.Guil
             if guild.system_channel_id is not None
             else None,
             "system_channel_flags": 0,
-            "rules_channel_id": None,
-            "public_updates_channel_id": None,
+            "rules_channel_id": str(guild.rules_channel_id) if guild.rules_channel_id is not None else None,
+            "public_updates_channel_id": (
+                str(guild.public_updates_channel_id) if guild.public_updates_channel_id is not None else None
+            ),
             "vanity_url_code": None,
             "application_id": None,
             "max_members": 500000,

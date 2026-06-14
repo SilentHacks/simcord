@@ -30,7 +30,7 @@ def edit_stage_instance(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
     ctx.require_channel_permissions(channel_id, "manage_channels")
-    body = ctx.body()
+    body = ctx.fields("topic", "privacy_level")
     changes: dict[str, Any] = {}
     if "topic" in body:
         changes["topic"] = body["topic"]

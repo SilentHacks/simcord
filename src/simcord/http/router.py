@@ -30,6 +30,30 @@ class RouteNotImplemented(BackendError):
         )
 
 
+class UnsupportedField(BackendError):
+    """A handler was sent a request field it does not honour.
+
+    The field-level analogue of :class:`RouteNotImplemented`: silently dropping
+    an edit field would let a bot test pass while the real edit diverges. Like
+    ``RouteNotImplemented`` it is *not* disguised as an ``HTTPException`` (the
+    transports re-raise it), so a broad ``except discord.HTTPException`` cannot
+    swallow a parity gap.
+    """
+
+    def __init__(self, method: str, path: str, fields: list[str]) -> None:
+        joined = ", ".join(fields)
+        super().__init__(
+            501, 0, f"simcord does not implement the field(s) [{joined}] on '{method} {path}' yet."
+        )
+        self.method = method
+        self.path = path
+        self.fields = list(fields)
+        self.add_note(
+            "See the parity matrix in the docs; please open an issue if your bot needs this field: "
+            "https://github.com/SilentHacks/simcord/issues"
+        )
+
+
 @dataclass
 class RequestContext:
     backend: Backend
@@ -39,9 +63,28 @@ class RequestContext:
     files: list[Any] = field(default_factory=list)
     #: The ``X-Audit-Log-Reason`` discord.py attached to this call, if any.
     reason: str | None = None
+    method: str = ""
+    path: str = ""
 
     def int_arg(self, name: str) -> int:
         return int(self.args[name])
+
+    def fields(self, *handled: str, ignore: tuple[str, ...] = ()) -> dict[str, Any]:
+        """Pull the recognised ``handled`` keys out of the JSON body, failing
+        loudly on any other key.
+
+        Replaces the ``{k: body[k] for k in editable if k in body}`` idiom that
+        silently dropped unrecognised edit fields. ``ignore`` names keys we
+        deliberately accept-and-discard (e.g. a field Discord lets you send but
+        that has no meaning for an offline test). Anything neither handled nor
+        ignored raises :class:`UnsupportedField` — a parity gap must be loud.
+        """
+        body = self.body()
+        allowed = set(handled) | set(ignore)
+        unsupported = sorted(key for key in body if key not in allowed)
+        if unsupported:
+            raise UnsupportedField(self.method, self.path, unsupported)
+        return {key: body[key] for key in handled if key in body}
 
     def require_channel_permissions(self, channel_id: int, *names: str) -> Channel:
         """Check the bot has ``names`` in a channel; return the channel.
@@ -118,7 +161,16 @@ def dispatch(
                 best = (literals, args, handler)
     if best is None:
         raise RouteNotImplemented(method, path)
-    ctx = RequestContext(backend, best[1], json=json, params=params or {}, files=files or [], reason=reason)
+    ctx = RequestContext(
+        backend,
+        best[1],
+        json=json,
+        params=params or {},
+        files=files or [],
+        reason=reason,
+        method=method,
+        path=path,
+    )
     return best[2](ctx)
 
 

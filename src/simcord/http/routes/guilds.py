@@ -35,8 +35,12 @@ _GUILD_EDITABLE = (
     "explicit_content_filter",
     "afk_channel_id",
     "system_channel_id",
+    "rules_channel_id",
+    "public_updates_channel_id",
 )
-_GUILD_CHANNEL_FIELDS = frozenset({"afk_channel_id", "system_channel_id"})
+_GUILD_CHANNEL_FIELDS = frozenset(
+    {"afk_channel_id", "system_channel_id", "rules_channel_id", "public_updates_channel_id"}
+)
 
 
 @route("PATCH", "/guilds/{guild_id}")
@@ -44,7 +48,7 @@ def edit_guild(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_guild")
-    body = ctx.body()
+    body = ctx.fields(*_GUILD_EDITABLE)
     changes: dict[str, Any] = {}
     for key in _GUILD_EDITABLE:
         if key not in body:
@@ -151,7 +155,7 @@ def edit_member(ctx: RequestContext) -> Any:
     user_id = ctx.int_arg("user_id")
     guild = backend.get_guild(guild_id)
     member = backend.get_member(guild_id, user_id)
-    body = ctx.body()
+    body = ctx.fields("nick", "roles", "communication_disabled_until", "mute", "deaf", "channel_id")
     bot_id = backend.bot_user.id
 
     # Validate every change before applying any of them, then hand the whole set
@@ -474,7 +478,7 @@ def edit_role(ctx: RequestContext) -> Any:
     bot_id = backend.bot_user.id
     ctx.require_guild_permissions(guild_id, "manage_roles")
     backend.get_role(guild_id, role_id)
-    body = ctx.body()
+    body = ctx.fields("name", "hoist", "mentionable", "color", "colors", "permissions")
 
     # Validate before mutating: a role above the bot can't be edited, and the
     # bot can't grant permissions it lacks.
@@ -485,6 +489,10 @@ def edit_role(ctx: RequestContext) -> Any:
     changes: dict[str, Any] = {
         key: body[key] for key in ("name", "hoist", "mentionable", "color") if body.get(key) is not None
     }
+    # Newer discord.py sends the gradient-colour object; we model a single colour,
+    # so honour its primary and let the (unmodelled) gradient parts ride along.
+    if body.get("colors") is not None and body["colors"].get("primary_color") is not None:
+        changes["color"] = body["colors"]["primary_color"]
     if "permissions" in body and body["permissions"] is not None:
         changes["permissions"] = int(body["permissions"])
     old = {key: getattr(backend.get_role(guild_id, role_id), key) for key in changes}

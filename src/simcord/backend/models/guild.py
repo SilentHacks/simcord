@@ -21,6 +21,8 @@ class Guild:
     afk_channel_id: int | None = None
     afk_timeout: int = 300
     system_channel_id: int | None = None
+    rules_channel_id: int | None = None
+    public_updates_channel_id: int | None = None
     verification_level: int = 0
     default_message_notifications: int = 0
     explicit_content_filter: int = 0

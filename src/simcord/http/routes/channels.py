@@ -21,8 +21,27 @@ def edit_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_channels")
     body = ctx.body()
-    editable = ("name", "topic", "nsfw", "rate_limit_per_user", "available_tags")
-    changes = {key: body[key] for key in editable if key in body}
+    # Scalar fields mapped 1:1 onto the Channel model. Voice fields only reach
+    # this handler for voice/stage channels (discord.py omits them otherwise).
+    editable = (
+        "name",
+        "topic",
+        "nsfw",
+        "rate_limit_per_user",
+        "available_tags",
+        "bitrate",
+        "user_limit",
+        "rtc_region",
+        "position",
+        "parent_id",
+    )
+    # Keys this handler honours but applies itself (not via the scalar `changes`).
+    ignore = ("permission_overwrites",)
+    if channel.is_thread:
+        ignore += ("archived", "locked", "auto_archive_duration", "invitable", "applied_tags")
+    changes = ctx.fields(*editable, ignore=ignore)
+    if changes.get("parent_id") is not None:
+        changes["parent_id"] = int(changes["parent_id"])
     thread_metadata: dict[str, Any] | None = None
     if channel.is_thread:
         thread_metadata = {
@@ -309,7 +328,8 @@ def edit_webhook(ctx: RequestContext) -> Any:
     backend = ctx.backend
     webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
     ctx.require_channel_permissions(webhook.channel_id, "manage_webhooks")
-    return serializers.webhook_payload(backend, backend.edit_webhook(webhook.id, ctx.body()))
+    changes = ctx.fields("name", "channel_id")
+    return serializers.webhook_payload(backend, backend.edit_webhook(webhook.id, changes))
 
 
 @route("PATCH", "/webhooks/{webhook_id}/{token}")
@@ -317,8 +337,9 @@ def edit_webhook_with_token(ctx: RequestContext) -> Any:
     backend = ctx.backend
     webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
     _require_token(webhook, ctx.args["token"])
-    # A token cannot move the webhook between channels.
-    changes = {key: value for key, value in ctx.body().items() if key != "channel_id"}
+    # A token cannot move the webhook between channels, so channel_id is accepted
+    # and ignored rather than honoured.
+    changes = ctx.fields("name", ignore=("channel_id",))
     return serializers.webhook_payload(
         backend, backend.edit_webhook(webhook.id, changes), include_token=False
     )

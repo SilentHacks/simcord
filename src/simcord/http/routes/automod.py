@@ -42,7 +42,16 @@ def edit_rule(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _AUTOMOD_PERM)
-    body = ctx.body()
+    body = ctx.fields(
+        "name",
+        "event_type",
+        "trigger_type",
+        "trigger_metadata",
+        "actions",
+        "enabled",
+        "exempt_roles",
+        "exempt_channels",
+    )
     field_map = {
         "name": "name",
         "event_type": "event_type",
