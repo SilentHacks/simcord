@@ -1,4 +1,5 @@
 import discord
+import pytest
 
 
 async def test_bulk_ban(env):
@@ -13,6 +14,28 @@ async def test_bulk_ban(env):
     assert {u.id for u in result.banned} == {alice.id, bob.id}
     assert env.guild.get_ban(alice) is not None
     assert alice.id not in env.backend.get_guild(env.guild.id).members
+
+
+async def test_bulk_ban_already_banned_reported_as_failed(env):
+    # When nobody can be banned (all already banned), Discord still returns the
+    # split result — not a 403 — with every id in `failed`.
+    alice = env.guild.add_member(env.create_user("alice"))
+    await env.settle()
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.ban(discord.Object(id=alice.id))
+    await env.settle()
+
+    result = await guild.bulk_ban([discord.Object(id=alice.id)])
+    await env.settle()
+    assert [u.id for u in result.failed] == [alice.id]
+    assert result.banned == []
+
+
+async def test_bulk_ban_empty_rejected(env):
+    guild = env.bot.get_guild(env.guild.id)
+    with pytest.raises(discord.HTTPException) as exc:
+        await guild.bulk_ban([])
+    assert exc.value.code == 50035
 
 
 async def test_estimate_and_prune_members(env):
@@ -42,6 +65,20 @@ async def test_publish_announcement(env):
 
     stored = env.backend.get_message(news.id, message.id)
     assert stored.flags & env.backend.CROSSPOSTED_FLAG
+
+
+async def test_double_publish_rejected(env):
+    news = env.guild.create_news_channel("announcements")
+    await env.settle()
+
+    cached = env.bot.get_channel(news.id)
+    message = await cached.send("ship it")
+    await message.publish()
+    await env.settle()
+
+    with pytest.raises(discord.HTTPException) as exc:
+        await message.publish()
+    assert exc.value.code == 40033
 
 
 async def test_publish_requires_news_channel(env):

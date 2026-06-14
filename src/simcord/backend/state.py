@@ -225,8 +225,30 @@ class Backend:
         if user_id not in guild.members:
             raise errors.unknown_member()
         del guild.members[user_id]
+        # Leaving the guild leaves every thread in it, so thread member_count and
+        # the thread-member listings stay correct after a kick/ban/prune.
+        for thread_id in guild.thread_ids:
+            thread = self.channels.get(thread_id)
+            if thread is not None:
+                thread.thread_members.pop(user_id, None)
         self.emit(
             "GUILD_MEMBER_REMOVE",
+            {"guild_id": str(guild_id), "user": serializers.user_payload(self.get_user(user_id))},
+        )
+
+    def apply_ban(self, guild_id: int, user_id: int, reason: str | None) -> None:
+        """Record a ban, evict the member if present, and announce GUILD_BAN_ADD.
+
+        The single source of truth for the ban mutation, shared by the single and
+        bulk ban routes. Audit logging stays in the route layer (the API-call
+        path), like every other moderation action.
+        """
+        guild = self.get_guild(guild_id)
+        guild.bans[user_id] = reason
+        if user_id in guild.members:
+            self.remove_member(guild_id, user_id)
+        self.emit(
+            "GUILD_BAN_ADD",
             {"guild_id": str(guild_id), "user": serializers.user_payload(self.get_user(user_id))},
         )
 
@@ -352,6 +374,10 @@ class Backend:
 
     def delete_channel(self, channel_id: int) -> None:
         channel = self.get_channel(channel_id)
+        # Deleting a stage channel closes any live stage instance on it (firing
+        # STAGE_INSTANCE_DELETE) so it does not outlive its channel.
+        if channel_id in self.stage_instances:
+            self.delete_stage_instance(channel_id)
         payload = serializers.channel_payload(self, channel)
         del self.channels[channel_id]
         self.messages.pop(channel_id, None)
@@ -390,8 +416,15 @@ class Backend:
 
     # ---------------------------------------------------------- thread members
 
+    def get_thread(self, channel_id: int) -> Channel:
+        """Fetch a channel that must be a thread, else fail like real Discord (50024)."""
+        channel = self.get_channel(channel_id)
+        if not channel.is_thread:
+            raise errors.cannot_execute_on_channel_type()
+        return channel
+
     def add_thread_member(self, thread_id: int, user_id: int) -> Channel:
-        thread = self.get_channel(thread_id)
+        thread = self.get_thread(thread_id)
         if user_id not in thread.thread_members:
             thread.thread_members[user_id] = self.now_iso()
             payload = dict(serializers.thread_payload(self, thread))
@@ -400,7 +433,7 @@ class Backend:
         return thread
 
     def remove_thread_member(self, thread_id: int, user_id: int) -> Channel:
-        thread = self.get_channel(thread_id)
+        thread = self.get_thread(thread_id)
         if thread.thread_members.pop(user_id, None) is not None:
             payload = dict(serializers.thread_payload(self, thread))
             payload["removed_member_ids"] = [str(user_id)]
@@ -582,6 +615,9 @@ class Backend:
     def crosspost_message(self, channel_id: int, message_id: int) -> Message:
         """Publish an announcement message: set the crossposted flag, announce it."""
         message = self.get_message(channel_id, message_id)
+        if message.flags & self.CROSSPOSTED_FLAG:
+            # Real Discord rejects re-publishing an already-crossposted message.
+            raise errors.already_crossposted()
         message.flags |= self.CROSSPOSTED_FLAG
         self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
@@ -1062,9 +1098,10 @@ class Backend:
             raise errors.unknown_emoji()
         return emoji
 
-    def edit_application_emoji(self, emoji_id: int, name: str) -> GuildEmoji:
+    def edit_application_emoji(self, emoji_id: int, name: str | None) -> GuildEmoji:
         emoji = self.get_application_emoji(emoji_id)
-        emoji.name = name
+        if name is not None:  # discord.py omits unchanged fields (e.g. a roles-only edit)
+            emoji.name = name
         return emoji
 
     def delete_application_emoji(self, emoji_id: int) -> None:
@@ -1077,6 +1114,9 @@ class Backend:
         channel = self.get_channel(channel_id)
         if channel.type != ChannelType.STAGE_VOICE:
             raise errors.cannot_execute_on_channel_type()
+        if channel_id in self.stage_instances:
+            # One live instance per stage channel; real Discord 400s a second open.
+            raise errors.invalid_form_body("A stage instance already exists for this channel")
         instance = StageInstance(
             id=self.snowflake(),
             guild_id=channel.guild_id,  # type: ignore[arg-type]

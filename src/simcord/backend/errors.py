@@ -84,6 +84,10 @@ def cannot_execute_on_channel_type() -> BackendError:
     return BackendError(400, 50024, "Cannot execute action on this channel type")
 
 
+def already_crossposted() -> BackendError:
+    return BackendError(400, 40033, "This message has already been crossposted")
+
+
 def cannot_dm_bot() -> BackendError:
     return BackendError(403, 50007, "Cannot send messages to this user")
 

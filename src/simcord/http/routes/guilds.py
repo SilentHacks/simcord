@@ -75,14 +75,7 @@ def edit_guild(ctx: RequestContext) -> Any:
 def active_guild_threads(ctx: RequestContext) -> Any:
     backend = ctx.backend
     threads = backend.active_threads(ctx.int_arg("guild_id"))
-    return {
-        "threads": [dict(serializers.thread_payload(backend, t)) for t in threads],
-        "members": [
-            serializers.thread_member_payload(t, backend.bot_user.id)
-            for t in threads
-            if backend.bot_user.id in t.thread_members
-        ],
-    }
+    return serializers.thread_list_payload(backend, threads)
 
 
 @route("POST", "/guilds/{guild_id}/channels")
@@ -306,14 +299,8 @@ def ban(ctx: RequestContext) -> Any:
     user_id = ctx.int_arg("user_id")
     ctx.require_guild_permissions(guild_id, "ban_members")
     backend.require_hierarchy(guild_id, backend.bot_user.id, user_id)
-    guild = backend.get_guild(guild_id)
-    guild.bans[user_id] = ctx.reason
-    if user_id in guild.members:
-        backend.remove_member(guild_id, user_id)
-    backend.emit(
-        "GUILD_BAN_ADD",
-        {"guild_id": str(guild_id), "user": serializers.user_payload(backend.get_user(user_id))},
-    )
+    backend.get_user(user_id)
+    backend.apply_ban(guild_id, user_id, ctx.reason)
     backend.record_audit_log(guild_id, AuditLogAction.MEMBER_BAN, target_id=user_id, reason=ctx.reason)
 
 
@@ -340,9 +327,14 @@ def bulk_ban(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "ban_members", "manage_guild")
     guild = backend.get_guild(guild_id)
+    user_ids = [int(u) for u in ctx.body().get("user_ids") or []]
+    if not user_ids:
+        # Real Discord 400s a bulk ban with no users; the per-user failed list is
+        # how it reports users that simply could not be banned (a 200 response).
+        raise errors.invalid_form_body("user_ids: This field is required")
     banned: list[int] = []
     failed: list[int] = []
-    for user_id in (int(u) for u in ctx.body().get("user_ids") or []):
+    for user_id in user_ids:
         if user_id in guild.bans:
             failed.append(user_id)
             continue
@@ -351,18 +343,9 @@ def bulk_ban(ctx: RequestContext) -> Any:
         except errors.BackendError:
             failed.append(user_id)
             continue
-        guild.bans[user_id] = ctx.reason
-        if user_id in guild.members:
-            backend.remove_member(guild_id, user_id)
-        backend.emit(
-            "GUILD_BAN_ADD",
-            {"guild_id": str(guild_id), "user": serializers.user_payload(backend.get_user(user_id))},
-        )
+        backend.apply_ban(guild_id, user_id, ctx.reason)
         backend.record_audit_log(guild_id, AuditLogAction.MEMBER_BAN, target_id=user_id, reason=ctx.reason)
         banned.append(user_id)
-    if not banned:
-        # Discord rejects a bulk ban that bans nobody (50013/all-failed); surface it.
-        raise errors.missing_permissions()
     return {
         "banned_users": [str(u) for u in banned],
         "failed_users": [str(u) for u in failed],
@@ -384,8 +367,9 @@ def _prunable(backend: Any, guild: Any) -> list[int]:
 
 @route("GET", "/guilds/{guild_id}/prune")
 def estimate_prune(ctx: RequestContext) -> Any:
-    guild = ctx.backend.get_guild(ctx.int_arg("guild_id"))
-    return {"pruned": len(_prunable(ctx.backend, guild))}
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "kick_members")
+    return {"pruned": len(_prunable(ctx.backend, ctx.backend.get_guild(guild_id)))}
 
 
 @route("POST", "/guilds/{guild_id}/prune")

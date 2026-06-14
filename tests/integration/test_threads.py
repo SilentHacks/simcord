@@ -1,4 +1,7 @@
 import discord
+import pytest
+
+from simcord.backend import errors
 
 
 async def _make_thread(env, name="discussion"):
@@ -67,3 +70,26 @@ async def test_archived_threads_listing(env):
     parent = env.bot.get_channel(thread.parent_id)
     found = [t async for t in parent.archived_threads()]
     assert thread.id in {t.id for t in found}
+
+
+async def test_leaving_guild_drops_thread_membership(env):
+    # A kicked/banned member also leaves every thread, so member_count stays right.
+    thread = await _make_thread(env)
+    alice = env.guild.add_member(env.create_user("alice"))
+    await thread.add_user(discord.Object(id=alice.id))
+    await env.settle()
+    assert alice.id in env.backend.get_channel(thread.id).thread_members
+
+    await env.bot.get_guild(env.guild.id).kick(discord.Object(id=alice.id))
+    await env.settle()
+    assert alice.id not in env.backend.get_channel(thread.id).thread_members
+
+
+async def test_thread_member_ops_reject_non_thread(env):
+    # A normal channel is not a thread: the thread-member surface must 50024,
+    # not crash on the thread_metadata assertion.
+    channel = env.guild.create_text_channel("general")
+    await env.settle()
+    with pytest.raises(errors.BackendError) as exc:
+        env.backend.add_thread_member(channel.id, env.bot.user.id)
+    assert exc.value.code == 50024

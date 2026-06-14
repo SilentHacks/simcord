@@ -214,31 +214,25 @@ def remove_thread_member(ctx: RequestContext) -> Any:
 
 @route("GET", "/channels/{channel_id}/thread-members")
 def list_thread_members(ctx: RequestContext) -> Any:
-    thread = ctx.backend.get_channel(ctx.int_arg("channel_id"))
+    thread = ctx.backend.get_thread(ctx.int_arg("channel_id"))
     return [serializers.thread_member_payload(thread, uid) for uid in thread.thread_members]
 
 
 @route("GET", "/channels/{channel_id}/thread-members/{user_id}")
 def get_thread_member(ctx: RequestContext) -> Any:
-    thread = ctx.backend.get_channel(ctx.int_arg("channel_id"))
+    thread = ctx.backend.get_thread(ctx.int_arg("channel_id"))
     user_id = ctx.int_arg("user_id")
     if user_id not in thread.thread_members:
         raise errors.unknown_member()
     return serializers.thread_member_payload(thread, user_id)
 
 
-def _archived_threads(ctx: RequestContext, *, private: bool) -> dict[str, Any]:
+def _archived_threads(ctx: RequestContext, *, private: bool, joined_only: bool = False) -> dict[str, Any]:
     backend = ctx.backend
     threads = backend.archived_threads(ctx.int_arg("channel_id"), private=private)
-    return {
-        "threads": [dict(serializers.thread_payload(backend, t)) for t in threads],
-        "members": [
-            serializers.thread_member_payload(t, backend.bot_user.id)
-            for t in threads
-            if backend.bot_user.id in t.thread_members
-        ],
-        "has_more": False,
-    }
+    if joined_only:
+        threads = [t for t in threads if backend.bot_user.id in t.thread_members]
+    return serializers.thread_list_payload(backend, threads, has_more=False)
 
 
 @route("GET", "/channels/{channel_id}/threads/archived/public")
@@ -253,7 +247,8 @@ def archived_private_threads(ctx: RequestContext) -> Any:
 
 @route("GET", "/channels/{channel_id}/users/@me/threads/archived/private")
 def joined_archived_private_threads(ctx: RequestContext) -> Any:
-    return _archived_threads(ctx, private=True)
+    # The `@me` variant is scoped to the private archived threads the bot joined.
+    return _archived_threads(ctx, private=True, joined_only=True)
 
 
 @route("POST", "/channels/{channel_id}/webhooks")
