@@ -1,0 +1,1 @@
+Implemented several common-bot REST routes: `Guild.fetch_role`, role and channel reordering (`Guild.edit_role_positions`, `Channel.move`), editing the bot's own nickname (`guild.me.edit`), `Guild.leave`, `Client.fetch_guilds`, and bot username edits (`ClientUser.edit`).

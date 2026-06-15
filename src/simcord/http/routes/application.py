@@ -18,6 +18,38 @@ def get_user(ctx: RequestContext) -> Any:
     return dict(serializers.user_payload(ctx.backend.get_user(ctx.int_arg("user_id"))))
 
 
+@route("PATCH", "/users/@me")
+def edit_profile(ctx: RequestContext) -> Any:
+    # The bot editing its own account (``Client.user.edit``) — in practice the
+    # username. avatar/banner are CDN images simcord does not model, so they fail
+    # loudly via ctx.fields rather than being silently dropped.
+    backend = ctx.backend
+    body = ctx.fields("username")
+    if "username" in body:
+        backend.bot_user.name = body["username"]
+        backend.emit("USER_UPDATE", dict(serializers.user_payload(backend.bot_user)))
+    return dict(serializers.user_payload(backend.bot_user))
+
+
+@route("GET", "/users/@me/guilds")
+def get_guilds(ctx: RequestContext) -> Any:
+    # ``Client.fetch_guilds`` pages this endpoint with an ascending ``before``
+    # cursor; simcord worlds are small, so one batch returns them all.
+    backend = ctx.backend
+    limit = int(ctx.params.get("limit", 200))
+    guilds = sorted(backend.guilds.values(), key=lambda g: g.id)
+    if "before" in ctx.params:
+        guilds = [g for g in guilds if g.id < int(ctx.params["before"])]
+    if "after" in ctx.params:
+        guilds = [g for g in guilds if g.id > int(ctx.params["after"])]
+    return [dict(serializers.guild_create_payload(backend, g)) for g in guilds[:limit]]
+
+
+@route("DELETE", "/users/@me/guilds/{guild_id}")
+def leave_guild(ctx: RequestContext) -> Any:
+    ctx.backend.remove_guild(ctx.int_arg("guild_id"))
+
+
 @route("GET", "/oauth2/applications/@me")
 def application_info(ctx: RequestContext) -> Any:
     backend = ctx.backend

@@ -21,3 +21,11 @@ def test_parity_matrix_gaps_section_in_sync():
     begin = text.index(parity.GAPS_BEGIN_MARKER)
     end = text.index(parity.GAPS_END_MARKER) + len(parity.GAPS_END_MARKER)
     assert text[begin:end] == parity.gaps_section()
+
+
+def test_parity_matrix_out_of_scope_section_in_sync():
+    """The committed out-of-scope list must match the derived one."""
+    text = MATRIX.read_text()
+    begin = text.index(parity.OOS_BEGIN_MARKER)
+    end = text.index(parity.OOS_END_MARKER) + len(parity.OOS_END_MARKER)
+    assert text[begin:end] == parity.out_of_scope_section()

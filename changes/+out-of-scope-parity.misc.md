@@ -1,0 +1,1 @@
+The parity matrix now separates deliberately out-of-scope routes (actions a bot account cannot perform, e.g. creating group DMs) from not-yet-implemented gaps, with the new section generated and drift-guarded like the others.
