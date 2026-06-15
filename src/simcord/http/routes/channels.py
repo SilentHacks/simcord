@@ -297,6 +297,22 @@ def joined_archived_private_threads(ctx: RequestContext) -> Any:
     return _archived_threads(ctx, private=True, joined_only=True)
 
 
+@route("POST", "/channels/{channel_id}/followers")
+def follow_channel(ctx: RequestContext) -> Any:
+    # TextChannel.follow(): a news channel is followed into a destination, where
+    # Discord creates a forwarding webhook. discord.py already guards that the
+    # source is a news channel client-side; we mirror the server check, then mint
+    # the destination webhook (manage_webhooks is required there).
+    backend = ctx.backend
+    source = backend.get_channel(ctx.int_arg("channel_id"))
+    if source.type != ChannelType.NEWS:
+        raise errors.cannot_execute_on_channel_type()
+    body = ctx.fields("webhook_channel_id")
+    destination = ctx.require_channel_permissions(int(body["webhook_channel_id"]), "manage_webhooks")
+    webhook = backend.create_webhook(destination.id, source.name or "Webhook", backend.bot_user.id)
+    return {"channel_id": str(source.id), "webhook_id": str(webhook.id)}
+
+
 @route("POST", "/channels/{channel_id}/webhooks")
 def create_webhook(ctx: RequestContext) -> Any:
     backend = ctx.backend

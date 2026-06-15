@@ -42,14 +42,14 @@ serializer payloads are conformance-tested against discord.py's own model parser
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
-| Guilds (create/edit) | ✅ | `Client.create_guild`, `Guild.edit`; `GUILD_UPDATE` audit; `Guild.leave`, `Client.fetch_guilds`, `ClientUser.edit` (bot username) |
-| Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds; reorder/move (`Channel.move`) |
+| Guilds (create/edit/delete) | ✅ | `Client.create_guild`, `Guild.edit`, `Guild.delete` (owner-only); `GUILD_UPDATE` audit; `Guild.leave`, `Client.fetch_guilds`, `ClientUser.edit` (bot username); `Guild.vanity_invite` (settable via `guild.set_vanity_url`) |
+| Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds; reorder/move (`Channel.move`); announcement `TextChannel.follow` |
 | Webhooks | ✅ | Create, execute, fetch/edit/delete (by id or token), guild listing |
 | Fault injection / HTTP log | ✅ | `env.inject_error`, `env.http_log` |
 | Audit logs | ✅ | Recorded for ban/kick/role/member/channel/event actions; `guild.audit_logs()`, filtering |
 | Polls | ✅ | Message-level poll object; `actor.vote`, expiry (route + `advance_time`), vote events |
 | Scheduled events | ✅ | CRUD + subscribe/unsubscribe; auto status transitions via `advance_time` |
-| Voice state | ✅ | State only — never audio; join/leave/move/mute, request-to-speak, `VOICE_STATE_UPDATE` |
+| Voice state | ✅ | State only — never audio; join/leave/move/mute, request-to-speak, `VOICE_STATE_UPDATE`; `Guild.fetch_voice_state` |
 | Stage instances | ✅ | `StageChannel.create_instance`/`fetch_instance`, `StageInstance.edit`/`delete`, gateway events |
 | Invites | ✅ | Create/list/fetch/delete, gateway events |
 | Emojis & stickers | ✅ | Guild expression CRUD, update events; application-owned emojis (`Client.create_application_emoji`, `fetch_application_emojis`) |
@@ -65,7 +65,7 @@ so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->
 
-129 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
+134 routes implemented. Anything else fails loudly with `RouteNotImplemented`.
 
 | Method | Route |
 | --- | --- |
@@ -82,6 +82,7 @@ so it is exact by construction.
 | `GET` | `/channels/{channel_id}` |
 | `PATCH` | `/channels/{channel_id}` |
 | `DELETE` | `/channels/{channel_id}` |
+| `POST` | `/channels/{channel_id}/followers` |
 | `GET` | `/channels/{channel_id}/invites` |
 | `POST` | `/channels/{channel_id}/invites` |
 | `GET` | `/channels/{channel_id}/messages` |
@@ -121,6 +122,7 @@ so it is exact by construction.
 | `POST` | `/guilds` |
 | `GET` | `/guilds/{guild_id}` |
 | `PATCH` | `/guilds/{guild_id}` |
+| `DELETE` | `/guilds/{guild_id}` |
 | `GET` | `/guilds/{guild_id}/audit-logs` |
 | `GET` | `/guilds/{guild_id}/auto-moderation/rules` |
 | `POST` | `/guilds/{guild_id}/auto-moderation/rules` |
@@ -168,7 +170,10 @@ so it is exact by construction.
 | `PATCH` | `/guilds/{guild_id}/stickers/{sticker_id}` |
 | `DELETE` | `/guilds/{guild_id}/stickers/{sticker_id}` |
 | `GET` | `/guilds/{guild_id}/threads/active` |
+| `GET` | `/guilds/{guild_id}/vanity-url` |
+| `GET` | `/guilds/{guild_id}/voice-states/@me` |
 | `PATCH` | `/guilds/{guild_id}/voice-states/@me` |
+| `GET` | `/guilds/{guild_id}/voice-states/{user_id}` |
 | `PATCH` | `/guilds/{guild_id}/voice-states/{user_id}` |
 | `GET` | `/guilds/{guild_id}/webhooks` |
 | `POST` | `/interactions/{interaction_id}/{token}/callback` |
@@ -207,9 +212,19 @@ These discord.py REST routes have no handler yet, derived by comparing simcord's
 route table against `discord.http.HTTPClient` (`python -m simcord.parity`), so the
 list stays honest as discord.py evolves.
 
+This is the **frozen 1.0 gap surface**: the omissions are deliberate and
+demand-driven, not unfinished work. Most are niche (monetization, soundboard,
+guild templates) or have a working common path already — individual application
+command CRUD is unlisted because `CommandTree.sync` (the bulk overwrite) is fully
+modelled. Others (integrations, welcome screen, widget, onboarding) are omitted on
+purpose: simcord has no settable state behind them, so a handler returning a
+constant empty value would be a *silent fake* — exactly what this project refuses
+to ship. They fail loudly until there is demand to model them properly. Open an
+issue if your bot needs one.
+
 <!-- gaps:begin (generated — do not edit by hand) -->
 
-58 discord.py REST routes are not yet implemented; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
+53 discord.py REST routes are not yet implemented; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
 
 | discord.py `HTTPClient` method | Route |
 | --- | --- |
@@ -231,12 +246,10 @@ list stays honest as discord.py evolves.
 | `edit_application_command_permissions` | `PUT /applications/{}/guilds/{}/commands/{}/permissions` |
 | `get_skus` | `GET /applications/{}/skus` |
 | `logout` | `POST /auth/logout` |
-| `follow_webhook` | `POST /channels/{}/followers` |
 | `send_soundboard_sound` | `POST /channels/{}/send-soundboard-sound` |
 | `edit_voice_channel_status` | `PUT /channels/{}/voice-status` |
 | `get_template` | `GET /guilds/templates/{}` |
 | `create_from_template` | `POST /guilds/templates/{}` |
-| `delete_guild` | `DELETE /guilds/{}` |
 | `edit_incident_actions` | `PUT /guilds/{}/incident-actions` |
 | `get_all_integrations` | `GET /guilds/{}/integrations` |
 | `create_integration` | `POST /guilds/{}/integrations` |
@@ -257,10 +270,7 @@ list stays honest as discord.py evolves.
 | `sync_template` | `PUT /guilds/{}/templates/{}` |
 | `edit_template` | `PATCH /guilds/{}/templates/{}` |
 | `delete_template` | `DELETE /guilds/{}/templates/{}` |
-| `get_vanity_code` | `GET /guilds/{}/vanity-url` |
 | `change_vanity_code` | `PATCH /guilds/{}/vanity-url` |
-| `get_my_voice_state` | `GET /guilds/{}/voice-states/@me` |
-| `get_voice_state` | `GET /guilds/{}/voice-states/{}` |
 | `get_welcome_screen` | `GET /guilds/{}/welcome-screen` |
 | `edit_welcome_screen` | `PATCH /guilds/{}/welcome-screen` |
 | `edit_widget` | `PATCH /guilds/{}/widget` |

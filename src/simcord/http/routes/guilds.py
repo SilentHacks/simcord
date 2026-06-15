@@ -25,6 +25,19 @@ def get_guild(ctx: RequestContext) -> Any:
     return dict(serializers.guild_create_payload(ctx.backend, ctx.backend.get_guild(ctx.int_arg("guild_id"))))
 
 
+@route("DELETE", "/guilds/{guild_id}")
+def delete_guild(ctx: RequestContext) -> Any:
+    # Guild.delete() is owner-only on real Discord — there is no permission that
+    # grants it. The bot is never an owner by default, so this 403s unless a test
+    # has made the bot own the guild.
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    guild = backend.get_guild(guild_id)
+    if guild.owner_id != backend.bot_user.id:
+        raise errors.missing_permissions()
+    backend.remove_guild(guild_id)
+
+
 # Guild fields a bot can edit (`Guild.edit`), mapped 1:1 onto the backend model.
 # Nullable fields may be set to None to clear them; channel ids are coerced to int.
 _GUILD_EDITABLE = (
@@ -491,6 +504,38 @@ def edit_voice_state(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "mute_members")
     _edit_voice_state(ctx, guild_id, ctx.int_arg("user_id"))
+
+
+def _voice_state(ctx: RequestContext, guild_id: int, user_id: int) -> Any:
+    state = ctx.backend.get_guild(guild_id).voice_states.get(user_id)
+    if state is None:
+        raise errors.target_not_connected_to_voice()
+    return serializers.voice_state_payload(ctx.backend, state)
+
+
+@route("GET", "/guilds/{guild_id}/voice-states/@me")
+def get_my_voice_state(ctx: RequestContext) -> Any:
+    return _voice_state(ctx, ctx.int_arg("guild_id"), ctx.backend.bot_user.id)
+
+
+@route("GET", "/guilds/{guild_id}/voice-states/{user_id}")
+def get_voice_state(ctx: RequestContext) -> Any:
+    return _voice_state(ctx, ctx.int_arg("guild_id"), ctx.int_arg("user_id"))
+
+
+@route("GET", "/guilds/{guild_id}/vanity-url")
+def get_vanity_url(ctx: RequestContext) -> Any:
+    # Guild.vanity_invite() reads {code} here, then (if a code is set) fetches the
+    # invite itself. A guild with no vanity code reports None, which discord.py
+    # surfaces as ``vanity_invite() -> None``. The code is settable in the world
+    # builder (GuildHandle.set_vanity_url) so the populated path is real, not faked.
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "manage_guild")
+    guild = ctx.backend.get_guild(guild_id)
+    if guild.vanity_url_code is None:
+        return {"code": None}
+    invite = ctx.backend.invites.get(guild.vanity_url_code)
+    return {"code": guild.vanity_url_code, "uses": invite.uses if invite else 0}
 
 
 @route("POST", "/guilds/{guild_id}/roles")
