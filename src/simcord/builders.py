@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from .backend.errors import SetupError
 from .backend.models import (
     AuditLogEntry,
     Channel,
@@ -261,6 +262,25 @@ class GuildHandle:
 
     def invites(self) -> list[Invite]:
         return [inv for inv in self._env.backend.invites.values() if inv.guild_id == self.id]
+
+    def set_vanity_url(self, code: str) -> None:
+        """Give the guild a vanity invite code so ``Guild.vanity_invite()`` resolves.
+
+        Discord backs a vanity URL with a real invite, so this stores one under
+        ``code`` pointing at the guild's first channel — the populated path is
+        genuine modelled state a test can read back, not a constant fake.
+        """
+        if not self._guild.channel_ids:
+            raise SetupError("set_vanity_url needs a channel; create one first")
+        backend = self._env.backend
+        self._guild.vanity_url_code = code
+        backend.invites[code] = Invite(
+            code=code,
+            guild_id=self.id,
+            channel_id=self._guild.channel_ids[0],
+            inviter_id=backend.bot_user.id,
+            created_at=backend.now_iso(),
+        )
 
     def create_role(
         self, name: str, *, permissions: discord.Permissions | None = None, **fields: Any

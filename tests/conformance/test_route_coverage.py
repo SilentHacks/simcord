@@ -58,7 +58,8 @@ def test_unimplemented_methods_are_reported_as_gaps():
         "create_integration",
         "get_guild_onboarding",
         "edit_widget",
-        "delete_guild",
+        # GET vanity-url is implemented; editing it (change_vanity_code) is not.
+        "change_vanity_code",
     ):
         assert method in gap_methods, f"{method} is unimplemented but not reported as a gap"
 

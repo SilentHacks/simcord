@@ -27,6 +27,7 @@ class Guild:
     default_message_notifications: int = 0
     explicit_content_filter: int = 0
     preferred_locale: str = "en-US"
+    vanity_url_code: str | None = None
     roles: dict[int, Role] = field(default_factory=dict)
     members: dict[int, Member] = field(default_factory=dict)
     channel_ids: list[int] = field(default_factory=list)
