@@ -62,7 +62,7 @@ branch = true
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise AssertionError"]
 # Ratchet: raise as coverage improves, never lower (plan targets >=95% by 1.0).
-fail_under = 84
+fail_under = 86
 
 [tool.ruff]
 line-length = 110
