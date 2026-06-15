@@ -90,9 +90,9 @@ def create_guild_channel(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_channels")
     # Scalar fields mapped 1:1 onto the Channel model; overwrites are applied
-    # separately. Anything else discord.py can send on create (position,
-    # video_quality_mode, default_* forum settings, ...) is unmodelled and so
-    # fails loudly rather than being silently dropped.
+    # separately. Anything else discord.py can send on create (video_quality_mode,
+    # default_* forum settings, ...) is unmodelled and so fails loudly rather than
+    # being silently dropped.
     body = ctx.fields(
         "name",
         "type",
@@ -103,6 +103,7 @@ def create_guild_channel(ctx: RequestContext) -> Any:
         "user_limit",
         "rtc_region",
         "parent_id",
+        "position",
         ignore=("permission_overwrites",),
     )
     overwrites = [
@@ -120,6 +121,8 @@ def create_guild_channel(ctx: RequestContext) -> Any:
             fields[key] = body[key]
     if body.get("parent_id") is not None:
         fields["parent_id"] = int(body["parent_id"])
+    if body.get("position") is not None:
+        fields["position"] = int(body["position"])
     channel = backend.create_channel(
         guild_id,
         body.get("name"),
@@ -580,10 +583,20 @@ def get_role(ctx: RequestContext) -> Any:
 @route("PATCH", "/guilds/{guild_id}/roles")
 def move_role_positions(ctx: RequestContext) -> Any:
     # discord.py's Guild.edit_role_positions PATCHes the whole ordering as a JSON
-    # list (not an object), so read it off ctx.json rather than the body dict.
+    # list (not an object), vetted item-by-item by list_fields.
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
+    bot_id = backend.bot_user.id
     ctx.require_guild_permissions(guild_id, "manage_roles")
-    positions = ctx.json if isinstance(ctx.json, list) else []
+    positions = ctx.list_fields("id", "position")
+    # Validate the whole batch before moving anything: the bot can neither touch a
+    # role at/above its own top role nor lift one to/above it. Rejecting up front
+    # keeps the move atomic, as on real Discord, rather than half-applying it.
+    guild = backend.get_guild(guild_id)
+    for item in positions:
+        if item.get("position") is None or int(item["id"]) not in guild.roles:
+            continue
+        backend.require_role_assignable(guild_id, bot_id, int(item["id"]))
+        backend.require_position_assignable(guild_id, bot_id, int(item["position"]))
     guild = backend.reorder_roles(guild_id, positions)
     return [dict(serializers.role_payload(r)) for r in guild.roles.values()]

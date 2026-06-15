@@ -33,8 +33,10 @@ def edit_profile(ctx: RequestContext) -> Any:
 
 @route("GET", "/users/@me/guilds")
 def get_guilds(ctx: RequestContext) -> Any:
-    # ``Client.fetch_guilds`` pages this endpoint with an ascending ``before``
-    # cursor; simcord worlds are small, so one batch returns them all.
+    # ``Client.fetch_guilds`` pages with ``before``/``after`` cursors over an
+    # ascending-by-id list (its default after-strategy walks ``data[-1]`` upward,
+    # the before-strategy walks ``data[0]`` downward — both consume ascending
+    # order). simcord worlds are small, so one batch usually returns them all.
     backend = ctx.backend
     limit = int(ctx.params.get("limit", 200))
     guilds = sorted(backend.guilds.values(), key=lambda g: g.id)
