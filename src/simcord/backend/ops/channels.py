@@ -36,7 +36,10 @@ class ChannelMixin(BackendBase):
         self.messages[channel.id] = {}
         if guild_id is not None:
             guild = self.get_guild(guild_id)
-            channel.position = len(guild.channel_ids)
+            # A caller may pin an explicit position (create_text_channel(position=));
+            # otherwise the channel lands at the end of the existing ordering.
+            if "position" not in fields:
+                channel.position = len(guild.channel_ids)
             guild.channel_ids.append(channel.id)
             if announce:
                 self.emit("CHANNEL_CREATE", serializers.channel_payload(self, channel))

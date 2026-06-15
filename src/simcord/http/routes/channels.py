@@ -96,11 +96,12 @@ def edit_channel(ctx: RequestContext) -> Any:
 @route("PATCH", "/guilds/{guild_id}/channels")
 def bulk_update_channels(ctx: RequestContext) -> Any:
     # discord.py's bulk-move endpoint: the body is a JSON list of
-    # {id, position, parent_id?} updates, so it rides on ctx.json, not the body
-    # dict. This is the route any position-carrying channel edit takes.
+    # {id, position, parent_id?} updates, so it rides on ctx.json as an array.
+    # ``lock_permissions`` is accepted and discarded (overwrites are unchanged);
+    # any other per-item key fails loudly via list_fields, like every create.
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_channels")
-    updates = ctx.json if isinstance(ctx.json, list) else []
+    updates = ctx.list_fields("id", "position", "parent_id", ignore=("lock_permissions",))
     ctx.backend.reorder_channels(guild_id, updates)
 
 

@@ -38,6 +38,14 @@ class PermissionsMixin(BackendBase):
         if role.position >= guild.top_role_position(actor_id):
             raise errors.missing_permissions()
 
+    def require_position_assignable(self, guild_id: int, actor_id: int, position: int) -> None:
+        """A role can only be moved to a slot below the actor's own top role."""
+        guild = self.get_guild(guild_id)
+        if actor_id == guild.owner_id:
+            return
+        if position >= guild.top_role_position(actor_id):
+            raise errors.missing_permissions()
+
     def require_can_grant(self, guild_id: int, actor_id: int, role_permissions: int) -> None:
         """You cannot grant a role permissions you do not hold yourself (unless admin)."""
         guild = self.get_guild(guild_id)

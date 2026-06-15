@@ -214,3 +214,32 @@ async def test_create_sticker_multipart_fields_apply(env):
     assert backend_sticker.name == "wave"
     assert backend_sticker.description == "a wave"
     assert backend_sticker.tags == "👋"
+
+
+# --- bulk (JSON-array) bodies: the same honesty for list payloads -----------
+
+
+async def test_unsupported_bulk_channel_field_fails_loudly(env):
+    """The reorder endpoints take a JSON array, not an object — an unrecognised
+    per-item key must still surface loudly via ``list_fields``, not be dropped."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "PATCH",
+            f"/guilds/{env.guild.id}/channels",
+            json=[{"id": "1", "position": 0, "made_up_field": 1}],
+        )
+    assert "made_up_field" in exc.value.fields
+
+
+async def test_unsupported_bulk_role_field_fails_loudly(env):
+    """Role reordering is array-bodied too; unknown per-item keys fail loudly."""
+    everyone = env.guild.id
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "PATCH",
+            f"/guilds/{env.guild.id}/roles",
+            json=[{"id": str(everyone), "position": 0, "made_up_field": 1}],
+        )
+    assert "made_up_field" in exc.value.fields

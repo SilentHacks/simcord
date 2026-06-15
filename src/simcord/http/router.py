@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import json as _json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,6 +97,23 @@ class RequestContext:
         if unsupported:
             raise UnsupportedField(self.method, self.path, unsupported)
         return {key: body[key] for key in handled if key in body}
+
+    def list_fields(self, *handled: str, ignore: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        """The :meth:`fields` honesty guarantee for JSON-array bodies.
+
+        The bulk reorder endpoints (``PATCH /guilds/{id}/roles`` and
+        ``PATCH /guilds/{id}/channels``) send a *list* of per-item dicts rather
+        than a single object, so :meth:`fields` does not apply. Vet every item's
+        keys the same way — anything neither handled nor ignored across any item
+        raises :class:`UnsupportedField` — and return the items unchanged so a
+        parity gap in a bulk payload is just as loud as in a scalar one.
+        """
+        items = [item for item in (self.json or []) if isinstance(item, Mapping)]
+        allowed = set(handled) | set(ignore)
+        unsupported = sorted({key for item in items for key in item if key not in allowed})
+        if unsupported:
+            raise UnsupportedField(self.method, self.path, unsupported)
+        return [dict(item) for item in items]
 
     def require_channel_permissions(self, channel_id: int, *names: str) -> Channel:
         """Check the bot has ``names`` in a channel; return the channel.
