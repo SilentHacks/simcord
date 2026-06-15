@@ -6,7 +6,7 @@ from typing import Any
 
 from ...backend import errors, serializers
 from ...enums import AuditLogAction, ChannelType
-from .._helpers import bot_message, message_response
+from .._helpers import bot_message, message_edit_changes, message_response
 from ..router import RequestContext, route
 
 
@@ -70,12 +70,7 @@ def edit_message(ctx: RequestContext) -> Any:
     # someone else's message is exactly the kind of bug this framework surfaces.
     if message.author_id != backend.bot_user.id:
         raise errors.cannot_edit_other_user()
-    # allowed_mentions is accepted but not modelled: simcord derives mentions
-    # from message content, so there is no separate mention-suppression state.
-    changes = ctx.fields(
-        "content", "embeds", "components", "attachments", "flags", ignore=("allowed_mentions", "tts")
-    )
-    message = backend.edit_message(channel_id, message.id, changes)
+    message = backend.edit_message(channel_id, message.id, message_edit_changes(ctx))
     return message_response(ctx, message)
 
 

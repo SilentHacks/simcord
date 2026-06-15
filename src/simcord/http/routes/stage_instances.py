@@ -11,7 +11,11 @@ from ..router import RequestContext, route
 @route("POST", "/stage-instances")
 def create_stage_instance(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    body = ctx.body()
+    # send_start_notification and guild_scheduled_event_id have no offline effect
+    # and are accepted and discarded.
+    body = ctx.fields(
+        "channel_id", "topic", "privacy_level", ignore=("send_start_notification", "guild_scheduled_event_id")
+    )
     channel_id = int(body["channel_id"])
     ctx.require_channel_permissions(channel_id, "manage_channels")
     instance = backend.create_stage_instance(

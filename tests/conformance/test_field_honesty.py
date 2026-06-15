@@ -9,6 +9,8 @@ fields a supported area implies are actually wired through to backend state.
 
 from __future__ import annotations
 
+import io
+
 import discord
 import pytest
 
@@ -139,3 +141,76 @@ async def test_guild_edit_channel_pointers_apply(env):
     backend_guild = env.backend.get_guild(guild.id)
     assert backend_guild.rules_channel_id == rules.id
     assert backend_guild.public_updates_channel_id == updates.id
+
+
+# --- create-projection honesty: the same guarantee at creation time ----------
+
+
+async def test_unsupported_create_field_fails_loudly(env):
+    """A body key no create handler honours raises UnsupportedField, naming it."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/guilds/{env.guild.id}/channels",
+            json={"name": "x", "type": 0, "made_up_field": 1},
+        )
+    assert "made_up_field" in exc.value.fields
+
+
+async def test_create_voice_channel_unmodelled_field_rejected(env):
+    """An unmodelled create field surfaces loudly, not as a swallowable error."""
+    guild = env.bot.get_guild(env.guild.id)
+    with pytest.raises(router.UnsupportedField):
+        try:
+            await guild.create_voice_channel("V", video_quality_mode=discord.VideoQualityMode.full)
+        except discord.HTTPException:  # pragma: no cover - would mean the gap was swallowed
+            pytest.fail("a create parity gap was disguised as discord.HTTPException")
+
+
+async def test_create_text_channel_supported_fields_apply(env):
+    """TextChannel create fields are wired through, not silently dropped."""
+    guild = env.bot.get_guild(env.guild.id)
+    channel = await guild.create_text_channel("support", topic="help here", nsfw=True, slowmode_delay=5)
+    await env.settle()
+
+    backend_channel = env.backend.get_channel(channel.id)
+    assert backend_channel.topic == "help here"
+    assert backend_channel.nsfw is True
+    assert backend_channel.rate_limit_per_user == 5
+
+
+async def test_create_role_colour_applies(env):
+    """Role create honours colour — discord.py sends the gradient ``colors``
+    object, so reading the legacy ``color`` key would silently drop it."""
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(
+        name="Coloured",
+        colour=discord.Colour(0x00FF00),
+        hoist=True,
+        permissions=discord.Permissions(manage_messages=True),
+    )
+    await env.settle()
+
+    backend_role = env.backend.get_role(guild.id, role.id)
+    assert backend_role.color == 0x00FF00
+    assert backend_role.hoist is True
+    assert backend_role.permissions == discord.Permissions(manage_messages=True).value
+
+
+async def test_create_sticker_multipart_fields_apply(env):
+    """Sticker creation is multipart: name/description/tags arrive as scalar form
+    parts (reconstructed by ``parse_form``) and must reach backend state."""
+    guild = env.bot.get_guild(env.guild.id)
+    sticker = await guild.create_sticker(
+        name="wave",
+        description="a wave",
+        emoji="👋",
+        file=discord.File(io.BytesIO(b"not-a-real-png"), filename="wave.png"),
+    )
+    await env.settle()
+
+    backend_sticker = env.backend.get_guild(guild.id).stickers[sticker.id]
+    assert backend_sticker.name == "wave"
+    assert backend_sticker.description == "a wave"
+    assert backend_sticker.tags == "👋"

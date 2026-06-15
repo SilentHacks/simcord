@@ -23,7 +23,17 @@ def create_rule(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _AUTOMOD_PERM)
-    rule = backend.create_auto_mod_rule(guild_id, backend.bot_user.id, ctx.body())
+    body = ctx.fields(
+        "name",
+        "event_type",
+        "trigger_type",
+        "trigger_metadata",
+        "actions",
+        "enabled",
+        "exempt_roles",
+        "exempt_channels",
+    )
+    rule = backend.create_auto_mod_rule(guild_id, backend.bot_user.id, body)
     return serializers.auto_mod_rule_payload(backend, rule)
 
 

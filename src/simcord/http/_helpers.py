@@ -94,5 +94,19 @@ def _validate_embeds(embeds: list[dict[str, Any]]) -> None:
             raise errors.invalid_form_body("embeds: total size of embeds exceeds 6000 characters")
 
 
+def message_edit_changes(ctx: RequestContext) -> dict[str, Any]:
+    """The message fields an edit honours, vetted for parity.
+
+    Shared by channel message edits and interaction response/followup edits,
+    which are all webhook-message-shaped. ``allowed_mentions`` and ``tts`` are
+    accepted and discarded (simcord derives mentions from content and never
+    speaks); any other unrecognised field fails loudly with ``UnsupportedField``
+    rather than being silently dropped.
+    """
+    return ctx.fields(
+        "content", "embeds", "components", "attachments", "flags", ignore=("allowed_mentions", "tts")
+    )
+
+
 def message_response(ctx: RequestContext, message: Message) -> dict[str, Any]:
     return dict(serializers.message_payload(ctx.backend, message))

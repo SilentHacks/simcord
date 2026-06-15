@@ -11,7 +11,7 @@ from typing import Any
 from ...backend import errors
 from ...backend.models import EPHEMERAL_FLAG, Interaction
 from ...enums import CallbackType
-from .._helpers import bot_message, message_response
+from .._helpers import bot_message, message_edit_changes, message_response
 from ..router import RequestContext, route
 
 
@@ -109,7 +109,7 @@ def edit_original_response(ctx: RequestContext) -> Any:
         return message_response(ctx, message)
     if record.message_id is None:
         raise errors.unknown_message()
-    message = backend.edit_message(record.channel_id, record.message_id, ctx.body())
+    message = backend.edit_message(record.channel_id, record.message_id, message_edit_changes(ctx))
     return message_response(ctx, message)
 
 
@@ -130,7 +130,7 @@ def get_followup(ctx: RequestContext) -> Any:
 @route("PATCH", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
 def edit_followup(ctx: RequestContext) -> Any:
     record = _record(ctx)
-    message = ctx.backend.edit_message(record.channel_id, ctx.int_arg("message_id"), ctx.body())
+    message = ctx.backend.edit_message(record.channel_id, ctx.int_arg("message_id"), message_edit_changes(ctx))
     return message_response(ctx, message)
 
 

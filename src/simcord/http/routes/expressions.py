@@ -21,7 +21,8 @@ def create_emoji(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _EXPRESSION_PERM)
-    body = ctx.body()
+    # image (CDN bytes) is accepted and discarded — no image storage offline.
+    body = ctx.fields("name", "roles", ignore=("image",))
     emoji = backend.create_emoji(
         guild_id,
         body["name"],
@@ -72,7 +73,10 @@ def create_sticker(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _EXPRESSION_PERM)
-    body = ctx.body()
+    # Sticker creation is multipart: the image rides as a file (discarded — no
+    # image storage offline) while name/description/tags arrive as scalar parts,
+    # reconstructed into the body by ``parse_form``.
+    body = ctx.fields("name", "description", "tags")
     sticker = backend.create_sticker(
         guild_id,
         body["name"],

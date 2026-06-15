@@ -150,13 +150,25 @@ def typing(ctx: RequestContext) -> Any:
 def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = backend.get_channel(ctx.int_arg("channel_id"))
-    body = ctx.body()
     if channel.type == ChannelType.FORUM:
         # A forum post is a message posted into the forum, so it is gated on
-        # send_messages there, not create_public_threads.
+        # send_messages there, not create_public_threads. Thread slowmode
+        # (rate_limit_per_user) is accepted and discarded — unmodelled offline.
         ctx.require_channel_permissions(channel.id, "send_messages")
+        # A forum post is always a public thread, so ``type`` is accepted and
+        # discarded; thread slowmode (rate_limit_per_user) is unmodelled.
+        body = ctx.fields(
+            "name",
+            "message",
+            "applied_tags",
+            "auto_archive_duration",
+            ignore=("type", "rate_limit_per_user"),
+        )
         return _create_forum_post(ctx, channel.id, body)
     ctx.require_channel_permissions(channel.id, "create_public_threads")
+    # invitable (private-thread joinability) and rate_limit_per_user are accepted
+    # and discarded: neither is modelled for offline threads.
+    body = ctx.fields("name", "type", "auto_archive_duration", ignore=("invitable", "rate_limit_per_user"))
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -200,7 +212,8 @@ def create_thread_from_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
     message = backend.get_message(channel.id, ctx.int_arg("message_id"))
-    body = ctx.body()
+    # rate_limit_per_user (thread slowmode) is accepted and discarded.
+    body = ctx.fields("name", "auto_archive_duration", ignore=("rate_limit_per_user",))
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -276,7 +289,9 @@ def joined_archived_private_threads(ctx: RequestContext) -> Any:
 def create_webhook(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_webhooks")
-    webhook = backend.create_webhook(channel.id, ctx.body().get("name") or "Webhook", backend.bot_user.id)
+    # avatar (CDN image) is accepted and discarded.
+    body = ctx.fields("name", ignore=("avatar",))
+    webhook = backend.create_webhook(channel.id, body.get("name") or "Webhook", backend.bot_user.id)
     return serializers.webhook_payload(backend, webhook)
 
 
