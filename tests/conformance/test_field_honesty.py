@@ -243,3 +243,90 @@ async def test_unsupported_bulk_role_field_fails_loudly(env):
             json=[{"id": str(everyone), "position": 0, "made_up_field": 1}],
         )
     assert "made_up_field" in exc.value.fields
+
+
+# --- handlers that previously read the raw body directly --------------------
+# These four route handlers used ``ctx.body().get(...)`` and so silently dropped
+# unknown keys; they now route through ``ctx.fields`` like every other handler.
+
+
+async def test_unsupported_overwrite_field_fails_loudly(env, channel):
+    """PUT channel permission overwrite rejects an unmodelled key."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "PUT",
+            f"/channels/{channel.id}/permissions/{env.guild.id}",
+            json={"type": 0, "allow": "0", "deny": "0", "made_up_field": 1},
+        )
+    assert "made_up_field" in exc.value.fields
+
+
+async def test_unsupported_bulk_ban_field_fails_loudly(env):
+    """POST bulk-ban rejects an unmodelled key (delete_message_seconds is ignored)."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/guilds/{env.guild.id}/bulk-ban",
+            json={"user_ids": ["1"], "made_up_field": 1},
+        )
+    assert "made_up_field" in exc.value.fields
+
+
+async def test_unsupported_prune_field_fails_loudly(env):
+    """POST prune rejects an unmodelled key."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/guilds/{env.guild.id}/prune",
+            json={"days": 7, "made_up_field": 1},
+        )
+    assert "made_up_field" in exc.value.fields
+
+
+async def test_prune_role_filter_rejected(env):
+    """``include_roles`` is rejected, not silently ignored: simcord models prune
+    as "roleless members", so honouring a role filter would prune a different
+    cohort than asked. Failing loudly is the honest stance, not a silent fake."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/guilds/{env.guild.id}/prune",
+            json={"days": 7, "include_roles": [str(env.guild.id)]},
+        )
+    assert "include_roles" in exc.value.fields
+
+
+async def test_prune_count_can_be_suppressed(env):
+    """compute_prune_count arrives as the string "false"; the count is then
+    omitted (returned as None) rather than always computed."""
+    suppressed = router.dispatch(
+        env.backend,
+        "POST",
+        f"/guilds/{env.guild.id}/prune",
+        json={"days": 7, "compute_prune_count": "false"},
+    )
+    assert suppressed["pruned"] is None
+    counted = router.dispatch(
+        env.backend,
+        "POST",
+        f"/guilds/{env.guild.id}/prune",
+        json={"days": 7, "compute_prune_count": "true"},
+    )
+    assert counted["pruned"] is not None
+
+
+async def test_unsupported_voice_state_field_fails_loudly(env):
+    """PATCH voice-state rejects an unmodelled key before the connection check,
+    so the parity gap is loud even for a member who is not in voice."""
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "PATCH",
+            f"/guilds/{env.guild.id}/voice-states/@me",
+            json={"made_up_field": 1},
+        )
+    assert "made_up_field" in exc.value.fields

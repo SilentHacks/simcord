@@ -126,7 +126,7 @@ def delete_channel(ctx: RequestContext) -> Any:
 @route("PUT", "/channels/{channel_id}/permissions/{target_id}")
 def edit_overwrite(ctx: RequestContext) -> Any:
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_roles")
-    body = ctx.body()
+    body = ctx.fields("type", "allow", "deny")
     ctx.backend.set_overwrite(
         channel.id,
         Overwrite(
