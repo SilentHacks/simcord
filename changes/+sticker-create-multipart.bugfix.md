@@ -1,1 +1,0 @@
-Fixed sticker creation via the REST route: multipart scalar form fields (`name`/`description`/`tags`) are now reconstructed into the request body. Also fixed `create_role` to honour discord.py 2.7's gradient `colors` payload (previously the colour was silently dropped on create).

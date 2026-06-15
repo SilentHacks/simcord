@@ -4,6 +4,26 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 0.10.0 (2026-06-15)
+
+### Features
+
+- Create handlers now reject unrecognised request fields with `UnsupportedField` instead of silently dropping them, extending field-level honest parity from edits to creates (channels, roles, threads, webhooks, invites, emojis, stickers, scheduled events, stage instances and auto-moderation rules). The same honesty now also covers the JSON-array bodies of the bulk reorder endpoints, so an unknown per-item key fails loudly there too. Channel creation honours an explicit `position` rather than always appending.
+- Implemented several common-bot REST routes: `Guild.fetch_role`, role and channel reordering (`Guild.edit_role_positions`, `Channel.move`), editing the bot's own nickname (`guild.me.edit`), `Guild.leave`, `Client.fetch_guilds`, and bot username edits (`ClientUser.edit`). Role reordering enforces hierarchy — moving a role to or above the bot's own top role raises `Forbidden`, as on real Discord.
+
+### Bug fixes
+
+- Fixed sticker creation via the REST route: multipart scalar form fields (`name`/`description`/`tags`) are now reconstructed into the request body. Also fixed `create_role` to honour discord.py 2.7's gradient `colors` payload (previously the colour was silently dropped on create).
+
+### Documentation
+
+- Added a "Stability & versioning" reference page documenting which parts of the API are public and semver-covered versus deliberately internal.
+
+### Miscellaneous
+
+- The parity matrix now separates deliberately out-of-scope routes (actions a bot account cannot perform, e.g. creating group DMs) from not-yet-implemented gaps, with the new section generated and drift-guarded like the others.
+
+
 ## 0.9.0 (2026-06-15)
 
 ### Features
