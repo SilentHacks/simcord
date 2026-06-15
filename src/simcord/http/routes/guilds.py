@@ -263,6 +263,24 @@ def edit_member(ctx: RequestContext) -> Any:
     return dict(serializers.member_payload(backend, guild, member))
 
 
+@route("PATCH", "/guilds/{guild_id}/members/@me")
+def edit_my_member(ctx: RequestContext) -> Any:
+    # The bot editing its own member — in practice its nickname (``guild.me.edit``).
+    # avatar/banner/bio are bot-self-only fields simcord does not model, so they
+    # fail loudly via ctx.fields rather than being silently dropped.
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    guild = backend.get_guild(guild_id)
+    bot_id = backend.bot_user.id
+    body = ctx.fields("nick")
+    if "nick" in body:
+        ctx.require_guild_permissions(guild_id, "change_nickname")
+        member = backend.edit_member(guild_id, bot_id, {"nick": body["nick"]})
+    else:
+        member = backend.get_member(guild_id, bot_id)
+    return dict(serializers.member_payload(backend, guild, member))
+
+
 @route("PUT", "/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
 def add_member_role(ctx: RequestContext) -> Any:
     backend = ctx.backend
@@ -550,4 +568,22 @@ def delete_role(ctx: RequestContext) -> Any:
 @route("GET", "/guilds/{guild_id}/roles")
 def get_roles(ctx: RequestContext) -> Any:
     guild = ctx.backend.get_guild(ctx.int_arg("guild_id"))
+    return [dict(serializers.role_payload(r)) for r in guild.roles.values()]
+
+
+@route("GET", "/guilds/{guild_id}/roles/{role_id}")
+def get_role(ctx: RequestContext) -> Any:
+    role = ctx.backend.get_role(ctx.int_arg("guild_id"), ctx.int_arg("role_id"))
+    return dict(serializers.role_payload(role))
+
+
+@route("PATCH", "/guilds/{guild_id}/roles")
+def move_role_positions(ctx: RequestContext) -> Any:
+    # discord.py's Guild.edit_role_positions PATCHes the whole ordering as a JSON
+    # list (not an object), so read it off ctx.json rather than the body dict.
+    backend = ctx.backend
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "manage_roles")
+    positions = ctx.json if isinstance(ctx.json, list) else []
+    guild = backend.reorder_roles(guild_id, positions)
     return [dict(serializers.role_payload(r)) for r in guild.roles.values()]

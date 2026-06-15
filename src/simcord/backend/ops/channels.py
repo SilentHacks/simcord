@@ -84,6 +84,33 @@ class ChannelMixin(BackendBase):
         self.announce_channel_update(channel.id)
         return channel
 
+    def reorder_channels(self, guild_id: int, updates: Iterable[Mapping[str, Any]]) -> None:
+        """Apply ``{id, position, parent_id?}`` updates from the bulk-move endpoint.
+
+        discord.py routes any position-carrying channel move through
+        ``PATCH /guilds/{id}/channels`` (sending the whole sibling ordering), and
+        attaches ``parent_id``/``lock_permissions`` to the moved channel.
+        ``lock_permissions`` is accepted and ignored — overwrites are unchanged.
+        """
+        changed: list[Channel] = []
+        for item in updates:
+            channel = self.channels.get(int(item["id"]))
+            if channel is None or channel.guild_id != guild_id:
+                continue
+            moved = False
+            if item.get("position") is not None and channel.position != int(item["position"]):
+                channel.position = int(item["position"])
+                moved = True
+            if "parent_id" in item:
+                new_parent = int(item["parent_id"]) if item["parent_id"] is not None else None
+                if channel.parent_id != new_parent:
+                    channel.parent_id = new_parent
+                    moved = True
+            if moved:
+                changed.append(channel)
+        for channel in changed:
+            self.announce_channel_update(channel.id)
+
     # ---------------------------------------------------------- thread members
 
     def get_thread(self, channel_id: int) -> Channel:

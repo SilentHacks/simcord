@@ -93,6 +93,17 @@ def edit_channel(ctx: RequestContext) -> Any:
     return dict(serializers.channel_payload(backend, channel))
 
 
+@route("PATCH", "/guilds/{guild_id}/channels")
+def bulk_update_channels(ctx: RequestContext) -> Any:
+    # discord.py's bulk-move endpoint: the body is a JSON list of
+    # {id, position, parent_id?} updates, so it rides on ctx.json, not the body
+    # dict. This is the route any position-carrying channel edit takes.
+    guild_id = ctx.int_arg("guild_id")
+    ctx.require_guild_permissions(guild_id, "manage_channels")
+    updates = ctx.json if isinstance(ctx.json, list) else []
+    ctx.backend.reorder_channels(guild_id, updates)
+
+
 @route("DELETE", "/channels/{channel_id}")
 def delete_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend

@@ -28,8 +28,19 @@ BEGIN_MARKER = "<!-- routes:begin (generated — do not edit by hand) -->"
 END_MARKER = "<!-- routes:end -->"
 GAPS_BEGIN_MARKER = "<!-- gaps:begin (generated — do not edit by hand) -->"
 GAPS_END_MARKER = "<!-- gaps:end -->"
+OOS_BEGIN_MARKER = "<!-- out-of-scope:begin (generated — do not edit by hand) -->"
+OOS_END_MARKER = "<!-- out-of-scope:end -->"
 
 _METHOD_ORDER = {"GET": 0, "POST": 1, "PUT": 2, "PATCH": 3, "DELETE": 4}
+
+# discord.py REST methods a bot can never drive, so they are deliberately never
+# implemented rather than left as "not yet" gaps — distinguishing intent from
+# backlog keeps the gap count honest. Kept deliberately small: only operations
+# genuinely impossible for a bot, not merely unbuilt ones.
+#
+# * ``start_group`` — creating a group DM is a user-account-only action; bots
+#   cannot open group DMs at all.
+OUT_OF_SCOPE = frozenset({"start_group"})
 
 # discord.py HTTPClient members that are not REST endpoints (transport plumbing,
 # the gateway, the CDN), so they have no route to compare against.
@@ -97,14 +108,35 @@ def discordpy_rest_routes() -> dict[str, list[tuple[str, str]]]:
 
 
 def unimplemented_routes() -> list[tuple[str, str, str]]:
-    """The discord.py REST routes simcord does not serve: (method, verb, path)."""
+    """The discord.py REST routes simcord does not serve: (method, verb, path).
+
+    Excludes :data:`OUT_OF_SCOPE` methods, which are reported separately as
+    deliberate non-goals rather than backlog.
+    """
     implemented = {(verb, _normalize(path)) for verb, path in implemented_routes()}
     gaps: set[tuple[str, str, str]] = set()
     for name, built in discordpy_rest_routes().items():
+        if name in OUT_OF_SCOPE:
+            continue
         for verb, path in built:
             if (verb, path) not in implemented:
                 gaps.add((name, verb, path))
     return sorted(gaps, key=lambda g: (g[2], _METHOD_ORDER.get(g[1], 9), g[0]))
+
+
+def out_of_scope_routes() -> list[tuple[str, str, str]]:
+    """The discord.py REST routes simcord deliberately never implements.
+
+    Derived from :data:`OUT_OF_SCOPE` against the live discord.py surface, so a
+    name that discord.py renames or drops makes the matrix stale (and the drift
+    guard fail) rather than silently lingering.
+    """
+    built = discordpy_rest_routes()
+    out: set[tuple[str, str, str]] = set()
+    for name in OUT_OF_SCOPE:
+        for verb, path in built.get(name, ()):
+            out.add((name, verb, path))
+    return sorted(out, key=lambda g: (g[2], _METHOD_ORDER.get(g[1], 9), g[0]))
 
 
 def routes_section() -> str:
@@ -141,6 +173,24 @@ def gaps_section() -> str:
     return "\n".join(lines)
 
 
+def out_of_scope_section() -> str:
+    """The generated markdown section listing deliberate non-goals."""
+    routes = out_of_scope_routes()
+    lines = [
+        OOS_BEGIN_MARKER,
+        "",
+        f"{len(routes)} discord.py REST route(s) are intentionally out of scope — actions a bot "
+        "cannot perform, so they will not be implemented (calling one still fails loudly with "
+        "`RouteNotImplemented`).",
+        "",
+        "| discord.py `HTTPClient` method | Route |",
+        "| --- | --- |",
+    ]
+    lines += [f"| `{name}` | `{verb} {path}` |" for name, verb, path in routes]
+    lines += ["", OOS_END_MARKER]
+    return "\n".join(lines)
+
+
 def _replace_section(text: str, begin: str, end: str, section: str) -> str:
     start = text.index(begin)
     stop = text.index(end) + len(end)
@@ -148,10 +198,11 @@ def _replace_section(text: str, begin: str, end: str, section: str) -> str:
 
 
 def update_matrix(path: Path) -> bool:
-    """Rewrite both generated sections in ``path``; returns True if it changed."""
+    """Rewrite every generated section in ``path``; returns True if it changed."""
     text = path.read_text()
     updated = _replace_section(text, BEGIN_MARKER, END_MARKER, routes_section())
     updated = _replace_section(updated, GAPS_BEGIN_MARKER, GAPS_END_MARKER, gaps_section())
+    updated = _replace_section(updated, OOS_BEGIN_MARKER, OOS_END_MARKER, out_of_scope_section())
     if updated != text:
         path.write_text(updated)
         return True

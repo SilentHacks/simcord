@@ -70,3 +70,42 @@ async def test_guild_edit_requires_manage_guild(env):
     with pytest.raises(discord.Forbidden) as exc_info:
         await guild.edit(name="nope")
     assert exc_info.value.code == 50013
+
+
+async def test_bot_leaves_guild(env):
+    guild = env.bot.get_guild(env.guild.id)
+    assert guild is not None
+
+    await guild.leave()
+    await env.settle()
+
+    # GUILD_DELETE evicts it from the bot's cache, just like a kick.
+    assert env.bot.get_guild(env.guild.id) is None
+    assert env.guild.id not in env.backend.guilds
+
+
+async def test_fetch_guilds_lists_bot_guilds(env):
+    with pytest.warns(DeprecationWarning):  # second world the bot is in
+        await env.bot.create_guild(name="Second")
+    await env.settle()
+
+    fetched = {g.id async for g in env.bot.fetch_guilds()}
+    assert env.guild.id in fetched
+    assert len(fetched) == len(env.backend.guilds)
+
+
+async def test_edit_bot_profile_username(env):
+    edited = await env.bot.user.edit(username="Renamed Bot")
+    await env.settle()
+
+    assert edited.name == "Renamed Bot"
+    assert env.backend.bot_user.name == "Renamed Bot"
+
+
+async def test_edit_own_nickname(env):
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.me.edit(nick="Helper")
+    await env.settle()
+
+    assert env.backend.get_member(env.guild.id, env.bot.user.id).nick == "Helper"
+    assert env.bot.get_guild(env.guild.id).me.nick == "Helper"

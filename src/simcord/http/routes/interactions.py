@@ -130,7 +130,9 @@ def get_followup(ctx: RequestContext) -> Any:
 @route("PATCH", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
 def edit_followup(ctx: RequestContext) -> Any:
     record = _record(ctx)
-    message = ctx.backend.edit_message(record.channel_id, ctx.int_arg("message_id"), message_edit_changes(ctx))
+    message = ctx.backend.edit_message(
+        record.channel_id, ctx.int_arg("message_id"), message_edit_changes(ctx)
+    )
     return message_response(ctx, message)
 
 

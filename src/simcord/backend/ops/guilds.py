@@ -68,6 +68,19 @@ class GuildMixin(BackendBase):
         self.emit("GUILD_UPDATE", serializers.guild_create_payload(self, guild))
         return guild
 
+    def remove_guild(self, guild_id: int) -> None:
+        """Drop a guild the bot has left (and its channels) and announce GUILD_DELETE.
+
+        Mirrors a real removal: the gateway projection fires GUILD_DELETE so the
+        bot's cache evicts the guild, exactly as when it is kicked or leaves.
+        """
+        guild = self.get_guild(guild_id)
+        for channel_id in list(guild.channel_ids) + list(guild.thread_ids):
+            self.channels.pop(channel_id, None)
+            self.messages.pop(channel_id, None)
+        del self.guilds[guild_id]
+        self.emit("GUILD_DELETE", {"id": str(guild_id)})
+
     # --------------------------------------------------------------- members
 
     def get_member(self, guild_id: int, user_id: int) -> Member:
@@ -192,6 +205,29 @@ class GuildMixin(BackendBase):
             setattr(role, attr, value)
         self.emit("GUILD_ROLE_UPDATE", {"guild_id": str(guild_id), "role": serializers.role_payload(role)})
         return role
+
+    def reorder_roles(self, guild_id: int, positions: Iterable[Mapping[str, Any]]) -> Guild:
+        """Apply a list of ``{id, position}`` updates and announce each move.
+
+        discord.py's ``Guild.edit_role_positions`` sends the whole new ordering
+        through ``PATCH /guilds/{id}/roles``; only the roles whose position
+        actually changes fire GUILD_ROLE_UPDATE.
+        """
+        guild = self.get_guild(guild_id)
+        changed: list[Role] = []
+        for item in positions:
+            role = guild.roles.get(int(item["id"]))
+            if role is None or item.get("position") is None:
+                continue
+            new_position = int(item["position"])
+            if role.position != new_position:
+                role.position = new_position
+                changed.append(role)
+        for role in changed:
+            self.emit(
+                "GUILD_ROLE_UPDATE", {"guild_id": str(guild_id), "role": serializers.role_payload(role)}
+            )
+        return guild
 
     def delete_role(self, guild_id: int, role_id: int) -> None:
         guild = self.get_guild(guild_id)
