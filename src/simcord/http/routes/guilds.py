@@ -369,7 +369,10 @@ def bulk_ban(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "ban_members", "manage_guild")
     guild = backend.get_guild(guild_id)
-    user_ids = [int(u) for u in ctx.body().get("user_ids") or []]
+    # delete_message_seconds is accepted-and-discarded: simcord does not model
+    # message purging on ban, but an unrecognised key must still fail loudly.
+    body = ctx.fields("user_ids", ignore=("delete_message_seconds",))
+    user_ids = [int(u) for u in body.get("user_ids") or []]
     if not user_ids:
         # Real Discord 400s a bulk ban with no users; the per-user failed list is
         # how it reports users that simply could not be banned (a 200 response).
@@ -420,7 +423,10 @@ def prune_members(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "kick_members")
     guild = backend.get_guild(guild_id)
-    body = ctx.body()
+    # ``include_roles`` is deliberately *not* accepted: simcord models "inactive"
+    # as "roleless" (see _prunable), so honouring a role filter would silently
+    # prune a different cohort than asked. Failing loudly is the honest stance.
+    body = ctx.fields("days", "compute_prune_count")
     targets = _prunable(backend, guild)
     for user_id in targets:
         backend.remove_member(guild_id, user_id)
@@ -431,7 +437,9 @@ def prune_members(ctx: RequestContext) -> Any:
         options={"delete_member_days": str(body.get("days", 7)), "members_removed": str(len(targets))},
         reason=ctx.reason,
     )
-    return {"pruned": len(targets) if body.get("compute_prune_count", True) else None}
+    # discord.py serialises compute_prune_count as the string "true"/"false".
+    compute = str(body.get("compute_prune_count", "true")).lower() != "false"
+    return {"pruned": len(targets) if compute else None}
 
 
 def _ban_payload(ctx: RequestContext, user_id: int, reason: Any) -> dict[str, Any]:
@@ -455,10 +463,14 @@ def get_ban(ctx: RequestContext) -> Any:
 
 def _edit_voice_state(ctx: RequestContext, guild_id: int, user_id: int) -> None:
     backend = ctx.backend
+    # Validate the body before the state lookup so an unmodelled field fails
+    # loudly even for a member who is not connected. channel_id is sent for
+    # server-side validation but never moves the member here (suppress /
+    # request-to-speak only), so it is accepted-and-discarded.
+    body = ctx.fields("suppress", "request_to_speak_timestamp", ignore=("channel_id",))
     state = backend.get_guild(guild_id).voice_states.get(user_id)
     if state is None:
         raise errors.target_not_connected_to_voice()
-    body = ctx.body()
     flags: dict[str, Any] = {}
     if "suppress" in body:
         flags["suppress"] = bool(body["suppress"])
