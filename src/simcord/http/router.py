@@ -200,9 +200,23 @@ def _check_faults(backend: Backend, method: str, path: str) -> None:
 
 
 def parse_form(form: list[dict[str, Any]], files: list[Any]) -> tuple[Any | None, list[Any]]:
-    """Extract the JSON payload from a multipart form built by discord.py."""
+    """Extract the JSON payload from a multipart form built by discord.py.
+
+    Most multipart calls (messages/webhooks with attachments) carry the body in a
+    single ``payload_json`` part. A few — notably sticker creation — instead send
+    each field as its own scalar part (``name``/``description``/``tags``) beside
+    the file. Reconstruct those into a body dict so the route handler sees them
+    (and can vet them through :meth:`RequestContext.fields`); ``payload_json``
+    still wins when present.
+    """
     payload = None
+    scalar: dict[str, Any] = {}
     for part in form:
-        if part.get("name") == "payload_json":
+        name = part.get("name")
+        if name == "payload_json":
             payload = _json.loads(part["value"])
+        elif name is not None and "filename" not in part:
+            scalar[name] = part["value"]
+    if payload is None and scalar:
+        payload = scalar
     return payload, list(files or [])

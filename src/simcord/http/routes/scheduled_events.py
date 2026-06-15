@@ -33,7 +33,18 @@ def create_scheduled_event(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_events")
-    body = ctx.body()
+    # privacy_level (always GUILD_ONLY) and image (CDN cover) are accepted and
+    # discarded — neither is modelled offline.
+    body = ctx.fields(
+        "name",
+        "entity_type",
+        "scheduled_start_time",
+        "scheduled_end_time",
+        "channel_id",
+        "description",
+        "entity_metadata",
+        ignore=("privacy_level", "image"),
+    )
     _validate_entity(body)
     event = backend.create_scheduled_event(
         guild_id,

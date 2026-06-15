@@ -49,7 +49,9 @@ def list_application_emojis(ctx: RequestContext) -> Any:
 @route("POST", "/applications/{application_id}/emojis")
 def create_application_emoji(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    emoji = backend.create_application_emoji(ctx.body()["name"])
+    # image (CDN bytes) is accepted and discarded.
+    body = ctx.fields("name", ignore=("image",))
+    emoji = backend.create_application_emoji(body["name"])
     return serializers.guild_emoji_payload(backend, emoji)
 
 
@@ -75,7 +77,7 @@ def delete_application_emoji(ctx: RequestContext) -> Any:
 def create_dm(ctx: RequestContext) -> Any:
     # Real Discord happily opens the DM channel even for a bot recipient; the
     # 50007 only surfaces when a message is actually sent (see send_message).
-    recipient_id = int(ctx.body()["recipient_id"])
+    recipient_id = int(ctx.fields("recipient_id")["recipient_id"])
     ctx.backend.get_user(recipient_id)
     channel = ctx.backend.get_dm_channel(recipient_id)
     return dict(serializers.channel_payload(ctx.backend, channel))

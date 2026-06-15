@@ -13,8 +13,10 @@ from ..router import RequestContext, route
 @route("POST", "/guilds")
 def create_guild(ctx: RequestContext) -> Any:
     # A bot that creates a guild becomes its owner, exactly as on real Discord.
+    # ``icon`` is accepted and discarded: there is no image rendering offline.
     backend = ctx.backend
-    guild = backend.create_guild(ctx.body().get("name") or "Guild", owner_id=backend.bot_user.id)
+    body = ctx.fields("name", ignore=("icon",))
+    guild = backend.create_guild(body.get("name") or "Guild", owner_id=backend.bot_user.id)
     return dict(serializers.guild_create_payload(backend, guild))
 
 
@@ -87,7 +89,22 @@ def create_guild_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_channels")
-    body = ctx.body()
+    # Scalar fields mapped 1:1 onto the Channel model; overwrites are applied
+    # separately. Anything else discord.py can send on create (position,
+    # video_quality_mode, default_* forum settings, ...) is unmodelled and so
+    # fails loudly rather than being silently dropped.
+    body = ctx.fields(
+        "name",
+        "type",
+        "topic",
+        "nsfw",
+        "rate_limit_per_user",
+        "bitrate",
+        "user_limit",
+        "rtc_region",
+        "parent_id",
+        ignore=("permission_overwrites",),
+    )
     overwrites = [
         Overwrite(
             target_id=int(o["id"]),
@@ -95,7 +112,7 @@ def create_guild_channel(ctx: RequestContext) -> Any:
             allow=int(o.get("allow", 0)),
             deny=int(o.get("deny", 0)),
         )
-        for o in body.get("permission_overwrites") or []
+        for o in ctx.body().get("permission_overwrites") or []
     ]
     fields: dict[str, Any] = {}
     for key in ("topic", "nsfw", "rate_limit_per_user", "bitrate", "user_limit", "rtc_region"):
@@ -449,16 +466,21 @@ def create_role(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     bot_id = backend.bot_user.id
     ctx.require_guild_permissions(guild_id, "manage_roles")
-    body = ctx.body()
+    body = ctx.fields("name", "permissions", "hoist", "mentionable", "color", "colors")
     new_permissions = int(body.get("permissions") or 0)
     backend.require_can_grant(guild_id, bot_id, new_permissions)
+    # Newer discord.py sends the gradient-colour object; we model a single colour,
+    # so honour its primary (mirrors edit_role).
+    color = int(body.get("color") or 0)
+    if body.get("colors") is not None and body["colors"].get("primary_color") is not None:
+        color = int(body["colors"]["primary_color"])
     role = backend.create_role(
         guild_id,
         body.get("name") or "new role",
         permissions=new_permissions,
         hoist=bool(body.get("hoist", False)),
         mentionable=bool(body.get("mentionable", False)),
-        color=int(body.get("color") or 0),
+        color=color,
     )
     backend.record_audit_log(
         guild_id,

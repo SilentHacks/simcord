@@ -12,7 +12,10 @@ from ..router import RequestContext, route
 def create_invite(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_instant_invite")
-    body = ctx.body()
+    # discord.py always sends ``unique``; we always mint a unique code, so it is
+    # accepted and discarded. target_type/target_*/flags are unmodelled and so
+    # fail loudly rather than being silently dropped.
+    body = ctx.fields("max_uses", "max_age", "temporary", ignore=("unique",))
     invite = backend.create_invite(
         channel.id,
         backend.bot_user.id,
