@@ -4,6 +4,21 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 0.11.0 (2026-06-16)
+
+### Features
+
+- Added the final common-bot route sweep as the surface settles heading into 1.0: `Guild.delete` (owner-only; the discord.py wrapper is deprecated but the route is kept for parity), `Member.fetch_voice` (read a member's voice state), `TextChannel.follow` (follow an announcement channel into a destination webhook), and `Guild.vanity_invite` (with `guild.set_vanity_url(code)` to populate it in the world builder). Routes whose result would have to be a constant empty value — integrations, welcome screen, widget, onboarding — are deliberately left as loud `RouteNotImplemented` gaps rather than faked; the parity matrix documents this as the frozen gap surface heading into 1.0.
+
+### Bug fixes
+
+- Closed the last silent-fake gaps in the request layer: the bulk-ban, prune, channel-permission-overwrite, and voice-state handlers read the raw body directly and so silently dropped unrecognised fields. They now route through the same `RequestContext.fields` honesty check as every other handler, raising `UnsupportedField` on an unmodelled key. Role-filtered prune (`include_roles`) is now rejected loudly rather than pruning a different cohort than asked, and `compute_prune_count=false` correctly omits the count.
+
+### Miscellaneous
+
+- Marked SimCord's public API as stable ahead of 1.0: the package now declares `Development Status :: 5 - Production/Stable`, the README and docs landing page describe the semantic-versioning commitment that takes effect from the upcoming 1.0 (see Stability & versioning, which now also documents the supported discord.py range and the deprecation policy), and the test-coverage ratchet is raised to 95%.
+
+
 ## 0.10.0 (2026-06-15)
 
 ### Features
