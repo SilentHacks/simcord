@@ -39,6 +39,13 @@ def test_assert_message_positive_paths():
     assert_message(_msg(), contains="world", embed_title="Title")
 
 
+def test_assert_message_ephemeral_mismatch():
+    # A discord.Message-like exposes ephemeral via .flags (not ResponseMessage).
+    message = types.SimpleNamespace(content="x", embeds=[], flags=types.SimpleNamespace(ephemeral=False))
+    with pytest.raises(AssertionError, match="ephemeral"):
+        assert_message(message, ephemeral=True)
+
+
 class _Wrapper(Exception):
     """Stands in for discord.py's CommandInvokeError, which wraps .original."""
 

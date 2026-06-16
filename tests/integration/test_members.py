@@ -54,6 +54,26 @@ async def test_member_voice_move_and_disconnect(env):
     assert target.id not in env.backend.get_guild(env.guild.id).voice_states
 
 
+async def test_fetch_unknown_member_errors(env):
+    guild = env.bot.get_guild(env.guild.id)
+    with pytest.raises(discord.NotFound):
+        await guild.fetch_member(424242)
+
+
+async def test_delete_role_strips_it_from_members(env, alice):
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Temp")
+    member = guild.get_member(alice.id)
+    await member.add_roles(role)
+    await env.settle()
+
+    await guild.get_role(role.id).delete()
+    await env.settle()
+
+    assert role.id not in env.backend.get_guild(env.guild.id).roles
+    assert role.id not in env.backend.get_guild(env.guild.id).members[alice.id].role_ids
+
+
 async def test_member_join_event(env, alice):
     welcome = env.guild.create_text_channel("welcome")
     bob = env.guild.add_member(env.create_user("bob"))
