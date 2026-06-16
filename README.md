@@ -35,11 +35,11 @@ async def test_ping(simcord_env):
     assert channel.last_message.content == "Pong!"
 ```
 
-> ⚠️ **Alpha.** The core surface (messages, prefix commands, slash commands, components,
-> modals, permissions, reactions, threads, DMs, time control) works; see the
-> [parity matrix](https://simcord.readthedocs.io/en/latest/parity-matrix/) for the
-> long tail. Unimplemented routes always fail loudly — SimCord never silently fakes
-> success.
+> ✅ **Stable (1.0).** The public API follows semantic versioning — see
+> [Stability & versioning](https://simcord.readthedocs.io/en/latest/stability/). The
+> [parity matrix](https://simcord.readthedocs.io/en/latest/parity-matrix/) records
+> exactly what is implemented; the remaining routes are a deliberate, demand-driven
+> backlog that always fails loudly — SimCord never silently fakes success.
 
 ## Why SimCord?
 

@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 authors = [{ name = "SilentHacks" }]
 keywords = ["discord", "discord.py", "testing", "pytest", "mock", "bot testing", "integration testing", "simulator", "unit testing", "mock discord"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",

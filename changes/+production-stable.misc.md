@@ -1,0 +1,1 @@
+Promoted SimCord to a stable 1.0: the package now declares `Development Status :: 5 - Production/Stable`, the README and docs landing page describe the semantic-versioning commitment on the public surface (see Stability & versioning), and the test-coverage ratchet is raised to its 1.0 target of 95%.
