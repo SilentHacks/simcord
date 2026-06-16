@@ -212,8 +212,8 @@ These discord.py REST routes have no handler yet, derived by comparing simcord's
 route table against `discord.http.HTTPClient` (`python -m simcord.parity`), so the
 list stays honest as discord.py evolves.
 
-This is the **frozen 1.0 gap surface**: the omissions are deliberate and
-demand-driven, not unfinished work. Most are niche (monetization, soundboard,
+This is the **frozen gap surface heading into 1.0**: the omissions are deliberate
+and demand-driven, not unfinished work. Most are niche (monetization, soundboard,
 guild templates) or have a working common path already — individual application
 command CRUD is unlisted because `CommandTree.sync` (the bulk overwrite) is fully
 modelled. Others (integrations, welcome screen, widget, onboarding) are omitted on

@@ -298,6 +298,8 @@ async def test_prune_role_filter_rejected(env):
             json={"days": 7, "include_roles": [str(env.guild.id)]},
         )
     assert "include_roles" in exc.value.fields
+    # The refusal carries its reason, so it reads as a deliberate gap, not a TODO.
+    assert any("deliberate" in note for note in getattr(exc.value, "__notes__", []))
 
 
 async def test_prune_count_can_be_suppressed(env):

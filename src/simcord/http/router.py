@@ -52,7 +52,7 @@ class UnsupportedField(BackendError):
     in a broad ``except BackendError``, which would re-hide the gap.
     """
 
-    def __init__(self, method: str, path: str, fields: list[str]) -> None:
+    def __init__(self, method: str, path: str, fields: list[str], *, note: str | None = None) -> None:
         joined = ", ".join(fields)
         super().__init__(
             501, 0, f"simcord does not implement the field(s) [{joined}] on '{method} {path}' yet."
@@ -60,8 +60,12 @@ class UnsupportedField(BackendError):
         self.method = method
         self.path = path
         self.fields = list(fields)
+        # ``note`` lets a handler explain a *deliberate* refusal (a real discord.py
+        # field simcord will not model), so the failure reads as a considered gap
+        # rather than an unfinished route; otherwise point at the parity matrix.
         self.add_note(
-            "See the parity matrix in the docs; please open an issue if your bot needs this field: "
+            note
+            or "See the parity matrix in the docs; please open an issue if your bot needs this field: "
             "https://github.com/SilentHacks/simcord/issues"
         )
 
@@ -81,17 +85,31 @@ class RequestContext:
     def int_arg(self, name: str) -> int:
         return int(self.args[name])
 
-    def fields(self, *handled: str, ignore: tuple[str, ...] = ()) -> dict[str, Any]:
+    def fields(
+        self,
+        *handled: str,
+        ignore: tuple[str, ...] = (),
+        reject: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Pull the recognised ``handled`` keys out of the JSON body, failing
         loudly on any other key.
 
         Replaces the ``{k: body[k] for k in editable if k in body}`` idiom that
         silently dropped unrecognised edit fields. ``ignore`` names keys we
         deliberately accept-and-discard (e.g. a field Discord lets you send but
-        that has no meaning for an offline test). Anything neither handled nor
-        ignored raises :class:`UnsupportedField` — a parity gap must be loud.
+        that has no meaning for an offline test). ``reject`` maps a real discord.py
+        field simcord deliberately will *not* model onto the reason why; sending one
+        raises :class:`UnsupportedField` carrying that reason, so the refusal reads
+        as a considered gap rather than an unfinished route. Anything neither
+        handled, ignored nor rejected also raises — a parity gap must be loud.
         """
         body = self.body()
+        reject = reject or {}
+        refused = sorted(key for key in reject if key in body)
+        if refused:
+            raise UnsupportedField(
+                self.method, self.path, refused, note=" ".join(reject[key] for key in refused)
+            )
         allowed = set(handled) | set(ignore)
         unsupported = sorted(key for key in body if key not in allowed)
         if unsupported:

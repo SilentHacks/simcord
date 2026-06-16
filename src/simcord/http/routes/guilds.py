@@ -29,7 +29,8 @@ def get_guild(ctx: RequestContext) -> Any:
 def delete_guild(ctx: RequestContext) -> Any:
     # Guild.delete() is owner-only on real Discord — there is no permission that
     # grants it. The bot is never an owner by default, so this 403s unless a test
-    # has made the bot own the guild.
+    # has made the bot own the guild. discord.py marks the wrapper deprecated, but
+    # the DELETE /guilds/{id} route still exists, so we keep it for parity.
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     guild = backend.get_guild(guild_id)
@@ -436,10 +437,21 @@ def prune_members(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "kick_members")
     guild = backend.get_guild(guild_id)
-    # ``include_roles`` is deliberately *not* accepted: simcord models "inactive"
-    # as "roleless" (see _prunable), so honouring a role filter would silently
-    # prune a different cohort than asked. Failing loudly is the honest stance.
-    body = ctx.fields("days", "compute_prune_count")
+    # ``include_roles`` is deliberately rejected, not silently dropped: simcord
+    # models "inactive" as "roleless" (see _prunable), so honouring a role filter
+    # would prune a different cohort than asked. The reason rides on the error so
+    # it reads as a considered gap rather than an unfinished route.
+    body = ctx.fields(
+        "days",
+        "compute_prune_count",
+        reject={
+            "include_roles": (
+                "simcord models prune eligibility as 'member has no roles', so it cannot honour "
+                "a role-filtered prune without removing a different cohort than asked; this gap "
+                "is deliberate, not an unfinished route."
+            )
+        },
+    )
     targets = _prunable(backend, guild)
     for user_id in targets:
         backend.remove_member(guild_id, user_id)
