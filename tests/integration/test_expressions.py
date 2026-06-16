@@ -62,7 +62,7 @@ async def test_sticker_edit(env):
     backend_sticker = env.backend.get_guild(env.guild.id).stickers[sticker.id]
     assert backend_sticker.name == "hello"
     assert backend_sticker.description == "a greeting"
-    assert backend_sticker.tags == "WAVING HAND SIGN"
+    assert backend_sticker.tags == "WAVING_HAND_SIGN"
 
 
 async def test_emoji_requires_permission(env, channel):

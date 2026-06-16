@@ -126,7 +126,9 @@ def delete_channel(ctx: RequestContext) -> Any:
 @route("PUT", "/channels/{channel_id}/permissions/{target_id}")
 def edit_overwrite(ctx: RequestContext) -> Any:
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_roles")
-    body = ctx.fields("type", "allow", "deny")
+    # discord.py echoes the target id in the body; it is redundant with the URL
+    # path param, so accept-and-ignore it rather than rejecting the call.
+    body = ctx.fields("type", "allow", "deny", ignore=("id",))
     ctx.backend.set_overwrite(
         channel.id,
         Overwrite(

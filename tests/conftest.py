@@ -6,15 +6,15 @@ import pytest_asyncio
 
 import simcord
 
-# Enables the `pytester` fixture so tests/unit/test_pytest_plugin.py can run a
-# sub-pytest that exercises simcord's own pytest plugin (simcord_env, the marker,
-# and the failing-test transcript hook).
-pytest_plugins = ["pytester"]
-
 # Make `fixtures.sample_bot` importable both from pytest and as bot extensions.
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fixtures.sample_bot import create_bot
+
+# Enables the `pytester` fixture so tests/unit/test_pytest_plugin.py can run a
+# sub-pytest that exercises simcord's own pytest plugin (simcord_env, the marker,
+# and the failing-test transcript hook).
+pytest_plugins = ["pytester"]
 
 
 @pytest_asyncio.fixture

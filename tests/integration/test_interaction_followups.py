@@ -4,6 +4,8 @@ bot only defers+sends, so these routes need a purpose-built bot.
 """
 
 import discord
+import pytest
+from discord import app_commands
 from discord.ext import commands
 
 import simcord
@@ -34,6 +36,50 @@ def _make_bot() -> commands.Bot:
         await interaction.delete_original_response()
 
     return bot
+
+
+async def test_slash_option_validation_errors():
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+    @bot.tree.command(name="echo")
+    @app_commands.choices(mode=[app_commands.Choice(name="Loud", value="loud")])
+    async def echo(interaction: discord.Interaction, text: str, count: int, mode: str) -> None:
+        await interaction.response.send_message(text)
+
+    async with simcord.run(bot, strict_sync=False) as env:
+        env.create_guild()
+        ch = env.guild.create_text_channel("general")
+        alice = env.guild.add_member(env.create_user("alice"))
+
+        # Unknown option.
+        with pytest.raises(simcord.SetupError):
+            await alice.slash(ch, "echo", text="hi", count=1, mode="loud", bogus="x")
+        # Scalar type mismatch (text expects str).
+        with pytest.raises(simcord.SetupError):
+            await alice.slash(ch, "echo", text=123, count=1, mode="loud")
+        # Value outside the declared choices.
+        with pytest.raises(simcord.SetupError):
+            await alice.slash(ch, "echo", text="hi", count=1, mode="whisper")
+        # Missing a required option.
+        with pytest.raises(simcord.SetupError):
+            await alice.slash(ch, "echo", text="hi")
+
+
+async def test_message_context_menu():
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+    @bot.tree.context_menu(name="Pin It")
+    async def pin_it(interaction: discord.Interaction, message: discord.Message) -> None:
+        await interaction.response.send_message(f"Pinned {message.id}", ephemeral=True)
+
+    async with simcord.run(bot, strict_sync=False) as env:
+        env.create_guild()
+        ch = env.guild.create_text_channel("general")
+        alice = env.guild.add_member(env.create_user("alice"))
+        msg = await alice.send(ch, "target")
+
+        result = await alice.context_menu(ch, "Pin It", msg)
+        assert f"Pinned {msg.id}" == result.response.content
 
 
 async def test_followup_edit_fetch_delete():

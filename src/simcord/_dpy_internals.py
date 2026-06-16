@@ -25,7 +25,9 @@ BACKGROUND_CORO_NAMES = ("__timeout_task_impl",)
 
 def verify() -> None:
     """Sanity-check the discord.py internals this framework relies on."""
-    if discord.version_info.major != 2 or discord.version_info.minor < 7:
+    if (
+        discord.version_info.major != 2 or discord.version_info.minor < 7
+    ):  # pragma: no cover - guards an unsupported discord.py
         raise ImportError(
             f"simcord requires discord.py 2.7+; found {discord.__version__}. "
             "Check https://github.com/SilentHacks/simcord for supported versions."
@@ -44,14 +46,16 @@ def verify() -> None:
         (DiscordWebSocket, "request_chunks"),
         (discord.Client, "_get_websocket"),
     ):
-        if not hasattr(cls, attr):
+        if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
     # The background-coro names are matched by leaf qualname; confirm they still
     # exist on View so a rename surfaces here instead of in settle().
     for name in BACKGROUND_CORO_NAMES:
-        if not any(attr.endswith(name) for attr in dir(View)):
+        if not any(
+            attr.endswith(name) for attr in dir(View)
+        ):  # pragma: no cover - fires only on a View internal rename
             problems.append(f"View.*{name}")
-    if problems:
+    if problems:  # pragma: no cover - only when discord.py changed an internal we depend on
         raise ImportError(
             "This discord.py version changed internals simcord depends on: "
             + ", ".join(problems)

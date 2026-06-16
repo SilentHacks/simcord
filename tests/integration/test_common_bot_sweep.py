@@ -25,6 +25,7 @@ async def test_owner_can_delete_guild(env):
     """When the bot owns the guild, delete removes it and fires GUILD_DELETE."""
     backend = env.backend
     backend.guilds[env.guild.id].owner_id = backend.bot_user.id
+    channel = env.guild.create_text_channel("doomed")  # exercise channel cleanup
     guild = env.bot.get_guild(env.guild.id)
 
     await guild.delete()
@@ -32,6 +33,7 @@ async def test_owner_can_delete_guild(env):
 
     assert env.bot.get_guild(env.guild.id) is None
     assert env.guild.id not in backend.guilds
+    assert channel.id not in backend.channels
 
 
 # --- Member.fetch_voice (GET voice-states) ----------------------------------

@@ -96,7 +96,7 @@ def discordpy_rest_routes() -> dict[str, list[tuple[str, str]]]:
             continue
         try:
             source = inspect.getsource(func)
-        except (OSError, TypeError):
+        except (OSError, TypeError):  # pragma: no cover - only when discord.py ships without source
             # discord.py installed without source (zipped/compiled): no route to
             # read. test_route_extraction_is_healthy guards against this silently
             # gutting the gap list.
@@ -209,7 +209,7 @@ def update_matrix(path: Path) -> bool:
     return False
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - CLI entrypoint, run as a subprocess
     target = Path(sys.argv[1] if len(sys.argv) > 1 else "docs/parity-matrix.md")
     changed = update_matrix(target)
     print(f"{target}: {'updated' if changed else 'already in sync'}")

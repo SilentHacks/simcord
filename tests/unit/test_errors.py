@@ -11,9 +11,7 @@ from simcord.backend import errors
 
 def test_every_error_factory_builds_a_backend_error():
     factories = [
-        obj
-        for obj in vars(errors).values()
-        if inspect.isfunction(obj) and obj.__module__ == errors.__name__
+        obj for obj in vars(errors).values() if inspect.isfunction(obj) and obj.__module__ == errors.__name__
     ]
     assert len(factories) >= 20
 

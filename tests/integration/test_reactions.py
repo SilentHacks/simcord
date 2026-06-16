@@ -1,6 +1,21 @@
 import discord
 import pytest
 
+import simcord
+
+
+async def test_reaction_idempotent_and_remove_unknown(env, channel, alice):
+    message = await alice.send(channel, "react!")
+    await alice.react(message, "👍")
+    await alice.react(message, "👍")  # adding the same reaction twice is a no-op
+
+    backend_message = env.backend.get_message(channel.id, message.id)
+    assert backend_message.reaction_for("👍").user_ids.count(alice.id) == 1
+
+    # Removing a reaction that was never added fails loudly.
+    with pytest.raises(simcord.BackendError):
+        env.backend.remove_reaction(channel.id, message.id, "🔥", alice.id)
+
 
 async def test_clear_all_reactions(env, channel, alice):
     bob = env.guild.add_member(env.create_user("bob"))
