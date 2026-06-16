@@ -310,7 +310,12 @@ def follow_channel(ctx: RequestContext) -> Any:
     if source.type != ChannelType.NEWS:
         raise errors.cannot_execute_on_channel_type()
     body = ctx.fields("webhook_channel_id")
-    destination = ctx.require_channel_permissions(int(body["webhook_channel_id"]), "manage_webhooks")
+    webhook_channel_id = body.get("webhook_channel_id")
+    if webhook_channel_id is None:
+        # discord.py always sends it; a direct/hand-rolled call that omits it gets
+        # Discord's real 400 rather than a bare KeyError surfacing as a 500.
+        raise errors.invalid_form_body("webhook_channel_id: This field is required")
+    destination = ctx.require_channel_permissions(int(webhook_channel_id), "manage_webhooks")
     webhook = backend.create_webhook(destination.id, source.name or "Webhook", backend.bot_user.id)
     return {"channel_id": str(source.id), "webhook_id": str(webhook.id)}
 

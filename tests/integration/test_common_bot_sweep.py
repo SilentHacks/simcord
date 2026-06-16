@@ -11,16 +11,17 @@ import simcord
 # --- Guild.delete (owner-only) ----------------------------------------------
 
 
-@pytest.mark.filterwarnings("ignore:delete is deprecated:DeprecationWarning")
 async def test_delete_guild_requires_ownership(env):
     """The bot is never a guild owner by default, so Guild.delete() is forbidden."""
     guild = env.bot.get_guild(env.guild.id)
-    with pytest.raises(discord.Forbidden) as exc:
+    # Guild.delete() is deprecated in discord.py; capture the warning here (a plain
+    # filterwarnings mark cannot — the @deprecated wrapper forces simplefilter on)
+    # while still asserting the forbidden response.
+    with pytest.deprecated_call(), pytest.raises(discord.Forbidden) as exc:
         await guild.delete()
     assert exc.value.code == 50013
 
 
-@pytest.mark.filterwarnings("ignore:delete is deprecated:DeprecationWarning")
 async def test_owner_can_delete_guild(env):
     """When the bot owns the guild, delete removes it and fires GUILD_DELETE."""
     backend = env.backend
@@ -28,7 +29,8 @@ async def test_owner_can_delete_guild(env):
     channel = env.guild.create_text_channel("doomed")  # exercise channel cleanup
     guild = env.bot.get_guild(env.guild.id)
 
-    await guild.delete()
+    with pytest.deprecated_call():
+        await guild.delete()
     await env.settle()
 
     assert env.bot.get_guild(env.guild.id) is None
@@ -74,6 +76,20 @@ async def test_follow_announcement_channel(env):
 
     # The forwarding webhook is created in the destination channel.
     assert env.backend.get_webhook(webhook.id).channel_id == relay.id
+
+
+async def test_follow_without_webhook_channel_id_fails_loudly(env):
+    """A direct call omitting the required webhook_channel_id gets Discord's real
+    400 Invalid Form Body, not a bare KeyError surfacing as a 500."""
+    from simcord.http import router
+
+    news = env.guild.create_news_channel("announce")
+    await env.settle()
+
+    with pytest.raises(simcord.BackendError) as exc:
+        router.dispatch(env.backend, "POST", f"/channels/{news.id}/followers", json={})
+    assert exc.value.status == 400
+    assert exc.value.code == 50035
 
 
 async def test_follow_non_news_source_rejected(env):

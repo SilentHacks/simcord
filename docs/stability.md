@@ -7,7 +7,19 @@ description: "What SimCord's public API covers, what stays internal, and how ver
 
 SimCord follows [semantic versioning](https://semver.org/). Once 1.0 lands, the
 **public API** below is covered by that promise: no breaking change to it without
-a major version bump.
+a major version bump. The surface is already settled — 1.0 is gated on adding
+property-based fuzzing of the honesty layer and a performance baseline, not on
+further API churn.
+
+## Supported discord.py
+
+SimCord targets **discord.py 2.7.x** (`discord.py>=2.7,<3`) and is exercised
+against it in CI. Because a faithful fake must shadow a few discord.py internals
+(view timeout tasks, parser entry points), simcord verifies them at import via
+`simcord._dpy_internals.verify()` and fails **loudly** with an `ImportError`
+naming what moved, rather than miscompiling silently against an untested release.
+The `<3` ceiling is deliberate: a new discord.py major may move those internals,
+so the range widens only once a release has been tested.
 
 ## Public API
 
@@ -51,3 +63,12 @@ verified in CI, so they cannot quietly drift as discord.py evolves.
 
 These exception types are part of the public API precisely so your tests can
 assert on them.
+
+## Deprecation policy
+
+From 1.0 onward, a public-API symbol is never removed or changed incompatibly
+without first being deprecated for at least one minor release. A deprecated
+symbol keeps working, emits a `DeprecationWarning` pointing at its replacement,
+and is listed in the changelog; removal then waits for the next major version.
+Anything documented above as intentionally internal carries no such guarantee
+and may change in any release.
