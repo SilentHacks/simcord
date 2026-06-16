@@ -25,11 +25,11 @@ async def test_ping(simcord_env):
 [Get started in 5 minutes :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [Browse the API :material-arrow-right:](api.md){ .md-button }
 
-!!! warning "Alpha"
-    The core surface — messages, prefix commands, slash commands, components, modals,
-    permissions, reactions, threads, DMs and time control — works today. See the
-    [parity matrix](parity-matrix.md) for the long tail. Unimplemented routes always fail
-    **loudly**; SimCord never silently fakes success.
+!!! success "Stable (1.0)"
+    The public API follows semantic versioning — see [Stability & versioning](stability.md).
+    The [parity matrix](parity-matrix.md) records exactly what is implemented; the remaining
+    routes are a deliberate, demand-driven backlog that always fails **loudly**. SimCord
+    never silently fakes success.
 
 ## Why SimCord?
 
