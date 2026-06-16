@@ -11,6 +11,30 @@ async def test_fetch_role(env):
     assert fetched.name == "Mods"
 
 
+async def test_role_edit_applies_and_audits(env):
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Helper", colour=discord.Colour(0x111111))
+    await env.settle()
+
+    await role.edit(
+        name="Senior Helper",
+        colour=discord.Colour(0x00FF00),
+        hoist=True,
+        mentionable=True,
+        permissions=discord.Permissions(manage_messages=True),
+    )
+    await env.settle()
+
+    backend_role = env.backend.get_role(env.guild.id, role.id)
+    assert backend_role.name == "Senior Helper"
+    assert backend_role.color == 0x00FF00
+    assert backend_role.hoist is True
+    assert backend_role.mentionable is True
+    assert backend_role.permissions == discord.Permissions(manage_messages=True).value
+    # The edit was journalled to the audit log (ROLE_UPDATE = 31).
+    assert 31 in {e.action_type for e in env.guild.audit_log()}
+
+
 async def test_edit_role_positions(env):
     guild = env.bot.get_guild(env.guild.id)
     low = await guild.create_role(name="Low")

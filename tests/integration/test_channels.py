@@ -147,6 +147,27 @@ async def test_webhook_fetch_with_token(env, channel):
     assert fetched.name == "Announcer"
 
 
+async def test_webhook_token_edit_and_delete(env, channel):
+    cached = env.bot.get_channel(channel.id)
+    created = await cached.create_webhook(name="Announcer")
+
+    # Token-scoped edit/delete (no bot auth) goes through the by-token routes.
+    partial = discord.Webhook.partial(created.id, created.token, client=env.bot)
+    await partial.edit(name="TokenRenamed")
+    assert env.backend.get_webhook(created.id).name == "TokenRenamed"
+
+    await partial.delete()
+    with pytest.raises(discord.NotFound):
+        await env.bot.fetch_webhook(created.id)
+
+
+async def test_channel_webhooks_listing(env, channel):
+    cached = env.bot.get_channel(channel.id)
+    await cached.create_webhook(name="Announcer")
+    hooks = await cached.webhooks()
+    assert [h.name for h in hooks] == ["Announcer"]
+
+
 async def test_guild_webhooks_listing(env, channel):
     cached = env.bot.get_channel(channel.id)
     await cached.create_webhook(name="Announcer")

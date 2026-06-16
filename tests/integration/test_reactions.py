@@ -48,6 +48,53 @@ async def test_clear_reactions_dispatches_raw_event(env, channel, alice):
     assert seen == [message.id]
 
 
+async def test_bot_add_list_and_remove_reactions(env, channel, alice):
+    message = await alice.send(channel, "react!")
+    await alice.react(message, "👍")
+    await env.settle()
+
+    cached = await env.bot.get_channel(channel.id).fetch_message(message.id)
+    # The bot adds its own reaction (PUT .../reactions/{emoji}/@me).
+    await cached.add_reaction("👍")
+    await env.settle()
+
+    refetched = await env.bot.get_channel(channel.id).fetch_message(message.id)
+    reaction = discord.utils.get(refetched.reactions, emoji="👍")
+    assert reaction.count == 2
+
+    # List who reacted (GET .../reactions/{emoji}).
+    user_ids = {user.id async for user in reaction.users()}
+    assert {alice.id, env.bot.user.id} <= user_ids
+
+    # The bot removes its own reaction (DELETE .../@me).
+    await refetched.remove_reaction("👍", env.bot.user)
+    await env.settle()
+
+    # Then removes another member's reaction (DELETE .../{user_id}, manage_messages).
+    again = await env.bot.get_channel(channel.id).fetch_message(message.id)
+    member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+    await again.remove_reaction("👍", member)
+    await env.settle()
+
+    final = await env.bot.get_channel(channel.id).fetch_message(message.id)
+    assert final.reactions == []
+
+
+async def test_reaction_users_empty_for_absent_emoji(env, channel, alice):
+    """GET reactions for an emoji nobody used returns an empty list, not an error."""
+    from simcord.http import router
+
+    message = await alice.send(channel, "hi")
+    await env.settle()
+
+    users = router.dispatch(
+        env.backend,
+        "GET",
+        f"/channels/{channel.id}/messages/{message.id}/reactions/%F0%9F%91%8D",
+    )
+    assert users == []
+
+
 async def test_clear_reactions_requires_manage_messages(env, alice):
     locked = env.guild.create_text_channel(
         "locked", overwrites={env.guild.default_role: discord.PermissionOverwrite(manage_messages=False)}
