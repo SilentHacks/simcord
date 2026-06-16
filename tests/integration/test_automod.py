@@ -31,6 +31,33 @@ async def test_rule_crud(env, channel):
     assert rule.id not in env.backend.get_guild(env.guild.id).auto_mod_rules
 
 
+async def test_rule_fetch_single_and_edit(env, channel):
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Exempt")
+    rule = await guild.create_automod_rule(**_keyword_rule_kwargs())
+    await env.settle()
+
+    # GET a single rule by id.
+    fetched = await guild.fetch_automod_rule(rule.id)
+    assert fetched.id == rule.id
+    assert fetched.name == "No badwords"
+
+    # PATCH it, including the exempt role/channel lists (coerced to int ids).
+    await rule.edit(
+        name="Renamed",
+        enabled=False,
+        exempt_roles=[role],
+        exempt_channels=[guild.get_channel(channel.id)],
+    )
+    await env.settle()
+
+    backend_rule = env.backend.get_auto_mod_rule(env.guild.id, rule.id)
+    assert backend_rule.name == "Renamed"
+    assert backend_rule.enabled is False
+    assert role.id in backend_rule.exempt_roles
+    assert channel.id in backend_rule.exempt_channels
+
+
 async def test_keyword_rule_blocks_message(env, channel, alice):
     guild = env.bot.get_guild(env.guild.id)
     await guild.create_automod_rule(**_keyword_rule_kwargs())

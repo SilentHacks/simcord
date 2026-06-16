@@ -32,6 +32,39 @@ async def test_sticker_listing_and_delete(env, channel):
     assert sticker.id not in env.backend.get_guild(env.guild.id).stickers
 
 
+async def test_emoji_fetch_single_and_edit(env):
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Nitro")
+    emoji = await guild.create_custom_emoji(name="party", image=b"\x89PNG\r\n\x1a\n")
+    await env.settle()
+
+    fetched = await guild.fetch_emoji(emoji.id)
+    assert fetched.id == emoji.id
+
+    await emoji.edit(name="celebrate", roles=[role])
+    await env.settle()
+
+    backend_emoji = env.backend.get_emoji(env.guild.id, emoji.id)
+    assert backend_emoji.name == "celebrate"
+    assert role.id in backend_emoji.role_ids
+
+
+async def test_sticker_edit(env):
+    sticker = env.guild.create_sticker("wave", tags="wave")
+    guild = env.bot.get_guild(env.guild.id)
+
+    full = await guild.fetch_sticker(sticker.id)
+    # GuildSticker.edit converts a unicode emoji to its unicode *name* and sends
+    # that as the sticker's tags (unlike create, which sends the raw char).
+    await full.edit(name="hello", description="a greeting", emoji="👋")
+    await env.settle()
+
+    backend_sticker = env.backend.get_guild(env.guild.id).stickers[sticker.id]
+    assert backend_sticker.name == "hello"
+    assert backend_sticker.description == "a greeting"
+    assert backend_sticker.tags == "WAVING HAND SIGN"
+
+
 async def test_emoji_requires_permission(env, channel):
     guild = env.bot.get_guild(env.guild.id)
     mask = ~discord.Permissions(manage_expressions=True).value

@@ -72,6 +72,38 @@ async def test_archived_threads_listing(env):
     assert thread.id in {t.id for t in found}
 
 
+async def test_fetch_single_thread_member(env):
+    thread = await _make_thread(env)
+    alice = env.guild.add_member(env.create_user("alice"))
+    await thread.add_user(discord.Object(id=alice.id))
+    await env.settle()
+
+    member = await thread.fetch_member(alice.id)
+    assert member.id == alice.id
+
+
+async def test_fetch_unknown_thread_member_errors(env):
+    thread = await _make_thread(env)
+    with pytest.raises(discord.NotFound):
+        await thread.fetch_member(99999)
+
+
+async def test_private_and_joined_archived_threads(env):
+    channel = env.guild.create_text_channel("priv")
+    await env.settle()
+    cached = env.bot.get_channel(channel.id)
+    thread = await cached.create_thread(name="secret", type=discord.ChannelType.private_thread)
+    await thread.edit(archived=True, auto_archive_duration=1440)
+    await env.settle()
+
+    parent = env.bot.get_channel(channel.id)
+    private = [t async for t in parent.archived_threads(private=True)]
+    assert thread.id in {t.id for t in private}
+
+    joined = [t async for t in parent.archived_threads(private=True, joined=True)]
+    assert thread.id in {t.id for t in joined}
+
+
 async def test_leaving_guild_drops_thread_membership(env):
     # A kicked/banned member also leaves every thread, so member_count stays right.
     thread = await _make_thread(env)
