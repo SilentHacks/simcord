@@ -5,6 +5,14 @@ guarantee at the *field* level. An unrecognised edit field raises
 ``UnsupportedField`` (which the transports deliberately do not disguise as an
 ``HTTPException``, so a broad ``except`` cannot swallow a parity gap), while the
 fields a supported area implies are actually wired through to backend state.
+
+Division of labour with ``test_field_honesty_fuzz.py``: the fuzzer sweeps raw
+*loudness* (an undeclared key raises) across every honesty-vetted route, so this
+file does not re-hand-roll per-route ``dispatch(..., {"made_up": 1})`` cases. What
+lives here is what the fuzzer cannot prove — that declared keys reach backend state
+(the ``*_fields_apply`` cases), that loudness survives the *real* discord.py client
+(not just raw ``dispatch``), and the branches the fuzzer's single-world probe does
+not reach (e.g. forum thread create).
 """
 
 from __future__ import annotations
@@ -14,18 +22,8 @@ import io
 import discord
 import pytest
 
+from simcord.enums import ChannelType
 from simcord.http import router
-
-
-async def test_unsupported_edit_field_fails_loudly(env):
-    """A body key no handler honours raises UnsupportedField, naming the field."""
-    guild = env.bot.get_guild(env.guild.id)
-    vc = await guild.create_voice_channel("Voice")
-    await env.settle()
-
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(env.backend, "PATCH", f"/channels/{vc.id}", json={"made_up_field": 1})
-    assert "made_up_field" in exc.value.fields
 
 
 async def test_unsupported_field_is_not_swallowable_as_httpexception(env):
@@ -146,18 +144,6 @@ async def test_guild_edit_channel_pointers_apply(env):
 # --- create-projection honesty: the same guarantee at creation time ----------
 
 
-async def test_unsupported_create_field_fails_loudly(env):
-    """A body key no create handler honours raises UnsupportedField, naming it."""
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "POST",
-            f"/guilds/{env.guild.id}/channels",
-            json={"name": "x", "type": 0, "made_up_field": 1},
-        )
-    assert "made_up_field" in exc.value.fields
-
-
 async def test_create_voice_channel_unmodelled_field_rejected(env):
     """An unmodelled create field surfaces loudly, not as a swallowable error."""
     guild = env.bot.get_guild(env.guild.id)
@@ -216,90 +202,11 @@ async def test_create_sticker_multipart_fields_apply(env):
     assert backend_sticker.tags == "👋"
 
 
-# --- bulk (JSON-array) bodies: the same honesty for list payloads -----------
-
-
-async def test_unsupported_bulk_channel_field_fails_loudly(env):
-    """The reorder endpoints take a JSON array, not an object — an unrecognised
-    per-item key must still surface loudly via ``list_fields``, not be dropped."""
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "PATCH",
-            f"/guilds/{env.guild.id}/channels",
-            json=[{"id": "1", "position": 0, "made_up_field": 1}],
-        )
-    assert "made_up_field" in exc.value.fields
-
-
-async def test_unsupported_bulk_role_field_fails_loudly(env):
-    """Role reordering is array-bodied too; unknown per-item keys fail loudly."""
-    everyone = env.guild.id
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "PATCH",
-            f"/guilds/{env.guild.id}/roles",
-            json=[{"id": str(everyone), "position": 0, "made_up_field": 1}],
-        )
-    assert "made_up_field" in exc.value.fields
-
-
-# --- handlers that previously read the raw body directly --------------------
-# These four route handlers used ``ctx.body().get(...)`` and so silently dropped
-# unknown keys; they now route through ``ctx.fields`` like every other handler.
-
-
-async def test_unsupported_overwrite_field_fails_loudly(env, channel):
-    """PUT channel permission overwrite rejects an unmodelled key."""
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "PUT",
-            f"/channels/{channel.id}/permissions/{env.guild.id}",
-            json={"type": 0, "allow": "0", "deny": "0", "made_up_field": 1},
-        )
-    assert "made_up_field" in exc.value.fields
-
-
-async def test_unsupported_bulk_ban_field_fails_loudly(env):
-    """POST bulk-ban rejects an unmodelled key (delete_message_seconds is ignored)."""
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "POST",
-            f"/guilds/{env.guild.id}/bulk-ban",
-            json={"user_ids": ["1"], "made_up_field": 1},
-        )
-    assert "made_up_field" in exc.value.fields
-
-
-async def test_unsupported_prune_field_fails_loudly(env):
-    """POST prune rejects an unmodelled key."""
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "POST",
-            f"/guilds/{env.guild.id}/prune",
-            json={"days": 7, "made_up_field": 1},
-        )
-    assert "made_up_field" in exc.value.fields
-
-
-async def test_prune_role_filter_rejected(env):
-    """``include_roles`` is rejected, not silently ignored: simcord models prune
-    as "roleless members", so honouring a role filter would prune a different
-    cohort than asked. Failing loudly is the honest stance, not a silent fake."""
-    with pytest.raises(router.UnsupportedField) as exc:
-        router.dispatch(
-            env.backend,
-            "POST",
-            f"/guilds/{env.guild.id}/prune",
-            json={"days": 7, "include_roles": [str(env.guild.id)]},
-        )
-    assert "include_roles" in exc.value.fields
-    # The refusal carries its reason, so it reads as a deliberate gap, not a TODO.
-    assert any("deliberate" in note for note in getattr(exc.value, "__notes__", []))
+# --- behaviour beyond loudness (loudness itself is swept by the fuzzer) -------
+# Per-route "an undeclared key raises" cases now live in test_field_honesty_fuzz.py
+# (bulk-array reorders, permission overwrite, bulk-ban, prune, voice-state and the
+# prune include_roles reject reason are all covered there). What remains here is
+# behaviour the fuzzer does not assert.
 
 
 async def test_prune_count_can_be_suppressed(env):
@@ -321,14 +228,32 @@ async def test_prune_count_can_be_suppressed(env):
     assert counted["pruned"] is not None
 
 
-async def test_unsupported_voice_state_field_fails_loudly(env):
-    """PATCH voice-state rejects an unmodelled key before the connection check,
-    so the parity gap is loud even for a member who is not in voice."""
+# --- forum thread create: the branch the fuzzer's single-world probe misses ---
+# create_thread has two field contracts (text-channel vs forum); the fuzzer probes
+# one world, reaching the text-channel branch, so the forum branch's honesty is
+# pinned here directly.
+
+
+async def test_forum_thread_create_field_honesty(env):
+    """The forum branch of thread-create honours name/message/applied_tags and
+    fails loudly on anything else, rather than silently dropping it."""
+    forum = env.backend.create_channel(env.guild.id, "forum", type=ChannelType.FORUM)
+
     with pytest.raises(router.UnsupportedField) as exc:
         router.dispatch(
             env.backend,
-            "PATCH",
-            f"/guilds/{env.guild.id}/voice-states/@me",
-            json={"made_up_field": 1},
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={"name": "post", "message": {"content": "hi"}, "made_up_field": 1},
         )
     assert "made_up_field" in exc.value.fields
+
+    # The declared fields are accepted (no false rejection) and the starter message
+    # — itself vetted by bot_message — is created.
+    thread = router.dispatch(
+        env.backend,
+        "POST",
+        f"/channels/{forum.id}/threads",
+        json={"name": "post", "message": {"content": "hi"}, "applied_tags": []},
+    )
+    assert thread["message"]["content"] == "hi"
