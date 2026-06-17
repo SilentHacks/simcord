@@ -95,21 +95,34 @@ def _honesty_probe(captured: dict[str, object]) -> Iterator[None]:
         RequestContext.list_fields = orig_list  # type: ignore[method-assign]
 
 
-def _discover() -> dict[tuple[str, str], Contract]:
+@dataclass(frozen=True)
+class Discovery:
+    """The outcome of probing every write route once."""
+
+    contracts: dict[tuple[str, str], Contract]
+    #: Why each *non*-vetted route never reached the honesty layer (unresolved
+    #: path, or the exception it raised first), so the completeness guard can
+    #: explain an unclassified route instead of just naming it.
+    reasons: dict[tuple[str, str], str]
+
+
+def _discover() -> Discovery:
     """Probe every write route to learn which use the honesty layer, and how.
 
     Dispatches each route (in a fresh world, so a non-vetting route that runs to
     completion cannot mutate the next route's resources) with an empty body under
-    :func:`_honesty_probe`. Routes that reach the layer are recorded; the rest
-    either run clean (no body contract) or fail before the layer.
+    :func:`_honesty_probe`. Routes that reach the layer are recorded; for the rest
+    we record *why* they did not (so the completeness guard can explain itself).
     """
     contracts: dict[tuple[str, str], Contract] = {}
+    reasons: dict[tuple[str, str], str] = {}
     captured: dict[str, object] = {}
     with _honesty_probe(captured):
         for method, template in _write_routes():
             world = build_world()
             path = resolve(template, world)
             if path is None:
+                reasons[method, template] = "path did not resolve (no mapping in _world._param)"
                 continue
             captured.pop("c", None)
             try:
@@ -117,31 +130,41 @@ def _discover() -> dict[tuple[str, str], Contract]:
             except _Probe:
                 kind, handled, ignore, reject = captured["c"]  # type: ignore[misc]
                 contracts[method, template] = Contract(method, template, kind, handled, ignore, reject)
-            except BaseException:
-                # Ran clean (no honesty layer) or failed before it; either way the
-                # completeness guard below requires it to be classified in EXEMPT.
-                pass
-    return contracts
+            except Exception as exc:
+                # Narrow to Exception (not BaseException): _Probe is handled above, and
+                # a KeyboardInterrupt/SystemExit during discovery should propagate, not
+                # be silently recorded as a route reason.
+                # Ran clean (no honesty layer) or failed before it. Not masked: the
+                # completeness guard requires the route to be classified in EXEMPT,
+                # and this reason is surfaced there if it is not.
+                reasons[method, template] = f"reached no honesty layer ({type(exc).__name__}: {exc})"
+            else:
+                reasons[method, template] = "ran to completion without calling the honesty layer"
+    return Discovery(contracts, reasons)
 
 
 def _write_routes() -> list[tuple[str, str]]:
     return [(m, p) for m, p in implemented_routes() if m in _WRITE_METHODS]
 
 
-_CONTRACTS: dict[tuple[str, str], Contract] | None = None
+_DISCOVERY: Discovery | None = None
 
 
-def _contracts() -> dict[tuple[str, str], Contract]:
+def _discovery() -> Discovery:
     """The discovered route contracts, computed once at collection time.
 
     Lazy (not a module-level ``= _discover()``) so a probing failure surfaces as an
     error collecting *this* module rather than an opaque import error elsewhere, and
     the production-class monkeypatch in :func:`_honesty_probe` never runs at import.
     """
-    global _CONTRACTS
-    if _CONTRACTS is None:
-        _CONTRACTS = _discover()
-    return _CONTRACTS
+    global _DISCOVERY
+    if _DISCOVERY is None:
+        _DISCOVERY = _discover()
+    return _DISCOVERY
+
+
+def _contracts() -> dict[tuple[str, str], Contract]:
+    return _discovery().contracts
 
 
 def pytest_generate_tests(metafunc: Metafunc) -> None:
@@ -267,16 +290,21 @@ def test_every_write_route_is_classified() -> None:
     route must either flow its body through ``ctx.fields`` or be added to
     ``EXEMPT`` with a reason, or this fails.
     """
-    contracts = _contracts()
+    discovery = _discovery()
+    contracts = discovery.contracts
     writes = set(_write_routes())
     vetted = set(contracts)
     exempt = set(EXEMPT)
     assert not (vetted & exempt), f"routes both vetted and exempt (stale EXEMPT): {vetted & exempt}"
     assert exempt <= writes, f"EXEMPT names routes that no longer exist: {exempt - writes}"
     unclassified = writes - vetted - exempt
+    # Each unclassified route comes with *why* discovery never reached its honesty
+    # layer, so a drift failure points at the fix (route the body through ctx.fields,
+    # add a resolver mapping, or add to EXEMPT) instead of just naming the route.
+    detail = {r: discovery.reasons.get(r, "unknown") for r in sorted(unclassified)}
     assert not unclassified, (
-        "unclassified write route(s) — route the body through ctx.fields or add to EXEMPT: "
-        f"{sorted(unclassified)}"
+        "unclassified write route(s) — route the body through ctx.fields or add to EXEMPT:\n"
+        + "\n".join(f"  {m} {p}: {why}" for (m, p), why in detail.items())
     )
     # No magic coverage count: the partition above already proves every write route
     # is accounted for, and if discovery's reach collapsed those routes would surface

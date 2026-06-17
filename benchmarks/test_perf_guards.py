@@ -17,6 +17,7 @@ flaky across runner types); ``test_dispatch_benchmarks.py`` carries the trend.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from statistics import median
 
 from _helpers import backend_with_channel
@@ -26,13 +27,26 @@ from simcord.http.router import dispatch
 _SEND_BUDGET_S = 0.005  # 5 ms; in-memory dispatch is microseconds, so this is huge headroom
 
 
-def _median_time(fn: object, repeats: int = 200) -> float:
-    samples = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        fn()  # type: ignore[operator]
-        samples.append(time.perf_counter() - start)
-    return median(samples)
+def _median_time(fn: Callable[[], object], *, repeats: int = 200, warmup: int = 50, rounds: int = 3) -> float:
+    """Per-call time as the *best* (most-quiescent) median of several rounds.
+
+    A warm-up primes caches and branch predictors so the first slow calls don't skew
+    the sample, and taking the best of several rounds rejects a transient GC or
+    OS-scheduler pause that would inflate a single round's median — exactly the
+    failure mode that makes wall-clock ratios flaky on shared CI runners. The result
+    still tracks genuine per-call cost, so an algorithmic regression is unaffected.
+    """
+    for _ in range(warmup):
+        fn()
+    best = float("inf")
+    for _ in range(rounds):
+        samples = []
+        for _ in range(repeats):
+            start = time.perf_counter()
+            fn()
+            samples.append(time.perf_counter() - start)
+        best = min(best, median(samples))
+    return best
 
 
 def test_send_dispatch_within_budget() -> None:
