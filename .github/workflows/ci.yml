@@ -15,8 +15,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra dev
-      - run: uv run ruff check src tests examples
-      - run: uv run ruff format --check src tests examples
+      - run: uv run ruff check src tests examples benchmarks
+      - run: uv run ruff format --check src tests examples benchmarks
       - run: uv run pyright src
 
   test:
@@ -41,3 +41,18 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra docs
       - run: uv run mkdocs build --strict
+
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      # The perf guards (absolute budget + same-run scaling ratio) fail the build
+      # on a catastrophic regression; the JSON is uploaded as a non-gating trend.
+      - run: uv sync --extra bench
+      - run: uv run pytest benchmarks --benchmark-json=benchmark.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: benchmark.json

@@ -30,6 +30,7 @@ pytest = ["pytest>=8", "pytest-asyncio>=0.24"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "pytest-benchmark>=4",
     "coverage[toml]>=7",
     "hypothesis>=6",
     "ruff>=0.8",
@@ -38,6 +39,9 @@ dev = [
     "pre-commit>=3",
 ]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.26"]
+# Just the performance suite, for the dedicated CI benchmark job (no lint/type
+# tooling). The full `dev` extra includes it too for local runs.
+bench = ["pytest>=8", "pytest-benchmark>=4"]
 
 [project.entry-points.pytest11]
 simcord = "simcord.pytest_plugin"
