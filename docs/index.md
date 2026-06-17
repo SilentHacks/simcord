@@ -26,8 +26,8 @@ async def test_ping(simcord_env):
 [Browse the API :material-arrow-right:](api.md){ .md-button }
 
 !!! success "Stable API"
-    The public surface is settled and will follow semantic versioning from the upcoming
-    1.0 — see [Stability & versioning](stability.md). The [parity matrix](parity-matrix.md)
+    The public surface is settled and follows semantic versioning as of 1.0
+    — see [Stability & versioning](stability.md). The [parity matrix](parity-matrix.md)
     records exactly what is implemented; the remaining routes are a deliberate, demand-driven
     backlog that always fails **loudly**. SimCord never silently fakes success.
 

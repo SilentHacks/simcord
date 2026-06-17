@@ -1,14 +1,14 @@
 ---
 title: "Stability & versioning"
-description: "What SimCord's public API covers, what stays internal, and how versioning works on the road to 1.0."
+description: "What SimCord's public API covers, what stays internal, and how versioning works now that 1.0 has landed."
 ---
 
 # Stability & versioning
 
-SimCord follows [semantic versioning](https://semver.org/). Once 1.0 lands, the
+SimCord follows [semantic versioning](https://semver.org/). As of 1.0, the
 **public API** below is covered by that promise: no breaking change to it without
-a major version bump. The surface is already settled, and the two gates 1.0 waited
-on are now in place: property-based fuzzing of the honesty layer and a
+a major version bump. The surface is settled, and the two gates 1.0 waited
+on are in place: property-based fuzzing of the honesty layer and a
 [performance baseline](performance.md) guarding the offline-speed value proposition.
 
 The fuzzer proves that across every route whose body is a field set — message
