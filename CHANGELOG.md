@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 1.0.1 (2026-06-18)
+
+### Documentation
+
+- Expanded the bundled `examples/` into a realistic mixed-feature bot (prefix command, cooldown, permission-gated slash, modal, button confirm flow and a persistent select menu) with a test per feature, and added context-menu, deferred-followup and embed-assertion recipes to the cookbook.
+
+
 ## 1.0.0 (2026-06-17)
 
 ### Features
