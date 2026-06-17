@@ -19,7 +19,9 @@ from __future__ import annotations
 import inspect
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from .http import routes as _routes  # noqa: F401  — importing registers every route handler
 from .http.router import _ROUTES
@@ -32,6 +34,68 @@ OOS_BEGIN_MARKER = "<!-- out-of-scope:begin (generated — do not edit by hand) 
 OOS_END_MARKER = "<!-- out-of-scope:end -->"
 
 _METHOD_ORDER = {"GET": 0, "POST": 1, "PUT": 2, "PATCH": 3, "DELETE": 4}
+
+# Friendly titles for the top-level resource each route lives under (its first path
+# segment). Used to group the long flat route lists into per-area sections in the
+# docs; an unmapped segment falls back to its own name, so a new discord.py resource
+# still groups sensibly without a code change.
+_AREA_TITLES = {
+    "applications": "Applications",
+    "auth": "Authentication",
+    "channels": "Channels",
+    "guilds": "Guilds",
+    "interactions": "Interactions",
+    "invites": "Invites",
+    "oauth2": "OAuth2",
+    "skus": "Monetization",
+    "soundboard-default-sounds": "Soundboard",
+    "stage-instances": "Stage instances",
+    "sticker-packs": "Sticker packs",
+    "stickers": "Stickers",
+    "users": "Users",
+    "webhooks": "Webhooks",
+}
+
+
+def _area(path: str) -> str:
+    """The top-level resource a route path belongs to (its first segment)."""
+    return path.strip("/").split("/", 1)[0]
+
+
+def _area_title(area: str) -> str:
+    return _AREA_TITLES.get(area, area.replace("-", " ").capitalize())
+
+
+_R = TypeVar("_R", bound=tuple[str, ...])
+
+
+def _grouped_tables(
+    rows: list[_R],
+    *,
+    area_of: Callable[[_R], str],
+    admonition: str,
+    header: str,
+    row: Callable[[_R], str],
+) -> list[str]:
+    """Render ``rows`` as one collapsible table per resource area.
+
+    Each area becomes an expanded-by-default Material admonition (so the content
+    stays searchable and Ctrl-F-able, but a reader can collapse areas they don't
+    care about), titled with the friendly area name and its route count. ``rows``
+    are pre-sorted, so each group preserves that order.
+    """
+    groups: dict[str, list[_R]] = {}
+    for item in rows:
+        groups.setdefault(area_of(item), []).append(item)
+    lines: list[str] = []
+    for area in sorted(groups):
+        members = groups[area]
+        lines.append(f'???+ {admonition} "{_area_title(area)} · {len(members)} route(s)"')
+        lines += ["", f"    {header}", "    | --- | --- |"]
+        lines += [f"    {row(item)}" for item in members]
+        lines.append("")
+    return lines
+
 
 # discord.py REST methods a bot can never drive, so they are deliberately never
 # implemented rather than left as "not yet" gaps — distinguishing intent from
@@ -140,18 +204,23 @@ def out_of_scope_routes() -> list[tuple[str, str, str]]:
 
 
 def routes_section() -> str:
-    """The generated markdown section listing every implemented route."""
+    """The generated markdown section listing every implemented route, by area."""
+    routes = implemented_routes()
     lines = [
         BEGIN_MARKER,
         "",
-        f"{len(implemented_routes())} routes implemented. Anything else fails loudly with "
-        "`RouteNotImplemented`.",
+        f"**{len(routes)} routes implemented**, grouped by resource below. Anything else fails "
+        "loudly with `RouteNotImplemented`.",
         "",
-        "| Method | Route |",
-        "| --- | --- |",
     ]
-    lines += [f"| `{method}` | `{path}` |" for method, path in implemented_routes()]
-    lines += ["", END_MARKER]
+    lines += _grouped_tables(
+        routes,
+        area_of=lambda r: _area(r[1]),
+        admonition="success",
+        header="| Method | Route |",
+        row=lambda r: f"| `{r[0]}` | `{r[1]}` |",
+    )
+    lines.append(END_MARKER)
     return "\n".join(lines)
 
 
@@ -161,15 +230,19 @@ def gaps_section() -> str:
     lines = [
         GAPS_BEGIN_MARKER,
         "",
-        f"{len(gaps)} discord.py REST routes are not yet implemented; calling one fails loudly "
-        "with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot "
-        "needs one.",
+        f"**{len(gaps)} discord.py REST routes are not yet implemented**, grouped by resource "
+        "below; calling one fails loudly with `RouteNotImplemented` (path parameters shown as "
+        "`{}`). Open an issue if your bot needs one.",
         "",
-        "| discord.py `HTTPClient` method | Route |",
-        "| --- | --- |",
     ]
-    lines += [f"| `{name}` | `{verb} {path}` |" for name, verb, path in gaps]
-    lines += ["", GAPS_END_MARKER]
+    lines += _grouped_tables(
+        gaps,
+        area_of=lambda g: _area(g[2]),
+        admonition="warning",
+        header="| Route | discord.py `HTTPClient` method |",
+        row=lambda g: f"| `{g[1]} {g[2]}` | `{g[0]}` |",
+    )
+    lines.append(GAPS_END_MARKER)
     return "\n".join(lines)
 
 
