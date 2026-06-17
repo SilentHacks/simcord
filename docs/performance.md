@@ -36,6 +36,10 @@ Reproduce them yourself:
 uv run --extra bench pytest benchmarks --benchmark-only
 ```
 
+`--benchmark-only` reports the numbers above; dropping it also runs the CI
+performance gate (`test_perf_guards.py`, described below), which is what the
+`benchmark` CI job does.
+
 ## How the guard works
 
 Wall-clock benchmarks are noisy on shared CI runners, so the build is **not** gated
