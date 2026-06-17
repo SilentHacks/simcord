@@ -8,10 +8,17 @@ description: "What SimCord's public API covers, what stays internal, and how ver
 SimCord follows [semantic versioning](https://semver.org/). Once 1.0 lands, the
 **public API** below is covered by that promise: no breaking change to it without
 a major version bump. The surface is already settled, and the two gates 1.0 waited
-on are now in place: property-based fuzzing of the honesty layer (every request
-body key is applied or raises `UnsupportedField`, never silently dropped) and a
-[performance baseline](performance.md) guarding the offline-speed value
-proposition.
+on are now in place: property-based fuzzing of the honesty layer and a
+[performance baseline](performance.md) guarding the offline-speed value proposition.
+
+The fuzzer proves that across every route whose body is a field set — message
+send and edits, webhook execute, bulk delete, and the rest — an unrecognised
+request key raises `UnsupportedField` rather than being silently dropped. The
+few routes that *cannot* be expressed as one flat field set are not swept under
+the rug: those with no JSON body, the command-sync routes that store their
+payload verbatim (so nothing is dropped), and the polymorphic
+interaction-callback envelope (whose message `data` is itself vetted) are
+enumerated with a reason and drift-guarded, so the boundary stays explicit.
 
 ## Supported discord.py
 
