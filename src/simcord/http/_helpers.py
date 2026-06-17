@@ -42,6 +42,23 @@ _MESSAGE_HANDLED = ("content", "embed", "embeds", "components", "flags", "messag
 _MESSAGE_IGNORED = ("tts", "nonce", "enforce_nonce", "allowed_mentions", "attachments")
 _MESSAGE_REJECTED = {"sticker_ids": "simcord does not model stickers on messages offline."}
 
+# ``Webhook.send`` adds fields that a plain channel send never carries, so the
+# webhook-execute route classifies them explicitly rather than letting them fall
+# through to the bare "unmodelled key" path:
+#   * ``username``   — an *incoming* webhook's per-message display-name override is
+#                      modelled (applied as ``author_name``); an *application*
+#                      webhook (interaction followup) is keyed differently — Discord
+#                      ignores username/avatar there — so it is accepted-and-ignored.
+#   * ``avatar_url`` — accepted-and-ignored: simcord models no avatars for any user,
+#                      so there is nothing to apply (and nothing silently faked).
+#   * forum-via-webhook (``thread_name``/``applied_tags``) is a real feature simcord
+#     does not model, so it is rejected loudly with a reason.
+_WEBHOOK_IGNORED = ("avatar_url",)
+_WEBHOOK_REJECTED = {
+    "thread_name": "simcord does not model creating a forum thread via webhook offline.",
+    "applied_tags": "simcord does not model creating a forum thread via webhook offline.",
+}
+
 
 def bot_message(
     ctx: RequestContext,
@@ -51,6 +68,7 @@ def bot_message(
     interaction: Interaction | None = None,
     webhook_id: int | None = None,
     body: dict[str, Any] | None = None,
+    webhook_execute: bool = False,
 ) -> Message:
     """Create a message from a request body, authored by the bot (or a webhook user).
 
@@ -59,14 +77,31 @@ def bot_message(
     explicit body instead of mutating the shared request context. Either way the
     payload is vetted through :meth:`RequestContext.fields`, so an unmodelled key
     raises :class:`UnsupportedField` rather than being silently dropped.
+
+    ``webhook_execute`` widens the field contract for the ``POST /webhooks`` route,
+    whose ``Webhook.send`` payload carries ``username``/``avatar_url`` and the
+    forum-thread fields a plain channel send never does (see ``_WEBHOOK_*``). An
+    incoming webhook (``webhook_id`` set) honours the ``username`` override; an
+    application webhook (interaction followup) does not, matching Discord.
     """
     backend = ctx.backend
+    handled = _MESSAGE_HANDLED
+    ignore = _MESSAGE_IGNORED
+    reject = _MESSAGE_REJECTED
+    # Only an incoming webhook honours a per-message identity; an application
+    # webhook (interaction followup, keyed by token, no webhook_id) ignores it.
+    apply_username = webhook_execute and webhook_id is not None
+    if webhook_execute:
+        reject = {**_MESSAGE_REJECTED, **_WEBHOOK_REJECTED}
+        handled = (*_MESSAGE_HANDLED, "username") if apply_username else _MESSAGE_HANDLED
+        ignore = (*_MESSAGE_IGNORED, *_WEBHOOK_IGNORED) + (() if apply_username else ("username",))
     body = ctx.fields(
-        *_MESSAGE_HANDLED,
-        ignore=_MESSAGE_IGNORED,
-        reject=_MESSAGE_REJECTED,
+        *handled,
+        ignore=ignore,
+        reject=reject,
         body=ctx.body() if body is None else body,
     )
+    author_name = body.get("username") if apply_username else None
     flags = int(body.get("flags") or 0)
     interaction_metadata = None
     if interaction is not None:
@@ -96,6 +131,7 @@ def bot_message(
         reference=reference,
         interaction_metadata=interaction_metadata,
         webhook_id=webhook_id,
+        author_name=author_name,
         poll=poll,
         broadcast=not flags & EPHEMERAL_FLAG,
     )

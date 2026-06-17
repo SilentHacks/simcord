@@ -72,14 +72,20 @@ def execute_webhook(ctx: RequestContext) -> Any:
     token = ctx.args["token"]
     if token in backend.interaction_tokens:
         record = backend.interaction_by_token(token)
-        message = bot_message(ctx, record.channel_id, interaction=record)
+        message = bot_message(ctx, record.channel_id, interaction=record, webhook_execute=True)
         record.followup_ids.append(message.id)
         return message_response(ctx, message)
     webhook_id = backend.webhook_tokens.get(token)
     if webhook_id is None or backend.webhooks[webhook_id].id != ctx.int_arg("webhook_id"):
         raise errors.unknown_webhook()
     webhook = backend.webhooks[webhook_id]
-    message = bot_message(ctx, webhook.channel_id, author_id=webhook.webhook_user_id, webhook_id=webhook.id)
+    message = bot_message(
+        ctx,
+        webhook.channel_id,
+        author_id=webhook.webhook_user_id,
+        webhook_id=webhook.id,
+        webhook_execute=True,
+    )
     return message_response(ctx, message)
 
 

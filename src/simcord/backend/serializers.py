@@ -233,10 +233,15 @@ def message_payload(
     for_user: int | None = None,
 ) -> message_types.Message:
     channel = backend.channels[message.channel_id]
+    author: dict[str, Any] = dict(user_payload(backend.users[message.author_id]))
+    if message.author_name is not None:
+        # An incoming webhook's per-message ``username=`` override: the message
+        # displays under this name, not the authoring webhook user's own name.
+        author["username"] = author["global_name"] = message.author_name
     payload: dict[str, Any] = {
         "id": str(message.id),
         "channel_id": str(message.channel_id),
-        "author": user_payload(backend.users[message.author_id]),
+        "author": author,
         "content": message.content,
         "timestamp": message.timestamp,
         "edited_timestamp": message.edited_timestamp,
