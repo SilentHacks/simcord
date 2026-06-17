@@ -4,6 +4,14 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 1.0.0 (2026-06-17)
+
+### Features
+
+- Added a performance benchmark suite and a CI guard for the offline-speed value proposition. A generous absolute budget catches catastrophic regressions (a real network call, an accidental quadratic) and a same-run scaling ratio proves message-send latency stays constant in channel size, without the flakiness of baseline percentage gating. See the new [Performance](https://simcord.readthedocs.io/en/latest/performance/) page.
+- Closed the honesty layer's remaining silent-drop blind spots and added property-based fuzzing to prove it stays closed. Message create, webhook execute, interaction responses and bulk message delete now route their bodies through `ctx.fields` like every edit, so an unmodelled key (e.g. `sticker_ids`) fails loudly with `UnsupportedField` instead of vanishing. As part of this, `Webhook.send(username=...)` is now modelled (the message posts under that per-message display name) rather than silently ignored; `avatar_url` is accepted (simcord models no avatars); and creating a forum thread via webhook (`thread_name`/`applied_tags`) is rejected with a reason, since it is unmodelled offline. A Hypothesis sweep proves that across every route whose body flows through `ctx.fields`/`list_fields`, an unrecognised request field always raises and a recognised one never does, and a drift guard fails loudly if a new write route is neither honesty-vetted nor explicitly exempted with a reason.
+
+
 ## 0.11.0 (2026-06-16)
 
 ### Features
