@@ -1411,6 +1411,7 @@ dependencies = [
 [package.optional-dependencies]
 bench = [
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "pytest-benchmark" },
 ]
 dev = [
@@ -1445,6 +1446,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'bench'", specifier = ">=8" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest", marker = "extra == 'pytest'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'bench'", specifier = ">=0.24" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pytest-asyncio", marker = "extra == 'pytest'", specifier = ">=0.24" },
     { name = "pytest-benchmark", marker = "extra == 'bench'", specifier = ">=4" },
