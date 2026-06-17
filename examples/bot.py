@@ -23,9 +23,7 @@ class FeedbackModal(discord.ui.Modal, title="Feedback"):
     """Collects a name and a comment, then thanks the user."""
 
     name = discord.ui.TextInput(label="Your name", custom_id="name")
-    comment = discord.ui.TextInput(
-        label="Comment", custom_id="comment", style=discord.TextStyle.paragraph
-    )
+    comment = discord.ui.TextInput(label="Comment", custom_id="comment", style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(f"Thanks {self.name.value}!", ephemeral=True)
