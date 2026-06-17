@@ -146,46 +146,54 @@ def resolve(template: str, w: World) -> str | None:
     return "/" + "/".join(parts)
 
 
+def _channel_for(template: str, w: World) -> int:
+    """Resolve an overloaded ``{channel_id}`` to the channel *type* the route wants.
+
+    The placeholder addresses different channel types depending on the route, so
+    the type is read from the template. The fallback is a plain text channel — the
+    correct default for the bulk of channel routes. A route whose field contract
+    depends on a *non-text* channel type must be registered here explicitly;
+    otherwise it would be (silently) probed against the text channel.
+    """
+    if "/stage-instances/" in template:
+        return w.stage
+    if "thread-members" in template or "threads/archived" in template:
+        return w.thread
+    if "/followers" in template or "crosspost" in template:
+        return w.news
+    return w.text
+
+
 def _param(name: str, template: str, w: World) -> object | None:
-    # ``channel_id`` and a few others mean different resource *types* depending on
-    # the route, so resolve them with the template as context.
-    if name == "guild_id":
-        return w.gid
+    # 1:1 placeholders: one name, one world resource, no template context needed.
+    simple: dict[str, object] = {
+        "guild_id": w.gid,
+        "user_id": w.member_uid,
+        "target_id": w.role,
+        "role_id": w.role,
+        "webhook_id": w.webhook,
+        "rule_id": w.rule,
+        "event_id": w.event,
+        "sticker_id": w.sticker,
+        "code": w.invite,
+        "application_id": w.app_id,
+        "answer_id": 1,
+    }
+    if name in simple:
+        return simple[name]
+    # Overloaded placeholders: the same name addresses different resources by route.
     if name == "channel_id":
-        if "/stage-instances/" in template:
-            return w.stage
-        if "thread-members" in template or "threads/archived" in template:
-            return w.thread
-        if "/followers" in template or "crosspost" in template:
-            return w.news
-        return w.text
+        return _channel_for(template, w)
     if name == "message_id":
-        if "crosspost" in template:
-            return w.news_msg
-        return w.msg
-    if name in ("user_id", "target_id"):
-        return w.member_uid if name == "user_id" else w.role
-    if name == "role_id":
-        return w.role
-    if name == "webhook_id":
-        return w.webhook
+        return w.news_msg if "crosspost" in template else w.msg
     if name == "token":
-        # The ``/webhooks/{id}/{token}/messages/...`` family are interaction
-        # response routes keyed by an interaction token; the plain webhook
-        # routes use the webhook's own token.
+        # The ``/webhooks/{id}/{token}/messages/...`` family are interaction-response
+        # routes keyed by an interaction token; plain webhook routes use the
+        # webhook's own token.
         return w.interaction_token if "/messages/" in template else w.webhook_token
-    if name == "rule_id":
-        return w.rule
-    if name == "event_id":
-        return w.event
     if name == "emoji_id":
         return w.app_emoji if template.startswith("/applications") else w.emoji
-    if name == "sticker_id":
-        return w.sticker
-    if name == "code":
-        return w.invite
-    if name == "application_id":
-        return w.app_id
-    if name == "answer_id":
-        return 1
+    # An unrecognised placeholder leaves the route unresolved. It is not silently
+    # lost: ``test_every_write_route_is_classified`` flags any write route that is
+    # neither vetted nor EXEMPT, so a new placeholder type surfaces there.
     return None

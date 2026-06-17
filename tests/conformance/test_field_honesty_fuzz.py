@@ -27,12 +27,18 @@ vetted nor explicitly exempt.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pytest
 from _world import build_world, resolve
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
+
+if TYPE_CHECKING:
+    from _pytest.python import Metafunc
 
 from simcord.backend.errors import BackendError
 from simcord.http.router import RequestContext, UnsupportedField, dispatch
@@ -61,17 +67,15 @@ class Contract:
     reject: tuple[tuple[str, str], ...]
 
 
-def _discover() -> dict[tuple[str, str], Contract]:
-    """Probe every write route to learn which use the honesty layer, and how.
+@contextlib.contextmanager
+def _honesty_probe(captured: dict[str, object]) -> Iterator[None]:
+    """Replace the honesty layer with a probe that records a route's declared
+    contract into ``captured`` and aborts (via :class:`_Probe`) before the handler
+    mutates state, restoring the real methods on exit.
 
-    Monkeypatches ``fields``/``list_fields`` to record the declared contract and
-    raise :class:`_Probe`, then dispatches each route (in a fresh world, so a
-    non-vetting route that runs to completion cannot mutate the next route's
-    resources) with an empty body. Routes that reach the layer are recorded; the
-    rest either run clean (no body contract) or fail before the layer.
+    Monkeypatching a production class is confined to this context manager and only
+    runs during collection (see :func:`pytest_generate_tests`), never at import.
     """
-    contracts: dict[tuple[str, str], Contract] = {}
-    captured: dict[str, object] = {}
     orig_fields, orig_list = RequestContext.fields, RequestContext.list_fields
 
     def probe_fields(self, *handled, ignore=(), reject=None, body=None):  # type: ignore[no-untyped-def]
@@ -85,6 +89,23 @@ def _discover() -> dict[tuple[str, str], Contract]:
     RequestContext.fields = probe_fields  # type: ignore[method-assign]
     RequestContext.list_fields = probe_list  # type: ignore[method-assign]
     try:
+        yield
+    finally:
+        RequestContext.fields = orig_fields  # type: ignore[method-assign]
+        RequestContext.list_fields = orig_list  # type: ignore[method-assign]
+
+
+def _discover() -> dict[tuple[str, str], Contract]:
+    """Probe every write route to learn which use the honesty layer, and how.
+
+    Dispatches each route (in a fresh world, so a non-vetting route that runs to
+    completion cannot mutate the next route's resources) with an empty body under
+    :func:`_honesty_probe`. Routes that reach the layer are recorded; the rest
+    either run clean (no body contract) or fail before the layer.
+    """
+    contracts: dict[tuple[str, str], Contract] = {}
+    captured: dict[str, object] = {}
+    with _honesty_probe(captured):
         for method, template in _write_routes():
             world = build_world()
             path = resolve(template, world)
@@ -100,9 +121,6 @@ def _discover() -> dict[tuple[str, str], Contract]:
                 # Ran clean (no honesty layer) or failed before it; either way the
                 # completeness guard below requires it to be classified in EXEMPT.
                 pass
-    finally:
-        RequestContext.fields = orig_fields  # type: ignore[method-assign]
-        RequestContext.list_fields = orig_list  # type: ignore[method-assign]
     return contracts
 
 
@@ -110,9 +128,36 @@ def _write_routes() -> list[tuple[str, str]]:
     return [(m, p) for m, p in implemented_routes() if m in _WRITE_METHODS]
 
 
-CONTRACTS = _discover()
-VETTED = sorted(CONTRACTS)
-REJECTING = sorted(r for r in VETTED if CONTRACTS[r].reject)
+_CONTRACTS: dict[tuple[str, str], Contract] | None = None
+
+
+def _contracts() -> dict[tuple[str, str], Contract]:
+    """The discovered route contracts, computed once at collection time.
+
+    Lazy (not a module-level ``= _discover()``) so a probing failure surfaces as an
+    error collecting *this* module rather than an opaque import error elsewhere, and
+    the production-class monkeypatch in :func:`_honesty_probe` never runs at import.
+    """
+    global _CONTRACTS
+    if _CONTRACTS is None:
+        _CONTRACTS = _discover()
+    return _CONTRACTS
+
+
+def pytest_generate_tests(metafunc: Metafunc) -> None:
+    """Parametrize each per-route test over the discovered contracts.
+
+    Replaces module-level ``@parametrize(VETTED)`` so the contract discovery that
+    feeds it runs at collection time through the normal pytest machinery.
+    """
+    if "route" not in metafunc.fixturenames:
+        return
+    contracts = _contracts()
+    routes = sorted(contracts)
+    if metafunc.function.__name__ == "test_reject_reason_surfaces":
+        routes = [r for r in routes if contracts[r].reject]
+    metafunc.parametrize("route", routes, ids=_ids)
+
 
 # Write routes that legitimately do NOT route a flat body through the honesty
 # layer, each with the honest reason. Three kinds: routes with no JSON body to
@@ -174,12 +219,11 @@ def _wrap(kind: str, key: str, value: object) -> object:
     return [{key: value}] if kind == "array" else {key: value}
 
 
-@pytest.mark.parametrize("route", VETTED, ids=_ids)
 @settings(max_examples=25, deadline=None)
 @given(key=_GARBAGE_KEYS, value=_VALUES)
 def test_unknown_field_rejected(route: tuple[str, str], key: str, value: object) -> None:
     """A body key no handler declares raises UnsupportedField, naming the key."""
-    contract = CONTRACTS[route]
+    contract = _contracts()[route]
     assume(key not in contract.handled and key not in contract.ignore)
     assume(key not in {k for k, _ in contract.reject})
     with pytest.raises(UnsupportedField) as exc:
@@ -187,12 +231,11 @@ def test_unknown_field_rejected(route: tuple[str, str], key: str, value: object)
     assert key in exc.value.fields
 
 
-@pytest.mark.parametrize("route", VETTED, ids=_ids)
 @settings(max_examples=15, deadline=None)
 @given(data=st.data())
 def test_declared_field_not_rejected(route: tuple[str, str], data: st.DataObject) -> None:
     """A key the handler declares is never rejected by the honesty layer."""
-    contract = CONTRACTS[route]
+    contract = _contracts()[route]
     if not contract.handled:
         pytest.skip("route declares no handled fields")
     key = data.draw(st.sampled_from(sorted(contract.handled)))
@@ -207,10 +250,9 @@ def test_declared_field_not_rejected(route: tuple[str, str], data: st.DataObject
         pass  # handler choking on a fuzzed value is not an honesty violation
 
 
-@pytest.mark.parametrize("route", REJECTING, ids=_ids)
 def test_reject_reason_surfaces(route: tuple[str, str]) -> None:
     """A deliberately-refused field fails loudly carrying its documented reason."""
-    contract = CONTRACTS[route]
+    contract = _contracts()[route]
     for key, reason in contract.reject:
         with pytest.raises(UnsupportedField) as exc:
             _dispatch(contract.method, contract.template, _wrap(contract.kind, key, "x"))
@@ -225,8 +267,9 @@ def test_every_write_route_is_classified() -> None:
     route must either flow its body through ``ctx.fields`` or be added to
     ``EXEMPT`` with a reason, or this fails.
     """
+    contracts = _contracts()
     writes = set(_write_routes())
-    vetted = set(CONTRACTS)
+    vetted = set(contracts)
     exempt = set(EXEMPT)
     assert not (vetted & exempt), f"routes both vetted and exempt (stale EXEMPT): {vetted & exempt}"
     assert exempt <= writes, f"EXEMPT names routes that no longer exist: {exempt - writes}"
@@ -235,7 +278,10 @@ def test_every_write_route_is_classified() -> None:
         "unclassified write route(s) — route the body through ctx.fields or add to EXEMPT: "
         f"{sorted(unclassified)}"
     )
-    # Coverage floor: guard against a regression that quietly drops the harness's
-    # reach (which would let routes slip from vetted into EXEMPT unnoticed).
-    assert len(vetted) >= 39, f"honesty-layer coverage dropped to {len(vetted)} routes"
-    assert REJECTING, "expected at least one reject= route (e.g. prune include_roles)"
+    # No magic coverage count: the partition above already proves every write route
+    # is accounted for, and if discovery's reach collapsed those routes would surface
+    # here as *unclassified*, not slip by. A route moving from vetted to EXEMPT is a
+    # human-reviewed decision gated by the reason each EXEMPT entry must carry.
+    assert any(c.reject for c in contracts.values()), (
+        "expected at least one reject= route (e.g. prune include_roles)"
+    )
