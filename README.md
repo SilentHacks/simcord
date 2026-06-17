@@ -35,8 +35,8 @@ async def test_ping(simcord_env):
     assert channel.last_message.content == "Pong!"
 ```
 
-> ✅ **Stable API.** The public surface is settled and will follow semantic versioning
-> from the upcoming 1.0 — see [Stability & versioning](https://simcord.readthedocs.io/en/latest/stability/).
+> ✅ **Stable API.** The public surface is settled and follows semantic versioning
+> — see [Stability & versioning](https://simcord.readthedocs.io/en/latest/stability/).
 > The [parity matrix](https://simcord.readthedocs.io/en/latest/parity-matrix/) records
 > exactly what is implemented; the remaining routes are a deliberate, demand-driven
 > backlog that always fails loudly — SimCord never silently fakes success.

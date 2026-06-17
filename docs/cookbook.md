@@ -104,6 +104,50 @@ async def test_tag_autocomplete(simcord_env):
     assert [c["value"] for c in choices] == ["python", "pytest"]
 ```
 
+## A context-menu command acts on its target
+
+```python
+async def test_report_message(simcord_env):
+    guild = simcord_env.create_guild()
+    channel = guild.create_text_channel("general")
+    alice = guild.add_member(simcord_env.create_user("alice"))
+    bob = guild.add_member(simcord_env.create_user("bob"))
+
+    spam = await bob.send(channel, "buy followers here")
+
+    result = await alice.context_menu(channel, "Report message", spam)   # right-click → Apps
+    assert result.ephemeral
+    assert "reported" in result.response.content.lower()
+```
+
+## A slash command defers, then follows up
+
+```python
+async def test_slow_command(simcord_env):
+    channel = simcord_env.create_guild().create_text_channel("general")
+    alice = simcord_env.guild.add_member(simcord_env.create_user("alice"))
+
+    result = await alice.slash(channel, "report")   # defers ("thinking…"), then follows up
+
+    assert result.deferred
+    assert result.followups[-1].content == "Done!"
+```
+
+## Assert on an embed with the helper
+
+```python
+import simcord
+
+async def test_profile_embed(simcord_env):
+    channel = simcord_env.create_guild().create_text_channel("general")
+    alice = simcord_env.guild.add_member(simcord_env.create_user("alice"))
+
+    result = await alice.slash(channel, "profile")
+
+    # assert_responded prints what the bot actually did on failure.
+    simcord.assert_responded(result, embed_title="alice's profile")
+```
+
 ## A cooldown blocks, then resets
 
 ```python
