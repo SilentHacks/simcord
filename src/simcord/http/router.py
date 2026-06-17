@@ -90,6 +90,7 @@ class RequestContext:
         *handled: str,
         ignore: tuple[str, ...] = (),
         reject: Mapping[str, str] | None = None,
+        body: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Pull the recognised ``handled`` keys out of the JSON body, failing
         loudly on any other key.
@@ -102,8 +103,13 @@ class RequestContext:
         raises :class:`UnsupportedField` carrying that reason, so the refusal reads
         as a considered gap rather than an unfinished route. Anything neither
         handled, ignored nor rejected also raises — a parity gap must be loud.
+
+        ``body`` defaults to the request's JSON body but may be an explicit dict for
+        handlers whose payload is nested (e.g. an interaction callback's ``data`` or
+        a forum post's starter ``message``), so those structured payloads get the
+        same honesty guarantee as a top-level body instead of being read key-by-key.
         """
-        body = self.body()
+        body = self.body() if body is None else body
         reject = reject or {}
         refused = sorted(key for key in reject if key in body)
         if refused:
