@@ -40,8 +40,10 @@ dev = [
 ]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.26"]
 # Just the performance suite, for the dedicated CI benchmark job (no lint/type
-# tooling). The full `dev` extra includes it too for local runs.
-bench = ["pytest>=8", "pytest-benchmark>=4"]
+# tooling). pytest-asyncio is included so the shared `asyncio_mode` ini option is
+# recognised (it is unused by the sync benchmarks, but its absence would warn —
+# and break under strict-warnings). The full `dev` extra includes all of this too.
+bench = ["pytest>=8", "pytest-benchmark>=4", "pytest-asyncio>=0.24"]
 
 [project.entry-points.pytest11]
 simcord = "simcord.pytest_plugin"
@@ -58,6 +60,11 @@ packages = ["src/simcord"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Make the sibling test-support modules (tests/conformance/_world.py,
+# benchmarks/_helpers.py) importable explicitly, rather than relying on pytest's
+# implicit rootdir sys.path insertion — which a stray __init__.py would silently
+# break. Entries resolve from the rootdir, so they hold for `pytest benchmarks` too.
+pythonpath = ["tests/conformance", "benchmarks"]
 
 [tool.coverage.run]
 source = ["simcord"]
