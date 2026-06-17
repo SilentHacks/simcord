@@ -121,6 +121,38 @@ async def test_webhook_create_and_execute(env, channel):
     assert last.author.id != env.bot.user.id  # authored by the webhook's synthetic user
 
 
+async def test_webhook_username_override_is_modelled(env, channel):
+    """``Webhook.send(username=...)`` posts under that per-message display name.
+
+    The override is modelled, not silently dropped: the stored message's author
+    reports the chosen name. ``avatar_url`` rides along and is accepted (simcord
+    models no avatars, so it has nothing to apply, but it must not fail loudly).
+    """
+    cached = env.bot.get_channel(channel.id)
+    webhook = await cached.create_webhook(name="Announcer")
+    await webhook.send("hi", username="Custom Name", avatar_url="https://example.com/a.png", wait=True)
+
+    last = channel.last_message
+    assert last.author.name == "Custom Name"
+
+
+async def test_webhook_forum_fields_rejected_loudly(env, channel):
+    """Creating a forum thread via webhook is unmodelled, so it fails loudly.
+
+    ``thread_name``/``applied_tags`` are a real ``Webhook.send`` feature simcord
+    does not model; sending one raises ``UnsupportedField`` carrying its reason
+    rather than silently posting a plain message into the wrong place.
+    """
+    from simcord.http import router
+
+    cached = env.bot.get_channel(channel.id)
+    webhook = await cached.create_webhook(name="Announcer")
+    with pytest.raises(router.UnsupportedField) as exc:
+        await webhook.send("hi", thread_name="New Post", wait=True)
+    assert "thread_name" in exc.value.fields
+    assert any("forum" in note for note in getattr(exc.value, "__notes__", []))
+
+
 async def test_webhook_fetch_edit_delete(env, channel):
     cached = env.bot.get_channel(channel.id)
     webhook = await cached.create_webhook(name="Announcer")

@@ -57,6 +57,10 @@ class Message:
     reference: dict[str, Any] | None = None
     interaction_metadata: dict[str, Any] | None = None
     webhook_id: int | None = None
+    #: A per-message display-name override (an incoming webhook's ``username=``).
+    #: When set, the serialized author reports this name instead of the authoring
+    #: user's; ``None`` means "use the author user's own name" (the common case).
+    author_name: str | None = None
     poll: Poll | None = None
 
     @property
