@@ -29,6 +29,20 @@ def poll_from_wire(backend: Any, wire: dict[str, Any]) -> Poll:
     )
 
 
+# discord.py's message-create payload (channel send, webhook execute, interaction
+# response) is read through ``ctx.fields`` like every edit, so an unrecognised key
+# fails loudly instead of being silently dropped:
+#   * handled  — keys simcord models into the stored message
+#   * ignored  — keys Discord accepts but that have no offline meaning (the bot
+#                never speaks; nonces don't dedupe; mentions are derived from
+#                content; the ``attachments`` metadata is rebuilt from the files)
+#   * rejected — a real discord.py feature simcord does not model, refused with a
+#                reason so a sticker send fails loudly rather than vanishing
+_MESSAGE_HANDLED = ("content", "embed", "embeds", "components", "flags", "message_reference", "poll")
+_MESSAGE_IGNORED = ("tts", "nonce", "enforce_nonce", "allowed_mentions", "attachments")
+_MESSAGE_REJECTED = {"sticker_ids": "simcord does not model stickers on messages offline."}
+
+
 def bot_message(
     ctx: RequestContext,
     channel_id: int,
@@ -42,11 +56,17 @@ def bot_message(
 
     ``body`` defaults to the request's JSON body, but callers (e.g. interaction
     callbacks, where the message payload is nested under ``data``) may pass an
-    explicit body instead of mutating the shared request context.
+    explicit body instead of mutating the shared request context. Either way the
+    payload is vetted through :meth:`RequestContext.fields`, so an unmodelled key
+    raises :class:`UnsupportedField` rather than being silently dropped.
     """
     backend = ctx.backend
-    if body is None:
-        body = ctx.body()
+    body = ctx.fields(
+        *_MESSAGE_HANDLED,
+        ignore=_MESSAGE_IGNORED,
+        reject=_MESSAGE_REJECTED,
+        body=ctx.body() if body is None else body,
+    )
     flags = int(body.get("flags") or 0)
     interaction_metadata = None
     if interaction is not None:

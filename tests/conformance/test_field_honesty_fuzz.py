@@ -17,11 +17,12 @@ What it proves, for every honesty-vetted route:
 
 What it does *not* prove: that a declared key is actually written to state (the
 ``*_fields_apply`` cases in ``test_field_honesty.py`` cover that), and it only
-covers routes that *use* the honesty layer. Routes that read their body directly
-(message create, interaction callback, bulk command overwrite, ...) are enumerated
-in ``EXEMPT`` and guarded by :func:`test_every_write_route_is_classified`, which —
-like the parity drift guard — fails loudly if a new write route is neither vetted
-nor explicitly exempt.
+covers routes that *use* the honesty layer. The handful that legitimately do not —
+no-body routes, the command-overwrite routes that round-trip their payload
+verbatim, and the polymorphic interaction-callback envelope — are enumerated in
+``EXEMPT`` with a reason and guarded by :func:`test_every_write_route_is_classified`,
+which — like the parity drift guard — fails loudly if a new write route is neither
+vetted nor explicitly exempt.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def _discover() -> dict[tuple[str, str], Contract]:
     captured: dict[str, object] = {}
     orig_fields, orig_list = RequestContext.fields, RequestContext.list_fields
 
-    def probe_fields(self, *handled, ignore=(), reject=None):  # type: ignore[no-untyped-def]
+    def probe_fields(self, *handled, ignore=(), reject=None, body=None):  # type: ignore[no-untyped-def]
         captured["c"] = ("object", frozenset(handled), frozenset(ignore), tuple((reject or {}).items()))
         raise _Probe
 
@@ -113,12 +114,19 @@ CONTRACTS = _discover()
 VETTED = sorted(CONTRACTS)
 REJECTING = sorted(r for r in VETTED if CONTRACTS[r].reject)
 
-# Write routes that deliberately do NOT route their body through the honesty
-# layer, each with the reason. Two kinds: routes with no request body, and the
-# structured-payload routes that read specific keys directly. This is the honest
-# inventory of the honesty layer's own blind spots — keep it accurate.
+# Write routes that legitimately do NOT route a flat body through the honesty
+# layer, each with the honest reason. Three kinds: routes with no JSON body to
+# vet, routes that round-trip a structured payload verbatim (so no key is ever
+# dropped), and one polymorphic envelope whose modelled sub-payload *is* vetted
+# elsewhere. This is the honest inventory of the layer's own boundaries.
+#
+# Adding a route here is a deliberate, human-reviewed decision: the completeness
+# guard below proves every write route is *classified*, but it cannot tell a
+# legitimate exemption from a handler that simply skipped ctx.fields. A new entry
+# must come with a reason that survives that scrutiny — prefer routing the body
+# through ctx.fields (see bot_message / bulk-delete, which used to live here).
 EXEMPT: dict[tuple[str, str], str] = {
-    # No request body to vet.
+    # No JSON body to vet.
     ("POST", "/channels/{channel_id}/messages/{message_id}/crosspost"): "no request body",
     ("POST", "/channels/{channel_id}/polls/{message_id}/expire"): "no request body",
     ("POST", "/channels/{channel_id}/typing"): "no request body",
@@ -128,18 +136,22 @@ EXEMPT: dict[tuple[str, str], str] = {
     ("PUT", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me"): "no request body",
     ("PUT", "/guilds/{guild_id}/members/{user_id}/roles/{role_id}"): "no request body",
     ("PUT", "/guilds/{guild_id}/bans/{user_id}"): (
-        "discards the body — delete_message_seconds is not modelled offline"
+        "delete_message_seconds is sent as a query param, not a JSON body — nothing to vet"
     ),
-    # Structured payloads read key-by-key rather than vetted as a flat field set.
-    ("POST", "/channels/{channel_id}/messages"): (
-        "message create reads content/embeds/components/poll/... directly (bot_message)"
-    ),
-    ("POST", "/channels/{channel_id}/messages/bulk-delete"): "reads the `messages` id list directly",
-    ("POST", "/webhooks/{webhook_id}/{token}"): "webhook execute is message-create-shaped",
-    ("POST", "/interactions/{interaction_id}/{token}/callback"): "interaction callback reads nested `data`",
-    ("PUT", "/applications/{application_id}/commands"): "bulk command overwrite reads the command array",
+    # Round-tripped verbatim: register_commands stores each command object as-is,
+    # so no key is dropped — there is nothing for a flat field set to catch.
+    (
+        "PUT",
+        "/applications/{application_id}/commands",
+    ): "stores each command object verbatim (no per-key drop)",
     ("PUT", "/applications/{application_id}/guilds/{guild_id}/commands"): (
-        "bulk command overwrite reads the command array"
+        "stores each command object verbatim (no per-key drop)"
+    ),
+    # Polymorphic envelope: {type, data} are both consumed, and the message-create
+    # `data` branch is vetted by bot_message via ctx.fields; the modal / autocomplete
+    # / update-message data shapes are read structurally, so no one field set applies.
+    ("POST", "/interactions/{interaction_id}/{token}/callback"): (
+        "polymorphic callback envelope; its message `data` is vetted via bot_message"
     ),
 }
 

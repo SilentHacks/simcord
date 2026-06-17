@@ -78,7 +78,7 @@ def edit_message(ctx: RequestContext) -> Any:
 def bulk_delete_messages(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
-    ids = [int(m) for m in ctx.body().get("messages") or []]
+    ids = [int(m) for m in ctx.fields("messages").get("messages") or []]
     # Discord's bulk-delete endpoint only accepts 2-100 messages; discord.py
     # uses single delete below that, so a route hit outside this range is a
     # malformed call.
