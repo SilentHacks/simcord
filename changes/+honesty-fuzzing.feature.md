@@ -1,0 +1,1 @@
+Added property-based fuzzing of the field-honesty layer: a Hypothesis sweep proves that across every route whose body flows through `ctx.fields`/`list_fields`, an unrecognised request field always raises `UnsupportedField` (never silently dropped) and a recognised one never does. A drift guard fails loudly if a new write route is neither honesty-vetted nor explicitly exempted.

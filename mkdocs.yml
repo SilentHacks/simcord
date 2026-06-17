@@ -64,6 +64,7 @@ nav:
       - API reference: api.md
       - Parity matrix: parity-matrix.md
       - Stability & versioning: stability.md
+      - Performance: performance.md
       - Architecture: architecture.md
       - Migrating from dpytest: migrating-from-dpytest.md
       - FAQ: faq.md

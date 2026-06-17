@@ -7,9 +7,11 @@ description: "What SimCord's public API covers, what stays internal, and how ver
 
 SimCord follows [semantic versioning](https://semver.org/). Once 1.0 lands, the
 **public API** below is covered by that promise: no breaking change to it without
-a major version bump. The surface is already settled — 1.0 is gated on adding
-property-based fuzzing of the honesty layer and a performance baseline, not on
-further API churn.
+a major version bump. The surface is already settled, and the two gates 1.0 waited
+on are now in place: property-based fuzzing of the honesty layer (every request
+body key is applied or raises `UnsupportedField`, never silently dropped) and a
+[performance baseline](performance.md) guarding the offline-speed value
+proposition.
 
 ## Supported discord.py
 

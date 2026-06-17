@@ -70,3 +70,5 @@ Runner-agnostic helpers whose failure messages print what the bot actually did. 
 ::: simcord.SetupError
 
 ::: simcord.RouteNotImplemented
+
+::: simcord.UnsupportedField
