@@ -175,3 +175,20 @@ async def test_query_members_by_name(env, alice):
 
     found = await guild.query_members("ali")
     assert [m.name for m in found] == ["alice"]
+
+
+async def test_stale_member_chunk_does_not_resurrect_departed_member(env, alice):
+    # A member chunk is snapshotted when the request is answered but delivered a
+    # tick later (request_chunks defers via a task). If the member leaves in that
+    # gap — exactly what a startup chunk does when a test removes someone before
+    # settle runs — the deferred chunk must not re-add them to the bot's cache.
+    # Force that ordering deterministically: snapshot a chunk with alice present,
+    # remove her, then let delivery run.
+    guild = env.bot.get_guild(env.guild.id)
+    assert guild.get_member(alice.id) is not None
+
+    await env.bot.ws.request_chunks(env.guild.id, limit=0, nonce="stale")
+    env.guild.remove_member(alice)
+    await env.settle()  # the deferred chunk is delivered here, after the removal
+
+    assert guild.get_member(alice.id) is None

@@ -198,6 +198,15 @@ class FakeWebSocket:
     async def _deliver_chunks(self, payloads: list[dict[str, Any]], guild_id: int, nonce: str | None) -> None:
         # Let the caller's ChunkRequest waiter register before we answer.
         await asyncio.sleep(0)
+        # The payloads were snapshotted when the request was answered; the
+        # deferred delivery may run a tick later than a member's departure
+        # (whether before or after is interpreter-dependent — see request_chunks).
+        # Reconcile against live membership so a since-departed member isn't
+        # resurrected in the bot's cache by a stale chunk, the way a startup
+        # chunk would re-add a member the test removed before settle ran.
+        guild = self._backend.guilds.get(guild_id)
+        if guild is not None:
+            self._drop_departed_members(payloads, guild.members.keys())
         for payload in payloads:
             self._gateway.deliver("GUILD_MEMBERS_CHUNK", payload)
         # If the guild was removed mid-flight, discord.py dropped the chunk we
@@ -205,3 +214,20 @@ class FakeWebSocket:
         # parked; resolve it directly. A no-op on the normal path, where
         # discord.py has already resolved and removed the request itself.
         _dpy_internals.resolve_pending_chunk(self._gateway._state, guild_id, nonce)
+
+    @staticmethod
+    def _drop_departed_members(payloads: list[dict[str, Any]], present: Any) -> None:
+        """Strip members no longer in ``present`` (live user ids) from each chunk.
+
+        Filtering never adds members, so a query/user_ids/limit snapshot stays
+        a subset of itself; it only removes anyone who left between snapshot and
+        delivery. Presences are kept in lockstep with the members they describe.
+        """
+        for payload in payloads:
+            members = payload["members"]
+            kept = [m for m in members if int(m["user"]["id"]) in present]
+            if len(kept) == len(members):
+                continue
+            payload["members"] = kept
+            if "presences" in payload:
+                payload["presences"] = [p for p in payload["presences"] if int(p["user"]["id"]) in present]
