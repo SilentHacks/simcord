@@ -65,16 +65,16 @@ def user_payload(user: User) -> user_types.User:
         {
             "id": str(user.id),
             "username": user.name,
-            "discriminator": "0",
-            "global_name": user.name,
-            "avatar": None,
+            "discriminator": user.discriminator,
+            "global_name": user.global_name if user.global_name is not None else user.name,
+            "avatar": user.avatar,
             "bot": user.bot,
-            "system": False,
-            "public_flags": 0,
+            "system": user.system,
+            "public_flags": user.public_flags,
             "verified": True,
             "mfa_enabled": False,
             "locale": "en-US",
-            "flags": 0,
+            "flags": user.public_flags,
         },
     )
 

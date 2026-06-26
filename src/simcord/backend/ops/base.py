@@ -106,8 +106,27 @@ class BackendBase:
 
     # ----------------------------------------------------------------- users
 
-    def make_user(self, name: str, *, bot: bool = False) -> User:
-        user = User(id=self.snowflake(), name=name, bot=bot)
+    def make_user(
+        self,
+        name: str,
+        *,
+        bot: bool = False,
+        system: bool = False,
+        global_name: str | None = None,
+        discriminator: str = "0",
+        avatar: str | None = None,
+        public_flags: int = 0,
+    ) -> User:
+        user = User(
+            id=self.snowflake(),
+            name=name,
+            bot=bot,
+            system=system,
+            global_name=global_name,
+            discriminator=discriminator,
+            avatar=avatar,
+            public_flags=public_flags,
+        )
         self.users[user.id] = user
         return user
 

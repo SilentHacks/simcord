@@ -336,13 +336,83 @@ class Env:
 
     # -------------------------------------------------------------- builders
 
-    def create_user(self, name: str) -> UserHandle:
-        return UserHandle(self, self.backend.make_user(name))
+    def create_user(
+        self,
+        name: str,
+        *,
+        bot: bool = False,
+        system: bool = False,
+        global_name: str | None = None,
+        discriminator: str = "0",
+        avatar: str | None = None,
+        public_flags: discord.PublicUserFlags | None = None,
+    ) -> UserHandle:
+        """Create a virtual user.
 
-    def create_guild(self, name: str = "Test Guild", *, id: int | None = None) -> GuildHandle:
-        """Create a guild. Pass ``id`` to pin a known id — e.g. to match a bot that
-        syncs its commands to a hardcoded guild id, so ``strict_sync`` can stay on."""
-        handle = GuildHandle(self, self.backend.create_guild(name, id=id))
+        ``bot=True`` makes messages this user posts arrive with
+        ``message.author.bot`` set — the way a bot/application account, or a
+        webhook (see :meth:`GuildHandle.create_webhook`), appears to the bot
+        under test. ``system=True`` marks an official Discord system account.
+        ``global_name`` is the display name (distinct from the unique
+        ``name``/username); ``discriminator`` is the legacy four-digit tag
+        (``"0"`` for migrated accounts); ``public_flags`` carries badge flags
+        such as ``verified_bot``.
+        """
+        return UserHandle(
+            self,
+            self.backend.make_user(
+                name,
+                bot=bot,
+                system=system,
+                global_name=global_name,
+                discriminator=discriminator,
+                avatar=avatar,
+                public_flags=public_flags.value if public_flags is not None else 0,
+            ),
+        )
+
+    def create_guild(
+        self,
+        name: str = "Test Guild",
+        *,
+        id: int | None = None,
+        owner: UserHandle | None = None,
+        description: str | None = None,
+        verification_level: discord.VerificationLevel | None = None,
+        notifications: discord.NotificationLevel | None = None,
+        content_filter: discord.ContentFilter | None = None,
+        preferred_locale: str | None = None,
+        afk_timeout: int | None = None,
+    ) -> GuildHandle:
+        """Create a guild.
+
+        Pass ``id`` to pin a known id — e.g. to match a bot that syncs its
+        commands to a hardcoded guild id, so ``strict_sync`` can stay on. Pass
+        ``owner`` to make a specific user the guild owner (owners bypass every
+        permission check); by default a fresh synthetic owner is created so the
+        bot never owns the guild. The remaining keywords seed guild settings
+        the bot can read back off ``discord.Guild`` — they mirror
+        ``Guild.edit``'s surface and may also be changed at runtime.
+        """
+        settings: dict[str, Any] = {}
+        if description is not None:
+            settings["description"] = description
+        if verification_level is not None:
+            settings["verification_level"] = verification_level.value
+        if notifications is not None:
+            settings["default_message_notifications"] = notifications.value
+        if content_filter is not None:
+            settings["explicit_content_filter"] = content_filter.value
+        if preferred_locale is not None:
+            settings["preferred_locale"] = preferred_locale
+        if afk_timeout is not None:
+            settings["afk_timeout"] = afk_timeout
+        handle = GuildHandle(
+            self,
+            self.backend.create_guild(
+                name, id=id, owner_id=owner.id if owner is not None else None, **settings
+            ),
+        )
         self._guilds.append(handle)
         return handle
 

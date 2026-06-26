@@ -36,7 +36,13 @@ from .backend import Backend  # noqa: E402, F401  — importable for advanced us
 
 # Backend's methods and payload shapes are internal and may change in any release.
 from .backend.errors import BackendError, SetupError  # noqa: E402
-from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle  # noqa: E402
+from .builders import (  # noqa: E402
+    ChannelHandle,
+    GuildHandle,
+    RoleHandle,
+    UserHandle,
+    WebhookHandle,
+)
 from .env import Env, run  # noqa: E402
 from .http import RouteNotImplemented, UnsupportedField  # noqa: E402
 from .results import InteractionResult, ResponseMessage  # noqa: E402
@@ -59,6 +65,7 @@ __all__ = (
     "SetupError",
     "UnsupportedField",
     "UserHandle",
+    "WebhookHandle",
     "assert_error",
     "assert_message",
     "assert_no_errors",

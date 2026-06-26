@@ -26,6 +26,7 @@ from .backend.models import (
     Sticker,
     User,
     VoiceState,
+    Webhook,
 )
 from .enums import ChannelType, OverwriteType
 from .results import to_discord_message
@@ -51,6 +52,26 @@ class UserHandle:
         return self._user.name
 
     @property
+    def bot(self) -> bool:
+        """Whether this user is a bot/application account."""
+        return self._user.bot
+
+    @property
+    def system(self) -> bool:
+        """Whether this user is an official Discord system account."""
+        return self._user.system
+
+    @property
+    def global_name(self) -> str | None:
+        """The user's display name, if distinct from the username."""
+        return self._user.global_name
+
+    @property
+    def discriminator(self) -> str:
+        """The legacy four-digit tag (``"0"`` for migrated accounts)."""
+        return self._user.discriminator
+
+    @property
     def mention(self) -> str:
         return f"<@{self.id}>"
 
@@ -68,6 +89,72 @@ class UserHandle:
 
     def __repr__(self) -> str:
         return f"<UserHandle id={self.id} name={self.name!r}>"
+
+
+class WebhookHandle:
+    """An incoming webhook that can post messages into its channel.
+
+    Created via :meth:`GuildHandle.create_webhook`. Messages it sends arrive at
+    the bot under test with ``message.webhook_id`` set and
+    ``message.author.bot`` True — distinct from a bot *member* posting, which
+    has ``author.bot`` True but no ``webhook_id``.
+    """
+
+    def __init__(self, env: Env, webhook: Webhook) -> None:
+        self._env = env
+        self._webhook = webhook
+
+    @property
+    def id(self) -> int:
+        return self._webhook.id
+
+    @property
+    def name(self) -> str:
+        return self._webhook.name
+
+    @property
+    def channel_id(self) -> int:
+        return self._webhook.channel_id
+
+    async def send(
+        self,
+        content: str = "",
+        *,
+        username: str | None = None,
+        embed: discord.Embed | None = None,
+        embeds: Sequence[discord.Embed] = (),
+        attachments: Sequence[tuple[str, bytes]] = (),
+    ) -> discord.Message:
+        """Post a message as this webhook, optionally overriding the display name.
+
+        ``username`` mirrors a webhook execution's per-message ``username=``
+        override (the message shows under that name, not the webhook's own).
+        Pass ``embed`` or ``embeds`` (real ``discord.Embed`` objects) to post an
+        embed — the common "service posts an embed" case.
+        """
+        if embed is not None and embeds:
+            raise SetupError("Pass either embed= or embeds=, not both")
+        chosen = [embed] if embed is not None else embeds
+        embed_dicts: list[dict[str, Any]] = [dict(e.to_dict()) for e in chosen]
+        backend = self._env.backend
+        attachment_payloads = [
+            backend.cdn.store_attachment(backend.snowflake(), self.channel_id, filename, data, None)
+            for filename, data in attachments
+        ]
+        message = backend.create_message(
+            self.channel_id,
+            self._webhook.webhook_user_id,
+            content,
+            embeds=embed_dicts,
+            attachments=attachment_payloads,
+            webhook_id=self._webhook.id,
+            author_name=username,
+        )
+        await self._env.settle()
+        return to_discord_message(self._env, message)
+
+    def __repr__(self) -> str:
+        return f"<WebhookHandle id={self.id} name={self.name!r}>"
 
 
 class RoleHandle:
@@ -218,6 +305,19 @@ class GuildHandle:
             scheduled_end_time=end_time,
             entity_metadata={"location": location} if location else None,
         )
+
+    def create_webhook(self, channel: ChannelHandle, name: str = "Webhook") -> WebhookHandle:
+        """Create an incoming webhook bound to ``channel`` (omnipotent setup).
+
+        Use the returned handle's :meth:`~WebhookHandle.send` to post messages
+        as the webhook would — they arrive with ``message.webhook_id`` set and
+        ``message.author.bot`` True, which is how a webhook (a GitHub/CI
+        integration, another service posting an embed, etc.) appears to the bot
+        under test. This is the test-driven counterpart to the bot creating and
+        executing a webhook itself over the API.
+        """
+        webhook = self._env.backend.create_webhook(channel.id, name, self._env.backend.bot_user.id)
+        return WebhookHandle(self._env, webhook)
 
     def create_emoji(self, name: str, *, animated: bool = False) -> GuildEmoji:
         return self._env.backend.create_emoji(self.id, name, self._env.backend.bot_user.id, animated=animated)
