@@ -137,10 +137,7 @@ class WebhookHandle:
         chosen = [embed] if embed is not None else embeds
         embed_dicts: list[dict[str, Any]] = [dict(e.to_dict()) for e in chosen]
         backend = self._env.backend
-        attachment_payloads = [
-            backend.cdn.store_attachment(backend.snowflake(), self.channel_id, filename, data, None)
-            for filename, data in attachments
-        ]
+        attachment_payloads = backend.store_attachments(self.channel_id, attachments)
         message = backend.create_message(
             self.channel_id,
             self._webhook.webhook_user_id,
