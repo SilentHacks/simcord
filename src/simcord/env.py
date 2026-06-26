@@ -344,7 +344,6 @@ class Env:
         system: bool = False,
         global_name: str | None = None,
         discriminator: str = "0",
-        avatar: str | None = None,
         public_flags: discord.PublicUserFlags | None = None,
     ) -> UserHandle:
         """Create a virtual user.
@@ -366,7 +365,6 @@ class Env:
                 system=system,
                 global_name=global_name,
                 discriminator=discriminator,
-                avatar=avatar,
                 public_flags=public_flags.value if public_flags is not None else 0,
             ),
         )
@@ -390,9 +388,10 @@ class Env:
         commands to a hardcoded guild id, so ``strict_sync`` can stay on. Pass
         ``owner`` to make a specific user the guild owner (owners bypass every
         permission check); by default a fresh synthetic owner is created so the
-        bot never owns the guild. The remaining keywords seed guild settings
-        the bot can read back off ``discord.Guild`` — they mirror
-        ``Guild.edit``'s surface and may also be changed at runtime.
+        bot never owns the guild. The remaining keywords seed guild settings the
+        bot can read back off ``discord.Guild`` and could later change itself via
+        ``Guild.edit`` (the keyword names here are friendlier aliases — e.g.
+        ``notifications`` for ``default_notifications``).
         """
         settings: dict[str, Any] = {}
         if description is not None:
