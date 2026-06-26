@@ -166,6 +166,70 @@ await hook.delete()
 hooks = await guild.webhooks()
 ```
 
+## Bot, system & webhook message sources
+
+A moderation bot usually branches on *who* sent a message — delete a human's
+message, but leave a bot's, an integration's webhook post, or a system notice
+alone. SimCord lets a test produce each source faithfully.
+
+A **bot/application account** is just a user created with `bot=True`; messages it
+posts arrive with `message.author.bot` set (and no `webhook_id`):
+
+```python
+app = env.guild.add_member(env.create_user("ReactionRoles", bot=True))
+msg = await app.send(channel, "pick a role")
+assert msg.author.bot and msg.webhook_id is None
+```
+
+`create_user` seeds the rest of the account surface too — `system=True` for an
+official Discord account, `global_name` for a display name distinct from the
+username, `discriminator` for legacy tags, and `public_flags` for badges:
+
+```python
+verified = env.create_user(
+    "GoodBot", bot=True, public_flags=discord.PublicUserFlags(verified_bot=True)
+)
+```
+
+A **webhook** is a different source: its messages have `author.bot` True *and*
+`message.webhook_id` set. Create one on a channel and post through it — this is
+the test-driven counterpart to the bot creating and executing a webhook itself:
+
+```python
+hook = env.guild.create_webhook(channel, "CI")
+msg = await hook.send(embed=discord.Embed(title="Build passed"), username="CI Bot")
+assert msg.webhook_id == hook.id and msg.author.bot
+assert msg.author.name == "CI Bot"   # per-message username override
+```
+
+So a "delete everything except bots and webhooks" rule can be tested against all
+three rows at once:
+
+```python
+human = await env.guild.add_member(env.create_user("spammer")).send(channel, "spam")
+botmsg = await app.send(channel, "ok")
+hookmsg = await hook.send("ok")
+# human.author.bot is False; botmsg/hookmsg.author.bot is True; only hookmsg has a webhook_id
+```
+
+## Guild settings up front
+
+`create_guild` seeds the settings a bot reads off `discord.Guild`, so you don't
+have to drive an edit just to arrange state:
+
+```python
+guild = env.create_guild(
+    "My Server",
+    owner=env.create_user("Boss"),          # owners bypass permission checks
+    description="a community",
+    verification_level=discord.VerificationLevel.high,
+    notifications=discord.NotificationLevel.only_mentions,
+    content_filter=discord.ContentFilter.all_members,
+    preferred_locale="en-GB",
+    afk_timeout=900,
+)
+```
+
 ## Stage request-to-speak
 
 ```python

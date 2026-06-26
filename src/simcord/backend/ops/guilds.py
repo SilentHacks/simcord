@@ -32,13 +32,15 @@ DEFAULT_EVERYONE_PERMISSIONS = discord.Permissions(
 class GuildMixin(BackendBase):
     # ---------------------------------------------------------------- guilds
 
-    def create_guild(self, name: str, *, id: int | None = None, owner_id: int | None = None) -> Guild:
+    def create_guild(
+        self, name: str, *, id: int | None = None, owner_id: int | None = None, **settings: Any
+    ) -> Guild:
         guild_id = id if id is not None else self.snowflake()
         if owner_id is None:
             # A synthetic owner: the bot must never own guilds by default,
             # since owners bypass every permission check.
             owner_id = self.make_user(f"{name} Owner").id
-        guild = Guild(id=guild_id, name=name, owner_id=owner_id)
+        guild = Guild(id=guild_id, name=name, owner_id=owner_id, **settings)
         guild.roles[guild_id] = Role(
             id=guild_id, name="@everyone", permissions=DEFAULT_EVERYONE_PERMISSIONS, position=0
         )
