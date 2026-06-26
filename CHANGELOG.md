@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 1.1.0 (2026-06-26)
+
+### Features
+
+- Simulate bot, system and webhook message sources. `env.create_user` gained `bot`, `system`, `global_name`, `discriminator` and `public_flags` keywords, so a simulated account posts with `message.author.bot` set the way an application does. `GuildHandle.create_webhook(channel)` returns a new `WebhookHandle` whose `send()` posts a message with `message.webhook_id` set (the distinct webhook source). `env.create_guild` also gained `owner`, `description`, `verification_level`, `notifications`, `content_filter`, `preferred_locale` and `afk_timeout` keywords for seeding guild settings up front. ([#18](https://github.com/SilentHacks/simcord/issues/18))
+
+
 ## 1.0.1 (2026-06-18)
 
 ### Documentation
