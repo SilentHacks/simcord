@@ -10,7 +10,7 @@ resolvable from all of them.
 from __future__ import annotations
 
 import datetime
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .. import errors, permissions
@@ -106,29 +106,27 @@ class BackendBase:
 
     # ----------------------------------------------------------------- users
 
-    def make_user(
-        self,
-        name: str,
-        *,
-        bot: bool = False,
-        system: bool = False,
-        global_name: str | None = None,
-        discriminator: str = "0",
-        avatar: str | None = None,
-        public_flags: int = 0,
-    ) -> User:
-        user = User(
-            id=self.snowflake(),
-            name=name,
-            bot=bot,
-            system=system,
-            global_name=global_name,
-            discriminator=discriminator,
-            avatar=avatar,
-            public_flags=public_flags,
-        )
+    def make_user(self, name: str, **fields: Any) -> User:
+        """Create and register a user. ``fields`` are :class:`User` attributes
+        (``bot``, ``system``, ``global_name``, ``discriminator``,
+        ``public_flags``); their defaults live on the model, not here."""
+        user = User(id=self.snowflake(), name=name, **fields)
         self.users[user.id] = user
         return user
+
+    def store_attachments(
+        self, channel_id: int, attachments: Sequence[tuple[str, bytes]]
+    ) -> list[dict[str, Any]]:
+        """Store ``(filename, bytes)`` uploads and return their attachment payloads.
+
+        The shared path for the test-driver send surfaces (a member or a webhook
+        posting files); the HTTP upload route stores its own, since those carry
+        per-file descriptions from the multipart body.
+        """
+        return [
+            self.cdn.store_attachment(self.snowflake(), channel_id, filename, data, None)
+            for filename, data in attachments
+        ]
 
     def get_user(self, user_id: int) -> User:
         try:
