@@ -12,7 +12,7 @@ from typing import Any
 import discord
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
-from discord.state import ConnectionState
+from discord.state import ChunkRequest, ConnectionState
 from discord.ui.view import View
 from discord.webhook.async_ import async_context
 
@@ -43,6 +43,8 @@ def verify() -> None:
         # Intent simulation and member chunking rely on these:
         (ConnectionState, "intents"),
         (ConnectionState, "parse_guild_members_chunk"),
+        (ConnectionState, "process_chunk_requests"),
+        (ChunkRequest, "done"),
         (DiscordWebSocket, "request_chunks"),
         (discord.Client, "_get_websocket"),
     ):
@@ -70,6 +72,27 @@ def get_state(client: discord.Client) -> Any:
 
 def parsers(client: discord.Client) -> dict[str, Any]:
     return get_state(client).parsers
+
+
+def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:
+    """Wake a member-chunk request whose guild vanished before it was answered.
+
+    When a guild is created and then immediately left/deleted, discord.py's
+    startup chunking (``_chunk_and_dispatch``) parks on a ``ChunkRequest`` that
+    its own ``parse_guild_members_chunk`` then drops — the guild is already gone
+    from cache, so the chunk we deliver is discarded and the waiter is never
+    resolved, leaving the wrapper to burn its full ``wait_for`` timeout. Resolve
+    the request directly so it completes at once. A no-op once discord.py has
+    already resolved and removed the request (the normal, guild-still-present
+    path), so it is safe to call after every chunk delivery.
+    """
+    requests = getattr(state, "_chunk_requests", None)
+    if not requests:
+        return
+    request = requests.get(guild_id)
+    if request is not None and (nonce is None or request.nonce == nonce):
+        request.done()
+        requests.pop(guild_id, None)
 
 
 def install_http(client: discord.Client, http: HTTPClient) -> None:
