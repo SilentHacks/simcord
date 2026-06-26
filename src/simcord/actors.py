@@ -70,10 +70,7 @@ class MemberActor:
         reference = None
         if reply_to is not None:
             reference = {"channel_id": str(channel.id), "message_id": str(reply_to.id)}
-        attachment_payloads = [
-            backend.cdn.store_attachment(backend.snowflake(), channel.id, filename, data, None)
-            for filename, data in attachments
-        ]
+        attachment_payloads = backend.store_attachments(channel.id, attachments)
         message = backend.create_message(
             channel.id,
             self.id,
