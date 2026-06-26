@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from . import _dpy_internals
 from . import intents as _intents
 from .backend import serializers
 
@@ -134,7 +135,12 @@ class FakeWebSocket:
         """
         guild = self._backend.guilds.get(guild_id)
         if guild is None:
-            return  # real Discord silently ignores chunk requests for unknown guilds
+            # The guild was removed before its chunk could be served (created and
+            # then immediately left/deleted, racing discord.py's startup chunk).
+            # Real Discord just never answers; deliver nothing, but still wake the
+            # parked request below so the bot's chunk wrapper doesn't hang.
+            self._chunk_task = asyncio.ensure_future(self._deliver_chunks([], guild_id, nonce))
+            return
         members = list(guild.members.values())
         not_found: list[str] = []
         if user_ids:
@@ -187,10 +193,15 @@ class FakeWebSocket:
         # wait_for schedules the inner task one tick later than 3.12+). Yielding
         # one loop iteration before delivering guarantees the waiter is in place
         # regardless of interpreter version.
-        self._chunk_task = asyncio.ensure_future(self._deliver_chunks(payloads))
+        self._chunk_task = asyncio.ensure_future(self._deliver_chunks(payloads, guild_id, nonce))
 
-    async def _deliver_chunks(self, payloads: list[dict[str, Any]]) -> None:
+    async def _deliver_chunks(self, payloads: list[dict[str, Any]], guild_id: int, nonce: str | None) -> None:
         # Let the caller's ChunkRequest waiter register before we answer.
         await asyncio.sleep(0)
         for payload in payloads:
             self._gateway.deliver("GUILD_MEMBERS_CHUNK", payload)
+        # If the guild was removed mid-flight, discord.py dropped the chunk we
+        # just delivered (its cache no longer has the guild) and left the request
+        # parked; resolve it directly. A no-op on the normal path, where
+        # discord.py has already resolved and removed the request itself.
+        _dpy_internals.resolve_pending_chunk(self._gateway._state, guild_id, nonce)

@@ -182,10 +182,18 @@ async def test_create_guild_custom_owner(env):
     cached = env.bot.get_guild(guild.id)
     assert cached is not None
     assert cached.owner_id == owner.id
+    # The owner is a real member, so discord.py can resolve Guild.owner.
+    assert cached.get_member(owner.id) is not None
+    assert cached.owner is not None and cached.owner.id == owner.id
 
 
 async def test_create_guild_defaults_have_synthetic_owner(env):
     guild = env.create_guild("Default")
     await env.settle()
+    backend_guild = env.backend.get_guild(guild.id)
     # The bot must never own a guild by default (owners bypass permission checks).
-    assert env.backend.get_guild(guild.id).owner_id != env.bot.user.id
+    assert backend_guild.owner_id != env.bot.user.id
+    # The synthetic owner is a member too, so Guild.owner resolves.
+    assert backend_guild.owner_id in backend_guild.members
+    cached = env.bot.get_guild(guild.id)
+    assert cached.owner is not None and cached.owner.id == backend_guild.owner_id

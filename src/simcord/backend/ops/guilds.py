@@ -45,6 +45,10 @@ class GuildMixin(BackendBase):
             id=guild_id, name="@everyone", permissions=DEFAULT_EVERYONE_PERMISSIONS, position=0
         )
         self.guilds[guild_id] = guild
+        # The owner is always a member of their own guild on real Discord; without
+        # the membership discord.py's ``Guild.owner`` (resolved via get_member)
+        # would be None and the owner would be absent from ``guild.members``.
+        self.add_member(guild_id, owner_id)
         # The bot is always a member of guilds it can see. It gets a managed
         # integration role with broad permissions — like a typical bot invite —
         # but not administrator, so channel overwrites still apply to it.
