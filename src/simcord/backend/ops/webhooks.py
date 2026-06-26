@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .. import errors
-from ..models import Webhook
+from ..models import User, Webhook
 from .base import BackendBase
 
 
@@ -14,7 +14,11 @@ class WebhookMixin(BackendBase):
     def create_webhook(self, channel_id: int, name: str, creator_id: int) -> Webhook:
         channel = self.get_channel(channel_id)
         webhook_id = self.snowflake()
-        webhook_user = self.make_user(name, bot=True)
+        # A webhook authors its own messages: on real Discord the message's
+        # author.id equals the webhook id. Register the authoring bot user under
+        # that same id so provenance checks like ``author.id == webhook_id`` hold.
+        webhook_user = User(id=webhook_id, name=name, bot=True)
+        self.users[webhook_id] = webhook_user
         webhook = Webhook(
             id=webhook_id,
             token=f"simcord_webhook_{webhook_id}",
@@ -22,7 +26,7 @@ class WebhookMixin(BackendBase):
             guild_id=channel.guild_id,
             name=name,
             creator_id=creator_id,
-            webhook_user_id=webhook_user.id,
+            webhook_user_id=webhook_id,
         )
         self.webhooks[webhook.id] = webhook
         self.webhook_tokens[webhook.token] = webhook.id

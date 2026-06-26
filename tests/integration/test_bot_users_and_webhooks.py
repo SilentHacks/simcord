@@ -83,6 +83,8 @@ async def test_webhook_send_sets_provenance(env, channel):
 
     assert message.webhook_id == hook.id
     assert message.author.bot is True
+    # A webhook authors its own messages: author.id equals the webhook id.
+    assert message.author.id == hook.id
     # The per-message username override is what the message displays under.
     assert message.author.name == "CI Bot"
 
@@ -90,6 +92,20 @@ async def test_webhook_send_sets_provenance(env, channel):
     fetched = await anext(cached.history(limit=1))
     assert fetched.webhook_id == hook.id
     assert fetched.author.bot is True
+
+
+async def test_webhook_send_username_override_is_per_message(env, channel):
+    """Each send through one webhook can display under a different username."""
+    hook = env.guild.create_webhook(channel, "CI")
+    first = await hook.send("build A", username="Builder A")
+    second = await hook.send("build B", username="Builder B")
+    third = await hook.send("plain")  # falls back to the webhook's own name
+
+    assert first.author.name == "Builder A"
+    assert second.author.name == "Builder B"
+    assert third.author.name == "CI"
+    # All three share the webhook's identity regardless of the display override.
+    assert {first.author.id, second.author.id, third.author.id} == {hook.id}
 
 
 async def test_webhook_send_defaults_to_webhook_name(env, channel):
