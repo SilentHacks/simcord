@@ -51,7 +51,7 @@ jobs:
       # on a catastrophic regression; the JSON is uploaded as a non-gating trend.
       - run: uv sync --extra bench
       - run: uv run pytest benchmarks --benchmark-json=benchmark.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: benchmark-results
