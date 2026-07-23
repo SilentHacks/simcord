@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 1.2.1 (2026-07-23)
+
+### Documentation
+
+- Improve technical search and AI-answer discoverability with structured metadata, social previews, crawler and agent indexes, intent-focused discord.py testing guides, and a working example demo. Remove the obsolete dpytest migration guide.
+
+
 ## 1.2.0 (2026-07-23)
 
 ### Features
