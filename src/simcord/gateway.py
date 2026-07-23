@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -241,9 +241,10 @@ class FakeWebSocket:
 class FakeShard:
     """The small interface consumed by discord.py's public ``ShardInfo``."""
 
-    def __init__(self, websocket: FakeWebSocket, dispatch: Any) -> None:
+    def __init__(self, websocket: FakeWebSocket, dispatch: Any, reconnect: Callable[[int], None]) -> None:
         self.ws = websocket
         self._dispatch = dispatch
+        self._reconnect = reconnect
 
     @property
     def id(self) -> int:
@@ -262,8 +263,7 @@ class FakeShard:
         if self.ws.open:
             return
         self.ws.open = True
-        self._dispatch("shard_connect", self.id)
-        self._dispatch("shard_ready", self.id)
+        self._reconnect(self.id)
 
 
 class ShardRouter:
@@ -274,17 +274,57 @@ class ShardRouter:
     ):
         self.shard_count = shard_count
         self.shard_ids = shard_ids
+        self._backend = backend
+        self._state = state
         self.gateways = {shard_id: FakeGateway(backend, state) for shard_id in shard_ids}
         self.websockets = {
             shard_id: FakeWebSocket(backend, self.gateways[shard_id], shard_id=shard_id)
             for shard_id in shard_ids
         }
-        self.shards = {shard_id: FakeShard(self.websockets[shard_id], dispatch) for shard_id in shard_ids}
+        self.shards = {
+            shard_id: FakeShard(self.websockets[shard_id], dispatch, self._reconnect)
+            for shard_id in shard_ids
+        }
+
+    def identify(self, shard_id: int, *, replay_guilds: bool = False) -> None:
+        gateway = self.gateways[shard_id]
+        cached_ids = (
+            {guild.id for guild in self._state.guilds if guild.shard_id == shard_id}
+            if replay_guilds
+            else set()
+        )
+        gateway.feed(
+            "READY",
+            {
+                "v": 10,
+                "user": dict(serializers.user_payload(self._backend.bot_user)),
+                "guilds": [],
+                "session_id": f"simcord-session-{shard_id}",
+                "resume_gateway_url": "wss://simcord.invalid",
+                "shard": [shard_id, self.shard_count],
+                "application": {"id": str(self._backend.application_id), "flags": 0},
+            },
+        )
+        if not replay_guilds:
+            return
+
+        current = {
+            guild.id: guild
+            for guild in self._backend.guilds.values()
+            if (guild.id >> 22) % self.shard_count == shard_id
+        }
+        for guild_id in cached_ids - current.keys():
+            gateway.feed("GUILD_DELETE", {"id": str(guild_id)})
+        for guild in current.values():
+            gateway.feed("GUILD_CREATE", serializers.guild_create_payload(self._backend, guild))
+
+    def _reconnect(self, shard_id: int) -> None:
+        self.identify(shard_id, replay_guilds=True)
 
     def feed(self, event: str, payload: Mapping[str, Any]) -> None:
         shard_id = self._event_shard_id(event, payload)
         gateway = self.gateways.get(shard_id)
-        if gateway is not None and gateway._state is not None:
+        if gateway is not None and self.websockets[shard_id].open:
             gateway.feed(event, payload)
 
     def _event_shard_id(self, event: str, payload: Mapping[str, Any]) -> int:

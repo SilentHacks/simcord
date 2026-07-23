@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 import discord
 import pytest
 from discord.ext import commands
@@ -25,6 +28,12 @@ async def test_auto_sharded_bot_is_ready_and_routes_each_guild_once():
     received: list[tuple[int, str]] = []
     ready_shards: list[int] = []
     ready_calls = 0
+    connect_calls = 0
+
+    @bot.event
+    async def on_connect() -> None:
+        nonlocal connect_calls
+        connect_calls += 1
 
     @bot.event
     async def on_shard_ready(shard_id: int) -> None:
@@ -71,10 +80,22 @@ async def test_auto_sharded_bot_is_ready_and_routes_each_guild_once():
         await bot.change_presence(status=discord.Status.idle, shard_id=2)
         shard2 = bot.get_shard(2)
         assert shard2 is not None
+        initial_connect_calls = connect_calls
         await shard2.disconnect()
         assert shard2.is_closed()
+        await bob.send(channel2, "lost while disconnected")
+        joined_while_disconnected = env.create_guild("offline", shard_id=2)
+        await cached2.leave()
+        await env.settle()
+        assert received == [(0, "from zero"), (2, "from two")]
+        assert bot.get_guild(joined_while_disconnected.id) is None
+        assert bot.get_guild(guild2.id) is cached2
         await shard2.connect()
         assert not shard2.is_closed()
+        await env.settle()
+        assert connect_calls == initial_connect_calls + 1
+        assert bot.get_guild(joined_while_disconnected.id) is not None
+        assert bot.get_guild(guild2.id) is None
 
 
 async def test_partial_shard_worker_only_receives_owned_guilds():
@@ -106,20 +127,33 @@ async def test_partial_shard_worker_only_receives_owned_guilds():
 
 async def test_run_accepts_discovered_shard_count_override():
     bot = make_sharded_bot()
+    setup_observation: dict[str, object] = {}
+
+    async def setup_hook() -> None:
+        setup_observation["shard_count"] = bot.shard_count
+        setup_observation["shards"] = dict(bot.shards)
+
+    bot.setup_hook = setup_hook
 
     async with simcord.run(bot, shard_count=2) as env:
         assert bot.shard_count == 2
         assert set(bot.shards) == {0, 1}
+        assert setup_observation == {"shard_count": None, "shards": {}}
         guild = env.create_guild(shard_id=1)
         assert (guild.id >> 22) % 2 == 1
 
 
 async def test_missing_discovered_shard_count_is_loud():
     bot = make_sharded_bot()
+    loop = asyncio.get_running_loop()
+    original_create_task = loop.create_task
+    original_monotonic = time.monotonic
 
     with pytest.raises(simcord.SetupError, match="has no shard_count"):
         async with simcord.run(bot):
             pass
+    assert loop.create_task == original_create_task
+    assert time.monotonic is original_monotonic
 
 
 async def test_sharded_restart_rebuilds_shards_and_cache():

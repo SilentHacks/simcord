@@ -137,6 +137,9 @@ class Env:
         self.bot = bot
         loop = self._loop
         assert loop is not None
+        # Validate before installing process-wide patches so a bad topology
+        # cannot leak task/clock/webhook replacements into the next test.
+        self._shard_count, self._shard_ids = self._resolve_shards(bot)
 
         # Track every task spawned while the env is live so settle() can wait
         # for the bot to finish reacting without guessing with sleeps.
@@ -163,16 +166,12 @@ class Env:
         self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
 
         state = _dpy_internals.get_state(bot)
-        self._shard_count, self._shard_ids = self._resolve_shards(bot)
         state.shard_count = self._shard_count
         state.shard_ids = list(self._shard_ids)
         router = ShardRouter(self.backend, state, bot.dispatch, self._shard_count, self._shard_ids)
         self._gateway_feed = router.feed
         self.backend.subscribers.append(router.feed)
-        if isinstance(bot, discord.AutoShardedClient):
-            bot.shard_count = self._shard_count
-            _dpy_internals.install_shards(bot, router.shards)
-        else:
+        if not isinstance(bot, discord.AutoShardedClient):
             _dpy_internals.install_websocket(bot, router.websockets[0])
 
         try:
@@ -187,19 +186,13 @@ class Env:
             # Runs the real login flow: identity, application info, setup_hook
             # (where bots typically load extensions and sync their command tree).
             await bot.login("simcord.fake.token")
+            # Production does not expose launched shards during setup_hook:
+            # connect() populates them only after login has completed.
+            if isinstance(bot, discord.AutoShardedClient):
+                bot.shard_count = self._shard_count
+                _dpy_internals.install_shards(bot, router.shards)
             for shard_id in self._shard_ids:
-                router.gateways[shard_id].feed(
-                    "READY",
-                    {
-                        "v": 10,
-                        "user": dict(serializers.user_payload(self.backend.bot_user)),
-                        "guilds": [],
-                        "session_id": f"simcord-session-{shard_id}",
-                        "resume_gateway_url": "wss://simcord.invalid",
-                        "shard": [shard_id, self._shard_count],
-                        "application": {"id": str(self.backend.application_id), "flags": 0},
-                    },
-                )
+                router.identify(shard_id)
             await self.settle()
         except BaseException:
             # Setup (e.g. setup_hook) blew up: undo the global monkeypatches so
