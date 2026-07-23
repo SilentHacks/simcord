@@ -1,0 +1,1 @@
+Improve technical search and AI-answer discoverability with structured metadata, social previews, crawler and agent indexes, intent-focused discord.py testing guides, and a working example demo. Remove the obsolete dpytest migration guide.

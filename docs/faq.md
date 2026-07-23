@@ -1,6 +1,6 @@
 ---
 title: "FAQ"
-description: "Frequently asked questions about SimCord, the discord.py testing framework: how it compares to dpytest, whether it connects to Discord, Terms of Service, async setup, mocking vs. simulation, and supported features."
+description: "Frequently asked questions about SimCord, the discord.py testing framework: offline testing, AI coding agents, Terms of Service, mocking vs. simulation, setup, and supported features."
 ---
 
 # Frequently asked questions
@@ -10,39 +10,42 @@ description: "Frequently asked questions about SimCord, the discord.py testing f
 SimCord is a **testing framework for [discord.py](https://github.com/Rapptz/discord.py)
 bots**. It gives your real, unmodified bot a faithful but entirely in-memory Discord to run
 against, so you can test prefix commands, slash commands, buttons, modals, permissions and
-events — with no network, no bot token, and no test server. See the
+events with no network, no bot token, and no test server. See the
 [overview](index.md) and [quickstart](quickstart.md).
 
 ## Does it connect to Discord? Is it against the Terms of Service?
 
 No, and no. SimCord **never opens a socket**. It replaces discord.py's two transport seams
 (the REST client and the gateway parser) with an in-memory backend, so nothing reaches
-Discord's servers. There is deliberately no "integration mode" — automating a real client
+Discord's servers. There is deliberately no "integration mode." Automating a real client
 would violate Discord's Terms of Service, and this project exists precisely to make that
 unnecessary. See the [architecture](architecture.md).
 
-## How is it different from dpytest?
+## Does SimCord collect telemetry?
 
-[dpytest](https://github.com/CraftSpider/dpytest) started this approach. SimCord covers
-the **modern interaction surface** dpytest doesn't — slash commands, context menus,
-components, modals, autocomplete — and enforces **real permissions with authentic Discord
-error codes**. It also replaces dpytest's module-global API with explicit
-[builders and actors](concepts.md), so messages are sent *by someone, from somewhere*, which
-is what makes permission-sensitive bugs testable. There's a full
-[migration guide](migrating-from-dpytest.md).
+No. The library makes no outbound network requests and collects no usage or runtime
+telemetry. Package hosts and source platforms may publish their own aggregate statistics,
+but SimCord does not transmit data from your tests.
 
 ## Is this a mock library?
 
-It's more than a mock — it's a **simulator**. A mock returns canned responses; SimCord
+It's more than a mock. It is a **simulator**. A mock returns canned responses; SimCord
 maintains real, consistent state. When your bot sends a message, the same backend produces
 both the REST response *and* the `MESSAGE_CREATE` gateway event, so your bot's cache and
 listeners behave exactly as in production. Permissions, the interaction lifecycle and
 validation limits are all computed, not faked.
 
+## Can AI coding agents use SimCord?
+
+Yes. An AI agent can run deterministic behavioral tests against the real bot instead of
+inventing Discord mocks or requesting a bot token. Add the instructions from the
+[AI coding agent guide](guides/ai-coding-agents.md) to your project, then require a SimCord
+test for commands, interactions, permissions, views, events, cache behavior, or sharding.
+
 ## Do I have to change my bot to test it?
 
 No. SimCord runs your **real, unmodified bot**. The only requirement is that you can
-*construct* it from a function (so tests can build a fresh instance) — see the
+*construct* it from a function so tests can build a fresh instance. See the
 [quickstart](quickstart.md). Your `setup_hook`, extension loading and `tree.sync()` all run
 for real.
 
@@ -54,7 +57,7 @@ The `pytest` extra installs `pytest-asyncio`. With `asyncio_mode = "auto"` set i
 
 ## Do I need `asyncio.sleep` to wait for the bot to reply?
 
-No — and you shouldn't. Every [actor](concepts.md#actors-act-as-a-real-user) verb waits for
+No, and you shouldn't. Every [actor](concepts.md#actors-act-as-a-real-user) verb waits for
 the bot to finish reacting before returning, so your assertions never race. SimCord tracks
 the bot's tasks and settles the event loop deterministically. If you need to advance *time*
 (for cooldowns or view timeouts), use [`env.advance_time`](guides/time-control.md), not a
@@ -76,7 +79,7 @@ assert the bot ran clean, call `env.raise_errors()`.
 
 ## What happens if my bot hits something SimCord doesn't support yet?
 
-It raises `RouteNotImplemented` naming the exact route — never a silent fake success. Check
+It raises `RouteNotImplemented` naming the exact route, never a silent fake success. Check
 the [parity matrix](parity-matrix.md) for what's implemented, and
 [open a parity-gap issue](https://github.com/SilentHacks/simcord/issues/new?template=parity-gap.md)
 for what you need.

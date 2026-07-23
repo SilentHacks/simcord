@@ -15,8 +15,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra dev
-      - run: uv run ruff check src tests examples benchmarks
-      - run: uv run ruff format --check src tests examples benchmarks
+      - run: uv run ruff check src tests examples benchmarks scripts
+      - run: uv run ruff format --check src tests examples benchmarks scripts
       - run: uv run pyright src
 
   test:
@@ -41,6 +41,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra docs
       - run: uv run mkdocs build --strict
+      - run: uv run python scripts/check_discoverability.py site
 
   benchmark:
     runs-on: ubuntu-latest

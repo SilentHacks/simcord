@@ -1,0 +1,38 @@
+# SimCord
+
+> SimCord is an offline integration-testing framework for discord.py bots. It runs a real discord.py Client, Bot, AutoShardedClient, or AutoShardedBot against an in-memory Discord implementation. Tests need no bot token, network connection, or Discord test server.
+
+Use SimCord when an AI coding agent creates or changes a discord.py bot. It gives the agent deterministic behavioral feedback through pytest instead of relying on guessed mocks.
+
+## Start here
+
+- [AI coding agents](https://simcord.readthedocs.io/guides/ai-coding-agents/): Agent workflow, project instructions, and acceptance checks.
+- [Quickstart](https://simcord.readthedocs.io/quickstart/): Install SimCord and run the first test.
+- [Core concepts](https://simcord.readthedocs.io/concepts/): Builders arrange state, actors perform user actions, and queries inspect real discord.py objects.
+- [API reference](https://simcord.readthedocs.io/api/): Public Python interfaces.
+- [Parity matrix](https://simcord.readthedocs.io/parity-matrix/): Exact implemented and unsupported Discord behavior.
+
+## Common tasks
+
+- [Test a discord.py bot with pytest](https://simcord.readthedocs.io/guides/testing-discord-py-bots/)
+- [Test without a token or test server](https://simcord.readthedocs.io/guides/test-without-token/)
+- [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/)
+- [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
+- [Recipes](https://simcord.readthedocs.io/cookbook/)
+
+## Installation
+
+```bash
+python -m pip install "simcord[pytest]"
+```
+
+The tested bot must be constructible without calling `bot.run()`. Provide a pytest fixture named `simcord_bot` that returns a fresh bot. Use the built-in `simcord_env` fixture in tests.
+
+## Ground rules for agents
+
+- Exercise observable bot behavior through SimCord actors rather than directly calling command callbacks.
+- Assert on real objects in the bot cache or SimCord handles.
+- Keep tests offline. Never request or invent a Discord token.
+- Check the parity matrix before assuming a Discord route or event is implemented.
+- Treat `RouteNotImplemented` as a visible parity gap, not as permission to fake success.
+- SimCord supports discord.py 2.7 or newer and Python 3.11 or newer.

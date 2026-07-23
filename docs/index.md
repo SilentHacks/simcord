@@ -1,13 +1,13 @@
 ---
-title: "SimCord — the discord.py testing framework"
+title: "SimCord: the discord.py testing framework"
 description: "SimCord is a discord.py testing framework that simulates Discord so you can test your bot offline: no network, no token, no test server. Test prefix commands, slash commands, buttons, modals and permissions in-process and deterministically."
 ---
 
 # SimCord
 
-**The discord.py testing framework** — simulate Discord, test your bot offline.
+**The discord.py testing framework**: simulate Discord, test your bot offline.
 
-Run your **real, unmodified bot** against a virtual, in-memory Discord — no network, no
+Run your **real, unmodified bot** against a virtual, in-memory Discord. No network, no
 tokens, and no Terms of Service concerns, because nothing ever connects to Discord.
 Simulate users sending messages, invoking slash commands and clicking buttons, then assert
 on exactly what your bot did.
@@ -26,8 +26,8 @@ async def test_ping(simcord_env):
 [Browse the API :material-arrow-right:](api.md){ .md-button }
 
 !!! success "Stable API"
-    The public surface is settled and follows semantic versioning as of 1.0
-    — see [Stability & versioning](stability.md). The [parity matrix](parity-matrix.md)
+    The public surface is settled and follows semantic versioning as of 1.0.
+    See [Stability & versioning](stability.md). The [parity matrix](parity-matrix.md)
     records exactly what is implemented; the remaining routes are a deliberate, demand-driven
     backlog that always fails **loudly**. SimCord never silently fakes success.
 
@@ -36,9 +36,9 @@ async def test_ping(simcord_env):
 Unit tests cover your business logic, but the bugs that bite Discord bots live in the
 **glue**: converters, checks, permissions, forgotten `tree.sync()` calls,
 double-acknowledged interactions, oversized embeds. Until now the only way to test that
-layer was manually, in a real server. SimCord runs all of discord.py's real machinery —
-its parsers, cache, command frameworks and views — against a faithful mock of Discord's
-REST API and gateway, entirely in-process.
+layer was manually, in a real server. SimCord runs all of discord.py's real machinery,
+including its parsers, cache, command frameworks and views, against a faithful simulation
+of Discord's REST API and gateway, entirely in-process.
 
 <div class="grid cards" markdown>
 
@@ -63,21 +63,21 @@ REST API and gateway, entirely in-process.
     ---
 
     No sleeps, no network, reproducible IDs and timestamps. The framework tracks the bot's
-    tasks and settles after every action — there is never an `asyncio.sleep` in your tests.
+    tasks and settles after every action. There is never an `asyncio.sleep` in your tests.
 
 -   :fast_forward: __Time control__
 
     ---
 
     [`env.advance_time(180)`](guides/time-control.md) fires view timeouts and resets
-    cooldowns instantly — no real waiting.
+    cooldowns instantly. No real waiting.
 
 -   :mag: __Debuggable failures__
 
     ---
 
     Failing tests automatically include a [transcript](guides/diagnostics.md) of every
-    gateway event and REST call — exactly what your bot did, in order.
+    gateway event and REST call, showing exactly what your bot did in order.
 
 -   :loudspeaker: __Honest about gaps__
 
@@ -90,11 +90,11 @@ REST API and gateway, entirely in-process.
 
 ## How it works
 
-discord.py has two narrow seams — every REST call goes through one `HTTPClient.request`,
+discord.py has two narrow seams: every REST call goes through one `HTTPClient.request`,
 and every gateway event enters through one `ConnectionState.parsers` dispatch. SimCord
 swaps the transports behind those two seams for an in-memory backend and injects
-Discord-shaped payloads. **Everything in between — models, converters, the command tree,
-checks, views, the cache — is real discord.py code running unmodified.** Read the full
+Discord-shaped payloads. **Models, converters, the command tree, checks, views, and the cache
+all run as real, unmodified discord.py code.** Read the full
 [architecture](architecture.md).
 
 ```text
@@ -127,7 +127,7 @@ test ──► builders / actors ──► virtual backend (single source of tru
 
     ---
 
-    Builders, actors and queries — the whole mental model on one page.
+    Builders, actors and queries: the whole mental model on one page.
 
 - :material-book-open-variant: __[Guides](guides/messages.md)__
 
@@ -141,10 +141,10 @@ test ──► builders / actors ──► virtual backend (single source of tru
 
     Copy-paste patterns for the tests you actually need to write.
 
-- :material-swap-horizontal: __[Migrating from dpytest](migrating-from-dpytest.md)__
+- :material-robot-outline: __[AI coding agents](guides/ai-coding-agents.md)__
 
     ---
 
-    A direct concept-by-concept mapping.
+    Give coding agents deterministic Discord behavior instead of guessed mocks.
 
 </div>

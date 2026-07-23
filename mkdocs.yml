@@ -8,6 +8,7 @@ copyright: Copyright &copy; SilentHacks — MIT licensed
 
 theme:
   name: material
+  custom_dir: overrides
   favicon: assets/simcord-transparent.webp
   logo: assets/simcord-transparent.webp
   icon:
@@ -49,6 +50,11 @@ nav:
       - Quickstart: quickstart.md
       - Core concepts: concepts.md
   - Guides:
+      - Test discord.py with pytest: guides/testing-discord-py-bots.md
+      - Test without a token: guides/test-without-token.md
+      - Test slash commands: guides/testing-slash-commands.md
+      - Mocks vs. simulation: guides/mocks-vs-simulation.md
+      - AI coding agents: guides/ai-coding-agents.md
       - Messages & prefix commands: guides/messages.md
       - Slash commands: guides/interactions.md
       - Components & modals: guides/components.md
@@ -66,7 +72,6 @@ nav:
       - Stability & versioning: stability.md
       - Performance: performance.md
       - Architecture: architecture.md
-      - Migrating from dpytest: migrating-from-dpytest.md
       - FAQ: faq.md
       - Changelog: changelog.md
 

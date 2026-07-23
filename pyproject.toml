@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "simcord"
 version = "1.2.0"
-description = "SimCord — discord.py testing framework. Simulate Discord, test your bot offline: no network, no token, no ToS."
+description = "Offline discord.py bot testing with pytest. No network, token, or test server."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "SilentHacks" }]
-keywords = ["discord", "discord.py", "testing", "pytest", "mock", "bot testing", "integration testing", "simulator", "unit testing", "mock discord"]
+keywords = ["discord", "discord.py", "discord bot testing", "pytest", "bot testing", "integration testing", "discord simulator", "slash commands", "AI coding agents", "offline testing"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Framework :: Pytest",
@@ -41,7 +41,7 @@ dev = [
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.26"]
 # Just the performance suite, for the dedicated CI benchmark job (no lint/type
 # tooling). pytest-asyncio is included so the shared `asyncio_mode` ini option is
-# recognised (it is unused by the sync benchmarks, but its absence would warn —
+# recognised (it is unused by the sync benchmarks, but its absence would warn
 # and break under strict-warnings). The full `dev` extra includes all of this too.
 bench = ["pytest>=8", "pytest-benchmark>=4", "pytest-asyncio>=0.24"]
 
@@ -62,7 +62,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 # Make the sibling test-support modules (tests/conformance/_world.py,
 # benchmarks/_helpers.py) importable explicitly, rather than relying on pytest's
-# implicit rootdir sys.path insertion — which a stray __init__.py would silently
+# implicit rootdir sys.path insertion, which a stray __init__.py would silently
 # break. Entries resolve from the rootdir, so they hold for `pytest benchmarks` too.
 pythonpath = ["tests/conformance", "benchmarks"]
 
