@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 1.2.0 (2026-07-23)
+
+### Features
+
+- Support discord.py `AutoShardedClient` and `AutoShardedBot` with per-shard readiness, Discord-compatible event routing, partial shard workers, chunking, shard controls, and targeted test guild creation via `Env.create_guild(shard_id=...)`.
+
+
 ## 1.1.0 (2026-06-26)
 
 ### Features

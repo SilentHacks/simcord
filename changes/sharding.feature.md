@@ -1,1 +1,0 @@
-Support discord.py `AutoShardedClient` and `AutoShardedBot` with per-shard readiness, Discord-compatible event routing, partial shard workers, chunking, shard controls, and targeted test guild creation via `Env.create_guild(shard_id=...)`.
