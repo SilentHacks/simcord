@@ -74,6 +74,13 @@ class BackendBase:
         ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter
         return (ms << 22) | (self._counter % 4096)
 
+    def snowflake_for_shard(self, shard_id: int, shard_count: int) -> int:
+        """Return the next snowflake owned by ``shard_id`` without trial allocation."""
+        next_ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter + 1
+        self._counter += 1 + (shard_id - next_ms % shard_count) % shard_count
+        ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter
+        return (ms << 22) | (self._counter % 4096)
+
     def now_iso(self) -> str:
         """The current virtual time as an ISO timestamp.
 

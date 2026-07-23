@@ -6,7 +6,9 @@ user (async actors), then assert on what the real bot did (queries).
 
 import discord
 import pytest
+from discord.ext import commands
 
+import simcord
 from simcord import assert_sent
 
 from .bot import create_bot
@@ -100,3 +102,17 @@ async def test_marker_forwards_options_to_run(simcord_env):
     # The marker's kwargs reach simcord.run(), so per-test config needs no
     # custom fixture.
     assert simcord_env.strict_sync is False
+
+
+async def test_sharded_bot_routes_guild_to_selected_shard():
+    bot = commands.AutoShardedBot(
+        command_prefix="!",
+        intents=discord.Intents.default(),
+        shard_count=2,
+    )
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild("Shard one", shard_id=1)
+
+        assert (guild.id >> 22) % bot.shard_count == 1
+        assert bot.get_shard(1) is not None

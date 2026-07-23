@@ -13,7 +13,7 @@ from . import intents as _intents
 from .backend import Backend, serializers
 from .backend.errors import SetupError
 from .builders import GuildHandle, UserHandle
-from .gateway import FakeGateway, FakeWebSocket
+from .gateway import ShardRouter
 from .http import FakeHTTPClient, FakeWebhookAdapter
 
 
@@ -38,6 +38,7 @@ class Env:
         strict_sync: bool = True,
         check_errors: bool = True,
         approved_intents: discord.Intents | None = None,
+        shard_count: int | None = None,
     ) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
@@ -47,6 +48,9 @@ class Env:
         #: e.g. ``members=False`` to make start() fail with
         #: :class:`discord.PrivilegedIntentsRequired`, as a real connect would.
         self.approved_intents = approved_intents
+        #: Simulator-side shard recommendation for an AutoShardedClient that
+        #: normally discovers its count from Discord's Get Gateway Bot endpoint.
+        self.requested_shard_count = shard_count
         self.backend = Backend()
         self._errors: list[BaseException] = []
         self._errors_inspected = False
@@ -58,6 +62,8 @@ class Env:
         self._time_offset = 0.0
         self._adapter_token: Any = None
         self._gateway_feed: Any = None
+        self._shard_count = 1
+        self._shard_ids = (0,)
         self._started = False
 
     # ------------------------------------------------------------- lifecycle
@@ -94,6 +100,37 @@ class Env:
             self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
         await self.settle()
 
+    def _resolve_shards(self, bot: discord.Client) -> tuple[int, tuple[int, ...]]:
+        requested = self.requested_shard_count
+        if not isinstance(bot, discord.AutoShardedClient):
+            if requested is not None:
+                raise SetupError("shard_count is only valid for discord.AutoShardedClient")
+            return 1, (0,)
+
+        configured = bot.shard_count
+        if configured is not None and requested is not None and configured != requested:
+            raise SetupError(
+                f"shard_count={requested} conflicts with the client's configured shard_count={configured}"
+            )
+        shard_count = configured if configured is not None else requested
+        if shard_count is None:
+            raise SetupError(
+                "AutoShardedClient has no shard_count; pass shard_count to the client "
+                "or simcord.run(bot, shard_count=...)"
+            )
+        if not isinstance(shard_count, int) or isinstance(shard_count, bool) or shard_count < 1:
+            raise SetupError("shard_count must be a positive integer")
+
+        shard_ids = tuple(bot.shard_ids) if bot.shard_ids is not None else tuple(range(shard_count))
+        if not shard_ids:
+            raise SetupError("AutoShardedClient must have at least one active shard")
+        if len(set(shard_ids)) != len(shard_ids) or any(
+            not isinstance(shard_id, int) or isinstance(shard_id, bool) or not 0 <= shard_id < shard_count
+            for shard_id in shard_ids
+        ):
+            raise SetupError(f"shard_ids must be unique integers between 0 and {shard_count - 1}")
+        return shard_count, shard_ids
+
     async def _attach_bot(self, bot: discord.Client) -> None:
         """Install the fakes onto ``bot`` and bring it to READY. Shared by
         :meth:`start` and :meth:`restart_bot`."""
@@ -125,12 +162,18 @@ class Env:
         _dpy_internals.set_guild_ready_timeout(bot, 0.0)
         self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
 
-        gateway = FakeGateway(self.backend, _dpy_internals.get_state(bot))
-        self._gateway_feed = gateway.feed
-        self.backend.subscribers.append(gateway.feed)
-        # The upstream half of the gateway: answers REQUEST_GUILD_MEMBERS so
-        # member chunking (startup, Guild.chunk, query_members) works.
-        _dpy_internals.install_websocket(bot, FakeWebSocket(self.backend, gateway))
+        state = _dpy_internals.get_state(bot)
+        self._shard_count, self._shard_ids = self._resolve_shards(bot)
+        state.shard_count = self._shard_count
+        state.shard_ids = list(self._shard_ids)
+        router = ShardRouter(self.backend, state, bot.dispatch, self._shard_count, self._shard_ids)
+        self._gateway_feed = router.feed
+        self.backend.subscribers.append(router.feed)
+        if isinstance(bot, discord.AutoShardedClient):
+            bot.shard_count = self._shard_count
+            _dpy_internals.install_shards(bot, router.shards)
+        else:
+            _dpy_internals.install_websocket(bot, router.websockets[0])
 
         try:
             self._capture_errors()
@@ -140,22 +183,23 @@ class Env:
             if self.approved_intents is not None and _intents.missing_privileged_intents(
                 bot.intents, self.approved_intents
             ):
-                raise discord.PrivilegedIntentsRequired(shard_id=None)
+                raise discord.PrivilegedIntentsRequired(shard_id=self._shard_ids[0])
             # Runs the real login flow: identity, application info, setup_hook
             # (where bots typically load extensions and sync their command tree).
             await bot.login("simcord.fake.token")
-            gateway.feed(
-                "READY",
-                {
-                    "v": 10,
-                    "user": dict(serializers.user_payload(self.backend.bot_user)),
-                    "guilds": [],
-                    "session_id": "simcord-session",
-                    "resume_gateway_url": "wss://simcord.invalid",
-                    "shard": [0, 1],
-                    "application": {"id": str(self.backend.application_id), "flags": 0},
-                },
-            )
+            for shard_id in self._shard_ids:
+                router.gateways[shard_id].feed(
+                    "READY",
+                    {
+                        "v": 10,
+                        "user": dict(serializers.user_payload(self.backend.bot_user)),
+                        "guilds": [],
+                        "session_id": f"simcord-session-{shard_id}",
+                        "resume_gateway_url": "wss://simcord.invalid",
+                        "shard": [shard_id, self._shard_count],
+                        "application": {"id": str(self.backend.application_id), "flags": 0},
+                    },
+                )
             await self.settle()
         except BaseException:
             # Setup (e.g. setup_hook) blew up: undo the global monkeypatches so
@@ -176,6 +220,8 @@ class Env:
             except ValueError:
                 pass
             self._gateway_feed = None
+        if isinstance(self.bot, discord.AutoShardedClient):
+            _dpy_internals.clear_shards(self.bot)
         if self._adapter_token is not None:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
             self._adapter_token = None
@@ -374,6 +420,7 @@ class Env:
         name: str = "Test Guild",
         *,
         id: int | None = None,
+        shard_id: int | None = None,
         owner: UserHandle | None = None,
         description: str | None = None,
         verification_level: discord.VerificationLevel | None = None,
@@ -385,14 +432,27 @@ class Env:
         """Create a guild.
 
         Pass ``id`` to pin a known id — e.g. to match a bot that syncs its
-        commands to a hardcoded guild id, so ``strict_sync`` can stay on. Pass
-        ``owner`` to make a specific user the guild owner (owners bypass every
-        permission check); by default a fresh synthetic owner is created so the
-        bot never owns the guild. The remaining keywords seed guild settings the
-        bot can read back off ``discord.Guild`` and could later change itself via
-        ``Guild.edit`` (the keyword names here are friendlier aliases — e.g.
-        ``notifications`` for ``default_notifications``).
+        commands to a hardcoded guild id, so ``strict_sync`` can stay on.
+        ``shard_id`` creates a snowflake owned by that shard; when both are
+        provided they must agree. Pass ``owner`` to make a specific user the
+        guild owner (owners bypass every permission check); by default a fresh
+        synthetic owner is created so the bot never owns the guild. The remaining
+        keywords seed guild settings the bot can read back off ``discord.Guild``
+        and could later change itself via ``Guild.edit`` (the keyword names here
+        are friendlier aliases — e.g. ``notifications`` for
+        ``default_notifications``).
         """
+        if shard_id is not None:
+            if (
+                not isinstance(shard_id, int)
+                or isinstance(shard_id, bool)
+                or not 0 <= shard_id < self._shard_count
+            ):
+                raise ValueError(f"shard_id must be between 0 and {self._shard_count - 1}")
+            if id is None:
+                id = self.backend.snowflake_for_shard(shard_id, self._shard_count)
+            elif (id >> 22) % self._shard_count != shard_id:
+                raise ValueError(f"id {id} does not belong to shard {shard_id}")
         settings: dict[str, Any] = {}
         if description is not None:
             settings["description"] = description

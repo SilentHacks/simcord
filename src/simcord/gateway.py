@@ -99,9 +99,11 @@ class FakeWebSocket:
     ``members`` intent) works against the backend instead of hanging.
     """
 
-    def __init__(self, backend: Backend, gateway: FakeGateway) -> None:
+    def __init__(self, backend: Backend, gateway: FakeGateway, *, shard_id: int = 0) -> None:
         self._backend = backend
         self._gateway = gateway
+        self.shard_id = shard_id
+        self.open = True
         self._chunk_task: asyncio.Task[None] | None = None
 
     @property
@@ -110,6 +112,9 @@ class FakeWebSocket:
 
     def is_ratelimited(self) -> bool:
         return False
+
+    async def close(self, code: int = 1000) -> None:
+        self.open = False
 
     async def change_presence(self, *, activity: Any = None, status: Any = None, since: float = 0.0) -> None:
         # Presence is cosmetic for an offline bot under test; accept and drop.
@@ -231,3 +236,61 @@ class FakeWebSocket:
             payload["members"] = kept
             if "presences" in payload:
                 payload["presences"] = [p for p in payload["presences"] if int(p["user"]["id"]) in present]
+
+
+class FakeShard:
+    """The small interface consumed by discord.py's public ``ShardInfo``."""
+
+    def __init__(self, websocket: FakeWebSocket, dispatch: Any) -> None:
+        self.ws = websocket
+        self._dispatch = dispatch
+
+    @property
+    def id(self) -> int:
+        return self.ws.shard_id
+
+    async def close(self) -> None:
+        await self.ws.close()
+
+    async def disconnect(self) -> None:
+        if not self.ws.open:
+            return
+        await self.close()
+        self._dispatch("shard_disconnect", self.id)
+
+    async def reconnect(self) -> None:
+        if self.ws.open:
+            return
+        self.ws.open = True
+        self._dispatch("shard_connect", self.id)
+        self._dispatch("shard_ready", self.id)
+
+
+class ShardRouter:
+    """Own fake shard connections and route each gateway event exactly once."""
+
+    def __init__(
+        self, backend: Backend, state: Any, dispatch: Any, shard_count: int, shard_ids: tuple[int, ...]
+    ):
+        self.shard_count = shard_count
+        self.shard_ids = shard_ids
+        self.gateways = {shard_id: FakeGateway(backend, state) for shard_id in shard_ids}
+        self.websockets = {
+            shard_id: FakeWebSocket(backend, self.gateways[shard_id], shard_id=shard_id)
+            for shard_id in shard_ids
+        }
+        self.shards = {shard_id: FakeShard(self.websockets[shard_id], dispatch) for shard_id in shard_ids}
+
+    def feed(self, event: str, payload: Mapping[str, Any]) -> None:
+        shard_id = self._event_shard_id(event, payload)
+        gateway = self.gateways.get(shard_id)
+        if gateway is not None and gateway._state is not None:
+            gateway.feed(event, payload)
+
+    def _event_shard_id(self, event: str, payload: Mapping[str, Any]) -> int:
+        guild_id = payload.get("guild_id")
+        if guild_id is None and event in {"GUILD_CREATE", "GUILD_UPDATE", "GUILD_DELETE"}:
+            guild_id = payload.get("id")
+        if guild_id is None:
+            return 0
+        return (int(guild_id) >> 22) % self.shard_count

@@ -116,6 +116,22 @@ def install_websocket(client: discord.Client, ws: Any) -> None:
     client.ws = ws
 
 
+def _shards(client: discord.AutoShardedClient) -> dict[int, Any]:
+    return client.__dict__["_AutoShardedClient__shards"]
+
+
+def install_shards(client: discord.AutoShardedClient, shards: dict[int, Any]) -> None:
+    """Populate the shard mapping behind ``AutoShardedClient.shards``."""
+    installed = _shards(client)
+    installed.clear()
+    installed.update(shards)
+
+
+def clear_shards(client: discord.AutoShardedClient) -> None:
+    """Remove fake shard adapters when an environment detaches."""
+    _shards(client).clear()
+
+
 def set_guild_ready_timeout(client: discord.Client, timeout: float) -> None:
     """No guilds arrive before our READY; don't wait for stragglers."""
     get_state(client).guild_ready_timeout = timeout
