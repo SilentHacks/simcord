@@ -168,12 +168,17 @@ on the `simcord_env` fixture:
 | `strict_sync` | `True` | Invoking an unsynced slash command fails the test, as in production. |
 | `check_errors` | `True` | Errors your bot swallowed are re-raised at test teardown unless inspected, so bugs can't pass silently. |
 | `approved_intents` | all | Simulate the developer-portal privileged-intent toggles; a missing intent raises `PrivilegedIntentsRequired` on connect. |
+| `shard_count` | client setting | Shard count to use when an `AutoShardedClient` normally discovers it from Discord. |
 
 ```python
 @pytest.mark.simcord(strict_sync=False)
 async def test_unsynced_command(simcord_env):
     ...
 ```
+
+Sharded bots use discord.py's normal API. Configure `AutoShardedBot` with its production
+`shard_count`, then place test guilds with `env.create_guild(shard_id=...)`. `bot.shards`,
+`get_shard()`, shard readiness, presence and guild event routing behave normally.
 
 When something goes wrong, the `env` tells you what happened:
 

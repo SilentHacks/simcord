@@ -83,9 +83,13 @@ for what you need.
 
 ## Does SimCord simulate sharding or rate limits?
 
-No — both are deliberately out of scope. A test drives a single virtual shard, and skipping
-rate limits keeps tests fast; use `inject_error` to exercise your `429` handling. See the
-[parity matrix](parity-matrix.md).
+Sharding is supported for discord.py's single-process `AutoShardedClient` and
+`AutoShardedBot`, including partial `shard_ids`, readiness, routing, chunking, presence,
+latency and shard controls. See [Testing sharded bots](guides/fixtures.md#testing-sharded-bots).
+Multi-process/IPC clusters are not simulated.
+
+Rate limits are deliberately out of scope so tests stay fast; use `inject_error` to exercise
+`429` handling. See the [parity matrix](parity-matrix.md).
 
 ## Which Python and discord.py versions are supported?
 

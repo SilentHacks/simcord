@@ -96,6 +96,8 @@ Both `simcord.run(bot, **options)` and the underlying `Env` accept these keyword
 | --- | --- | --- |
 | `strict_sync` | `True` | Unsynced app commands can't be invoked — invoking one fails the test, catching forgotten `tree.sync()` calls. Set `False` to auto-register unsynced commands for isolated unit tests. |
 | `check_errors` | `True` | At teardown, errors the bot raised but the test never inspected are re-raised as an `ExceptionGroup`, so bot bugs can't pass silently. Set `False` to opt out. |
+| `approved_intents` | all | Simulates developer-portal privileged-intent toggles. |
+| `shard_count` | client setting | Supplies the Get Gateway Bot recommendation when an `AutoShardedClient` does not configure `shard_count` itself. |
 
 ```python
 # An isolated unit test that doesn't care about sync, and inspects errors itself:
@@ -112,6 +114,36 @@ async with simcord.run(bot, strict_sync=False) as env:
     MY_GUILD = 123456789012345678  # the id the bot syncs to
     guild = env.create_guild(id=MY_GUILD)
     ```
+
+### Testing sharded bots
+
+Use discord.py's production sharding configuration unchanged:
+
+```python
+bot = commands.AutoShardedBot(command_prefix="!", intents=intents, shard_count=4)
+
+async with simcord.run(bot) as env:
+    guild = env.create_guild("Shard two", shard_id=2)
+    assert (guild.id >> 22) % bot.shard_count == 2
+    assert bot.get_shard(2) is not None
+```
+
+`create_guild(shard_id=...)` generates a snowflake owned by that shard. An explicit `id`
+remains authoritative and raises `ValueError` if it conflicts with `shard_id`. Manual workers
+also keep their normal configuration:
+
+```python
+bot = commands.AutoShardedBot(
+    command_prefix="!",
+    intents=intents,
+    shard_count=16,
+    shard_ids=[4, 5, 6, 7],
+)
+```
+
+Only owned guild events reach a partial worker. Non-guild events follow Discord routing and
+reach shard `0`. If production leaves `bot.shard_count` unset for automatic discovery, make
+the recommendation explicit in the test with `simcord.run(bot, shard_count=16)`.
 
 ### Overriding options per test
 

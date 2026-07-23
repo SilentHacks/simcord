@@ -56,7 +56,7 @@ serializer payloads are conformance-tested against discord.py's own model parser
 | Auto-moderation | ✅ | Rule CRUD + keyword & mention-spam execution (block/alert) on send |
 | View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
-| Sharding simulation | ❌ | Single virtual shard |
+| Sharding simulation | ✅ | `AutoShardedClient`/`AutoShardedBot`; full and partial shard sets, Discord guild routing, per-shard READY/chunking/presence/latency/controls; no multi-process IPC |
 
 ## Implemented routes
 

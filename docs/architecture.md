@@ -35,6 +35,11 @@ test ──► builders/actors ──► virtual backend (single source of truth
   parse the request, permission-check it (via `ctx.require_*_permissions`), call one
   `Backend` method, and serialize the result — so a mutation can never be announced
   inconsistently or forgotten as more routes are added.
+- **One shard router.** `AutoShardedClient` gets one fake gateway/websocket adapter per
+  active shard, while one router applies Discord's snowflake formula and delivers each
+  backend event exactly once. All adapters feed the client's shared real
+  `AutoShardedConnectionState`, preserving discord.py's cache and readiness semantics
+  without modelling sockets or IPC.
 - **Loud gaps.** An unimplemented route raises `RouteNotImplemented` naming the route,
   and an edit handler sent a field it does not honour raises `UnsupportedField` rather
   than silently dropping it. A testing tool must never silently fake success — neither at
