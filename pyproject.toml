@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simcord"
-version = "1.2.1"
+version = "1.2.2"
 description = "Offline discord.py bot testing with pytest. No network, token, or test server."
 readme = "README.md"
 license = "MIT"

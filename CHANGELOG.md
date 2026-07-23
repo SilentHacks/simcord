@@ -4,6 +4,14 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 1.2.2 (2026-07-23)
+
+### Documentation
+
+- Fix social preview metadata to use the deployed Read the Docs asset URL.
+- Replace the static README illustration with an animated terminal recording generated from the real example test suite.
+
+
 ## 1.2.1 (2026-07-23)
 
 ### Documentation
