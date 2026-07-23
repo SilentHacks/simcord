@@ -31,7 +31,7 @@ async def test_ping(simcord_env):
     assert channel.last_message.content == "Pong!"
 ```
 
-[![SimCord ping test with a passing pytest result](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/simcord-demo.webp)](https://github.com/SilentHacks/simcord/tree/master/examples)
+[![Real SimCord example suite running in pytest](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/simcord-terminal-demo.gif)](https://github.com/SilentHacks/simcord/tree/master/examples)
 
 The [bundled example bot](https://github.com/SilentHacks/simcord/tree/master/examples) is executable, tested, and covers prefix commands,
 slash commands, permissions, cooldowns, modals, buttons, and persistent views.
