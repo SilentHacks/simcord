@@ -42,4 +42,4 @@ jobs:
       # Pinned to a commit SHA (v1.14.0) rather than the mutable release/v1
       # branch: this job holds id-token: write, so a moved tag/branch could be
       # used to mint a trusted-publishing token.
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
