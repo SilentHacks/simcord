@@ -84,8 +84,9 @@ lifecycle bugs testable.
 ### Why actors await
 
 Every actor verb is `async` and **waits for the bot to finish reacting** before returning.
-SimCord tracks every task your bot spawns and "settles" the event loop — running callbacks,
-awaiting handlers, even draining `asyncio.sleep` chains — until the bot is quiescent. So
+SimCord tracks which tasks the dispatched event spawned — the handler and everything it
+created, including work running on thread executors (`run_in_executor`, `asyncio.to_thread`,
+aiosqlite) that schedules nothing on the event loop — and joins them all to completion. So
 this is race-free with no sleeps:
 
 ```python
@@ -93,9 +94,13 @@ await alice.send(channel, "!ping")
 assert channel.last_message.content == "Pong!"   # the reply is already here
 ```
 
-If a handler hangs, settling fails fast with the pending tasks listed, rather than your
-assertion flaking. (Tasks genuinely parked waiting for *future* user input — like a `View`
-in `wait_for` — are correctly left running.)
+Tasks are only left running when *provably* parked on future input: discord.py background
+machinery (a `View`'s timeout task, a `wait_for` listener) or the handler's own
+`asyncio.sleep` timers beyond the settle timeout (fast-forward those with
+`env.advance_time()`). If owned work cannot make progress, settling fails fast with the
+stuck tasks named and why each was stuck, rather than your assertion flaking. A handler
+that intentionally parks forever can be whitelisted by name:
+`simcord.run(bot, background_names={"my_waiter"})`.
 
 The actor verbs, by area:
 

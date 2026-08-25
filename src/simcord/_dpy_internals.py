@@ -5,8 +5,7 @@ self-check below fails with a clear message instead of users' tests breaking
 mysteriously. Keep this inventory in sync with what the framework touches.
 """
 
-from __future__ import annotations
-
+import inspect
 from typing import Any
 
 import discord
@@ -50,6 +49,13 @@ def verify() -> None:
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
+    # settle()'s parked-classifier reads wait_for registrations from
+    # Client._listeners (an instance attribute set in Client.__init__, so
+    # hasattr on the class can't see it); confirm by source instead.
+    import inspect
+
+    if "_listeners" not in inspect.getsource(discord.Client.__init__):  # pragma: no cover
+        problems.append("discord.Client.__init__ no longer sets _listeners")
     # The background-coro names are matched by leaf qualname; confirm they still
     # exist on View so a rename surfaces here instead of in settle().
     for name in BACKGROUND_CORO_NAMES:

@@ -35,4 +35,4 @@ The tested bot must be constructible without calling `bot.run()`. Provide a pyte
 - Keep tests offline. Never request or invent a Discord token.
 - Check the parity matrix before assuming a Discord route or event is implemented.
 - Treat `RouteNotImplemented` as a visible parity gap, not as permission to fake success.
-- SimCord supports discord.py 2.7 or newer and Python 3.11 or newer.
+- SimCord supports discord.py 2.7 or newer and Python 3.12 or newer.

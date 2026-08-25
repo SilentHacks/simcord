@@ -58,8 +58,8 @@ The `pytest` extra installs `pytest-asyncio`. With `asyncio_mode = "auto"` set i
 ## Do I need `asyncio.sleep` to wait for the bot to reply?
 
 No, and you shouldn't. Every [actor](concepts.md#actors-act-as-a-real-user) verb waits for
-the bot to finish reacting before returning, so your assertions never race. SimCord tracks
-the bot's tasks and settles the event loop deterministically. If you need to advance *time*
+the bot to finish reacting before returning, so your assertions never race. SimCord joins
+the spawned handler tasks — even executor-backed ones — until they finish or provably park. If you need to advance *time*
 (for cooldowns or view timeouts), use [`env.advance_time`](guides/time-control.md), not a
 real sleep.
 

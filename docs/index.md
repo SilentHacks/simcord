@@ -62,8 +62,7 @@ of Discord's REST API and gateway, entirely in-process.
 
     ---
 
-    No sleeps, no network, reproducible IDs and timestamps. The framework tracks the bot's
-    tasks and settles after every action. There is never an `asyncio.sleep` in your tests.
+    No sleeps, no network, reproducible IDs and timestamps. The framework joins the spawned handler tasks after every action. There is never an `asyncio.sleep` in your tests.
 
 -   :fast_forward: __Time control__
 

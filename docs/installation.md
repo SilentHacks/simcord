@@ -9,7 +9,7 @@ description: "Install SimCord, the discord.py testing framework. Requirements, t
 
 | Requirement | Version |
 | --- | --- |
-| Python | 3.11 or newer |
+| Python | 3.12 or newer |
 | discord.py | 2.7 or newer (`>=2.7,<3`) |
 
 SimCord has **zero runtime dependencies beyond discord.py itself**. It deliberately never

@@ -84,7 +84,7 @@ class UserHandle:
         """DM the bot as this user."""
         channel = self._env.backend.get_dm_channel(self.id)
         message = self._env.backend.create_message(channel.id, self.id, content, **kwargs)
-        await self._env.settle()
+        await self._env.settle(event="USER.send_dm")
         return to_discord_message(self._env, message)
 
     def __repr__(self) -> str:
@@ -147,7 +147,7 @@ class WebhookHandle:
             webhook_id=self._webhook.id,
             author_name=username,
         )
-        await self._env.settle()
+        await self._env.settle(event="WEBHOOK.send")
         return to_discord_message(self._env, message)
 
     def __repr__(self) -> str:

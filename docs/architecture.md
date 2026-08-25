@@ -50,9 +50,10 @@ test ──► builders/actors ──► virtual backend (single source of truth
 - **Payloads typed against `discord.types`.** Serializers are annotated with discord.py's
   own TypedDicts — the exact contract its parsers consume — so shape drift against a new
   discord.py release is caught statically.
-- **Deterministic settling.** The environment tracks every task the bot spawns and waits
-  for quiescence after each injected event. No `asyncio.sleep` guesswork; a hung handler
-  fails fast with the pending tasks listed.
+- **Deterministic settling.** The environment joins every task the dispatched event spawned —
+  including thread-executor work invisible to the event loop — before each actor verb returns.
+  Tasks provably parked on future input are left running; anything else that stalls fails fast
+  with the stuck tasks named.
 - **Quarantined internals.** Every private discord.py touchpoint lives in
   `_dpy_internals.py` behind an import-time self-check, and CI runs weekly against
   discord.py's master branch to catch drift early.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import warnings
 from typing import Any
 
 import discord
@@ -39,6 +40,7 @@ class Env:
         check_errors: bool = True,
         approved_intents: discord.Intents | None = None,
         shard_count: int | None = None,
+        background_names: frozenset[str] | set[str] | tuple[str, ...] = (),
     ) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
@@ -51,11 +53,26 @@ class Env:
         #: Simulator-side shard recommendation for an AutoShardedClient that
         #: normally discovers its count from Discord's Get Gateway Bot endpoint.
         self.requested_shard_count = shard_count
+        #: Coroutine qualname leaves treated as parked background machinery even
+        #: when spawned inside an event window (e.g. ``{"my_waiter"}``). Extends
+        #: the built-in discord.py set; use this when a handler legitimately
+        #: parks on external input and settle() otherwise times out.
+        self.background_names = frozenset(background_names)
         self.backend = Backend()
         self._errors: list[BaseException] = []
         self._errors_inspected = False
         self._guilds: list[GuildHandle] = []
         self._tasks: list[asyncio.Task[Any]] = []
+        # Task ancestry for event-ownership: parent task at create_task time,
+        # or None for roots (spawned outside any tracked task).
+        self._task_parents: dict[asyncio.Task[Any], asyncio.Task[Any] | None] = {}
+        # Tasks alive when the last settle() returned quiescent; their new
+        # descendants are long-lived machinery, not work belonging to the next
+        # dispatched event.
+        self._preexisting: set[asyncio.Task[Any]] = set()
+        #: Label of the gateway event currently being settled (set by actor
+        #: verbs; ``None`` for direct ``await env.settle()`` calls).
+        self._last_dispatch: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._orig_create_task: Any = None
         self._orig_monotonic: Any = None
@@ -92,13 +109,13 @@ class Env:
         """
         if not self._started:
             raise SetupError("Env not started; use restart_bot() only inside simcord.run()")
-        await self.settle()
+        await self.settle(_startup=True)
         await self._detach_bot()
         await self._attach_bot(bot or self.bot)
         for handle in self._guilds:
             guild = self.backend.get_guild(handle.id)
             self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
-        await self.settle()
+        await self.settle(_startup=True)
 
     def _resolve_shards(self, bot: discord.Client) -> tuple[int, tuple[int, ...]]:
         requested = self.requested_shard_count
@@ -142,12 +159,26 @@ class Env:
         self._shard_count, self._shard_ids = self._resolve_shards(bot)
 
         # Track every task spawned while the env is live so settle() can wait
-        # for the bot to finish reacting without guessing with sleeps.
+        # for the bot to finish reacting without guessing with sleeps, and
+        # record its parent so event ownership can follow ancestry.
+        # ponytail: tasks spawned from call_soon callbacks or worker threads
+        # (call_soon_threadsafe / run_coroutine_threadsafe) have no current
+        # task and become orphan roots — surfaced in settle() timeout
+        # diagnostics rather than silently abandoned. If real bots hit this,
+        # the upgrade path is an explicit registration API.
         self._orig_create_task = loop.create_task
 
         def tracking_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+            try:
+                parent = asyncio.current_task()
+            except RuntimeError:  # called outside a running loop
+                parent = None
             task = self._orig_create_task(coro, **kwargs)
             self._tasks.append(task)
+            # Record the creating task even when it is itself untracked (e.g.
+            # the test coroutine, which asyncio.run/pytest runs directly rather
+            # than via loop.create_task): ancestry matters more than tracking.
+            self._task_parents[task] = parent
             return task
 
         loop.create_task = tracking_create_task  # type: ignore[method-assign]
@@ -193,7 +224,7 @@ class Env:
                 _dpy_internals.install_shards(bot, router.shards)
             for shard_id in self._shard_ids:
                 router.identify(shard_id)
-            await self.settle()
+            await self.settle(_startup=True)
         except BaseException:
             # Setup (e.g. setup_hook) blew up: undo the global monkeypatches so
             # we don't leak the patched loop.create_task / webhook adapter into
@@ -231,55 +262,217 @@ class Env:
         await asyncio.gather(*to_cancel, return_exceptions=True)
         self._tasks = []
 
-    async def settle(self, timeout: float = 5.0, idle: float = 0.05) -> None:  # noqa: ASYNC109
+    async def settle(
+        self,
+        timeout: float = 5.0,
+        idle: float = 0.05,
+        *,
+        event: str | None = None,
+        _startup: bool = False,
+    ) -> None:  # noqa: ASYNC109
         # `timeout` is deliberate public API: settle() polls for quiescence and
-        # decides between "parked on a future" and "still working", so it can't
-        # be replaced by wrapping the body in asyncio.timeout().
+        # decides between "parked" and "still working", so it can't be replaced
+        # by wrapping the body in asyncio.timeout().
         """Wait until the bot has finished reacting to injected events.
 
-        Waits for all tracked tasks to complete. A task that completes no work
-        within an ``idle`` window is only abandoned if it is genuinely parked on
-        a future (e.g. blocked in ``wait_for`` for a later user action) — if the
-        loop still has timers scheduled to fire before ``timeout`` (e.g. an
-        ``asyncio.sleep`` in a cooldown or backoff), we keep waiting for them.
-        If pending tasks neither finish nor park before ``timeout``, a
-        ``TimeoutError`` with the pending tasks is raised.
+        Tasks are classified by *ownership*, decided by an **emit window**:
+        everything a task spawns while it runs is recorded, and the work
+        belonging to this settle is
+
+        - for actor verbs (``event=...``, set automatically): the dispatched
+          event's handler and every descendant it spawned, **joined to
+          completion** — including executor/thread-backed work;
+        - for direct ``await env.settle()`` calls: everything spawned since the
+          last quiescent return (startup settles included), so tests that emit
+          raw gateway events still join the bot's reaction. Tasks rooted in the
+          calling coroutine itself are your background work and left alone.
+
+        An owned task is *not* joined only when provably parked:
+
+        - its coroutine leaf qualname is background machinery
+          (``BACKGROUND_CORO_NAMES`` or the ``background_names`` Env option);
+        - it awaits a future registered in ``bot._listeners`` (a
+          ``Client.wait_for`` for later input);
+        - its own wake timer (:class:`asyncio.sleep` and friends) lies beyond
+          ``timeout`` — fast-forward those with :meth:`advance_time`.
+
+        If owned work neither finishes nor parks before ``timeout``, a
+        ``TimeoutError`` naming the incomplete tasks is raised; nothing is
+        abandoned silently.
         """
+        self._last_dispatch = event
         assert self._loop is not None
         deadline = self._loop.time() + timeout
         # Give freshly-scheduled callbacks a chance to run first.
         for _ in range(3):
             await asyncio.sleep(0)
         while True:
-            self._tasks = [t for t in self._tasks if not t.done()]
-            pending = [
-                t
-                for t in self._tasks
-                if getattr(t.get_coro(), "__qualname__", "").split(".")[-1]
-                not in _dpy_internals.BACKGROUND_CORO_NAMES
-            ]
+            self._prune_done()
+            pending = [t for t in self._owned_tasks(caller=asyncio.current_task(), startup=_startup) if not t.done()]
             if not pending:
+                self._mark_quiescent()
                 return
             done, _ = await asyncio.wait(pending, timeout=idle, return_when=asyncio.FIRST_COMPLETED)
             if done:
                 continue  # progress made — re-evaluate what is still pending
-            if self._loop.time() > deadline:
-                raise TimeoutError(f"bot did not settle; pending tasks: {pending}")
-            next_timer = self._next_scheduled_timer()
-            if next_timer is None or next_timer > deadline:
-                # No imminent timer: the remaining tasks are parked on futures
-                # waiting for input we will never deliver. Leave them running.
+            parked = [t for t in pending if self._is_parked(t, deadline)]
+            if len(parked) == len(pending):
+                # Every owned task is provably waiting on future input.
+                self._mark_quiescent()
                 return
-            # A timer (e.g. asyncio.sleep) is due before the deadline; loop and
-            # wait for the work it will wake up.
+            if self._loop.time() > deadline:
+                stuck = [t for t in pending if t not in parked]
+                raise TimeoutError(self._settle_timeout_message(stuck, pending))
+            # Some owned tasks still have a wake timer due before the deadline;
+            # loop and wait for the work it will wake up.
+
+    # ------------------------------------------------------------- ownership
+
+    def _prune_done(self) -> None:
+        """Drop completed tasks from every tracking structure."""
+        done = {t for t in self._tasks if t.done()}
+        if not done:
+            return
+        self._tasks = [t for t in self._tasks if t not in done]
+        for t in done:
+            self._task_parents.pop(t, None)
+            self._preexisting.discard(t)
+
+    def _owned_tasks(self, *, caller: asyncio.Task[Any] | None, startup: bool) -> list[asyncio.Task[Any]]:
+        """Tasks this settle() must join: everything spawned since the last
+        quiescent return whose ancestry does not reach a task that was already
+        running before its spawning window opened — except tasks rooted in a
+        direct-settle caller, which are the test's own background work.
+
+        During startup (attach/READY/restart) that exclusion does not apply:
+        login/setup_hook machinery rooted in the attaching coroutine is exactly
+        what must finish before the test starts.
+        """
+        owned: list[asyncio.Task[Any]] = []
+        for task in self._tasks:
+            if task is caller:
+                continue
+            walker = task
+            is_owned = True
+            while walker is not None:
+                if walker in self._preexisting:
+                    is_owned = False  # descendant of long-lived machinery
+                    break
+                parent = self._task_parents.get(walker)
+                if parent is None:
+                    # Root of the tracked tree. For verb-driven settles the
+                    # dispatching caller spawned it (event work). For direct
+                    # settles from a test, only exclude when the root IS the
+                    # caller — user-emitted events still count as event work.
+                    if not self._last_dispatch and not startup and self._rooted_in_caller(task, caller):
+                        is_owned = False
+                    break
+                walker = parent
+            if is_owned:
+                owned.append(task)
+        return owned
+
+    def _mark_quiescent(self) -> None:
+        """Everything alive now becomes the pre-existing baseline that the next
+        settle() will treat as long-lived machinery rather than event work."""
+        self._preexisting = {t for t in self._tasks if not t.done()}
+
+    def _rooted_in_caller(self, task: asyncio.Task[Any], caller: asyncio.Task[Any] | None) -> bool:
+        """Walk to the root of ``task``'s ancestry; True when that root is the
+        settle() caller itself. Orphans with no recorded parent return False —
+        they stay event-owned and surface in timeout diagnostics."""
+        walker = task
+        while True:
+            parent = self._task_parents.get(walker)
+            if parent is None:
+                return False
+            if parent is caller:
+                return True
+            if parent not in self._task_parents:
+                return False
+            walker = parent
+
+    def _is_parked(self, task: asyncio.Task[Any], deadline: float) -> bool:
+        """True only when the task is *provably* waiting on future external
+        input; anything unprovable stays owned-and-joined (loud over silent)."""
+        coro = task.get_coro()
+        leaf = getattr(coro, "__qualname__", "").split(".")[-1]
+        if leaf in _dpy_internals.BACKGROUND_CORO_NAMES or leaf in self.background_names:
+            return True
+        # discord.py wraps handlers in Client._run_event; the user's coroutine
+        # is one frame down. Match background_names against it too.
+        if leaf == "_run_event" and self.background_names and coro.cr_frame:
+            inner = coro.cr_frame.f_locals.get("coro")
+            if inner is not None and getattr(inner, "__qualname__", "").split(".")[-1] in self.background_names:
+                return True
+        waiter = getattr(task, "_fut_waiter", None)
+        if waiter is None:
+            return False
+        listeners = getattr(self.bot, "_listeners", None)
+        if listeners and any(waiter is fut for futures, _ in listeners.values() for fut in futures):
+            return True  # Client.wait_for: parked for a later event
+        # Own-wake-timer rule: asyncio.sleep registers call_later(delay,
+        # _set_result_unless_cancelled, <this future>); a far-future own timer
+        # means the task cannot make progress before the deadline.
+        scheduled = getattr(self._loop, "_scheduled", None)
+        if scheduled is None:
+            warnings.warn(
+                "simcord could not read the event loop's timer heap "
+                "(non-stdlib loop, e.g. uvloop); sleep-parked tasks may stall "
+                "settle() until its timeout.",
+                RuntimeWarning,
+                stacklevel=4,
+            )
+            return False
+        for handle in scheduled:
+            if handle.cancelled():
+                continue
+            args = getattr(handle, "_args", ())
+            if any(arg is waiter for arg in args) and handle.when() > deadline:
+                return True
+        return False
+
+    def _settle_timeout_message(self, stuck: list[asyncio.Task[Any]], all_pending: list[asyncio.Task[Any]]) -> str:
+        """Diagnostic for a settle() timeout: what was dispatched, which
+        event-owned tasks never finished, and why each was considered active."""
+        lines = ["bot did not settle"]
+        if self._last_dispatch:
+            lines[0] += f" after dispatching {self._last_dispatch}"
+        else:
+            lines[0] += " (direct settle() call)"
+        for task in stuck:
+            coro = task.get_coro()
+            leaf = getattr(coro, "__qualname__", "?")
+            waiter = getattr(task, "_fut_waiter", None)
+            waiter_desc = type(waiter).__name__ if waiter is not None else "no awaited future"
+            listeners = getattr(self.bot, "_listeners", None)
+            if waiter is not None and listeners and any(
+                waiter is fut for futures, _ in listeners.values() for fut in futures
+            ):
+                reason = "waiting on a Client.wait_for listener"
+            elif waiter_desc == "Future":
+                reason = (
+                    "awaiting an externally-woken future (executor/thread work "
+                    "or a plain Future/Event); if this is intentional parking, "
+                    "add its coroutine name to Env(background_names=...)"
+                )
+            else:
+                reason = f"blocked on {waiter_desc}"
+            lines.append(f"  {leaf}: {reason}")
+        orphan_roots = [
+            t for t in all_pending if self._task_parents.get(t) is None and not self._is_parked(t, self._loop.time())
+        ]
+        if orphan_roots:
+            names = ", ".join(getattr(t.get_coro(), "__qualname__", "?") for t in orphan_roots)
+            lines.append(f"  unowned orphan roots (spawned off-loop, not joined): {names}")
+        return "\n".join(lines)
 
     def _next_scheduled_timer(self) -> float | None:
         """The earliest live ``call_later`` deadline on the loop, if any.
 
-        Used by :meth:`settle` to tell ``asyncio.sleep``-style pauses (which
-        schedule a timer) apart from tasks parked indefinitely on a future
-        (which do not). Best-effort: relies on the standard loop's internals
-        and degrades to ``None`` if they are unavailable.
+        Used by :meth:`advance_time` to step through timers in order.
+        Best-effort: relies on the standard loop's internals and degrades to
+        ``None`` if they are unavailable (non-stdlib loops).
         """
         scheduled = getattr(self._loop, "_scheduled", None)
         if not scheduled:
