@@ -5,7 +5,6 @@ self-check below fails with a clear message instead of users' tests breaking
 mysteriously. Keep this inventory in sync with what the framework touches.
 """
 
-import inspect
 from typing import Any
 
 import discord

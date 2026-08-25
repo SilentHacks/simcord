@@ -269,7 +269,7 @@ class Env:
         *,
         event: str | None = None,
         _startup: bool = False,
-    ) -> None:  # noqa: ASYNC109
+    ) -> None:
         # `timeout` is deliberate public API: settle() polls for quiescence and
         # decides between "parked" and "still working", so it can't be replaced
         # by wrapping the body in asyncio.timeout().
@@ -308,7 +308,9 @@ class Env:
             await asyncio.sleep(0)
         while True:
             self._prune_done()
-            pending = [t for t in self._owned_tasks(caller=asyncio.current_task(), startup=_startup) if not t.done()]
+            pending = [
+                t for t in self._owned_tasks(caller=asyncio.current_task(), startup=_startup) if not t.done()
+            ]
             if not pending:
                 self._mark_quiescent()
                 return
@@ -401,16 +403,17 @@ class Env:
             return True
         # discord.py wraps handlers in Client._run_event; the user's coroutine
         # is one frame down. Match background_names against it too.
-        if leaf == "_run_event" and self.background_names and coro.cr_frame:
-            inner = coro.cr_frame.f_locals.get("coro")
-            if inner is not None and getattr(inner, "__qualname__", "").split(".")[-1] in self.background_names:
+        if leaf == "_run_event" and self.background_names:
+            frame = getattr(coro, "cr_frame", None)  # type: ignore[attr-defined]
+            inner = frame.f_locals.get("coro") if frame is not None else None
+            if (
+                inner is not None
+                and getattr(inner, "__qualname__", "").split(".")[-1] in self.background_names
+            ):
                 return True
         waiter = getattr(task, "_fut_waiter", None)
         if waiter is None:
             return False
-        listeners = getattr(self.bot, "_listeners", None)
-        if listeners and any(waiter is fut for futures, _ in listeners.values() for fut in futures):
-            return True  # Client.wait_for: parked for a later event
         # Own-wake-timer rule: asyncio.sleep registers call_later(delay,
         # _set_result_unless_cancelled, <this future>); a far-future own timer
         # means the task cannot make progress before the deadline.
@@ -432,9 +435,12 @@ class Env:
                 return True
         return False
 
-    def _settle_timeout_message(self, stuck: list[asyncio.Task[Any]], all_pending: list[asyncio.Task[Any]]) -> str:
+    def _settle_timeout_message(
+        self, stuck: list[asyncio.Task[Any]], all_pending: list[asyncio.Task[Any]]
+    ) -> str:
         """Diagnostic for a settle() timeout: what was dispatched, which
         event-owned tasks never finished, and why each was considered active."""
+        assert self._loop is not None  # callers run inside settle()
         lines = ["bot did not settle"]
         if self._last_dispatch:
             lines[0] += f" after dispatching {self._last_dispatch}"
@@ -446,8 +452,10 @@ class Env:
             waiter = getattr(task, "_fut_waiter", None)
             waiter_desc = type(waiter).__name__ if waiter is not None else "no awaited future"
             listeners = getattr(self.bot, "_listeners", None)
-            if waiter is not None and listeners and any(
-                waiter is fut for futures, _ in listeners.values() for fut in futures
+            if (
+                waiter is not None
+                and listeners
+                and any(waiter is fut for futures, _ in listeners.values() for fut in futures)
             ):
                 reason = "waiting on a Client.wait_for listener"
             elif waiter_desc == "Future":
@@ -460,7 +468,9 @@ class Env:
                 reason = f"blocked on {waiter_desc}"
             lines.append(f"  {leaf}: {reason}")
         orphan_roots = [
-            t for t in all_pending if self._task_parents.get(t) is None and not self._is_parked(t, self._loop.time())
+            t
+            for t in all_pending
+            if self._task_parents.get(t) is None and not self._is_parked(t, self._loop.time())
         ]
         if orphan_roots:
             names = ", ".join(getattr(t.get_coro(), "__qualname__", "?") for t in orphan_roots)

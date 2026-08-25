@@ -9,11 +9,9 @@ import time
 
 import discord
 import pytest
+
 import simcord
-
-
 from fixtures.sample_bot import create_bot
-
 
 
 @pytest.mark.asyncio
