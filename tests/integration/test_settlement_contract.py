@@ -5,12 +5,14 @@ no test-side re-settle loops, no sleeps, no flaking on executor-backed work.
 """
 
 import asyncio
+import threading
 import time
 
 import discord
 import pytest
 
 import simcord
+
 from fixtures.sample_bot import create_bot
 
 
@@ -119,13 +121,13 @@ async def test_timeout_names_event_and_task_with_hint():
     """An event-owned worker that never finishes raises TimeoutError naming
     the dispatched event and why the task was considered active."""
     bot = create_bot()
-    released = asyncio.Event()
+    release = threading.Event()
 
     @bot.listen("on_message")
     async def stuck_worker(message: discord.Message) -> None:
         if message.content != "stuck":
             return
-        await asyncio.to_thread(time.sleep, 30)
+        await asyncio.to_thread(lambda: release.wait(timeout=10))
 
     async with simcord.run(bot) as env:
         guild = env.create_guild()
@@ -137,9 +139,9 @@ async def test_timeout_names_event_and_task_with_hint():
 
         with pytest.raises(asyncio.TimeoutError) as exc_info:
             await asyncio.wait_for(bounded(), timeout=6)
+        release.set()
         cause = exc_info.value.__cause__ or exc_info.value
         text = str(cause)
-        released.set()
         assert "MEMBER.send" in text
         assert "externally-woken" in text
         assert "background_names" in text
@@ -166,11 +168,34 @@ async def test_background_names_hatch_allows_intentional_park():
 @pytest.mark.asyncio
 async def test_startup_machinery_is_joined_before_ready():
     """Startup settles join login/setup_hook machinery even though it is
-    rooted in the attaching coroutine (regression guard for _delay_ready)."""
+    rooted in the attaching coroutine (regression guard): READY must have
+    fired before the first verb runs."""
     bot = create_bot()
     async with simcord.run(bot) as env:
         assert env.bot.is_ready()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_listener_parks_cleanly():
+    """A handler awaiting Client.wait_for parks; later input resolves it and
+    the next verb joins the continuation."""
+    import asyncio as aio
+
+    bot = create_bot()
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
-        member = guild.add_member(env.create_user("late"))
-        await asyncio.sleep(0.05)
-        assert member.member is not None or True  # cache populated post-chunk
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+
+        async def arm_and_wait():
+            try:
+                await bot.wait_for("message", check=lambda m: m.channel.id == channel.id, timeout=5)
+                return True
+            except aio.TimeoutError:
+                return False
+
+        waiter_task = aio.get_running_loop().create_task(arm_and_wait())
+        await env.settle()  # direct settle: caller-rooted waiter left alone
+        result = await alice.send(channel, "wake")  # resolves wait_for + joins
+        assert await aio.wait_for(waiter_task, timeout=2) is True
+        assert channel.last_message is not None

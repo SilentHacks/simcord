@@ -70,6 +70,13 @@ class Env:
         # descendants are long-lived machinery, not work belonging to the next
         # dispatched event.
         self._preexisting: set[asyncio.Task[Any]] = set()
+        #: Roots spawned inside the current emit window (between a gateway
+        #: event reaching the bot and the settle() that follows it). Event
+        #: work is exactly these roots and their descendants.
+        self._window_roots: set[asyncio.Task[Any]] = set()
+        #: True while settle() polls; anything spawned in that span is
+        #: window work.
+        self._window_open = False
         #: Label of the gateway event currently being settled (set by actor
         #: verbs; ``None`` for direct ``await env.settle()`` calls).
         self._last_dispatch: str | None = None
@@ -179,6 +186,12 @@ class Env:
             # the test coroutine, which asyncio.run/pytest runs directly rather
             # than via loop.create_task): ancestry matters more than tracking.
             self._task_parents[task] = parent
+            if parent is None or self._window_open or parent in self._preexisting:
+                # A root when: spawned off-loop, inside an emit window (the
+                # event's handler and everything it schedules), or a
+                # pre-existing task waking up — reawakened work belongs to
+                # whatever woke it, so a later settle() still joins it.
+                self._window_roots.add(task)
             return task
 
         loop.create_task = tracking_create_task  # type: ignore[method-assign]
@@ -200,8 +213,20 @@ class Env:
         state.shard_count = self._shard_count
         state.shard_ids = list(self._shard_ids)
         router = ShardRouter(self.backend, state, bot.dispatch, self._shard_count, self._shard_ids)
-        self._gateway_feed = router.feed
-        self.backend.subscribers.append(router.feed)
+        # Open the emit window around every gateway feed: tasks spawned while
+        # the event is being dispatched (the handler and its cascades) are the
+        # window work the following settle() joins.
+        raw_feed = router.feed
+
+        def windowed_feed(event: str, payload: Any) -> None:
+            self._window_open = True
+            try:
+                raw_feed(event, payload)
+            finally:
+                self._window_open = False
+
+        self._gateway_feed = windowed_feed
+        self.backend.subscribers.append(windowed_feed)
         if not isinstance(bot, discord.AutoShardedClient):
             _dpy_internals.install_websocket(bot, router.websockets[0])
 
@@ -261,6 +286,11 @@ class Env:
             task.cancel()
         await asyncio.gather(*to_cancel, return_exceptions=True)
         self._tasks = []
+        # Ancestry indexes hold strong task references; clear them so a
+        # restart_bot doesn't retain the previous bot generation's tasks.
+        self._task_parents.clear()
+        self._preexisting.clear()
+        self._window_roots.clear()
 
     async def settle(
         self,
@@ -301,32 +331,39 @@ class Env:
         abandoned silently.
         """
         self._last_dispatch = event
+        # Startup settles own everything: login/setup_hook machinery is rooted
+        # in the attaching coroutine, which no emit window covers, so open one
+        # for the whole settle.
+        self._window_open = _startup
         assert self._loop is not None
         deadline = self._loop.time() + timeout
-        # Give freshly-scheduled callbacks a chance to run first.
-        for _ in range(3):
-            await asyncio.sleep(0)
-        while True:
-            self._prune_done()
-            pending = [
-                t for t in self._owned_tasks(caller=asyncio.current_task(), startup=_startup) if not t.done()
-            ]
-            if not pending:
-                self._mark_quiescent()
-                return
-            done, _ = await asyncio.wait(pending, timeout=idle, return_when=asyncio.FIRST_COMPLETED)
-            if done:
-                continue  # progress made — re-evaluate what is still pending
-            parked = [t for t in pending if self._is_parked(t, deadline)]
-            if len(parked) == len(pending):
-                # Every owned task is provably waiting on future input.
-                self._mark_quiescent()
-                return
-            if self._loop.time() > deadline:
-                stuck = [t for t in pending if t not in parked]
-                raise TimeoutError(self._settle_timeout_message(stuck, pending))
-            # Some owned tasks still have a wake timer due before the deadline;
-            # loop and wait for the work it will wake up.
+        # The emit window stays open while settle() polls: anything discord.py
+        # schedules in reaction to the event (including cascading work) is
+        # window-owned. Closed when settlement ends.
+        try:
+            # Give freshly-scheduled callbacks a chance to run first.
+            for _ in range(3):
+                await asyncio.sleep(0)
+            while True:
+                self._prune_done()
+                pending = [t for t in self._owned_tasks(own_all=_startup) if not t.done()]
+                if not pending:
+                    return
+                done, _ = await asyncio.wait(pending, timeout=idle, return_when=asyncio.FIRST_COMPLETED)
+                if done:
+                    continue  # progress made — re-evaluate what is still pending
+                parked = [t for t in pending if self._is_parked(t, deadline)]
+                if len(parked) == len(pending):
+                    # Every owned task is provably waiting on future input.
+                    return
+                if self._loop.time() > deadline:
+                    stuck = [t for t in pending if t not in parked]
+                    raise TimeoutError(self._settle_timeout_message(stuck, pending))
+                # Some owned tasks still have a wake timer due before the
+                # deadline; loop and wait for the work it will wake up.
+        finally:
+            self._window_open = False
+            self._mark_quiescent()
 
     # ------------------------------------------------------------- ownership
 
@@ -339,35 +376,42 @@ class Env:
         for t in done:
             self._task_parents.pop(t, None)
             self._preexisting.discard(t)
+            self._window_roots.discard(t)
 
-    def _owned_tasks(self, *, caller: asyncio.Task[Any] | None, startup: bool) -> list[asyncio.Task[Any]]:
-        """Tasks this settle() must join: everything spawned since the last
-        quiescent return whose ancestry does not reach a task that was already
-        running before its spawning window opened — except tasks rooted in a
-        direct-settle caller, which are the test's own background work.
-
-        During startup (attach/READY/restart) that exclusion does not apply:
-        login/setup_hook machinery rooted in the attaching coroutine is exactly
-        what must finish before the test starts.
-        """
+    def _owned_tasks(self, own_all: bool = False) -> list[asyncio.Task[Any]]:
+        """Event work: the emit-window roots and every task descended from
+        them — except the settle() caller and anything rooted in it (a direct
+        settle()'s own background work). With ``own_all`` (startup settles),
+        every task except the caller is owned: login/setup_hook machinery
+        must finish before the test starts."""
+        if own_all:
+            caller = asyncio.current_task()
+            return [t for t in self._tasks if t is not caller and not t.done()]
+        caller = asyncio.current_task()
         owned: list[asyncio.Task[Any]] = []
         for task in self._tasks:
             if task is caller:
                 continue
             walker = task
-            is_owned = True
+            is_owned = False
+            rooted_in_caller = False
             while walker is not None:
-                if walker in self._preexisting:
-                    is_owned = False  # descendant of long-lived machinery
+                if walker in self._window_roots and walker is not caller:
+                    is_owned = True
                     break
+                if walker in self._preexisting:
+                    break  # descendant of long-lived machinery
                 parent = self._task_parents.get(walker)
-                if parent is None:
-                    # Root of the tracked tree. For verb-driven settles the
-                    # dispatching caller spawned it (event work). For direct
-                    # settles from a test, only exclude when the root IS the
-                    # caller — user-emitted events still count as event work.
-                    if not self._last_dispatch and not startup and self._rooted_in_caller(task, caller):
-                        is_owned = False
+                if parent is caller:
+                    # Rooted directly in the settle() caller (a direct-settle
+                    # test's own background task, or a verb's dispatched
+                    # handler). The verb path re-roots handlers via the open
+                    # window, so reaching here means direct-settle background.
+                    rooted_in_caller = True
+                    is_owned = False
+                    break
+                if parent is None or parent in self._window_roots:
+                    is_owned = parent in self._window_roots or walker in self._window_roots
                     break
                 walker = parent
             if is_owned:
@@ -376,23 +420,11 @@ class Env:
 
     def _mark_quiescent(self) -> None:
         """Everything alive now becomes the pre-existing baseline that the next
-        settle() will treat as long-lived machinery rather than event work."""
+        settle() will treat as long-lived machinery rather than event work.
+        Parked tasks stay parked here; when their wake timer later fires they
+        are re-rooted by the tracking patch."""
         self._preexisting = {t for t in self._tasks if not t.done()}
-
-    def _rooted_in_caller(self, task: asyncio.Task[Any], caller: asyncio.Task[Any] | None) -> bool:
-        """Walk to the root of ``task``'s ancestry; True when that root is the
-        settle() caller itself. Orphans with no recorded parent return False —
-        they stay event-owned and surface in timeout diagnostics."""
-        walker = task
-        while True:
-            parent = self._task_parents.get(walker)
-            if parent is None:
-                return False
-            if parent is caller:
-                return True
-            if parent not in self._task_parents:
-                return False
-            walker = parent
+        self._window_roots.clear()
 
     def _is_parked(self, task: asyncio.Task[Any], deadline: float) -> bool:
         """True only when the task is *provably* waiting on future external
@@ -414,6 +446,11 @@ class Env:
         waiter = getattr(task, "_fut_waiter", None)
         if waiter is None:
             return False
+        listeners = getattr(self.bot, "_listeners", None)
+        if listeners and any(
+            waiter is fut for listener_list in listeners.values() for fut, _ in listener_list
+        ):
+            return True  # Client.wait_for: parked for a later event
         # Own-wake-timer rule: asyncio.sleep registers call_later(delay,
         # _set_result_unless_cancelled, <this future>); a far-future own timer
         # means the task cannot make progress before the deadline.
@@ -455,7 +492,7 @@ class Env:
             if (
                 waiter is not None
                 and listeners
-                and any(waiter is fut for futures, _ in listeners.values() for fut in futures)
+                and any(waiter is fut for listener_list in listeners.values() for fut, _ in listener_list)
             ):
                 reason = "waiting on a Client.wait_for listener"
             elif waiter_desc == "Future":
