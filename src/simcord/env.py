@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import warnings
+from collections.abc import Iterable
 from typing import Any
 
 import discord
@@ -40,7 +41,7 @@ class Env:
         check_errors: bool = True,
         approved_intents: discord.Intents | None = None,
         shard_count: int | None = None,
-        background_names: frozenset[str] | set[str] | tuple[str, ...] = (),
+        background_names: Iterable[str] = (),
     ) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
@@ -454,8 +455,7 @@ class Env:
         # discord.py wraps handlers in Client._run_event; the user's coroutine
         # is one frame down. Match background_names against it too.
         if leaf == "_run_event" and self.background_names:
-            frame = getattr(coro, "cr_frame", None)  # type: ignore[attr-defined]
-            inner = frame.f_locals.get("coro") if frame is not None else None
+            inner = _dpy_internals.handler_inner_coro(coro)
             if (
                 inner is not None
                 and getattr(inner, "__qualname__", "").split(".")[-1] in self.background_names
@@ -464,10 +464,7 @@ class Env:
         waiter = getattr(task, "_fut_waiter", None)
         if waiter is None:
             return False
-        listeners = getattr(self.bot, "_listeners", None)
-        if listeners and any(
-            waiter is fut for listener_list in listeners.values() for fut, _ in listener_list
-        ):
+        if any(f is waiter for f in _dpy_internals.listener_futures(self.bot)):
             return True  # Client.wait_for: parked for a later event
         # Own-wake-timer rule: asyncio.sleep registers call_later(delay,
         # _set_result_unless_cancelled, <this future>); a far-future own timer
@@ -506,12 +503,8 @@ class Env:
             leaf = getattr(coro, "__qualname__", "?")
             waiter = getattr(task, "_fut_waiter", None)
             waiter_desc = type(waiter).__name__ if waiter is not None else "no awaited future"
-            listeners = getattr(self.bot, "_listeners", None)
-            if (
-                waiter is not None
-                and listeners
-                and any(waiter is fut for listener_list in listeners.values() for fut, _ in listener_list)
-            ):
+            listeners = _dpy_internals.listener_futures(self.bot)
+            if waiter is not None and listeners and waiter in listeners:
                 reason = "waiting on a Client.wait_for listener"
             elif waiter_desc == "Future":
                 reason = (
