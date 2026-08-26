@@ -198,3 +198,60 @@ async def test_wait_for_listener_parks_cleanly():
         await alice.send(channel, "wake")  # resolves wait_for + joins
         assert await aio.wait_for(waiter_task, timeout=2) is True
         assert channel.last_message is not None
+
+
+@pytest.mark.asyncio
+async def test_descendant_outliving_its_root_is_joined():
+    """A handler that spawns a slower child and returns immediately does not
+    let settle() finish early: the orphaned-descendant chain stays event-owned
+    until the child completes."""
+    log: list[str] = []
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def spawning_handler(message: discord.Message) -> None:
+        if message.content != "go":
+            return
+
+        async def slow_child() -> None:
+            await asyncio.sleep(0.2)
+            log.append("child")
+            await message.channel.send("done")
+
+        asyncio.get_running_loop().create_task(slow_child())  # handler returns at once
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "go")
+        assert log == ["child"]
+        assert channel.last_message is not None
+        assert channel.last_message.content == "done"
+
+
+@pytest.mark.asyncio
+async def test_resumed_wait_for_handler_is_joined_by_next_verb():
+    """A handler that parks on Client.wait_for and later resumes in place is
+    rejoined by the settling that woke it — its continuation (the reply) is
+    complete when the waking verb returns, with no test-side awaits."""
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def armed_waiter(message: discord.Message) -> None:
+        if message.content != "arm":
+            return
+        await bot.wait_for("message", check=lambda m: m.content == "fire", timeout=30)
+        # Real continuation work: long enough that a settle() ignoring the
+        # resumed task returns before this reply exists.
+        await asyncio.sleep(0.2)
+        await message.channel.send("fired")
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "arm")  # parks the handler; settle returns
+        await alice.send(channel, "fire")  # resumes it in place; must be joined
+        assert channel.last_message is not None
+        assert channel.last_message.content == "fired"

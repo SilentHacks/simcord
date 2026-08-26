@@ -70,9 +70,11 @@ class Env:
         # descendants are long-lived machinery, not work belonging to the next
         # dispatched event.
         self._preexisting: set[asyncio.Task[Any]] = set()
-        #: Roots spawned inside the current emit window (between a gateway
-        #: event reaching the bot and the settle() that follows it). Event
-        #: work is exactly these roots and their descendants.
+        #: Every task that was ever window-owned (an emit-window root or
+        # promoted back in by :meth:`_promote_awake`). Parked members of this
+        # set that later wake are rejoined by the settling that woke them;
+        # tasks the test rooted itself never enter it and stay ignored.
+        self._event_tasks: set[asyncio.Task[Any]] = set()
         self._window_roots: set[asyncio.Task[Any]] = set()
         #: True while settle() polls; anything spawned in that span is
         #: window work.
@@ -186,12 +188,11 @@ class Env:
             # the test coroutine, which asyncio.run/pytest runs directly rather
             # than via loop.create_task): ancestry matters more than tracking.
             self._task_parents[task] = parent
-            if parent is None or self._window_open or parent in self._preexisting:
-                # A root when: spawned off-loop, inside an emit window (the
-                # event's handler and everything it schedules), or a
-                # pre-existing task waking up — reawakened work belongs to
-                # whatever woke it, so a later settle() still joins it.
+            if parent is None or self._window_open:
+                # A root when: spawned off-loop, or inside an emit window
+                # (the event's handler and everything it schedules).
                 self._window_roots.add(task)
+                self._event_tasks.add(task)
             return task
 
         loop.create_task = tracking_create_task  # type: ignore[method-assign]
@@ -290,6 +291,7 @@ class Env:
         # restart_bot doesn't retain the previous bot generation's tasks.
         self._task_parents.clear()
         self._preexisting.clear()
+        self._event_tasks.clear()
         self._window_roots.clear()
 
     async def settle(
@@ -346,6 +348,7 @@ class Env:
                 await asyncio.sleep(0)
             while True:
                 self._prune_done()
+                self._promote_awake(deadline)
                 pending = [t for t in self._owned_tasks(own_all=_startup) if not t.done()]
                 if not pending:
                     return
@@ -368,15 +371,18 @@ class Env:
     # ------------------------------------------------------------- ownership
 
     def _prune_done(self) -> None:
-        """Drop completed tasks from every tracking structure."""
+        """Drop completed tasks from the live-task list.
+
+        Ancestry and window/baseline membership stay: live descendants may
+        still walk through a completed ancestor in :meth:`_owned_tasks`, and
+        removing those links mid-settle would cut handler-spawned children
+        off from their event-window root, letting settle() return before
+        they finish. :meth:`_mark_quiescent` rebuilds the baseline and
+        :meth:`_detach_bot` clears the indexes wholesale."""
         done = {t for t in self._tasks if t.done()}
         if not done:
             return
         self._tasks = [t for t in self._tasks if t not in done]
-        for t in done:
-            self._task_parents.pop(t, None)
-            self._preexisting.discard(t)
-            self._window_roots.discard(t)
 
     def _owned_tasks(self, own_all: bool = False) -> list[asyncio.Task[Any]]:
         """Event work: the emit-window roots and every task descended from
@@ -411,16 +417,30 @@ class Env:
                 if parent is None or parent in self._window_roots:
                     is_owned = parent in self._window_roots or walker in self._window_roots
                     break
-                walker = parent
+
             if is_owned:
                 owned.append(task)
         return owned
 
+    def _promote_awake(self, deadline: float) -> None:
+        """Re-root parked event machinery that has stopped parking.
+
+        A parked task (``wait_for``, a sleep timer) resumes *in place* — no
+        ``create_task`` fires, so the tracking patch never sees the wake-up.
+        Anything previously window-owned that is no longer provably parked
+        is doing work now, which belongs to whatever woke it: move it into
+        the current window so this settle() joins its continuation instead
+        of ignoring it. Tasks the test rooted itself were never window-owned
+        and are left alone."""
+        for task in list(self._preexisting):
+            if task in self._event_tasks and not task.done() and not self._is_parked(task, deadline):
+                self._preexisting.discard(task)
+                self._window_roots.add(task)
+
     def _mark_quiescent(self) -> None:
         """Everything alive now becomes the pre-existing baseline that the next
-        settle() will treat as long-lived machinery rather than event work.
-        Parked tasks stay parked here; when their wake timer later fires they
-        are re-rooted by the tracking patch."""
+        Parked tasks stay parked here; when one later wakes, the settling
+        that woke it re-roots it via :meth:`_promote_awake`."""
         self._preexisting = {t for t in self._tasks if not t.done()}
         self._window_roots.clear()
 
