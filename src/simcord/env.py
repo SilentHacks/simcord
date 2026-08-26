@@ -294,7 +294,7 @@ class Env:
 
     async def settle(
         self,
-        timeout: float = 5.0,
+        timeout: float = 5.0,  # noqa: ASYNC109 - deliberate public API, see docstring
         idle: float = 0.05,
         *,
         event: str | None = None,
@@ -394,7 +394,6 @@ class Env:
                 continue
             walker = task
             is_owned = False
-            rooted_in_caller = False
             while walker is not None:
                 if walker in self._window_roots and walker is not caller:
                     is_owned = True
@@ -407,7 +406,6 @@ class Env:
                     # test's own background task, or a verb's dispatched
                     # handler). The verb path re-roots handlers via the open
                     # window, so reaching here means direct-settle background.
-                    rooted_in_caller = True
                     is_owned = False
                     break
                 if parent is None or parent in self._window_roots:

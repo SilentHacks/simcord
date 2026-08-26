@@ -21,7 +21,6 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
 
 from .http import routes as _routes  # noqa: F401  — importing registers every route handler
 from .http.router import _ROUTES
@@ -66,16 +65,13 @@ def _area_title(area: str) -> str:
     return _AREA_TITLES.get(area, area.replace("-", " ").capitalize())
 
 
-_R = TypeVar("_R", bound=tuple[str, ...])
-
-
-def _grouped_tables(
-    rows: list[_R],
+def _grouped_tables[R: tuple[str, ...]](
+    rows: list[R],
     *,
-    area_of: Callable[[_R], str],
+    area_of: Callable[[R], str],
     admonition: str,
     header: str,
-    row: Callable[[_R], str],
+    row: Callable[[R], str],
 ) -> list[str]:
     """Render ``rows`` as one collapsible table per resource area.
 
@@ -84,7 +80,7 @@ def _grouped_tables(
     care about), titled with the friendly area name and its route count. ``rows``
     are pre-sorted, so each group preserves that order.
     """
-    groups: dict[str, list[_R]] = {}
+    groups: dict[str, list[R]] = {}
     for item in rows:
         groups.setdefault(area_of(item), []).append(item)
     lines: list[str] = []

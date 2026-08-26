@@ -12,7 +12,6 @@ import discord
 import pytest
 
 import simcord
-
 from fixtures.sample_bot import create_bot
 
 
@@ -191,11 +190,11 @@ async def test_wait_for_listener_parks_cleanly():
             try:
                 await bot.wait_for("message", check=lambda m: m.channel.id == channel.id, timeout=5)
                 return True
-            except aio.TimeoutError:
+            except TimeoutError:
                 return False
 
         waiter_task = aio.get_running_loop().create_task(arm_and_wait())
         await env.settle()  # direct settle: caller-rooted waiter left alone
-        result = await alice.send(channel, "wake")  # resolves wait_for + joins
+        await alice.send(channel, "wake")  # resolves wait_for + joins
         assert await aio.wait_for(waiter_task, timeout=2) is True
         assert channel.last_message is not None
