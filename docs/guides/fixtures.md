@@ -98,6 +98,7 @@ Both `simcord.run(bot, **options)` and the underlying `Env` accept these keyword
 | `check_errors` | `True` | At teardown, errors the bot raised but the test never inspected are re-raised as an `ExceptionGroup`, so bot bugs can't pass silently. Set `False` to opt out. |
 | `approved_intents` | all | Simulates developer-portal privileged-intent toggles. |
 | `shard_count` | client setting | Supplies the Get Gateway Bot recommendation when an `AutoShardedClient` does not configure `shard_count` itself. |
+| `background_names` | `()` | Coroutine-name leaves settle() may leave running when they park on external input (e.g. `{"my_waiter"}`). Use for handlers that intentionally wait forever on an event/queue/future. |
 
 ```python
 # An isolated unit test that doesn't care about sync, and inspects errors itself:

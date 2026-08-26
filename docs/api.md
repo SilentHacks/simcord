@@ -19,6 +19,13 @@ top-level `simcord` package.
 
 ::: simcord.Env
 
+### `Env(background_names=...)`
+
+`background_names` accepts an iterable of coroutine-name strings (e.g. `{"my_waiter"}`).
+Handlers whose coroutine name matches are left running when they park on external input
+(an `asyncio.Event`, a queue, a plain future) instead of stalling settle() until its
+timeout.
+
 ## Builders
 
 Synchronous, omnipotent handles for arranging the virtual Discord. Returned by `env`/`guild`

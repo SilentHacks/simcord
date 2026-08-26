@@ -5,8 +5,6 @@ self-check below fails with a clear message instead of users' tests breaking
 mysteriously. Keep this inventory in sync with what the framework touches.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 import discord
@@ -21,6 +19,18 @@ from discord.webhook.async_ import async_context
 #: in :meth:`Env.settle`; keep them here so a discord.py rename is caught by
 #: ``verify()`` rather than by users' tests hanging mysteriously.
 BACKGROUND_CORO_NAMES = ("__timeout_task_impl",)
+
+
+def handler_inner_coro(coro: Any) -> Any:
+    """The user coroutine behind a ``Client._run_event`` wrapper, if any."""
+    frame = getattr(coro, "cr_frame", None)  # type: ignore[attr-defined]
+    return frame.f_locals.get("coro") if frame is not None else None
+
+
+def listener_futures(client: discord.Client) -> list[Any]:
+    """Every future registered by ``Client.wait_for`` (``Client._listeners``)."""
+    listeners = getattr(client, "_listeners", None)
+    return [fut for entries in (listeners or {}).values() for fut, _ in entries]
 
 
 def verify() -> None:
@@ -43,13 +53,23 @@ def verify() -> None:
         # Intent simulation and member chunking rely on these:
         (ConnectionState, "intents"),
         (ConnectionState, "parse_guild_members_chunk"),
-        (ConnectionState, "process_chunk_requests"),
+        (discord.Client, "_run_event"),
         (ChunkRequest, "done"),
         (DiscordWebSocket, "request_chunks"),
         (discord.Client, "_get_websocket"),
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
+    # settle()'s parked-classifier reads the wrapped coroutine out of
+    # _run_event's frame locals, and wait_for registrations from
+    # Client._listeners (an instance attribute set in Client.__init__, so
+    # hasattr on the class can't see it); confirm both by source.
+    import inspect
+
+    if "coro" not in inspect.getsource(discord.Client._run_event):  # pragma: no cover
+        problems.append("discord.Client._run_event no longer takes a 'coro' parameter")
+    if "_listeners" not in inspect.getsource(discord.Client.__init__):  # pragma: no cover
+        problems.append("discord.Client.__init__ no longer sets _listeners")
     # The background-coro names are matched by leaf qualname; confirm they still
     # exist on View so a rename surfaces here instead of in settle().
     for name in BACKGROUND_CORO_NAMES:

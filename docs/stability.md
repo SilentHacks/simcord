@@ -5,6 +5,12 @@ description: "What SimCord's public API covers, what stays internal, and how ver
 
 # Stability & versioning
 
+!!! warning "What changed in 2.0"
+    Settlement semantics changed: tasks spawned by a dispatched event are now
+    joined to completion (including executor-backed work) instead of being
+    abandoned when they looked parked. Handlers that intentionally park forever
+    must be declared via `Env(background_names=...)`. See the changelog.
+
 SimCord follows [semantic versioning](https://semver.org/). As of 1.0, the
 **public API** below is covered by that promise: no breaking change to it without
 a major version bump. The surface is settled, and the two gates 1.0 waited

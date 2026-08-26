@@ -78,7 +78,7 @@ class MemberActor:
             reference=reference,
             attachments=attachment_payloads,
         )
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.send")
         return to_discord_message(self._env, message)
 
     async def edit(self, message: MessageLike, content: str) -> None:
@@ -86,7 +86,7 @@ class MemberActor:
         if stored.author_id != self.id:
             raise SetupError("Users can only edit their own messages")
         self._env.backend.edit_message(stored.channel_id, stored.id, {"content": content})
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.edit")
 
     async def delete(self, message: MessageLike) -> None:
         stored = self._env.backend.get_message(_channel_id_of(message), message.id)
@@ -95,7 +95,7 @@ class MemberActor:
                 self.guild.id, self.id, stored.channel_id, "manage_messages"
             )
         self._env.backend.delete_message(stored.channel_id, stored.id)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.delete")
 
     async def typing(self, channel: ChannelHandle) -> None:
         self._check(channel, "send_messages")
@@ -109,20 +109,20 @@ class MemberActor:
             "member": serializers.member_payload(backend, guild, guild.members[self.id]),
         }
         backend.emit("TYPING_START", payload)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.typing")
 
     async def react(self, message: MessageLike, emoji: str) -> None:
         backend = self._env.backend
         stored = backend.get_message(_channel_id_of(message), message.id)
         backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
         backend.add_reaction(stored.channel_id, stored.id, emoji, self.id)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.react")
 
     async def unreact(self, message: MessageLike, emoji: str) -> None:
         backend = self._env.backend
         stored = backend.get_message(_channel_id_of(message), message.id)
         backend.remove_reaction(stored.channel_id, stored.id, emoji, self.id)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.unreact")
 
     async def send_dm(self, content: str = "", **kwargs: Any) -> discord.Message:
         return await self.user.send_dm(content, **kwargs)
@@ -357,7 +357,7 @@ class MemberActor:
         # require_permissions enforces view_channel whenever a channel id is passed.
         backend.require_permissions(self.guild.id, self.id, stored.channel_id)
         backend.add_poll_vote(stored.channel_id, stored.id, answer, self.id)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.vote")
 
     async def remove_vote(self, message: MessageLike, *, answer: int) -> None:
         """Retract this user's vote for ``answer``."""
@@ -365,7 +365,7 @@ class MemberActor:
         stored = backend.get_message(_channel_id_of(message), message.id)
         backend.require_permissions(self.guild.id, self.id, stored.channel_id)
         backend.remove_poll_vote(stored.channel_id, stored.id, answer, self.id)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.remove_vote")
 
     # ------------------------------------------------------------------ voice
 
@@ -377,12 +377,12 @@ class MemberActor:
         self._env.backend.set_voice_state(
             self.guild.id, self.id, channel.id, self_mute=self_mute, self_deaf=self_deaf
         )
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.join_voice")
 
     async def leave_voice(self) -> None:
         """Disconnect from voice."""
         self._env.backend.set_voice_state(self.guild.id, self.id, None)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.leave_voice")
 
     async def set_voice(self, *, self_mute: bool | None = None, self_deaf: bool | None = None) -> None:
         """Update self-mute/self-deaf while connected."""
@@ -395,7 +395,7 @@ class MemberActor:
         if self_deaf is not None:
             flags["self_deaf"] = self_deaf
         self._env.backend.set_voice_state(self.guild.id, self.id, state.channel_id, **flags)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.set_voice")
 
     # -------------------------------------------------------- scheduled events
 
@@ -403,12 +403,12 @@ class MemberActor:
         """Mark interest in a scheduled event (accepts an id or a handle with ``.id``)."""
         event_id = event if isinstance(event, int) else event.id
         self._env.backend.set_scheduled_event_subscription(self.guild.id, event_id, self.id, True)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.subscribe_event")
 
     async def unsubscribe_event(self, event: Any) -> None:
         event_id = event if isinstance(event, int) else event.id
         self._env.backend.set_scheduled_event_subscription(self.guild.id, event_id, self.id, False)
-        await self._env.settle()
+        await self._env.settle(event="MEMBER.unsubscribe_event")
 
     # -------------------------------------------------------------- plumbing
 
@@ -457,7 +457,7 @@ class MemberActor:
         if source_message_id is not None:
             record.source_message_id = source_message_id
         backend.emit("INTERACTION_CREATE", payload)
-        await self._env.settle()
+        await self._env.settle(event="INTERACTION_CREATE")
         return InteractionResult(self._env, record)
 
     def __repr__(self) -> str:

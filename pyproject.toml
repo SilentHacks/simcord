@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simcord"
-version = "1.2.2"
+version = "2.0.0"
 description = "Offline discord.py bot testing with pytest. No network, token, or test server."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [{ name = "SilentHacks" }]
 keywords = ["discord", "discord.py", "discord bot testing", "pytest", "bot testing", "integration testing", "discord simulator", "slash commands", "AI coding agents", "offline testing"]
 classifiers = [
@@ -16,7 +16,6 @@ classifiers = [
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Testing",
@@ -77,7 +76,7 @@ fail_under = 95
 
 [tool.ruff]
 line-length = 110
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -93,7 +92,7 @@ ignore = [
 include = ["src"]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 typeCheckingMode = "basic"
 reportPrivateUsage = false
 

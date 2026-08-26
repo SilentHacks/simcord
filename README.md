@@ -68,7 +68,7 @@ Or with uv:
 uv add --dev "simcord[pytest]"
 ```
 
-Requires **Python 3.11+** and **discord.py 2.7+**. No dependencies beyond discord.py itself.
+Requires **Python 3.12+** and **discord.py 2.7+**. No dependencies beyond discord.py itself.
 
 ## Quickstart
 
