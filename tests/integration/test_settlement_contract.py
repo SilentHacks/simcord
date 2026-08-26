@@ -255,3 +255,73 @@ async def test_resumed_wait_for_handler_is_joined_by_next_verb():
         await alice.send(channel, "fire")  # resumes it in place; must be joined
         assert channel.last_message is not None
         assert channel.last_message.content == "fired"
+
+
+@pytest.mark.asyncio
+async def test_three_level_descendant_chain_is_joined():
+    """Ownership must walk up through several live ancestors to reach the
+    event-window root: root spawns middle, middle spawns leaf, both parents
+    finish first. The leaf is still joined."""
+    log: list[str] = []
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def chain_root(message: discord.Message) -> None:
+        if message.content != "go":
+            return
+
+        async def middle() -> None:
+            await asyncio.sleep(0.05)
+
+            async def leaf() -> None:
+                await asyncio.sleep(0.15)
+                log.append("leaf")
+                await message.channel.send("done")
+
+            asyncio.get_running_loop().create_task(leaf())
+
+        asyncio.get_running_loop().create_task(middle())
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "go")
+        assert log == ["leaf"]
+        assert channel.last_message is not None
+        assert channel.last_message.content == "done"
+
+
+@pytest.mark.asyncio
+async def test_work_spawned_between_settles_by_machinery_is_joined():
+    """Parked bot machinery that wakes between settles and spawns new work
+    has that work rooted into the next settle's window — no test-side
+    re-settles, no sleeps."""
+    wake = asyncio.Event()
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def armer(message: discord.Message) -> None:
+        if message.content != "arm":
+            return
+
+        async def late_spawner() -> None:
+            await wake.wait()
+
+            async def worker() -> None:
+                await asyncio.sleep(0.2)
+                await message.channel.send("worked")
+
+            asyncio.get_running_loop().create_task(worker())
+
+        asyncio.get_running_loop().create_task(late_spawner())
+
+    async with simcord.run(bot, background_names=["late_spawner"]) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "arm")  # parks the spawner; baseline settles
+        wake.set()  # wakes it between settles; it spawns the worker now
+        await env.settle()  # must join the freshly spawned worker
+        assert channel.last_message is not None
+        assert channel.last_message.content == "worked"

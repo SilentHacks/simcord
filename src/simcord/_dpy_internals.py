@@ -61,16 +61,13 @@ def verify() -> None:
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
     # settle()'s parked-classifier reads the wrapped coroutine out of
-    # _run_event's frame locals; confirm the parameter is still named ``coro``.
+    # _run_event's frame locals, and wait_for registrations from
+    # Client._listeners (an instance attribute set in Client.__init__, so
+    # hasattr on the class can't see it); confirm both by source.
     import inspect
 
     if "coro" not in inspect.getsource(discord.Client._run_event):  # pragma: no cover
         problems.append("discord.Client._run_event no longer takes a 'coro' parameter")
-    # settle()'s parked-classifier reads wait_for registrations from
-    # Client._listeners (an instance attribute set in Client.__init__, so
-    # hasattr on the class can't see it); confirm by source instead.
-    import inspect
-
     if "_listeners" not in inspect.getsource(discord.Client.__init__):  # pragma: no cover
         problems.append("discord.Client.__init__ no longer sets _listeners")
     # The background-coro names are matched by leaf qualname; confirm they still

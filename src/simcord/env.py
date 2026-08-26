@@ -189,9 +189,11 @@ class Env:
             # the test coroutine, which asyncio.run/pytest runs directly rather
             # than via loop.create_task): ancestry matters more than tracking.
             self._task_parents[task] = parent
-            if parent is None or self._window_open:
-                # A root when: spawned off-loop, or inside an emit window
-                # (the event's handler and everything it schedules).
+            if parent is None or self._window_open or parent in self._preexisting:
+                # A root when: spawned off-loop, inside an emit window (the
+                # event's handler and everything it schedules), or by
+                # long-lived machinery between settles — that spawn is new
+                # work since the last quiescent return.
                 self._window_roots.add(task)
                 self._event_tasks.add(task)
             return task
@@ -418,7 +420,7 @@ class Env:
                 if parent is None or parent in self._window_roots:
                     is_owned = parent in self._window_roots or walker in self._window_roots
                     break
-
+                walker = parent
             if is_owned:
                 owned.append(task)
         return owned
