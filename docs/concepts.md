@@ -94,13 +94,18 @@ await alice.send(channel, "!ping")
 assert channel.last_message.content == "Pong!"   # the reply is already here
 ```
 
-Tasks are only left running when *provably* parked on future input: discord.py background
-machinery (a `View`'s timeout task, a `wait_for` listener) or the handler's own
-`asyncio.sleep` timers beyond the settle timeout (fast-forward those with
-`env.advance_time()`). If owned work cannot make progress, settling fails fast with the
-stuck tasks named and why each was stuck, rather than your assertion flaking. A handler
-that intentionally parks forever can be whitelisted by name:
-`simcord.run(bot, background_names={"my_waiter"})`.
+Bot-owned work stays bot-owned across parking, timeout, cancellation, later actions, startup,
+and restart. Recognized waits — `Client.wait_for`, View/Modal completion, composed
+`gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`, and verified
+far-future sleeps — may remain. Unknown waits remain active and time out. Use a reasoned,
+scoped declaration for external input:
+
+```python
+await env.external_wait(stop.wait(), reason="wait for the next message")
+```
+
+Successful settlement means no runnable tracked bot work remains. Public operations reject
+overlap before mutating state, and teardown cancels only bot-owned work; caller tasks survive.
 
 The actor verbs, by area:
 

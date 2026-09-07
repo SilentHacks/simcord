@@ -96,7 +96,9 @@ Rate limits are deliberately out of scope so tests stay fast; use `inject_error`
 
 ## Which Python and discord.py versions are supported?
 
-Python **3.11+** and discord.py **2.7+**. See [Installation](installation.md).
+Python **3.12–3.14** and discord.py **2.7+** are supported. The asyncio task and timer
+capabilities required for deterministic settlement are intentionally not promised on older
+Python versions. See [Installation](installation.md).
 
 ## Still stuck?
 

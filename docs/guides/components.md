@@ -139,3 +139,8 @@ Pass a freshly built client — re-running the same instance would re-execute `s
 - [Slash commands](interactions.md) — invoking commands and the interaction lifecycle.
 - [Time control](time-control.md) — firing view timeouts and cooldowns instantly.
 - [Recipes](../cookbook.md) — a reusable paginator test, among others.
+## Settlement and external input
+
+View/Modal completion waits are recognized by settlement. If a component flow waits on a
+different external source, declare that one dependency explicitly with
+`await env.external_wait(awaitable, reason="...")`; arbitrary unresolved futures remain active.

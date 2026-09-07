@@ -6,10 +6,10 @@ description: "What SimCord's public API covers, what stays internal, and how ver
 # Stability & versioning
 
 !!! warning "What changed in 2.0"
-    Settlement semantics changed: tasks spawned by a dispatched event are now
-    joined to completion (including executor-backed work) instead of being
-    abandoned when they looked parked. Handlers that intentionally park forever
-    must be declared via `Env(background_names=...)`. See the changelog.
+    Settlement now joins all runnable bot-owned work, including executor-backed work and
+    finite callback chains. Recognized external waits may park only through
+    `env.external_wait(awaitable, reason=...)`; unknown waits time out. Ownership survives
+    timeout, cancellation, later operations, restart, and teardown boundaries.
 
 SimCord follows [semantic versioning](https://semver.org/). As of 1.0, the
 **public API** below is covered by that promise: no breaking change to it without
@@ -35,6 +35,8 @@ against it in CI. Because a faithful fake must shadow a few discord.py internals
 naming what moved, rather than miscompiling silently against an untested release.
 The `<3` ceiling is deliberate: a new discord.py major may move those internals,
 so the range widens only once a release has been tested.
+SimCord supports Python **3.12–3.14**. The settlement engine requires the standard
+`asyncio` task factory, callback scheduling, and timer-heap capabilities provided there.
 
 ## Public API
 

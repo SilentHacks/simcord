@@ -19,12 +19,12 @@ top-level `simcord` package.
 
 ::: simcord.Env
 
-### `Env(background_names=...)`
+### `Env(settle_timeout=5.0)`
 
-`background_names` accepts an iterable of coroutine-name strings (e.g. `{"my_waiter"}`).
-Handlers whose coroutine name matches are left running when they park on external input
-(an `asyncio.Event`, a queue, a plain future) instead of stalling settle() until its
-timeout.
+`settle_timeout` is the default maximum time spent joining runnable bot work. A direct
+`await env.settle(timeout=...)` override is available; `idle=` is only the polling interval.
+Use `await env.external_wait(awaitable, reason="...")` for one explicitly scoped external
+input wait. Unknown waits remain active and produce a diagnostic timeout.
 
 ## Builders
 

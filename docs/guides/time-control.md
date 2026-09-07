@@ -63,6 +63,10 @@ there's no skew to trip over in assertions.
 Snowflake IDs and timestamps come from a fixed virtual epoch, so they're identical across
 runs. Combined with no network and no real sleeps, your time-based tests are fully
 reproducible — the same inputs always produce the same IDs, timestamps and ordering.
+Settlement joins runnable work before and after each timer step. A far-future sleep is
+recognized only when its live loop timer resolves the awaited future; unrelated or cancelled
+timers do not make an unknown wait look parked. `advance_time()` is itself exclusive with
+other public operations and rejects invalid or negative durations.
 
 ## Next
 

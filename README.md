@@ -7,7 +7,7 @@
 [![CI](https://github.com/SilentHacks/simcord/actions/workflows/ci.yml/badge.svg)](https://github.com/SilentHacks/simcord/actions/workflows/ci.yml)
 [![Docs](https://app.readthedocs.org/projects/simcord/badge/?version=latest)](https://simcord.readthedocs.io/)
 [![PyPI](https://img.shields.io/pypi/v/simcord)](https://pypi.org/project/simcord/)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/simcord/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://pypi.org/project/simcord/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.7%2B-5865F2)](https://github.com/Rapptz/discord.py)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -196,7 +196,9 @@ on the `simcord_env` fixture:
 | `check_errors` | `True` | Errors your bot swallowed are re-raised at test teardown unless inspected, so bugs can't pass silently. |
 | `approved_intents` | all | Simulate the developer-portal privileged-intent toggles; a missing intent raises `PrivilegedIntentsRequired` on connect. |
 | `shard_count` | client setting | Shard count to use when an `AutoShardedClient` normally discovers it from Discord. |
+| `settle_timeout` | `5.0` seconds | Maximum time an actor or `env.settle()` waits for runnable bot work. Per-call `timeout=` overrides it. |
 
+Bot work remains owned across recognized external waits, timeout, cancellation, and restart. Declare exactly one intentional external wait with `await env.external_wait(awaitable, reason="...")`; unknown waits time out with diagnostics. Operations overlap-guard before mutating the virtual world, and teardown cancels bot-owned work without cancelling caller tasks.
 ```python
 @pytest.mark.simcord(strict_sync=False)
 async def test_unsynced_command(simcord_env):

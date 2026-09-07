@@ -23,7 +23,7 @@ You do not need a bot token, network connection, or Discord test server.
     uv add --dev "simcord[pytest]"
     ```
 
-The pytest extra installs pytest and pytest-asyncio. SimCord requires Python 3.11 or newer and discord.py 2.7 or newer.
+The pytest extra installs pytest and pytest-asyncio. SimCord requires Python 3.12 or newer and discord.py 2.7 or newer.
 
 Enable automatic async test discovery in your project's `pyproject.toml`:
 
