@@ -8,7 +8,9 @@ doubles as a continuous check that gateway dispatch populated the cache.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -84,7 +86,7 @@ class UserHandle:
         """DM the bot as this user."""
         channel = self._env.backend.get_dm_channel(self.id)
         message = self._env.backend.create_message(channel.id, self.id, content, **kwargs)
-        await self._env.settle(event="USER.send_dm")
+        await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
 
     def __repr__(self) -> str:
@@ -147,7 +149,7 @@ class WebhookHandle:
             webhook_id=self._webhook.id,
             author_name=username,
         )
-        await self._env.settle(event="WEBHOOK.send")
+        await self._env._settle_internal(dispatch="WEBHOOK.send")
         return to_discord_message(self._env, message)
 
     def __repr__(self) -> str:
@@ -470,3 +472,50 @@ class ChannelHandle:
 
     def __repr__(self) -> str:
         return f"<ChannelHandle id={self.id} name={self.name!r}>"
+
+
+def _guard_builder_operation(method: Any) -> Any:
+    if inspect.iscoroutinefunction(method):
+
+        @wraps(method)
+        async def guarded_async(self: Any, *args: Any, **kwargs: Any) -> Any:
+            token = self._env._begin_operation(method.__name__)
+            try:
+                return await method(self, *args, **kwargs)
+            finally:
+                self._env._end_operation(token)
+
+        return guarded_async
+
+    @wraps(method)
+    def guarded_sync(self: Any, *args: Any, **kwargs: Any) -> Any:
+        token = self._env._begin_operation(method.__name__)
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._env._end_operation(token)
+
+    return guarded_sync
+
+
+for _operation_name in ("send_dm",):
+    setattr(UserHandle, _operation_name, _guard_builder_operation(getattr(UserHandle, _operation_name)))
+WebhookHandle.send = _guard_builder_operation(WebhookHandle.send)
+for _operation_name in (
+    "create_text_channel",
+    "create_voice_channel",
+    "create_stage_channel",
+    "create_news_channel",
+    "create_category",
+    "create_forum_channel",
+    "create_scheduled_event",
+    "create_webhook",
+    "create_emoji",
+    "create_sticker",
+    "set_command_permissions",
+    "set_vanity_url",
+    "create_role",
+    "add_member",
+    "remove_member",
+):
+    setattr(GuildHandle, _operation_name, _guard_builder_operation(getattr(GuildHandle, _operation_name)))

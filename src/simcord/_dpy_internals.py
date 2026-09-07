@@ -5,26 +5,16 @@ self-check below fails with a clear message instead of users' tests breaking
 mysteriously. Keep this inventory in sync with what the framework touches.
 """
 
+import asyncio
 from typing import Any
 
 import discord
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
 from discord.state import ChunkRequest, ConnectionState
-from discord.ui.view import View
 from discord.webhook.async_ import async_context
 
-#: discord.py coroutine qualnames that are long-lived background machinery
-#: (not work to settle on). Their leaf names are matched against running tasks
-#: in :meth:`Env.settle`; keep them here so a discord.py rename is caught by
-#: ``verify()`` rather than by users' tests hanging mysteriously.
-BACKGROUND_CORO_NAMES = ("__timeout_task_impl",)
-
-
-def handler_inner_coro(coro: Any) -> Any:
-    """The user coroutine behind a ``Client._run_event`` wrapper, if any."""
-    frame = getattr(coro, "cr_frame", None)  # type: ignore[attr-defined]
-    return frame.f_locals.get("coro") if frame is not None else None
+from .backend.errors import SetupError
 
 
 def listener_futures(client: discord.Client) -> list[Any]:
@@ -60,29 +50,88 @@ def verify() -> None:
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
-    # settle()'s parked-classifier reads the wrapped coroutine out of
-    # _run_event's frame locals, and wait_for registrations from
-    # Client._listeners (an instance attribute set in Client.__init__, so
-    # hasattr on the class can't see it); confirm both by source.
-    import inspect
-
-    if "coro" not in inspect.getsource(discord.Client._run_event):  # pragma: no cover
-        problems.append("discord.Client._run_event no longer takes a 'coro' parameter")
-    if "_listeners" not in inspect.getsource(discord.Client.__init__):  # pragma: no cover
-        problems.append("discord.Client.__init__ no longer sets _listeners")
-    # The background-coro names are matched by leaf qualname; confirm they still
-    # exist on View so a rename surfaces here instead of in settle().
-    for name in BACKGROUND_CORO_NAMES:
-        if not any(
-            attr.endswith(name) for attr in dir(View)
-        ):  # pragma: no cover - fires only on a View internal rename
-            problems.append(f"View.*{name}")
-    if problems:  # pragma: no cover - only when discord.py changed an internal we depend on
+    run_event_code = getattr(discord.Client._run_event, "__code__", None)
+    if run_event_code is None or "coro" not in run_event_code.co_varnames:
+        problems.append("discord.Client._run_event no longer exposes its handler coroutine")
+    client_probe = discord.Client(intents=discord.Intents.none())
+    if not hasattr(client_probe, "_listeners"):
+        problems.append("discord.Client no longer exposes _listeners")
+    if problems:  # pragma: no cover - only when discord.py changed an internal
         raise ImportError(
             "This discord.py version changed internals simcord depends on: "
             + ", ".join(problems)
             + ". Please report this at https://github.com/SilentHacks/simcord/issues."
         )
+
+
+def verify_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Reject event loops missing capabilities settlement needs."""
+    required = ("create_task", "call_soon", "call_later", "call_at", "call_soon_threadsafe", "time")
+    missing = [name for name in required if not callable(getattr(loop, name, None))]
+    if not hasattr(loop, "_scheduled"):
+        missing.append("_scheduled timer heap")
+    task = asyncio.current_task()
+    for name in ("_exception", "_fut_waiter", "_log_traceback"):
+        if task is None or not hasattr(task, name):
+            missing.append(f"Task.{name}")
+    factory = loop.get_task_factory() if callable(getattr(loop, "get_task_factory", None)) else None
+    if factory is not None and not callable(factory):
+        missing.append("callable task factory")
+    if missing:
+        raise SetupError("simcord requires asyncio loop capabilities: " + ", ".join(missing))
+    return None
+
+
+def is_listener_future(client: discord.Client, waiter: Any) -> bool:
+    return any(future is waiter and not future.done() for future in listener_futures(client))
+
+
+def _stored_wait_futures(client: discord.Client) -> set[Any]:
+    state = get_state(client)
+    store = getattr(state, "_view_store", None)
+    futures: set[Any] = set()
+    if store is None:
+        return futures
+    views = getattr(store, "_views", {})
+    for entries in views.values():
+        for item in entries.values():
+            view = getattr(item, "_view", None)
+            if view is None:
+                continue
+            for name, value in vars(view).items():
+                if name.endswith("__stopped") and isinstance(value, asyncio.Future):
+                    futures.add(value)
+    for modal in getattr(store, "_modals", {}).values():
+        for name, value in vars(modal).items():
+            if name.endswith("__stopped") and isinstance(value, asyncio.Future):
+                futures.add(value)
+    return futures
+
+
+def is_view_wait_future(client: discord.Client, waiter: Any) -> bool:
+    return waiter in _stored_wait_futures(client) and not waiter.done()
+
+
+def _original_callback(callback: Any) -> Any:
+    while True:
+        original = getattr(callback, "__simcord_original_callback__", callback)
+        if original is callback:
+            return callback
+        callback = original
+
+
+def is_sleep_waiter(waiter: Any, loop: Any, deadline: float) -> bool:
+    if waiter is None or waiter.done():
+        return False
+    for handle in getattr(loop, "_scheduled", ()):
+        if handle.cancelled() or handle.when() <= deadline:
+            continue
+        callback = _original_callback(getattr(handle, "_callback", None))
+        if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and any(
+            arg is waiter for arg in getattr(handle, "_args", ())
+        ):
+            return True
+    return False
 
 
 def get_state(client: discord.Client) -> Any:
