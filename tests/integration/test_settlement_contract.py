@@ -9,6 +9,7 @@ import gc
 import threading
 import time
 import weakref
+from typing import Any
 
 import discord
 import pytest
@@ -130,16 +131,12 @@ async def test_timeout_names_event_and_task_with_hint():
             return
         await asyncio.to_thread(lambda: release.wait(timeout=10))
 
-    async with simcord.run(bot) as env:
+    async with simcord.run(bot, settle_timeout=0.02) as env:
         guild = env.create_guild()
         alice = guild.add_member(env.create_user("alice"))
         channel = guild.create_text_channel("general")
-
-        async def bounded():
-            await alice.send(channel, "stuck")
-
         with pytest.raises(asyncio.TimeoutError) as exc_info:
-            await asyncio.wait_for(bounded(), timeout=6)
+            await alice.send(channel, "stuck")
         release.set()
         cause = exc_info.value.__cause__ or exc_info.value
         text = str(cause)
@@ -637,3 +634,165 @@ async def test_startup_owned_sleep_parks_and_is_cancelled_on_teardown():
         assert len(sleepers) == 1
         assert not sleepers[0].done()
     assert sleepers[0].cancelled()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_parked_child_cannot_hide_unknown_wait():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def masked_unknown_wait(message: discord.Message) -> None:
+        if message.content != "mask":
+            return
+        parked_child = asyncio.create_task(
+            bot.wait_for("message", check=lambda item: item.content == "release")
+        )
+        assert not parked_child.done()
+        await asyncio.Event().wait()
+
+    async with simcord.run(bot, settle_timeout=0.01) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        with pytest.raises(TimeoutError, match="masked_unknown_wait"):
+            await alice.send(channel, "mask")
+
+
+@pytest.mark.asyncio
+async def test_cancellation_cleanup_error_is_reported():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def fail_during_cleanup(message: discord.Message) -> None:
+        if message.content != "park":
+            return
+
+        async def child() -> None:
+            try:
+                await env.external_wait(asyncio.Event().wait(), reason="teardown")
+            except asyncio.CancelledError as error:
+                raise RuntimeError("cleanup failed") from error
+
+        child_task = asyncio.create_task(child())
+        assert not child_task.done()
+
+    with pytest.raises(ExceptionGroup, match="bot raised 1 error"):
+        async with simcord.run(bot) as env:
+            guild = env.create_guild()
+            alice = guild.add_member(env.create_user("alice"))
+            channel = guild.create_text_channel("general")
+            await alice.send(channel, "park")
+
+
+@pytest.mark.asyncio
+async def test_bot_owned_work_cannot_call_test_operations():
+    release = asyncio.Event()
+    attempted = asyncio.Event()
+    outcome: list[str] = []
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def attempt_builder(message: discord.Message) -> None:
+        if message.content != "try":
+            return
+        await env.external_wait(release.wait(), reason="operation probe")
+        try:
+            env.create_user("intruder")
+        except simcord.SetupError as error:
+            outcome.append(str(error))
+        finally:
+            attempted.set()
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "try")
+        release.set()
+        await attempted.wait()
+        assert outcome and "bot-owned" in outcome[0]
+
+
+@pytest.mark.asyncio
+async def test_continuous_progress_cannot_extend_settlement_deadline():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def busy(message: discord.Message) -> None:
+        if message.content != "busy":
+            return
+        while True:  # noqa: ASYNC110 - deliberately exercises perpetual progress
+            await asyncio.sleep(0)
+
+    async with simcord.run(bot, settle_timeout=0.01) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        with pytest.raises(TimeoutError, match="busy"):
+            await alice.send(channel, "busy")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eager", [False, True])
+async def test_custom_and_eager_task_factories_are_supported(eager: bool):
+    loop = asyncio.get_running_loop()
+    original = loop.get_task_factory()
+
+    def custom_factory(
+        factory_loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any
+    ) -> asyncio.Task[Any]:
+        return asyncio.Task(coro, loop=factory_loop, **kwargs)
+
+    loop.set_task_factory(asyncio.eager_task_factory if eager else custom_factory)
+    try:
+        bot = create_bot()
+        async with simcord.run(bot) as env:
+            guild = env.create_guild()
+            alice = guild.add_member(env.create_user("alice"))
+            channel = guild.create_text_channel("general")
+            await alice.send(channel, "!ping")
+            assert channel.last_message is not None
+            assert channel.last_message.content == "Pong!"
+    finally:
+        loop.set_task_factory(original)
+
+
+@pytest.mark.asyncio
+async def test_external_wait_in_prefix_and_component_callbacks():
+    prefix_release = asyncio.Event()
+    component_release = asyncio.Event()
+    bot = create_bot()
+
+    @bot.command(name="parkprefix")
+    async def parkprefix(ctx: Any) -> None:
+        await env.external_wait(prefix_release.wait(), reason="prefix release")
+        await ctx.send("prefix resumed")
+
+    class ParkView(discord.ui.View):
+        @discord.ui.button(label="Park", custom_id="park")
+        async def park(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+            await interaction.response.defer()
+            await env.external_wait(component_release.wait(), reason="component release")
+            await interaction.followup.send("component resumed")
+
+    @bot.tree.command(name="park-component")
+    async def park_component(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("component ready", view=ParkView(timeout=None))
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+
+        await alice.send(channel, "!parkprefix")
+        prefix_release.set()
+        await env.settle()
+        assert channel.last_message is not None
+        assert channel.last_message.content == "prefix resumed"
+
+        shown = await alice.slash(channel, "park-component")
+        await alice.click(shown.response.message, custom_id="park")
+        component_release.set()
+        await env.settle()
+        assert channel.last_message is not None
+        assert channel.last_message.content == "component resumed"

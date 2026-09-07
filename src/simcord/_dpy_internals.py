@@ -134,6 +134,55 @@ def is_sleep_waiter(waiter: Any, loop: Any, deadline: float) -> bool:
     return False
 
 
+def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[asyncio.Task[Any]]:
+    """Tasks demonstrably linked to a supported asyncio composition."""
+    found: list[asyncio.Task[Any]] = []
+    if type(waiter).__module__ == "asyncio.tasks" and type(waiter).__name__ == "_GatheringFuture":
+        found.extend(child for child in getattr(waiter, "_children", ()) if isinstance(child, asyncio.Task))
+
+    for entry in getattr(waiter, "_callbacks", ()) or ():
+        callback = entry[0] if isinstance(entry, tuple) else entry
+        if getattr(callback, "__module__", "") == "asyncio.tasks" and getattr(
+            callback, "__qualname__", ""
+        ).endswith("shield.<locals>._outer_done_callback"):
+            for cell in callback.__closure__ or ():
+                value = cell.cell_contents
+                if isinstance(value, asyncio.Task):
+                    found.append(value)
+
+    wait_codes = {
+        getattr(asyncio.wait, "__code__", None),
+        getattr(getattr(getattr(asyncio, "tasks", None), "_wait", None), "__code__", None),
+    }
+    group_codes = {
+        getattr(asyncio.TaskGroup.__aexit__, "__code__", None),
+        getattr(getattr(asyncio.TaskGroup, "_aexit", None), "__code__", None),
+    }
+    coroutine: Any = task.get_coro()
+    seen: set[int] = set()
+    while coroutine is not None and id(coroutine) not in seen:
+        seen.add(id(coroutine))
+        frame = getattr(coroutine, "cr_frame", None)
+        code = frame.f_code if frame is not None else None
+        if frame is not None and code in wait_codes:
+            found.extend(child for child in frame.f_locals.get("fs", ()) if isinstance(child, asyncio.Task))
+        elif frame is not None and code in group_codes:
+            group = frame.f_locals.get("self")
+            found.extend(child for child in getattr(group, "_tasks", ()) if isinstance(child, asyncio.Task))
+        coroutine = getattr(coroutine, "cr_await", None)
+    return list(dict.fromkeys(found))
+
+
+def task_label(coro: Any) -> str:
+    """Name a task, including discord.py's wrapped event callback when present."""
+    wrapper = getattr(coro, "__qualname__", "?")
+    frame = getattr(coro, "cr_frame", None)
+    callback = frame.f_locals.get("coro") if frame is not None else None
+    if wrapper.endswith("Client._run_event") and callable(callback):
+        return f"{getattr(callback, '__qualname__', '?')} via {wrapper}"
+    return wrapper
+
+
 def get_state(client: discord.Client) -> Any:
     """The client's ConnectionState (cache + gateway event parsers)."""
     return client._connection

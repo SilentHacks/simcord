@@ -30,7 +30,7 @@ _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.Context
 @dataclass(slots=True)
 class _TaskRecord:
     generation: int
-    parent: asyncio.Task[Any] | None
+    label: str
 
 
 @dataclass(slots=True)
@@ -118,6 +118,9 @@ class Env:
             _BOT_SCOPE.reset(token)
 
     def _begin_operation(self, label: str) -> asyncio.Task[Any] | None:
+        scope = _BOT_SCOPE.get()
+        if scope is not None and scope[0] is self:
+            raise SetupError(f"bot-owned work cannot call simcord operation {label}")
         current = _current_task()
         if self._operation_task is not None and self._operation_task is not current:
             active = self._operation_label or "another operation"
@@ -194,7 +197,7 @@ class Env:
 
     def _track_task(self, task: asyncio.Task[Any], generation: int) -> None:
         self._tasks.append(task)
-        self._task_records[task] = _TaskRecord(generation, _current_task())
+        self._task_records[task] = _TaskRecord(generation, _dpy_internals.task_label(task.get_coro()))
 
         def inspect_result(completed: asyncio.Task[Any], record: _TaskRecord | None) -> None:
             if record is None or completed.cancelled():
@@ -389,6 +392,9 @@ class Env:
             task.cancel()
         if to_cancel:
             await asyncio.gather(*to_cancel, return_exceptions=True)
+            for task in to_cancel:
+                if not task.cancelled() and (error := task.exception()) is not None:
+                    self._record_error(error)
         for record in list(self._callbacks):
             if record.handle is not None:
                 record.handle.cancel()
@@ -554,8 +560,8 @@ class Env:
             return "discord View/Modal completion"
         children = [
             child
-            for child, record in self._task_records.items()
-            if record.parent is task and not child.done()
+            for child in _dpy_internals.composed_tasks(task, waiter)
+            if child in self._task_records and not child.done()
         ]
         if children:
             reasons = [self._park_reason(child, deadline, seen) for child in children]
@@ -579,8 +585,8 @@ class Env:
             f" (timeout={effective:g}s); state may already have changed and outstanding work remains tracked"
         )
         for task in stuck:
-            coro = task.get_coro()
-            leaf = getattr(coro, "__qualname__", "?")
+            record = self._task_records.get(task)
+            label = record.label if record is not None else _dpy_internals.task_label(task.get_coro())
             waiter = getattr(task, "_fut_waiter", None)
             reason = self._external_waits.get(task)
             if reason is None:
@@ -592,9 +598,8 @@ class Env:
                     reason = "runnable continuation"
                 else:
                     reason = f"unknown wait ({type(waiter).__name__})"
-            record = self._task_records.get(task)
             generation = record.generation if record is not None else self._generation
-            lines.append(f"  bot-owned generation {generation} {leaf}: {reason}")
+            lines.append(f"  bot-owned generation {generation} {label}: {reason}")
         if callbacks:
             lines.append(f"  bot-owned callbacks pending: {len(callbacks)}")
         if len(all_pending) > len(stuck):
