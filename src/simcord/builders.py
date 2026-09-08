@@ -89,6 +89,36 @@ class UserHandle:
         await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
 
+    async def click(
+        self,
+        message: Any,
+        *,
+        label: str | None = None,
+        custom_id: str | None = None,
+    ) -> Any:
+        """Click an interactive component in this user's DM."""
+        from .actors import _component_click
+
+        return await _component_click(self, message, label=label, custom_id=custom_id)
+
+    async def select(
+        self,
+        message: Any,
+        values: Sequence[Any],
+        *,
+        custom_id: str | None = None,
+    ) -> Any:
+        """Select values in a DM component using the same handle/value contract as guild actors."""
+        from .actors import _component_select
+
+        return await _component_select(self, message, values, custom_id=custom_id)
+
+    async def submit_modal(self, shown: Any, values: dict[str, Any]) -> Any:
+        """Submit a DM modal using strings, entity handles, booleans, or file tuples."""
+        from .actors import _submit_modal
+
+        return await _submit_modal(self, shown, values)
+
     def __repr__(self) -> str:
         return f"<UserHandle id={self.id} name={self.name!r}>"
 
@@ -498,7 +528,7 @@ def _guard_builder_operation(method: Any) -> Any:
     return guarded_sync
 
 
-for _operation_name in ("send_dm",):
+for _operation_name in ("send_dm", "click", "select", "submit_modal"):
     setattr(UserHandle, _operation_name, _guard_builder_operation(getattr(UserHandle, _operation_name)))
 WebhookHandle.send = _guard_builder_operation(WebhookHandle.send)
 for _operation_name in (

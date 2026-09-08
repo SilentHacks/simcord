@@ -18,6 +18,7 @@ from . import interactions as _interactions
 from .backend import serializers
 from .backend.errors import SetupError
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
+from .components import walk_components
 from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
 from .results import InteractionResult, ResponseMessage, to_discord_message
 
@@ -251,7 +252,6 @@ class MemberActor:
         return result.autocomplete_choices or []
 
     # ------------------------------------------------------------ components
-
     async def click(
         self,
         message: MessageLike,
@@ -259,14 +259,8 @@ class MemberActor:
         label: str | None = None,
         custom_id: str | None = None,
     ) -> InteractionResult:
-        """Click a button on a message, exactly as a user could."""
-        stored = self._visible_message(message)
-        button = _find_component(
-            stored.components, types=(ComponentType.BUTTON,), custom_id=custom_id, label=label
-        )
-        return await self._component_interaction(
-            stored, {"custom_id": button["custom_id"], "component_type": ComponentType.BUTTON}
-        )
+        """Click one interactive button, including buttons nested in V2 layouts."""
+        return await _component_click(self, message, label=label, custom_id=custom_id)
 
     async def select(
         self,
@@ -277,77 +271,21 @@ class MemberActor:
     ) -> InteractionResult:
         """Choose values in a select menu.
 
-        For a string select, ``values`` are the option strings. For user/role/
-        channel/mentionable selects, ``values`` are the matching handles
-        (:class:`UserHandle`/:class:`MemberActor`, :class:`RoleHandle`,
-        :class:`ChannelHandle`) — exactly the entities a real user could pick.
+        String values are strings; entity values are existing
+        :class:`UserHandle`/:class:`MemberActor`, :class:`RoleHandle`, or
+        :class:`ChannelHandle` handles. Modal values use this same contract.
         """
-        stored = self._visible_message(message)
-        menu = _find_component(stored.components, types=SELECT_TYPES, custom_id=custom_id, label=None)
-        menu_type = menu["type"]
+        return await _component_select(self, message, values, custom_id=custom_id)
 
-        lo = menu.get("min_values", 1)
-        hi = menu.get("max_values", 1)
-        if not lo <= len(values) <= hi:
-            raise SetupError(f"Select expects between {lo} and {hi} value(s), got {len(values)}")
+    async def submit_modal(self, shown: InteractionResult, values: dict[str, Any]) -> InteractionResult:
+        """Fill and submit a modal shown to this user.
 
-        data: dict[str, Any] = {"custom_id": menu["custom_id"], "component_type": menu_type}
-        if menu_type == ComponentType.STRING_SELECT:
-            valid = {o["value"] for o in menu.get("options") or []}
-            for value in values:
-                if value not in valid:
-                    error = SetupError(f"Select option {value!r} does not exist")
-                    error.add_note(f"Available options: {sorted(valid)}")
-                    raise error
-            data["values"] = list(values)
-        else:
-            self._check_select_handles(menu_type, values)
-            resolved: dict[str, dict[str, Any]] = {}
-            for value in values:
-                _interactions.resolve_handle(self._env.backend, value, resolved, user_id=self.id)
-            data["values"] = [str(value.id) for value in values]
-            data["resolved"] = resolved
-        return await self._component_interaction(stored, data)
-
-    @staticmethod
-    def _check_select_handles(menu_type: int, values: Sequence[Any]) -> None:
-        """Reject handles whose kind cannot appear in this entity-select type."""
-        allowed: tuple[type, ...] = _ENTITY_SELECT_HANDLES[ComponentType(menu_type)]
-        for value in values:
-            if not isinstance(value, allowed):
-                names = " or ".join(t.__name__ for t in allowed)
-                raise SetupError(
-                    f"{ComponentType(menu_type).name} expects {names}, got {type(value).__name__}"
-                )
-
-    async def submit_modal(self, shown: InteractionResult, values: dict[str, str]) -> InteractionResult:
-        """Fill in and submit a modal the bot previously showed this user."""
-        spec = shown.modal
-        if spec is None:
-            raise SetupError("That interaction did not respond with a modal")
-        components = []
-        for row in spec.get("components") or []:
-            for item in row.get("components") or []:
-                custom_id = item.get("custom_id")
-                if custom_id in values:
-                    components.append(
-                        {
-                            "type": ComponentType.ACTION_ROW,
-                            "components": [
-                                {
-                                    "type": ComponentType.TEXT_INPUT,
-                                    "custom_id": custom_id,
-                                    "value": values[custom_id],
-                                }
-                            ],
-                        }
-                    )
-        channel = ChannelHandle(
-            self._env, self.guild, self._env.backend.get_channel(shown._interaction.channel_id)
-        )
-        return await self._dispatch_interaction(
-            InteractionType.MODAL_SUBMIT, channel, {"custom_id": spec["custom_id"], "components": components}
-        )
+        Values are strings for text inputs and string selects, existing entity
+        handles for entity selects, booleans for checkboxes, and
+        ``(filename, bytes)`` tuples for file uploads (a sequence of tuples for
+        multi-file controls). Optional controls may be omitted.
+        """
+        return await _submit_modal(self, shown, values)
 
     # ------------------------------------------------------------------ polls
 
@@ -414,26 +352,10 @@ class MemberActor:
     # -------------------------------------------------------------- plumbing
 
     def _visible_message(self, message: MessageLike) -> Any:
-        backend = self._env.backend
-        stored = backend.get_message(_channel_id_of(message), message.id)
-        if not stored.visible_to(self.id):
-            raise SetupError(
-                "That message is ephemeral and not visible to this user — "
-                "a real user could not interact with it"
-            )
-        return stored
+        return _visible_message(self, message)
 
     async def _component_interaction(self, stored: Any, data: dict[str, Any]) -> InteractionResult:
-        backend = self._env.backend
-        channel = ChannelHandle(self._env, self.guild, backend.get_channel(stored.channel_id))
-        result = await self._dispatch_interaction(
-            InteractionType.MESSAGE_COMPONENT,
-            channel,
-            data,
-            extra={"message": dict(serializers.message_payload(backend, stored))},
-            source_message_id=stored.id,
-        )
-        return result
+        return await _component_interaction(self, stored, data)
 
     async def _dispatch_interaction(
         self,
@@ -444,31 +366,28 @@ class MemberActor:
         extra: dict[str, Any] | None = None,
         source_message_id: int | None = None,
     ) -> InteractionResult:
-        backend = self._env.backend
-        record, payload = _interactions.base_payload(
-            backend,
-            type=type,
-            channel_id=channel.id,
-            guild_id=self.guild.id,
-            user_id=self.id,
-            data=data,
+        return await _dispatch_actor_interaction(
+            self,
+            type,
+            channel,
+            data,
+            extra=extra,
+            source_message_id=source_message_id,
         )
-        if extra:
-            payload.update(extra)
-        if source_message_id is not None:
-            record.source_message_id = source_message_id
-        backend.emit("INTERACTION_CREATE", payload)
-        await self._env._settle_internal(dispatch="INTERACTION_CREATE")
-        return InteractionResult(self._env, record)
 
     def __repr__(self) -> str:
         return f"<MemberActor id={self.id} name={self.name!r} guild={self.guild.id}>"
 
 
-def _channel_id_of(message: MessageLike) -> int:
+def _channel_id_of(message: MessageLike, fallback: int | None = None) -> int:
     if isinstance(message, ResponseMessage):
         return message.channel_id
-    return message.channel.id
+    channel = message.channel
+    if channel is None:
+        if fallback is None:
+            raise SetupError("That message is not bound to a channel")
+        return fallback
+    return channel.id
 
 
 _ENTITY_SELECT_HANDLES: dict[ComponentType, tuple[type, ...]] = {
@@ -479,6 +398,17 @@ _ENTITY_SELECT_HANDLES: dict[ComponentType, tuple[type, ...]] = {
 }
 
 
+def _visible_message(actor: Any, message: MessageLike) -> Any:
+    backend = actor._env.backend
+    fallback = actor.dm_channel.id if isinstance(actor, UserHandle) else None
+    stored = backend.get_message(_channel_id_of(message, fallback), message.id)
+    if not stored.visible_to(actor.id):
+        raise SetupError(
+            "That message is ephemeral and not visible to this user — a real user could not interact with it"
+        )
+    return stored
+
+
 def _find_component(
     rows: list[dict[str, Any]],
     *,
@@ -487,24 +417,403 @@ def _find_component(
     label: str | None,
 ) -> dict[str, Any]:
     found = []
-    for row in rows or []:
-        for component in row.get("components") or []:
-            if component.get("type") not in types:
-                continue
-            if custom_id is not None and component.get("custom_id") != custom_id:
-                continue
-            if label is not None and component.get("label") != label:
-                continue
-            found.append(component)
+    for component in walk_components(rows):
+        if component.get("type") not in types:
+            continue
+        if custom_id is not None and component.get("custom_id") != custom_id:
+            continue
+        if label is not None and component.get("label") != label:
+            continue
+        found.append(component)
     if not found:
         raise SetupError(
             f"No matching component (custom_id={custom_id!r}, label={label!r}) — "
             "a real user could not interact with it"
         )
+    if len(found) > 1:
+        raise SetupError(
+            f"Ambiguous component (custom_id={custom_id!r}, label={label!r}); identify exactly one component"
+        )
     component = found[0]
     if component.get("disabled"):
         raise SetupError("That component is disabled — a real user could not interact with it")
     return component
+
+
+async def _component_click(
+    actor: Any,
+    message: MessageLike,
+    *,
+    label: str | None,
+    custom_id: str | None,
+) -> InteractionResult:
+    stored = _visible_message(actor, message)
+    button = _find_component(
+        stored.components, types=(ComponentType.BUTTON,), custom_id=custom_id, label=label
+    )
+    if button.get("style") in (5, 6) or not button.get("custom_id"):
+        raise SetupError("That button is a link or premium control, not an interactive callback")
+    data: dict[str, Any] = {
+        "custom_id": button["custom_id"],
+        "component_type": ComponentType.BUTTON,
+    }
+    if button.get("id") is not None:
+        data["id"] = button["id"]
+    return await _component_interaction(actor, stored, data)
+
+
+def _check_select_handles(menu_type: int, values: Sequence[Any]) -> None:
+    allowed = _ENTITY_SELECT_HANDLES[ComponentType(menu_type)]
+    for value in values:
+        if not isinstance(value, allowed):
+            names = " or ".join(t.__name__ for t in allowed)
+            raise SetupError(f"{ComponentType(menu_type).name} expects {names}, got {type(value).__name__}")
+
+
+def _as_values(values: Any) -> list[Any]:
+    if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
+        raise SetupError("Select values must be a sequence")
+    return list(values)
+
+
+def _ensure_unique(values: Sequence[Any]) -> None:
+    for index, value in enumerate(values):
+        if any(value == previous for previous in values[:index]):
+            raise SetupError("A select cannot contain duplicate values")
+
+
+async def _component_select(
+    actor: Any,
+    message: MessageLike,
+    values: Sequence[Any],
+    *,
+    custom_id: str | None,
+) -> InteractionResult:
+    stored = _visible_message(actor, message)
+    menu = _find_component(stored.components, types=SELECT_TYPES, custom_id=custom_id, label=None)
+    chosen = _as_values(values)
+    menu_type = ComponentType(menu["type"])
+    _ensure_unique(chosen)
+    lo = menu.get("min_values", 1)
+    hi = menu.get("max_values", 1)
+    if not isinstance(lo, int) or not isinstance(hi, int) or not lo <= len(chosen) <= hi:
+        raise SetupError(f"Select expects between {lo} and {hi} value(s), got {len(chosen)}")
+
+    data: dict[str, Any] = {"custom_id": menu["custom_id"], "component_type": menu_type}
+    if menu.get("id") is not None:
+        data["id"] = menu["id"]
+    if menu_type == ComponentType.STRING_SELECT:
+        if not all(isinstance(value, str) for value in chosen):
+            raise SetupError("STRING_SELECT expects string values")
+        valid = {option["value"] for option in menu.get("options") or []}
+        for value in chosen:
+            if value not in valid:
+                error = SetupError(f"Select option {value!r} does not exist")
+                error.add_note(f"Available options: {sorted(valid)}")
+                raise error
+        data["values"] = chosen
+    else:
+        _check_select_handles(menu_type, chosen)
+        resolved: dict[str, dict[str, Any]] = {}
+        for value in chosen:
+            _interactions.resolve_handle(actor._env.backend, value, resolved, user_id=actor.id)
+        data["values"] = [str(value.id) for value in chosen]
+        data["resolved"] = resolved
+    return await _component_interaction(actor, stored, data)
+
+
+def _component_interaction_data_id(component: dict[str, Any], data: dict[str, Any]) -> None:
+    if component.get("id") is not None:
+        data["id"] = component["id"]
+
+
+def _modal_components(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return interactive modal leaves, retaining each layout wrapper."""
+    supported = {
+        ComponentType.TEXT_INPUT,
+        *SELECT_TYPES,
+        ComponentType.FILE_UPLOAD,
+        ComponentType.RADIO_GROUP,
+        ComponentType.CHECKBOX_GROUP,
+        ComponentType.CHECKBOX,
+    }
+    leaves: list[dict[str, Any]] = []
+    for component in spec.get("components") or []:
+        if component.get("type") == ComponentType.TEXT_DISPLAY:
+            continue
+        if component.get("type") == ComponentType.ACTION_ROW:
+            for child in component.get("components") or []:
+                if child.get("type") in supported:
+                    leaves.append(child)
+        elif component.get("type") == ComponentType.LABEL:
+            child = component.get("component")
+            if child and child.get("type") in supported:
+                leaves.append(child)
+        elif component.get("type") in supported:
+            leaves.append(component)
+    return leaves
+
+
+def _modal_control_map(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    controls = {}
+    for control in _modal_components(spec):
+        custom_id = control.get("custom_id")
+        if not custom_id:
+            raise SetupError("Modal control is missing custom_id")
+        if custom_id in controls:
+            raise SetupError(f"Modal custom_id {custom_id!r} is ambiguous")
+        controls[custom_id] = control
+    return controls
+
+
+def _modal_files(value: Any) -> list[tuple[str, bytes]]:
+    if (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], str)
+        and isinstance(value[1], bytes)
+    ):
+        return [value]
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise SetupError("FileUpload expects (filename, bytes) tuples")
+    files = list(value)
+    if not all(
+        isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], bytes)
+        for item in files
+    ):
+        raise SetupError("FileUpload expects (filename, bytes) tuples")
+    return files
+
+
+def _modal_bounds(component: dict[str, Any], *, default_max: int) -> tuple[int, int]:
+    lo = component.get("min_values")
+    hi = component.get("max_values")
+    lo = 1 if lo is None else lo
+    hi = default_max if hi is None else hi
+    if not isinstance(lo, int) or not isinstance(hi, int) or lo < 0 or hi < lo:
+        raise SetupError(f"Invalid modal value bounds for {component.get('custom_id')!r}")
+    return lo, hi
+
+
+def _modal_leaf(
+    actor: Any,
+    component: dict[str, Any],
+    values: dict[str, Any],
+    resolved: dict[str, dict[str, Any]],
+    channel_id: int,
+) -> dict[str, Any] | None:
+    typ = ComponentType(component["type"])
+    custom_id = component["custom_id"]
+    supplied = custom_id in values
+    value = values.get(custom_id)
+    required = bool(component.get("required", typ in (ComponentType.TEXT_INPUT, *SELECT_TYPES)))
+    data: dict[str, Any] = {"type": typ, "custom_id": custom_id}
+    _component_interaction_data_id(component, data)
+
+    if typ == ComponentType.TEXT_INPUT:
+        if not supplied:
+            if required:
+                raise SetupError(f"Required modal control {custom_id!r} was not supplied")
+            value = ""
+        if not isinstance(value, str):
+            raise SetupError(f"Text input {custom_id!r} expects a string")
+        if required and not value:
+            raise SetupError(f"Required modal control {custom_id!r} cannot be empty")
+        minimum = component.get("min_length")
+        maximum = component.get("max_length")
+        if minimum is not None and len(value) < minimum:
+            raise SetupError(f"Text input {custom_id!r} is shorter than min_length={minimum}")
+        if maximum is not None and len(value) > maximum:
+            raise SetupError(f"Text input {custom_id!r} exceeds max_length={maximum}")
+        data["value"] = value
+    elif typ in SELECT_TYPES:
+        chosen = [] if not supplied else _as_values(value)
+        _ensure_unique(chosen)
+        lo, hi = _modal_bounds(component, default_max=25)
+        if required and not chosen:
+            raise SetupError(f"Required modal control {custom_id!r} was not supplied")
+        if (supplied or required) and not lo <= len(chosen) <= hi:
+            raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} values")
+        if typ == ComponentType.STRING_SELECT:
+            if not all(isinstance(item, str) for item in chosen):
+                raise SetupError(f"Select {custom_id!r} expects string values")
+            options = {option["value"] for option in component.get("options") or []}
+            unknown = [item for item in chosen if item not in options]
+            if unknown:
+                raise SetupError(f"Select option {unknown[0]!r} does not exist")
+        else:
+            _check_select_handles(typ, chosen)
+            for item in chosen:
+                _interactions.resolve_handle(actor._env.backend, item, resolved, user_id=actor.id)
+            chosen = [str(item.id) for item in chosen]
+        data["values"] = chosen
+    elif typ == ComponentType.FILE_UPLOAD:
+        files = [] if not supplied else _modal_files(value)
+        lo, hi = _modal_bounds(component, default_max=1)
+        if required and not files:
+            raise SetupError(f"Required modal control {custom_id!r} was not supplied")
+        if (supplied or required) and not lo <= len(files) <= hi:
+            raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} files")
+        ids = []
+        for filename, blob in files:
+            attachment_id = actor._env.backend.snowflake()
+            attachment = actor._env.backend.cdn.store_attachment(
+                attachment_id, channel_id, filename, blob, None
+            )
+            resolved.setdefault("attachments", {})[str(attachment_id)] = attachment
+            ids.append(str(attachment_id))
+        data["values"] = ids
+    elif typ == ComponentType.RADIO_GROUP:
+        if not supplied:
+            if required:
+                raise SetupError(f"Required modal control {custom_id!r} was not supplied")
+            value = None
+        if value is not None:
+            if not isinstance(value, str):
+                raise SetupError(f"RadioGroup {custom_id!r} expects a string")
+            options = {option["value"] for option in component.get("options") or []}
+            if value not in options:
+                raise SetupError(f"RadioGroup option {value!r} does not exist")
+        data["value"] = value
+    elif typ == ComponentType.CHECKBOX_GROUP:
+        chosen = [] if not supplied else _as_values(value)
+        lo, hi = _modal_bounds(component, default_max=10)
+        _ensure_unique(chosen)
+        if required and not chosen:
+            raise SetupError(f"Required modal control {custom_id!r} was not supplied")
+        if (supplied or required) and not lo <= len(chosen) <= hi:
+            raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} values")
+        if not all(isinstance(item, str) for item in chosen):
+            raise SetupError(f"CheckboxGroup {custom_id!r} expects string values")
+        options = {option["value"] for option in component.get("options") or []}
+        unknown = [item for item in chosen if item not in options]
+        if unknown:
+            raise SetupError(f"CheckboxGroup option {unknown[0]!r} does not exist")
+        data["values"] = chosen
+    elif typ == ComponentType.CHECKBOX:
+        value = component.get("default", False) if not supplied else value
+        if not isinstance(value, bool):
+            raise SetupError(f"Checkbox {custom_id!r} expects a bool")
+        data["value"] = value
+    else:
+        raise SetupError(f"Unsupported modal component type {typ}")
+    return data
+
+
+def _modal_submit_nodes(
+    nodes: list[dict[str, Any]],
+    actor: Any,
+    values: dict[str, Any],
+    resolved: dict[str, dict[str, Any]],
+    channel_id: int,
+) -> list[dict[str, Any]]:
+    out = []
+    for node in nodes:
+        typ = node.get("type")
+        if typ == ComponentType.TEXT_DISPLAY:
+            continue
+        if typ == ComponentType.ACTION_ROW:
+            children = _modal_submit_nodes(node.get("components") or [], actor, values, resolved, channel_id)
+            if children:
+                item: dict[str, Any] = {"type": ComponentType.ACTION_ROW, "components": children}
+                if node.get("id") is not None:
+                    item["id"] = node["id"]
+                out.append(item)
+        elif typ == ComponentType.LABEL:
+            child = node.get("component")
+            if child is None or child.get("type") == ComponentType.TEXT_DISPLAY:
+                continue
+            children = _modal_submit_nodes([child], actor, values, resolved, channel_id)
+            if children:
+                item = {"type": ComponentType.LABEL, "component": children[0]}
+                if node.get("id") is not None:
+                    item["id"] = node["id"]
+                out.append(item)
+        elif typ in {
+            ComponentType.TEXT_INPUT,
+            *SELECT_TYPES,
+            ComponentType.FILE_UPLOAD,
+            ComponentType.RADIO_GROUP,
+            ComponentType.CHECKBOX_GROUP,
+            ComponentType.CHECKBOX,
+        }:
+            out.append(_modal_leaf(actor, node, values, resolved, channel_id))
+    return out
+
+
+async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, Any]) -> InteractionResult:
+    spec = shown.modal
+    if spec is None:
+        raise SetupError("That interaction did not respond with a modal")
+    if not isinstance(values, dict):
+        raise SetupError("Modal values must be a dict keyed by custom_id")
+    controls = _modal_control_map(spec)
+    unknown = set(values) - set(controls)
+    if unknown:
+        raise SetupError(f"Unknown modal custom_id {sorted(unknown)[0]!r}")
+    channel_id = shown._interaction.channel_id
+    resolved: dict[str, dict[str, Any]] = {}
+    components = _modal_submit_nodes(spec.get("components") or [], actor, values, resolved, channel_id)
+    data: dict[str, Any] = {"custom_id": spec["custom_id"], "components": components}
+    if resolved:
+        data["resolved"] = resolved
+    backend = actor._env.backend
+    source_message_id = shown._interaction.source_message_id
+    extra = None
+    if source_message_id is not None:
+        source = backend.get_message(channel_id, source_message_id)
+        extra = {"message": dict(serializers.message_payload(backend, source))}
+    channel = ChannelHandle(actor._env, getattr(actor, "guild", None), backend.get_channel(channel_id))
+    return await _dispatch_actor_interaction(
+        actor,
+        InteractionType.MODAL_SUBMIT,
+        channel,
+        data,
+        extra=extra,
+        source_message_id=source_message_id,
+    )
+
+
+async def _component_interaction(actor: Any, stored: Any, data: dict[str, Any]) -> InteractionResult:
+    backend = actor._env.backend
+    channel = ChannelHandle(actor._env, getattr(actor, "guild", None), backend.get_channel(stored.channel_id))
+    return await _dispatch_actor_interaction(
+        actor,
+        InteractionType.MESSAGE_COMPONENT,
+        channel,
+        data,
+        extra={"message": dict(serializers.message_payload(backend, stored))},
+        source_message_id=stored.id,
+    )
+
+
+async def _dispatch_actor_interaction(
+    actor: Any,
+    type: int,
+    channel: ChannelHandle,
+    data: dict[str, Any],
+    *,
+    extra: dict[str, Any] | None = None,
+    source_message_id: int | None = None,
+) -> InteractionResult:
+    backend = actor._env.backend
+    guild = getattr(actor, "guild", None)
+    guild_id = guild.id if guild is not None else None
+    record, payload = _interactions.base_payload(
+        backend,
+        type=type,
+        channel_id=channel.id,
+        guild_id=guild_id,
+        user_id=actor.id,
+        data=data,
+    )
+    if extra:
+        payload.update(extra)
+    if source_message_id is not None:
+        record.source_message_id = source_message_id
+    backend.emit("INTERACTION_CREATE", payload)
+    await actor._env._settle_internal(dispatch="INTERACTION_CREATE")
+    return InteractionResult(actor._env, record)
 
 
 def _guard_actor_operation(method: Any) -> Any:
