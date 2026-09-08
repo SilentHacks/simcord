@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import math
 import time
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -31,12 +32,15 @@ _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.Context
 class _TaskRecord:
     generation: int
     label: str
+    owner: weakref.ReferenceType[asyncio.Task[Any]] | None
+    inspection_waiting: bool = False
 
 
 @dataclass(slots=True)
 class _CallbackRecord:
     handle: asyncio.Handle | None
     when: float | None
+    label: str
 
 
 def _current_task() -> asyncio.Task[Any] | None:
@@ -70,7 +74,6 @@ class Env:
         self._error_ids: set[int] = set()
         self._errors_inspected = False
         self._guilds: list[GuildHandle] = []
-        self._tasks: list[asyncio.Task[Any]] = []
         self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
         self._callbacks: list[_CallbackRecord] = []
         self._generation = 0
@@ -84,6 +87,7 @@ class Env:
         self._orig_call_later: Any = None
         self._orig_call_at: Any = None
         self._orig_call_soon_threadsafe: Any = None
+        self._orig_run_in_executor: Any = None
         self._orig_monotonic: Any = None
         self._time_offset = 0.0
         self._adapter_token: Any = None
@@ -195,28 +199,64 @@ class Env:
             raise SetupError(f"shard_ids must be unique integers between 0 and {shard_count - 1}")
         return shard_count, shard_ids
 
-    def _track_task(self, task: asyncio.Task[Any], generation: int) -> None:
-        self._tasks.append(task)
-        self._task_records[task] = _TaskRecord(generation, _dpy_internals.task_label(task.get_coro()))
+    def _context_for_scope(
+        self,
+        context: contextvars.Context,
+        scope: tuple[Any, int] | None,
+    ) -> contextvars.Context:
+        context = context.copy()
+        context.run(_BOT_SCOPE.set, scope if scope is not None and scope[0] is self else None)
+        return context
 
-        def inspect_result(completed: asyncio.Task[Any], record: _TaskRecord | None) -> None:
-            if record is None or completed.cancelled():
-                return
-            error = getattr(completed, "_exception", None)
-            if error is not None and getattr(completed, "_log_traceback", False):
-                self._record_error(error)
-                completed.exception()
+    def _inspect_task_result(
+        self,
+        completed: asyncio.Task[Any],
+        record: _TaskRecord | None,
+        *,
+        force: bool = False,
+    ) -> None:
+        if record is None or self._task_records.get(completed) is not record:
+            return
+        if not completed.done():
+            return
+        if completed.cancelled():
+            self._task_records.pop(completed, None)
+            return
+        error = getattr(completed, "_exception", None)
+        if error is None or not getattr(completed, "_log_traceback", False):
+            self._task_records.pop(completed, None)
+            return
+        owner = record.owner() if record.owner is not None else None
+        if not force and owner is not None and owner is not completed and not owner.done():
+            if not record.inspection_waiting:
+                record.inspection_waiting = True
+
+                def retry(_owner: asyncio.Task[Any]) -> None:
+                    if self._loop is None:
+                        self._inspect_task_result(completed, record)
+                    else:
+                        self._loop.call_soon(self._inspect_task_result, completed, record)
+
+                owner.add_done_callback(retry)
+            return
+        self._record_error(error)
+        completed.exception()
+        self._task_records.pop(completed, None)
+
+    def _track_task(self, task: asyncio.Task[Any], generation: int, label: str) -> None:
+        owner = _current_task()
+        self._task_records[task] = _TaskRecord(
+            generation,
+            label,
+            weakref.ref(owner) if owner is not None else None,
+        )
 
         def done(completed: asyncio.Task[Any]) -> None:
-            record = self._task_records.pop(completed, None)
-            try:
-                self._tasks.remove(completed)
-            except ValueError:
-                pass
+            record = self._task_records.get(completed)
             if self._loop is None:
-                inspect_result(completed, record)
+                self._inspect_task_result(completed, record)
                 return
-            self._loop.call_soon(inspect_result, completed, record)
+            self._loop.call_soon(self._inspect_task_result, completed, record)
 
         task.add_done_callback(done)
 
@@ -230,12 +270,30 @@ class Env:
         when: float | None,
         schedule_args: tuple[Any, ...] = (),
     ) -> asyncio.Handle:
-        scope = context.get(_BOT_SCOPE) if context is not None else _BOT_SCOPE.get()
+        bound_task = getattr(callback, "__self__", None)
+        if isinstance(bound_task, asyncio.Task):
+            owner_record = self._task_records.get(bound_task)
+            scope = (
+                (self, owner_record.generation)
+                if owner_record is not None
+                else context.get(_BOT_SCOPE)
+                if context is not None
+                else None
+            )
+        else:
+            scope = _BOT_SCOPE.get()
+        schedule_context = self._context_for_scope(context, scope) if context is not None else context
         if scope is None or scope[0] is not self:
-            return original(*schedule_args, callback, *args, context=context)
-        record = _CallbackRecord(None, when)
+            return original(*schedule_args, callback, *args, context=schedule_context)
+        label = getattr(callback, "__qualname__", None) or getattr(
+            callback, "__name__", type(callback).__name__
+        )
+        record = _CallbackRecord(None, when, label)
+        called = False
 
         def invoke(*call_args: Any) -> None:
+            nonlocal called
+            called = True
             if record.handle is not None:
                 try:
                     self._callbacks.remove(record)
@@ -248,9 +306,10 @@ class Env:
                 raise
 
         invoke.__simcord_original_callback__ = callback
-        handle = original(*schedule_args, invoke, *args, context=context)
+        handle = original(*schedule_args, invoke, *args, context=schedule_context)
         record.handle = handle
-        self._callbacks.append(record)
+        if not called:
+            self._callbacks.append(record)
         return handle
 
     async def _attach_bot(self, bot: discord.Client) -> None:
@@ -267,22 +326,25 @@ class Env:
         self._orig_call_later = loop.call_later
         self._orig_call_at = loop.call_at
         self._orig_call_soon_threadsafe = loop.call_soon_threadsafe
+        self._orig_run_in_executor = loop.run_in_executor
 
         def tracking_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
             scope = _BOT_SCOPE.get()
+            context = kwargs.get("context")
+            if context is not None:
+                kwargs["context"] = self._context_for_scope(context, scope)
+            label = _dpy_internals.task_label(coro) if scope is not None and scope[0] is self else None
             task = self._orig_create_task(coro, **kwargs)
             if not isinstance(task, asyncio.Task):
                 raise SetupError("simcord requires the loop task factory to return asyncio.Task objects")
-            if scope is not None and scope[0] is self:
-                self._track_task(task, scope[1])
+            if label is not None:
+                self._track_task(task, scope[1], label)
             return task
 
         def call_soon(
             callback: Any, *args: Any, context: contextvars.Context | None = None
         ) -> asyncio.Handle:
-            return self._track_callback(
-                self._orig_call_soon, callback, args, context=context, when=loop.time()
-            )
+            return self._track_callback(self._orig_call_soon, callback, args, context=context, when=None)
 
         def call_later(
             delay: float, callback: Any, *args: Any, context: contextvars.Context | None = None
@@ -318,14 +380,29 @@ class Env:
             callback: Any, *args: Any, context: contextvars.Context | None = None
         ) -> asyncio.Handle:
             return self._track_callback(
-                self._orig_call_soon_threadsafe, callback, args, context=context, when=loop.time()
+                self._orig_call_soon_threadsafe, callback, args, context=context, when=None
             )
+
+        def run_in_executor(executor: Any, func: Any, *args: Any) -> Any:
+            scope = _BOT_SCOPE.get()
+            if scope is None or scope[0] is not self:
+                return self._orig_run_in_executor(executor, func, *args)
+
+            def owned_call(*call_args: Any) -> Any:
+                token = _BOT_SCOPE.set(scope)
+                try:
+                    return func(*call_args)
+                finally:
+                    _BOT_SCOPE.reset(token)
+
+            return self._orig_run_in_executor(executor, owned_call, *args)
 
         loop.create_task = tracking_create_task  # type: ignore[method-assign]
         loop.call_soon = call_soon  # type: ignore[method-assign]
         loop.call_later = call_later  # type: ignore[method-assign]
         loop.call_at = call_at  # type: ignore[method-assign]
         loop.call_soon_threadsafe = call_soon_threadsafe  # type: ignore[method-assign]
+        loop.run_in_executor = run_in_executor  # type: ignore[method-assign]
 
         self._orig_monotonic = time.monotonic
         time.monotonic = lambda: self._orig_monotonic() + self._time_offset
@@ -387,34 +464,46 @@ class Env:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
             self._adapter_token = None
         current = _current_task()
-        to_cancel = [task for task in self._task_records if task is not current and not task.done()]
-        for task in to_cancel:
-            task.cancel()
-        if to_cancel:
+        while True:
+            to_cancel = [task for task in self._task_records if task is not current and not task.done()]
+            if not to_cancel:
+                await asyncio.sleep(0)
+                if not any(task is not current and not task.done() for task in self._task_records):
+                    break
+                continue
+            for task in to_cancel:
+                task.cancel()
             await asyncio.gather(*to_cancel, return_exceptions=True)
             for task in to_cancel:
                 if not task.cancelled() and (error := task.exception()) is not None:
                     self._record_error(error)
-        for record in list(self._callbacks):
+            await asyncio.sleep(0)
+
+        for task, record in list(self._task_records.items()):
+            if task.done():
+                self._inspect_task_result(task, record, force=True)
+        for record in self._callbacks:
             if record.handle is not None:
                 record.handle.cancel()
-                self._callbacks.remove(record)
+        self._callbacks.clear()
         if self._loop is not None and self._orig_create_task is not None:
             self._loop.create_task = self._orig_create_task  # type: ignore[method-assign]
             self._loop.call_soon = self._orig_call_soon  # type: ignore[method-assign]
             self._loop.call_later = self._orig_call_later  # type: ignore[method-assign]
             self._loop.call_at = self._orig_call_at  # type: ignore[method-assign]
             self._loop.call_soon_threadsafe = self._orig_call_soon_threadsafe  # type: ignore[method-assign]
+            self._loop.run_in_executor = self._orig_run_in_executor  # type: ignore[method-assign]
             self._orig_create_task = None
+            self._orig_call_soon = None
+            self._orig_call_later = None
+            self._orig_call_at = None
+            self._orig_call_soon_threadsafe = None
+            self._orig_run_in_executor = None
         if self._orig_monotonic is not None:
             time.monotonic = self._orig_monotonic
             self._orig_monotonic = None
-        for task in list(self._task_records):
-            self._task_records.pop(task, None)
-            try:
-                self._tasks.remove(task)
-            except ValueError:
-                pass
+        self._task_records.clear()
+        self._external_waits.clear()
 
     async def external_wait(self, awaitable: Any, *, reason: str) -> Any:
         """Await one explicitly declared external input without blocking settlement."""
@@ -560,15 +649,27 @@ class Env:
             return "discord Client.wait_for listener"
         if _dpy_internals.is_view_wait_future(self.bot, waiter):
             return "discord View/Modal completion"
-        children = [
-            child
-            for child in _dpy_internals.composed_tasks(task, waiter)
-            if child in self._task_records and not child.done()
-        ]
-        if children:
-            reasons = [self._park_reason(child, deadline, seen) for child in children]
-            if all(reason is not None for reason in reasons):
-                return "composed external wait"
+        dependencies = _dpy_internals.composed_tasks(task, waiter)
+        unresolved = [dependency for dependency in dependencies if not dependency.done()]
+        if unresolved:
+            reasons: list[str] = []
+            for dependency in unresolved:
+                if isinstance(dependency, asyncio.Task):
+                    if dependency not in self._task_records:
+                        break
+                    reason = self._park_reason(dependency, deadline, seen)
+                elif _dpy_internals.is_listener_future(self.bot, dependency):
+                    reason = "discord Client.wait_for listener"
+                elif _dpy_internals.is_view_wait_future(self.bot, dependency):
+                    reason = "discord View/Modal completion"
+                else:
+                    break
+                if reason is None:
+                    break
+                reasons.append(reason)
+            else:
+                if reasons and all(reason is not None for reason in reasons):
+                    return "composed external wait"
         if _dpy_internals.is_sleep_waiter(waiter, self._loop, deadline):
             return "sleep timer beyond settlement deadline"
         return None
@@ -605,7 +706,13 @@ class Env:
             generation = record.generation if record is not None else self._generation
             lines.append(f"  bot-owned generation {generation} {label}: {reason}")
         if callbacks:
-            lines.append(f"  bot-owned callbacks pending: {len(callbacks)}")
+            lines.append("  bot-owned callbacks pending:")
+            for record in callbacks:
+                lines.append(f"    {record.label}")
+        lines.append(
+            "  use await env.external_wait(...) for intentional external input; "
+            "use await env.advance_time(...) for virtual timers"
+        )
         if len(all_pending) > len(stuck):
             lines.append(f"  {len(all_pending) - len(stuck)} recognized waits remain parked")
         return "\n".join(lines)

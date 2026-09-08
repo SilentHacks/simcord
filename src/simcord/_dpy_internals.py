@@ -155,11 +155,13 @@ def is_sleep_waiter(waiter: Any, loop: Any, deadline: float) -> bool:
     return False
 
 
-def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[asyncio.Task[Any]]:
-    """Tasks demonstrably linked to a supported asyncio composition."""
-    found: list[asyncio.Task[Any]] = []
+def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[Any]:
+    """Return every unresolved dependency of a supported asyncio composition."""
+    found: list[Any] = []
+    if isinstance(waiter, asyncio.Task):
+        found.append(waiter)
     if type(waiter).__module__ == "asyncio.tasks" and type(waiter).__name__ == "_GatheringFuture":
-        found.extend(child for child in getattr(waiter, "_children", ()) if isinstance(child, asyncio.Task))
+        found.extend(child for child in getattr(waiter, "_children", ()) if isinstance(child, asyncio.Future))
 
     for entry in getattr(waiter, "_callbacks", ()) or ():
         callback = entry[0] if isinstance(entry, tuple) else entry
@@ -168,7 +170,7 @@ def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[asyncio.Task[An
         ).endswith("shield.<locals>._outer_done_callback"):
             for cell in callback.__closure__ or ():
                 value = cell.cell_contents
-                if isinstance(value, asyncio.Task):
+                if isinstance(value, asyncio.Future):
                     found.append(value)
 
     wait_codes = {
@@ -186,7 +188,7 @@ def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[asyncio.Task[An
         frame = getattr(coroutine, "cr_frame", None)
         code = frame.f_code if frame is not None else None
         if frame is not None and code in wait_codes:
-            found.extend(child for child in frame.f_locals.get("fs", ()) if isinstance(child, asyncio.Task))
+            found.extend(child for child in frame.f_locals.get("fs", ()) if isinstance(child, asyncio.Future))
         elif frame is not None and code in group_codes:
             group = frame.f_locals.get("self")
             found.extend(child for child in getattr(group, "_tasks", ()) if isinstance(child, asyncio.Task))

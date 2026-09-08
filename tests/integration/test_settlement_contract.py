@@ -5,6 +5,7 @@ no test-side re-settle loops, no sleeps, no flaking on executor-backed work.
 """
 
 import asyncio
+import contextvars
 import gc
 import sys
 import threading
@@ -461,7 +462,7 @@ async def test_view_and_modal_waits_park():
     bot = create_bot()
 
     class WaitingModal(discord.ui.Modal, title="Waiting"):
-        pass
+        name = discord.ui.TextInput(label="Name")
 
     @bot.listen("on_message")
     async def view_wait(message: discord.Message) -> None:
@@ -808,3 +809,186 @@ async def test_external_wait_in_prefix_and_component_callbacks():
         await env.settle()
         assert channel.last_message is not None
         assert channel.last_message.content == "component resumed"
+
+
+@pytest.mark.asyncio
+async def test_explicit_contexts_keep_bot_provenance():
+    marker = contextvars.ContextVar("settlement_marker", default="missing")
+    bot = create_bot()
+    created: list[asyncio.Task[None]] = []
+
+    @bot.listen("on_message")
+    async def schedule_with_context(message: discord.Message) -> None:
+        if message.content != "contexts":
+            return
+        loop = asyncio.get_running_loop()
+        context = contextvars.Context()
+        context.run(marker.set, "explicit")
+
+        async def send_from_task() -> None:
+            await message.channel.send(marker.get())
+
+        def schedule_callback() -> None:
+            created.append(loop.create_task(send_from_task(), context=context))
+
+        created.append(loop.create_task(send_from_task(), context=context))
+        loop.call_soon(schedule_callback, context=context)
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "contexts")
+        assert [item.content for item in channel.history() if item.author.bot] == [
+            "explicit",
+            "explicit",
+        ]
+        assert all(task.done() for task in created)
+
+
+@pytest.mark.asyncio
+async def test_executor_threadsafe_descendant_is_joined():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def executor_callback(message: discord.Message) -> None:
+        if message.content != "executor-child":
+            return
+        loop = asyncio.get_running_loop()
+
+        def spawn() -> None:
+            loop.call_soon_threadsafe(lambda: loop.create_task(message.channel.send("executor child")))
+
+        await loop.run_in_executor(None, spawn)
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "executor-child")
+        assert channel.last_message is not None
+        assert channel.last_message.content == "executor child"
+
+
+@pytest.mark.asyncio
+async def test_composed_unknown_future_does_not_park_parent():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def mixed_wait(message: discord.Message) -> None:
+        if message.content != "mixed-future":
+            return
+        loop = asyncio.get_running_loop()
+        unknown = loop.create_future()
+        await asyncio.gather(bot.wait_for("message"), unknown)
+
+    async with simcord.run(bot, settle_timeout=0.01) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        with pytest.raises(asyncio.TimeoutError, match="unknown wait"):
+            await alice.send(channel, "mixed-future")
+
+
+@pytest.mark.asyncio
+async def test_direct_awaited_wait_for_task_parks_and_resumes():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def direct_wait(message: discord.Message) -> None:
+        if message.content != "direct-wait":
+            return
+        waiter = asyncio.create_task(bot.wait_for("message", check=lambda item: item.content == "release"))
+        await waiter
+        await message.channel.send("direct resumed")
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "direct-wait")
+        await alice.send(channel, "release")
+        assert channel.last_message is not None
+        assert channel.last_message.content == "direct resumed"
+
+
+@pytest.mark.asyncio
+async def test_detach_drains_descendants_spawned_by_cancellation_cleanup():
+    bot = create_bot()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    spawned: list[asyncio.Task[None]] = []
+
+    @bot.listen("on_message")
+    async def parked(message: discord.Message) -> None:
+        if message.content != "cancel-cleanup":
+            return
+        try:
+            started.set()
+            await env.external_wait(release.wait(), reason="cleanup release")
+        finally:
+
+            async def never_child() -> None:
+                await asyncio.Future()
+
+            spawned.append(asyncio.create_task(never_child()))
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "cancel-cleanup")
+        await started.wait()
+    assert spawned and spawned[0].cancelled()
+
+
+@pytest.mark.asyncio
+async def test_delayed_handled_task_exception_is_not_captured():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def delayed_handler(message: discord.Message) -> None:
+        if message.content != "delayed-handle":
+            return
+
+        async def fail() -> None:
+            raise RuntimeError("handled later")
+
+        task = asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        with pytest.raises(RuntimeError, match="handled later"):
+            await task
+
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "delayed-handle")
+        assert env.errors == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_zero_reports_immediate_callback_label_and_guidance():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def callback_loop(message: discord.Message) -> None:
+        if message.content != "callback-timeout":
+            return
+        loop = asyncio.get_running_loop()
+
+        def pending_callback() -> None:
+            loop.call_soon(pending_callback)
+
+        loop.call_soon(pending_callback)
+
+    async with simcord.run(bot, settle_timeout=0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        with pytest.raises(asyncio.TimeoutError) as caught:
+            await alice.send(channel, "callback-timeout")
+        text = str(caught.value)
+        assert "pending_callback" in text
+        assert "external_wait" in text
+        assert "advance_time" in text
