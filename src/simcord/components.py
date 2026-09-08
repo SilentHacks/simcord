@@ -62,6 +62,11 @@ def _string(value: Any, path: str, *, minimum: int = 0, maximum: int | None = No
     return value
 
 
+def _optional_bool(component: Mapping[str, Any], key: str, path: str) -> None:
+    if key in component and not isinstance(component[key], bool):
+        raise _fail(f"{path}.{key}", "must be a boolean")
+
+
 def _component_type(component: Mapping[str, Any], path: str) -> int:
     value = component.get("type")
     if isinstance(value, bool) or not isinstance(value, int):
@@ -203,6 +208,7 @@ def _check_component(
         _check_media(component.get("media"), f"{path}.media")
         if "description" in component and component["description"] is not None:
             _string(component["description"], f"{path}.description", maximum=1024)
+        _optional_bool(component, "spoiler", path)
         return
 
     if kind == 9:  # section
@@ -240,21 +246,30 @@ def _check_component(
             if not isinstance(item, Mapping):
                 raise _fail(item_path, "must be an object")
             _check_media(item.get("media"), f"{item_path}.media")
+            _optional_bool(item, "spoiler", item_path)
             if "description" in item and item["description"] is not None:
                 _string(item["description"], f"{item_path}.description", maximum=1024)
         return
 
     if kind == 13:  # file
+        _optional_bool(component, "spoiler", path)
         _check_media(component.get("file"), f"{path}.file")
         return
 
     if kind == 14:  # separator
         spacing = component.get("spacing", 1)
-        if spacing not in {1, 2}:
+        if isinstance(spacing, bool) or spacing not in {1, 2}:
             raise _fail(path, "spacing must be 1 or 2")
+        _optional_bool(component, "divider", path)
         return
 
     if kind == 17:  # container
+        _optional_bool(component, "spoiler", path)
+        accent = component.get("accent_color")
+        if accent is not None and (
+            isinstance(accent, bool) or not isinstance(accent, int) or not 0 <= accent <= 0xFFFFFF
+        ):
+            raise _fail(f"{path}.accent_color", "must be an RGB integer between 0 and 16777215")
         children = component.get("components")
         if not isinstance(children, list):
             raise _fail(path, "container components must be an array")
@@ -301,15 +316,22 @@ def _modal_required(component: Mapping[str, Any], path: str) -> None:
         raise _fail(f"{path}.required", "must be a boolean")
 
 
-def _modal_bounds(component: Mapping[str, Any], path: str, *, default_min: int, default_max: int) -> None:
+def _modal_bounds(
+    component: Mapping[str, Any],
+    path: str,
+    *,
+    default_min: int,
+    default_max: int,
+    maximum_limit: int,
+) -> None:
     minimum = component.get("min_values")
     maximum = component.get("max_values")
     minimum = default_min if minimum is None else minimum
     maximum = default_max if maximum is None else maximum
-    if isinstance(minimum, bool) or not isinstance(minimum, int) or not 0 <= minimum <= default_max:
-        raise _fail(f"{path}.min_values", f"must be between 0 and {default_max}")
-    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= default_max:
-        raise _fail(f"{path}.max_values", f"must be between 1 and {default_max}")
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or not 0 <= minimum <= maximum_limit:
+        raise _fail(f"{path}.min_values", f"must be between 0 and {maximum_limit}")
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= maximum_limit:
+        raise _fail(f"{path}.max_values", f"must be between 1 and {maximum_limit}")
     if minimum > maximum:
         raise _fail(path, "min_values cannot exceed max_values")
 
@@ -413,7 +435,7 @@ def _check_modal_component(
         _modal_required(component, path)
     elif kind in _SELECT_TYPES:
         _modal_required(component, path)
-        _modal_bounds(component, path, default_min=1, default_max=25)
+        _modal_bounds(component, path, default_min=1, default_max=1, maximum_limit=25)
         if "disabled" in component and not isinstance(component["disabled"], bool):
             raise _fail(f"{path}.disabled", "must be a boolean")
         if "placeholder" in component and component["placeholder"] is not None:
@@ -422,13 +444,20 @@ def _check_modal_component(
             _modal_options(component, path, maximum=25)
     elif kind == 19:
         _modal_required(component, path)
-        _modal_bounds(component, path, default_min=0, default_max=10)
+        _modal_bounds(component, path, default_min=1, default_max=1, maximum_limit=10)
     elif kind == 21:
         _modal_required(component, path)
         _modal_options(component, path, maximum=10, minimum=2)
     elif kind == 22:
         _modal_required(component, path)
-        _modal_bounds(component, path, default_min=0, default_max=10)
+        options = component.get("options")
+        _modal_bounds(
+            component,
+            path,
+            default_min=1,
+            default_max=len(options) if isinstance(options, list) else 1,
+            maximum_limit=10,
+        )
         _modal_options(component, path, maximum=10)
     elif kind == 23:
         if "default" in component and not isinstance(component["default"], bool):

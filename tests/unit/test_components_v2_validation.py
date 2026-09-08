@@ -157,6 +157,17 @@ def test_modal_definition_shape_errors_are_reported(payload, message):
         (modal_control(3, "select", min_values=True), "min_values"),
         (modal_control(3, "select", max_values=0), "max_values"),
         (modal_control(3, "select", min_values=2, max_values=1), "cannot exceed"),
+        (modal_control(3, "select", max_values=26), "max_values"),
+        (modal_control(19, "upload", max_values=11), "max_values"),
+        (
+            modal_control(
+                22,
+                "checks",
+                options=[{"label": str(index), "value": str(index)} for index in range(10)],
+                max_values=11,
+            ),
+            "max_values",
+        ),
         (modal_control(3, "select", disabled="no"), "disabled"),
         (modal_control(3, "select", placeholder="x" * 151), "placeholder"),
         (modal_control(3, "select", options=None), "between 1 and 25"),
@@ -485,6 +496,36 @@ def test_files_and_separators_accept_valid_layout_values_and_reject_invalid_valu
     raises("media must be an object", validate_v2, {"type": 13, "file": None})
     raises("file.url: must be a string", validate_v2, {"type": 13, "file": {"url": 1}})
     raises("spacing must be 1 or 2", validate_v2, {"type": 14, "spacing": 0})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        section(accessory=valid_thumbnail(spoiler=1)),
+        {"type": 12, "items": [{"media": {"url": "u"}, "spoiler": 1}]},
+        valid_file(spoiler=1),
+        {"type": 14, "divider": 1},
+        {"type": 14, "spacing": True},
+        {"type": 17, "components": [], "spoiler": 1},
+        {"type": 17, "components": [], "accent_color": True},
+        {"type": 17, "components": [], "accent_color": -1},
+        {"type": 17, "components": [], "accent_color": 0x1000000},
+    ],
+)
+def test_visual_style_fields_reject_wrong_types_and_out_of_range_colors(payload):
+    raises("must be", validate_v2, payload)
+
+
+def test_visual_style_fields_accept_protocol_values():
+    normalized = validate_v2(
+        section(accessory=valid_thumbnail(spoiler=True)),
+        {"type": 12, "items": [{"media": {"url": "u"}, "spoiler": False}]},
+        valid_file(spoiler=True),
+        {"type": 14, "divider": False, "spacing": 2},
+        {"type": 17, "components": [], "accent_color": 0xABCDEF, "spoiler": False},
+    )
+
+    assert [component["type"] for component in normalized] == [9, 12, 13, 14, 17]
 
 
 def test_containers_accept_layout_children_and_reject_invalid_shapes():

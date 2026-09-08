@@ -289,8 +289,6 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
                     discord.CheckboxGroupOption(label="One", value="one"),
                     discord.CheckboxGroupOption(label="Two", value="two"),
                 ],
-                min_values=0,
-                max_values=1,
                 required=False,
             ),
         )
@@ -323,14 +321,14 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
         await alice.submit_modal(opened, {"color": ["red"], "radio": "one", "checks": [1]})
     with pytest.raises(simcord.SetupError, match="CheckboxGroup option 'missing' does not exist"):
         await alice.submit_modal(opened, {"color": ["red"], "radio": "one", "checks": ["missing"]})
-    with pytest.raises(simcord.SetupError, match="expects between 0 and 1 values"):
-        await alice.submit_modal(opened, {"color": ["red"], "radio": "one", "checks": ["one", "two"]})
+    with pytest.raises(simcord.SetupError, match="cannot contain duplicate values"):
+        await alice.submit_modal(opened, {"color": ["red"], "radio": "one", "checks": ["one", "one"]})
     with pytest.raises(simcord.SetupError, match="USER_SELECT expects"):
         await alice.submit_modal(opened, {"color": ["red"], "radio": "one", "person": ["alice"]})
     bob = env.guild.add_member(env.create_user("bob"))
     result = await alice.submit_modal(
         opened,
-        {"color": ["red"], "radio": "one", "person": [bob]},
+        {"color": ["red"], "radio": "one", "checks": ["one", "two"], "person": [bob]},
     )
     assert result.response.content == "ok"
     with pytest.raises(simcord.SetupError, match="did not respond with a modal"):
@@ -341,7 +339,7 @@ async def test_modal_upload_and_checkbox_validation_is_reported_through_actor_ap
     class Form(discord.ui.Modal, title="Files"):
         upload = discord.ui.Label(
             text="Upload",
-            component=discord.ui.FileUpload(custom_id="upload", min_values=1, max_values=1),
+            component=discord.ui.FileUpload(custom_id="upload"),
         )
         accepted = discord.ui.Label(
             text="Accepted",

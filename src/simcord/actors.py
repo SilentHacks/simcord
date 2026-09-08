@@ -595,7 +595,13 @@ def _modal_files(value: Any) -> list[tuple[str, bytes]]:
     return files
 
 
-def _modal_bounds(component: dict[str, Any], *, default_min: int, default_max: int) -> tuple[int, int]:
+def _modal_bounds(
+    component: dict[str, Any],
+    *,
+    default_min: int,
+    default_max: int,
+    maximum_limit: int,
+) -> tuple[int, int]:
     lo = component.get("min_values")
     hi = component.get("max_values")
     lo = default_min if lo is None else lo
@@ -605,9 +611,10 @@ def _modal_bounds(component: dict[str, Any], *, default_min: int, default_max: i
         or isinstance(hi, bool)
         or not isinstance(lo, int)
         or not isinstance(hi, int)
+        or lo < 0
         or hi < 1
         or hi < lo
-        or hi > default_max
+        or hi > maximum_limit
     ):
         raise SetupError(f"Invalid modal value bounds for {component.get('custom_id')!r}")
     return lo, hi
@@ -648,7 +655,7 @@ def _modal_leaf(
     elif typ in SELECT_TYPES:
         chosen = [] if not supplied else _as_values(value)
         _ensure_unique(chosen)
-        lo, hi = _modal_bounds(component, default_min=1, default_max=25)
+        lo, hi = _modal_bounds(component, default_min=1, default_max=1, maximum_limit=25)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
         if (supplied or required) and not lo <= len(chosen) <= hi:
@@ -668,7 +675,7 @@ def _modal_leaf(
         data["values"] = chosen
     elif typ == ComponentType.FILE_UPLOAD:
         files = [] if not supplied else _modal_files(value)
-        lo, hi = _modal_bounds(component, default_min=0, default_max=10)
+        lo, hi = _modal_bounds(component, default_min=1, default_max=1, maximum_limit=10)
         if required and not files:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
         if (supplied or required) and not lo <= len(files) <= hi:
@@ -690,7 +697,13 @@ def _modal_leaf(
         data["value"] = value
     elif typ == ComponentType.CHECKBOX_GROUP:
         chosen = [] if not supplied else _as_values(value)
-        lo, hi = _modal_bounds(component, default_min=0, default_max=10)
+        options = component.get("options") or []
+        lo, hi = _modal_bounds(
+            component,
+            default_min=1,
+            default_max=len(options),
+            maximum_limit=10,
+        )
         _ensure_unique(chosen)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
