@@ -733,6 +733,7 @@ def _modal_submit_nodes(
             out.append({"type": typ, "id": node["id"], "components": children})
         elif typ == ComponentType.LABEL:
             child = node.get("component")
+            assert isinstance(child, dict)
             children = _modal_submit_nodes([child], actor, values, resolved, channel_id, pending_uploads)
             out.append({"type": typ, "id": node["id"], "component": children[0]})
         elif typ in {

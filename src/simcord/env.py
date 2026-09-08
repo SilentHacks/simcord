@@ -338,6 +338,7 @@ class Env:
             if not isinstance(task, asyncio.Task):
                 raise SetupError("simcord requires the loop task factory to return asyncio.Task objects")
             if label is not None:
+                assert scope is not None
                 self._track_task(task, scope[1], label)
             return task
 
