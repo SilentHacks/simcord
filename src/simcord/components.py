@@ -195,7 +195,7 @@ def _check_component(
     if kind == 11:  # thumbnail
         _check_media(component.get("media"), f"{path}.media")
         if "description" in component and component["description"] is not None:
-            _string(component["description"], f"{path}.description", maximum=256)
+            _string(component["description"], f"{path}.description", maximum=1024)
         return
 
     if kind == 9:  # section
@@ -234,7 +234,7 @@ def _check_component(
                 raise _fail(item_path, "must be an object")
             _check_media(item.get("media"), f"{item_path}.media")
             if "description" in item and item["description"] is not None:
-                _string(item["description"], f"{item_path}.description", maximum=256)
+                _string(item["description"], f"{item_path}.description", maximum=1024)
         return
 
     if kind == 13:  # file

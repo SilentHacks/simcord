@@ -76,6 +76,19 @@ def interaction_callback(ctx: RequestContext) -> Any:
     return response
 
 
+def _incoming_webhook_body(ctx: RequestContext) -> tuple[dict[str, Any], bool]:
+    body = dict(ctx.body())
+    with_components = str(ctx.params.get("with_components", "")).lower() in {"1", "true"}
+    if not with_components:
+        body.pop("components", None)
+    elif any(
+        component.get("type") in {2, 3, 5, 6, 7, 8}
+        for component in walk_components(body.get("components", []))
+    ):
+        raise errors.invalid_form_body("non-application webhooks cannot send interactive components")
+    return body, with_components
+
+
 @route("POST", "/webhooks/{webhook_id}/{token}")
 def execute_webhook(ctx: RequestContext) -> Any:
     backend = ctx.backend
@@ -88,15 +101,7 @@ def execute_webhook(ctx: RequestContext) -> Any:
         record.followup_ids.append(message.id)
         return message_response(ctx, message)
     webhook = _incoming_webhook(ctx)
-    body = dict(ctx.body())
-    with_components = str(ctx.params.get("with_components", "")).lower() in {"1", "true"}
-    if not with_components:
-        body.pop("components", None)
-    elif any(
-        component.get("type") in {2, 3, 5, 6, 7, 8}
-        for component in walk_components(body.get("components", []))
-    ):
-        raise errors.invalid_form_body("non-application webhooks cannot send interactive components")
+    body, _ = _incoming_webhook_body(ctx)
     message = bot_message(
         ctx,
         webhook.channel_id,
@@ -186,9 +191,14 @@ def edit_followup(ctx: RequestContext) -> Any:
         message = ctx.backend.edit_message(record.channel_id, message.id, message_edit_changes(ctx, message))
         return message_response(ctx, message)
     message = _incoming_message(ctx)
-    message = ctx.backend.edit_message(message.channel_id, message.id, message_edit_changes(ctx, message))
+    body, with_components = _incoming_webhook_body(ctx)
+    message = ctx.backend.edit_message(
+        message.channel_id,
+        message.id,
+        message_edit_changes(ctx, message, body=body),
+    )
     response = message_response(ctx, message)
-    if not int(ctx.params.get("with_components", 0)):
+    if not with_components:
         response.pop("components", None)
     return response
 

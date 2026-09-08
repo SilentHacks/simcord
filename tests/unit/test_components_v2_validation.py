@@ -302,12 +302,12 @@ def test_sections_require_text_children_and_button_or_thumbnail_accessory():
 
 
 def test_sections_accept_thumbnail_accessories_and_validate_media_description():
-    valid = validate_v2(section(accessory=valid_thumbnail(description=None)))
+    valid = validate_v2(section(accessory=valid_thumbnail(description="x" * 1024)))
     assert valid[0]["accessory"]["type"] == 11
     raises(
-        "description: must be 256 or fewer",
+        "description: must be 1024 or fewer",
         validate_v2,
-        section(accessory=valid_thumbnail(description="x" * 257)),
+        section(accessory=valid_thumbnail(description="x" * 1025)),
     )
     raises("media must be an object", validate_v2, section(accessory={"type": 11, "media": None}))
     raises(
@@ -322,7 +322,7 @@ def test_sections_accept_thumbnail_accessories_and_validate_media_description():
         ({"type": 12, "items": [{}] * 11}, "between 1 and 10"),
         ({"type": 12, "items": [None]}, "must be an object"),
         ({"type": 12, "items": [{"media": None}]}, "media must be an object"),
-        ({"type": 12, "items": [{"media": {"url": "u"}, "description": "x" * 257}]}, "description"),
+        ({"type": 12, "items": [{"media": {"url": "u"}, "description": "x" * 1025}]}, "description"),
     ],
 )
 def test_media_galleries_validate_items(payload, message):

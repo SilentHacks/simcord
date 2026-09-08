@@ -82,6 +82,33 @@ def test_incoming_webhook_component_rules(env, channel):
         params={"with_components": "true"},
     )
     assert static["components"][0]["content"] == "status"
+    edit_path = f"{path}/messages/{static['id']}"
+    ignored_edit = router.dispatch(
+        env.backend,
+        "PATCH",
+        edit_path,
+        json={"components": interactive},
+    )
+    assert "components" not in ignored_edit
+    assert env.backend.get_message(channel.id, int(static["id"])).components[0]["content"] == "status"
+
+    with pytest.raises(simcord.BackendError, match="non-application webhooks"):
+        router.dispatch(
+            env.backend,
+            "PATCH",
+            edit_path,
+            json={"components": interactive},
+            params={"with_components": "true"},
+        )
+
+    edited = router.dispatch(
+        env.backend,
+        "PATCH",
+        edit_path,
+        json={"components": [{"type": 10, "content": "updated"}]},
+        params={"with_components": "true"},
+    )
+    assert edited["components"][0]["content"] == "updated"
 
 
 async def test_layout_media_attachment_resolves_and_reads(env, channel):
