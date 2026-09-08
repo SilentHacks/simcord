@@ -6,7 +6,7 @@ from typing import Any
 
 from ..backend import errors, serializers
 from ..backend.models import EPHEMERAL_FLAG, Interaction, Message, Poll, PollAnswer
-from ..components import ComponentValidationError, resolve_attachment_references
+from ..components import ComponentValidationError, resolve_attachment_references, validate_message_state
 from .router import RequestContext
 
 
@@ -142,6 +142,52 @@ def _validate_embeds(embeds: list[dict[str, Any]]) -> None:
             raise errors.invalid_form_body("embeds: total size of embeds exceeds 6000 characters")
 
 
+def _preview_uploads(ctx: RequestContext) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(index),
+            "filename": file.filename,
+            "description": file.description,
+            "size": 0,
+            "url": f"https://cdn.simcord.invalid/pending/{index}",
+            "proxy_url": f"https://cdn.simcord.invalid/pending/{index}",
+            "content_type": "application/octet-stream",
+        }
+        for index, file in enumerate(ctx.files)
+    ]
+
+
+def _store_upload(ctx: RequestContext, channel_id: int, index: int) -> dict[str, Any]:
+    file = ctx.files[index]
+    return ctx.backend.cdn.store_attachment(
+        ctx.backend.snowflake(), channel_id, file.filename, file.fp.read(), file.description
+    )
+
+
+def _validate_edit_state(
+    message: Message | None,
+    fields: dict[str, Any],
+    components: list[dict[str, Any]],
+    *,
+    flags: int,
+) -> None:
+    current_content = message.content if message is not None else None
+    current_embeds = message.embeds if message is not None else []
+    try:
+        _validate_embeds(fields.get("embeds", current_embeds) or [])
+        validate_message_state(
+            components,
+            flags=flags,
+            content=fields.get("content", current_content),
+            embeds=fields.get("embeds", current_embeds) or [],
+            poll=message.poll if message is not None else None,
+            previous_flags=message.flags if message is not None else 0,
+        )
+    except (ComponentValidationError, TypeError, ValueError) as exc:
+        detail = exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
+        raise errors.invalid_form_body(str(detail)) from exc
+
+
 def message_edit_changes(
     ctx: RequestContext, message: Message | None = None, *, body: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -155,17 +201,16 @@ def message_edit_changes(
         ignore=("allowed_mentions", "tts"),
         body=ctx.body() if body is None else body,
     )
-    if "embeds" in fields:
-        _validate_embeds(fields["embeds"] or [])
-
     current_attachments = list(message.attachments) if message is not None else []
+    preview_uploads = _preview_uploads(ctx)
+    upload_indices: list[int] = []
+    selected_indices: list[int | None] = []
     if "attachments" in fields:
         declared = fields["attachments"]
         if declared is None:
             declared = []
         if not isinstance(declared, list):
             raise errors.invalid_form_body("attachments must be an array")
-        uploads = ctx.store_files(message.channel_id if message is not None else 0)
         existing = {str(item.get("id")): item for item in current_attachments}
         selected: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -180,18 +225,49 @@ def message_edit_changes(
                 retained = dict(existing[key])
                 retained.update({k: item[k] for k in ("filename", "description") if k in item})
                 selected.append(retained)
+                selected_indices.append(None)
                 continue
             try:
-                upload = uploads[int(key)]
-            except (ValueError, IndexError):
+                index = int(key)
+            except (TypeError, ValueError):
                 raise errors.invalid_form_body(f"attachments: unknown attachment id {key}") from None
-            selected.append(upload)
+            if index < 0 or index >= len(preview_uploads):
+                raise errors.invalid_form_body(f"attachments: unknown attachment id {key}")
+            selected.append(preview_uploads[index])
+            selected_indices.append(index)
+            upload_indices.append(index)
         fields["attachments"] = selected
     elif ctx.files:
-        fields["attachments"] = current_attachments + ctx.store_files(
-            message.channel_id if message is not None else 0
-        )
+        fields["attachments"] = current_attachments + preview_uploads
+        selected_indices = [None] * len(current_attachments) + list(range(len(preview_uploads)))
+        upload_indices = list(range(len(preview_uploads)))
 
+    current_components = message.components if message is not None else []
+    effective_components = fields.get("components", current_components) or []
+    preview_attachments = fields.get("attachments", current_attachments)
+    try:
+        preview_components = resolve_attachment_references(effective_components, preview_attachments)
+    except ComponentValidationError as exc:
+        raise errors.invalid_form_body(str(exc)) from exc
+    try:
+        flags = (
+            int(fields["flags"])
+            if "flags" in fields and fields["flags"] is not None
+            else (message.flags if message is not None else 0)
+        )
+    except (TypeError, ValueError) as exc:
+        raise errors.invalid_form_body("flags must be an integer") from exc
+    _validate_edit_state(message, fields, preview_components, flags=flags)
+
+    if upload_indices:
+        stored_by_index = {
+            index: _store_upload(ctx, message.channel_id if message is not None else 0, index)
+            for index in set(upload_indices)
+        }
+        fields["attachments"] = [
+            stored_by_index[index] if index is not None else attachment
+            for index, attachment in zip(selected_indices, fields["attachments"], strict=True)
+        ]
     if "components" in fields:
         try:
             fields["components"] = resolve_attachment_references(

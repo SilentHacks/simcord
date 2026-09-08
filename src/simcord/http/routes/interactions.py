@@ -10,7 +10,7 @@ from typing import Any
 
 from ...backend import errors
 from ...backend.models import EPHEMERAL_FLAG, Interaction
-from ...components import walk_components
+from ...components import ComponentValidationError, validate_modal, walk_components
 from ...enums import CallbackType
 from .._helpers import bot_message, message_edit_changes, message_response
 from ..router import RequestContext, route
@@ -53,7 +53,12 @@ def interaction_callback(ctx: RequestContext) -> Any:
             )
         record.update_source(record.source_message_id)
     elif callback_type == CallbackType.MODAL:
-        record.show_modal(data)
+        try:
+            modal = validate_modal(data)
+        except (ComponentValidationError, TypeError, ValueError) as exc:
+            detail = exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
+            raise errors.invalid_form_body(str(detail)) from exc
+        record.show_modal(modal)
     elif callback_type == CallbackType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT:
         record.complete_autocomplete(data.get("choices", []))
     elif callback_type == CallbackType.PONG:

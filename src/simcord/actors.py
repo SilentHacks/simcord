@@ -18,7 +18,7 @@ from . import interactions as _interactions
 from .backend import serializers
 from .backend.errors import SetupError
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
-from .components import walk_components
+from .components import validate_modal, walk_components
 from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
 from .results import InteractionResult, ResponseMessage, to_discord_message
 
@@ -398,10 +398,20 @@ _ENTITY_SELECT_HANDLES: dict[ComponentType, tuple[type, ...]] = {
 }
 
 
+def _check_user_dm_channel(actor: Any, channel_id: int) -> None:
+    if isinstance(actor, UserHandle) and actor._env.backend.dm_channels.get(actor.id) != channel_id:
+        raise SetupError(
+            "UserHandle interaction operations are restricted to this user's DM channel — "
+            "a real user could not interact with guild messages"
+        )
+
+
 def _visible_message(actor: Any, message: MessageLike) -> Any:
     backend = actor._env.backend
     fallback = actor.dm_channel.id if isinstance(actor, UserHandle) else None
-    stored = backend.get_message(_channel_id_of(message, fallback), message.id)
+    channel_id = _channel_id_of(message, fallback)
+    _check_user_dm_channel(actor, channel_id)
+    stored = backend.get_message(channel_id, message.id)
     if not stored.visible_to(actor.id):
         raise SetupError(
             "That message is ephemeral and not visible to this user — a real user could not interact with it"
@@ -585,12 +595,20 @@ def _modal_files(value: Any) -> list[tuple[str, bytes]]:
     return files
 
 
-def _modal_bounds(component: dict[str, Any], *, default_max: int) -> tuple[int, int]:
+def _modal_bounds(component: dict[str, Any], *, default_min: int, default_max: int) -> tuple[int, int]:
     lo = component.get("min_values")
     hi = component.get("max_values")
-    lo = 1 if lo is None else lo
+    lo = default_min if lo is None else lo
     hi = default_max if hi is None else hi
-    if not isinstance(lo, int) or not isinstance(hi, int) or lo < 0 or hi < lo:
+    if (
+        isinstance(lo, bool)
+        or isinstance(hi, bool)
+        or not isinstance(lo, int)
+        or not isinstance(hi, int)
+        or hi < 1
+        or hi < lo
+        or hi > default_max
+    ):
         raise SetupError(f"Invalid modal value bounds for {component.get('custom_id')!r}")
     return lo, hi
 
@@ -601,6 +619,7 @@ def _modal_leaf(
     values: dict[str, Any],
     resolved: dict[str, dict[str, Any]],
     channel_id: int,
+    pending_uploads: list[tuple[dict[str, Any], str, bytes]],
 ) -> dict[str, Any] | None:
     typ = ComponentType(component["type"])
     custom_id = component["custom_id"]
@@ -629,7 +648,7 @@ def _modal_leaf(
     elif typ in SELECT_TYPES:
         chosen = [] if not supplied else _as_values(value)
         _ensure_unique(chosen)
-        lo, hi = _modal_bounds(component, default_max=25)
+        lo, hi = _modal_bounds(component, default_min=1, default_max=25)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
         if (supplied or required) and not lo <= len(chosen) <= hi:
@@ -649,20 +668,14 @@ def _modal_leaf(
         data["values"] = chosen
     elif typ == ComponentType.FILE_UPLOAD:
         files = [] if not supplied else _modal_files(value)
-        lo, hi = _modal_bounds(component, default_max=1)
+        lo, hi = _modal_bounds(component, default_min=0, default_max=10)
         if required and not files:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
         if (supplied or required) and not lo <= len(files) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} files")
-        ids = []
+        data["values"] = []
         for filename, blob in files:
-            attachment_id = actor._env.backend.snowflake()
-            attachment = actor._env.backend.cdn.store_attachment(
-                attachment_id, channel_id, filename, blob, None
-            )
-            resolved.setdefault("attachments", {})[str(attachment_id)] = attachment
-            ids.append(str(attachment_id))
-        data["values"] = ids
+            pending_uploads.append((data, filename, blob))
     elif typ == ComponentType.RADIO_GROUP:
         if not supplied:
             if required:
@@ -677,7 +690,7 @@ def _modal_leaf(
         data["value"] = value
     elif typ == ComponentType.CHECKBOX_GROUP:
         chosen = [] if not supplied else _as_values(value)
-        lo, hi = _modal_bounds(component, default_max=10)
+        lo, hi = _modal_bounds(component, default_min=0, default_max=10)
         _ensure_unique(chosen)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
@@ -706,29 +719,22 @@ def _modal_submit_nodes(
     values: dict[str, Any],
     resolved: dict[str, dict[str, Any]],
     channel_id: int,
+    pending_uploads: list[tuple[dict[str, Any], str, bytes]],
 ) -> list[dict[str, Any]]:
     out = []
     for node in nodes:
         typ = node.get("type")
         if typ == ComponentType.TEXT_DISPLAY:
-            continue
-        if typ == ComponentType.ACTION_ROW:
-            children = _modal_submit_nodes(node.get("components") or [], actor, values, resolved, channel_id)
-            if children:
-                item: dict[str, Any] = {"type": ComponentType.ACTION_ROW, "components": children}
-                if node.get("id") is not None:
-                    item["id"] = node["id"]
-                out.append(item)
+            out.append({"type": typ, "id": node["id"]})
+        elif typ == ComponentType.ACTION_ROW:
+            children = _modal_submit_nodes(
+                node.get("components") or [], actor, values, resolved, channel_id, pending_uploads
+            )
+            out.append({"type": typ, "id": node["id"], "components": children})
         elif typ == ComponentType.LABEL:
             child = node.get("component")
-            if child is None or child.get("type") == ComponentType.TEXT_DISPLAY:
-                continue
-            children = _modal_submit_nodes([child], actor, values, resolved, channel_id)
-            if children:
-                item = {"type": ComponentType.LABEL, "component": children[0]}
-                if node.get("id") is not None:
-                    item["id"] = node["id"]
-                out.append(item)
+            children = _modal_submit_nodes([child], actor, values, resolved, channel_id, pending_uploads)
+            out.append({"type": typ, "id": node["id"], "component": children[0]})
         elif typ in {
             ComponentType.TEXT_INPUT,
             *SELECT_TYPES,
@@ -737,8 +743,22 @@ def _modal_submit_nodes(
             ComponentType.CHECKBOX_GROUP,
             ComponentType.CHECKBOX,
         }:
-            out.append(_modal_leaf(actor, node, values, resolved, channel_id))
+            out.append(_modal_leaf(actor, node, values, resolved, channel_id, pending_uploads))
     return out
+
+
+def _commit_modal_uploads(
+    actor: Any,
+    channel_id: int,
+    pending_uploads: list[tuple[dict[str, Any], str, bytes]],
+    resolved: dict[str, dict[str, Any]],
+) -> None:
+    backend = actor._env.backend
+    for data, filename, blob in pending_uploads:
+        attachment_id = backend.snowflake()
+        attachment = backend.cdn.store_attachment(attachment_id, channel_id, filename, blob, None)
+        resolved.setdefault("attachments", {})[str(attachment_id)] = attachment
+        data["values"].append(str(attachment_id))
 
 
 async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, Any]) -> InteractionResult:
@@ -747,16 +767,19 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
         raise SetupError("That interaction did not respond with a modal")
     if not isinstance(values, dict):
         raise SetupError("Modal values must be a dict keyed by custom_id")
+    try:
+        spec = validate_modal(spec)
+    except ValueError as exc:
+        raise SetupError(str(exc)) from exc
+    channel_id = shown._interaction.channel_id
+    _check_user_dm_channel(actor, channel_id)
     controls = _modal_control_map(spec)
     unknown = set(values) - set(controls)
     if unknown:
         raise SetupError(f"Unknown modal custom_id {sorted(unknown)[0]!r}")
-    channel_id = shown._interaction.channel_id
     resolved: dict[str, dict[str, Any]] = {}
-    components = _modal_submit_nodes(spec.get("components") or [], actor, values, resolved, channel_id)
-    data: dict[str, Any] = {"custom_id": spec["custom_id"], "components": components}
-    if resolved:
-        data["resolved"] = resolved
+    pending_uploads: list[tuple[dict[str, Any], str, bytes]] = []
+    components = _modal_submit_nodes(spec["components"], actor, values, resolved, channel_id, pending_uploads)
     backend = actor._env.backend
     source_message_id = shown._interaction.source_message_id
     extra = None
@@ -764,6 +787,10 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
         source = backend.get_message(channel_id, source_message_id)
         extra = {"message": dict(serializers.message_payload(backend, source))}
     channel = ChannelHandle(actor._env, getattr(actor, "guild", None), backend.get_channel(channel_id))
+    _commit_modal_uploads(actor, channel_id, pending_uploads, resolved)
+    data: dict[str, Any] = {"custom_id": spec["custom_id"], "components": components}
+    if resolved:
+        data["resolved"] = resolved
     return await _dispatch_actor_interaction(
         actor,
         InteractionType.MODAL_SUBMIT,

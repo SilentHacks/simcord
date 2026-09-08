@@ -18,7 +18,7 @@ _MAX_COMPONENT_ID = (1 << 32) - 1
 
 # Components which Discord permits in a message's V2 layout.  Action rows are
 # also valid in a V2 container; the remaining values are the Bot UI Kit types.
-_V2_TYPES = {9, 10, 11, 12, 13, 14, 17}
+_V2_TYPES = {9, 10, 12, 13, 14, 17}
 _SELECT_TYPES = {3, 5, 6, 7, 8}
 _V2_CONTAINER_CHILDREN = {1, 9, 10, 12, 13, 14}
 
@@ -137,12 +137,18 @@ def _check_component(
         children = component.get("components")
         if not isinstance(children, list) or not 1 <= len(children) <= 5:
             raise _fail(path, "action rows must contain between 1 and 5 components")
+        child_kinds = []
         for index, child in enumerate(children):
             if not isinstance(child, Mapping):
                 raise _fail(f"{path}.components[{index}]", "must be an object")
             child_kind = _component_type(child, f"{path}.components[{index}]")
             if child_kind not in ({2, *_SELECT_TYPES}):
                 raise _fail(path, "action rows may contain only buttons and select menus")
+            child_kinds.append(child_kind)
+        select_count = sum(child_kind in _SELECT_TYPES for child_kind in child_kinds)
+        if select_count and len(children) != 1:
+            raise _fail(path, "action rows may contain up to five buttons or exactly one select menu")
+        for index, child in enumerate(children):
             _check_component(
                 child,
                 f"{path}.components[{index}]",
@@ -159,9 +165,9 @@ def _check_component(
         if "label" in component and component["label"] is not None:
             _string(component["label"], f"{path}.label", maximum=80)
         if style == 5:  # link button
-            _string(component.get("url"), f"{path}.url", minimum=1)
-            if "custom_id" in component:
-                raise _fail(path, "link buttons cannot have custom_id")
+            _string(component.get("url"), f"{path}.url", minimum=1, maximum=512)
+            if "custom_id" in component or "sku_id" in component:
+                raise _fail(path, "link buttons cannot have custom_id or sku_id")
         elif style == 6:  # premium button
             sku_id = component.get("sku_id")
             if isinstance(sku_id, bool) or not isinstance(sku_id, (int, str)) or not str(sku_id):
@@ -169,6 +175,8 @@ def _check_component(
             if any(key in component for key in ("custom_id", "url", "label", "emoji")):
                 raise _fail(path, "premium buttons cannot have custom_id, url, label, or emoji")
         else:
+            if "url" in component or "sku_id" in component:
+                raise _fail(path, "regular buttons cannot have url or sku_id")
             _string(component.get("custom_id"), f"{path}.custom_id", minimum=1, maximum=100)
             if component["custom_id"] in custom_ids:
                 raise _fail(path, f"custom_id {component['custom_id']!r} is not unique")
@@ -180,7 +188,6 @@ def _check_component(
         ):
             raise _fail(path, "emoji must be an object")
         return
-
     if kind in _SELECT_TYPES:
         _check_select(component, path, custom_ids)
         return
@@ -273,6 +280,191 @@ def _assign_ids(components: list[dict[str, Any]], explicit_ids: set[int]) -> Non
                 next_id += 1
             component["id"] = next_id
             next_id += 1
+
+
+_MODAL_CONTROL_TYPES = {4, *_SELECT_TYPES, 19, 21, 22, 23}
+
+
+def _modal_id(component: Mapping[str, Any], path: str, explicit: set[int]) -> None:
+    value = component.get("id")
+    if value is None or (type(value) is int and value == 0):
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= _MAX_COMPONENT_ID:
+        raise _fail(f"{path}.id", "id must be a positive 32-bit integer")
+    if value in explicit:
+        raise _fail(path, f"id {value} is not unique")
+    explicit.add(value)
+
+
+def _modal_required(component: Mapping[str, Any], path: str) -> None:
+    if "required" in component and not isinstance(component["required"], bool):
+        raise _fail(f"{path}.required", "must be a boolean")
+
+
+def _modal_bounds(component: Mapping[str, Any], path: str, *, default_min: int, default_max: int) -> None:
+    minimum = component.get("min_values")
+    maximum = component.get("max_values")
+    minimum = default_min if minimum is None else minimum
+    maximum = default_max if maximum is None else maximum
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or not 0 <= minimum <= default_max:
+        raise _fail(f"{path}.min_values", f"must be between 0 and {default_max}")
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= default_max:
+        raise _fail(f"{path}.max_values", f"must be between 1 and {default_max}")
+    if minimum > maximum:
+        raise _fail(path, "min_values cannot exceed max_values")
+
+
+def _modal_options(component: Mapping[str, Any], path: str, *, maximum: int, minimum: int = 1) -> None:
+    options = component.get("options")
+    if not isinstance(options, list) or not minimum <= len(options) <= maximum:
+        raise _fail(path, f"options must contain between {minimum} and {maximum} items")
+    values: set[str] = set()
+    for index, option in enumerate(options):
+        option_path = f"{path}.options[{index}]"
+        if not isinstance(option, Mapping):
+            raise _fail(option_path, "must be an object")
+        _string(option.get("label"), f"{option_path}.label", minimum=1, maximum=100)
+        value = _string(option.get("value"), f"{option_path}.value", minimum=1, maximum=100)
+        if value in values:
+            raise _fail(option_path, f"value {value!r} is not unique")
+        values.add(value)
+        if "description" in option and option["description"] is not None:
+            _string(option["description"], f"{option_path}.description", maximum=100)
+        if "emoji" in option and option["emoji"] is not None and not isinstance(option["emoji"], Mapping):
+            raise _fail(f"{option_path}.emoji", "must be an object")
+        if "default" in option and not isinstance(option["default"], bool):
+            raise _fail(f"{option_path}.default", "must be a boolean")
+
+
+def _check_modal_component(
+    component: Mapping[str, Any],
+    path: str,
+    *,
+    parent: str,
+    custom_ids: set[str],
+    explicit_ids: set[int],
+) -> None:
+    kind = _component_type(component, path)
+    _modal_id(component, path, explicit_ids)
+    if kind == 10:
+        if parent != "root":
+            raise _fail(path, "text displays are only valid at the modal root")
+        _string(component.get("content"), f"{path}.content", minimum=1, maximum=4000)
+        return
+    if kind == 18:
+        if parent != "root":
+            raise _fail(path, "labels are only valid at the modal root")
+        _string(component.get("label"), f"{path}.label", minimum=1, maximum=45)
+        if "description" in component and component["description"] is not None:
+            _string(component["description"], f"{path}.description", maximum=100)
+        child = component.get("component")
+        if not isinstance(child, Mapping):
+            raise _fail(f"{path}.component", "must be an object")
+        child_kind = _component_type(child, f"{path}.component")
+        if child_kind not in _MODAL_CONTROL_TYPES:
+            raise _fail(f"{path}.component", "must contain one modal control")
+        _check_modal_component(
+            child,
+            f"{path}.component",
+            parent="label",
+            custom_ids=custom_ids,
+            explicit_ids=explicit_ids,
+        )
+        return
+    if kind == 1:
+        if parent != "root":
+            raise _fail(path, "action rows are only valid at the modal root")
+        children = component.get("components")
+        if not isinstance(children, list) or len(children) != 1:
+            raise _fail(path, "modal action rows must contain exactly one control")
+        child = children[0]
+        if not isinstance(child, Mapping):
+            raise _fail(f"{path}.components[0]", "must be an object")
+        child_kind = _component_type(child, f"{path}.components[0]")
+        if child_kind not in _MODAL_CONTROL_TYPES:
+            raise _fail(f"{path}.components[0]", "must contain one modal control")
+        _check_modal_component(
+            child,
+            f"{path}.components[0]",
+            parent="action_row",
+            custom_ids=custom_ids,
+            explicit_ids=explicit_ids,
+        )
+        return
+    if kind not in _MODAL_CONTROL_TYPES or parent not in {"label", "action_row"}:
+        raise _fail(path, "modal controls must be wrapped by a label or action row")
+
+    custom_id = _string(component.get("custom_id"), f"{path}.custom_id", minimum=1, maximum=100)
+    if custom_id in custom_ids:
+        raise _fail(path, f"custom_id {custom_id!r} is not unique")
+    custom_ids.add(custom_id)
+    if kind == 4:
+        style = component.get("style", 1)
+        if isinstance(style, bool) or not isinstance(style, int) or style not in {1, 2}:
+            raise _fail(f"{path}.style", "must be 1 or 2")
+        if "label" in component and component["label"] is not None:
+            _string(component["label"], f"{path}.label", maximum=45)
+        if "placeholder" in component and component["placeholder"] is not None:
+            _string(component["placeholder"], f"{path}.placeholder", maximum=100)
+        if "default" in component and component["default"] is not None:
+            _string(component["default"], f"{path}.default", maximum=4000)
+        minimum = component.get("min_length", 0)
+        maximum = component.get("max_length", 4000)
+        if isinstance(minimum, bool) or not isinstance(minimum, int) or not 0 <= minimum <= 4000:
+            raise _fail(f"{path}.min_length", "must be between 0 and 4000")
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 4000:
+            raise _fail(f"{path}.max_length", "must be between 1 and 4000")
+        if minimum > maximum:
+            raise _fail(path, "min_length cannot exceed max_length")
+        _modal_required(component, path)
+    elif kind in _SELECT_TYPES:
+        _modal_required(component, path)
+        _modal_bounds(component, path, default_min=1, default_max=25)
+        if "disabled" in component and not isinstance(component["disabled"], bool):
+            raise _fail(f"{path}.disabled", "must be a boolean")
+        if "placeholder" in component and component["placeholder"] is not None:
+            _string(component["placeholder"], f"{path}.placeholder", maximum=150)
+        if kind == 3:
+            _modal_options(component, path, maximum=25)
+    elif kind == 19:
+        _modal_required(component, path)
+        _modal_bounds(component, path, default_min=0, default_max=10)
+    elif kind == 21:
+        _modal_required(component, path)
+        _modal_options(component, path, maximum=10, minimum=2)
+    elif kind == 22:
+        _modal_required(component, path)
+        _modal_bounds(component, path, default_min=0, default_max=10)
+        _modal_options(component, path, maximum=10)
+    elif kind == 23:
+        if "default" in component and not isinstance(component["default"], bool):
+            raise _fail(f"{path}.default", "must be a boolean")
+
+
+def validate_modal(modal: Any) -> dict[str, Any]:
+    """Validate and normalize a modal callback payload."""
+    if not isinstance(modal, Mapping):
+        raise _fail("modal", "must be an object")
+    normalized = deepcopy(dict(modal))
+    _string(normalized.get("custom_id"), "custom_id", minimum=1, maximum=100)
+    _string(normalized.get("title"), "title", minimum=1, maximum=45)
+    components = normalized.get("components")
+    if not isinstance(components, list) or not 1 <= len(components) <= 5:
+        raise _fail("components", "must contain between 1 and 5 components")
+    custom_ids: set[str] = set()
+    explicit_ids: set[int] = set()
+    for index, component in enumerate(components):
+        if not isinstance(component, Mapping):
+            raise _fail(f"components[{index}]", "must be an object")
+        _check_modal_component(
+            component,
+            f"components[{index}]",
+            parent="root",
+            custom_ids=custom_ids,
+            explicit_ids=explicit_ids,
+        )
+    _assign_ids(components, explicit_ids)
+    return normalized
 
 
 def validate_components(components: Any, *, flags: int = 0) -> list[dict[str, Any]]:

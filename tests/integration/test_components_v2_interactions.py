@@ -126,22 +126,13 @@ async def test_modern_modal_values_wrappers_and_component_open_source_message():
             text="Radio",
             component=discord.ui.RadioGroup(
                 custom_id="radio",
-                options=[discord.RadioGroupOption(label="One", value="one")],
+                options=[
+                    discord.RadioGroupOption(label="One", value="one"),
+                    discord.RadioGroupOption(label="Two", value="two"),
+                ],
                 id=34,
             ),
         )
-        checks = discord.ui.Label(
-            text="Checks",
-            component=discord.ui.CheckboxGroup(
-                custom_id="checks",
-                options=[discord.CheckboxGroupOption(label="One", value="one")],
-                required=False,
-                min_values=0,
-                max_values=1,
-                id=35,
-            ),
-        )
-        checked = discord.ui.Label(text="Checked", component=discord.ui.Checkbox(custom_id="checked", id=36))
         help_text = discord.ui.TextDisplay("This is not submitted", id=37)
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -150,8 +141,6 @@ async def test_modern_modal_values_wrappers_and_component_open_source_message():
                 "color": self.color.component.values,
                 "files": [item.filename for item in self.files.component.values],
                 "radio": self.radio.component.value,
-                "checks": self.checks.component.values,
-                "checked": self.checked.component.value,
             }
             captured["data"] = interaction.data
             await interaction.response.edit_message(content="submitted", view=None)
@@ -183,8 +172,6 @@ async def test_modern_modal_values_wrappers_and_component_open_source_message():
                 "color": ["red"],
                 "files": [("note.txt", b"hello")],
                 "radio": "one",
-                "checks": ["one"],
-                "checked": True,
             },
         )
         assert submitted.response.id == original.id
@@ -194,10 +181,9 @@ async def test_modern_modal_values_wrappers_and_component_open_source_message():
             "color": ["red"],
             "files": ["note.txt"],
             "radio": "one",
-            "checks": ["one"],
-            "checked": True,
         }
-        assert all(component["type"] != 10 for component in captured["data"]["components"])
+        assert captured["data"]["components"][-1] == {"type": 10, "id": 37}
+        assert captured["data"]["components"][0]["id"] > 0
         assert captured["data"]["components"][0]["component"]["id"] == 31
         assert captured["data"]["resolved"]["attachments"]
 
@@ -289,7 +275,10 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
             text="Radio",
             component=discord.ui.RadioGroup(
                 custom_id="radio",
-                options=[discord.RadioGroupOption(label="One", value="one")],
+                options=[
+                    discord.RadioGroupOption(label="One", value="one"),
+                    discord.RadioGroupOption(label="Two", value="two"),
+                ],
             ),
         )
         checks = discord.ui.Label(
@@ -328,8 +317,8 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
         await alice.submit_modal(opened, {"color": ["red"]})
     with pytest.raises(simcord.SetupError, match=r"RadioGroup .* expects a string"):
         await alice.submit_modal(opened, {"color": ["red"], "radio": 1})
-    with pytest.raises(simcord.SetupError, match="RadioGroup option 'two' does not exist"):
-        await alice.submit_modal(opened, {"color": ["red"], "radio": "two"})
+    with pytest.raises(simcord.SetupError, match="RadioGroup option 'missing' does not exist"):
+        await alice.submit_modal(opened, {"color": ["red"], "radio": "missing"})
     with pytest.raises(simcord.SetupError, match=r"CheckboxGroup .* expects string values"):
         await alice.submit_modal(opened, {"color": ["red"], "radio": "one", "checks": [1]})
     with pytest.raises(simcord.SetupError, match="CheckboxGroup option 'missing' does not exist"):
