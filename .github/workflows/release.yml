@@ -131,4 +131,4 @@ jobs:
           name: dist
           path: dist/
       # Pinned to a commit SHA rather than the mutable release/v1 branch.
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
