@@ -347,13 +347,9 @@ def _check_modal_component(
     kind = _component_type(component, path)
     _modal_id(component, path, explicit_ids)
     if kind == 10:
-        if parent != "root":
-            raise _fail(path, "text displays are only valid at the modal root")
         _string(component.get("content"), f"{path}.content", minimum=1, maximum=4000)
         return
     if kind == 18:
-        if parent != "root":
-            raise _fail(path, "labels are only valid at the modal root")
         _string(component.get("label"), f"{path}.label", minimum=1, maximum=45)
         if "description" in component and component["description"] is not None:
             _string(component["description"], f"{path}.description", maximum=100)
@@ -372,8 +368,6 @@ def _check_modal_component(
         )
         return
     if kind == 1:
-        if parent != "root":
-            raise _fail(path, "action rows are only valid at the modal root")
         children = component.get("components")
         if not isinstance(children, list) or len(children) != 1:
             raise _fail(path, "modal action rows must contain exactly one control")

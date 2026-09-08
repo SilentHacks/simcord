@@ -7,6 +7,7 @@ from simcord.components import (
     resolve_attachment_references,
     validate_components,
     validate_message_state,
+    validate_modal,
     walk_components,
 )
 
@@ -65,6 +66,136 @@ def valid_file(url="https://cdn.test/file.bin", **extra):
     value = {"type": 13, "file": {"url": url}}
     value.update(extra)
     return value
+
+
+def modal_control(kind, custom_id="control", **extra):
+    value = {"type": kind, "custom_id": custom_id}
+    value.update(extra)
+    return value
+
+
+def modal(*components, custom_id="modal", title="Modal"):
+    return {"custom_id": custom_id, "title": title, "components": list(components)}
+
+
+def label(component, text="Control", **extra):
+    value = {"type": 18, "label": text, "component": component}
+    value.update(extra)
+    return value
+
+
+@pytest.mark.parametrize(
+    "component",
+    [
+        {"type": 10, "content": "intro"},
+        label(modal_control(4, "name")),
+        label(modal_control(3, "choice", options=[{"label": "A", "value": "a"}])),
+        label(modal_control(5, "user")),
+        label(modal_control(19, "files", min_values=0, max_values=2)),
+        label(
+            modal_control(
+                21,
+                "radio",
+                options=[{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+            )
+        ),
+        label(modal_control(22, "checks", options=[{"label": "A", "value": "a"}])),
+        label(modal_control(23, "accepted", default=True)),
+        {"type": 1, "components": [modal_control(4, "row-text")]},
+    ],
+)
+def test_modal_definitions_accept_wrappers_and_normalize_ids(component):
+    original = modal(component)
+    normalized = validate_modal(original)
+
+    assert normalized["custom_id"] == "modal"
+    assert [item["type"] for item in walk_components(normalized["components"])] == [
+        item["type"] for item in walk_components(original["components"])
+    ]
+    assert all(item.get("id", 1) >= 1 for item in walk_components(normalized["components"]))
+    assert all("id" not in item for item in walk_components(original["components"]))
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (None, "modal: must be an object"),
+        ({}, "custom_id: must be a string"),
+        ({"custom_id": "", "title": "T", "components": []}, "custom_id: must be at least 1"),
+        ({"custom_id": "x", "title": "", "components": []}, "title: must be at least 1"),
+        ({"custom_id": "x", "title": "T", "components": None}, "components"),
+        ({"custom_id": "x", "title": "T", "components": [None]}, "must be an object"),
+        (modal(modal_control(4)), "wrapped by a label or action row"),
+        (modal({"type": 18, "label": "x"}), "component: must be an object"),
+        (modal(label({"type": 10, "content": "bad"})), "must contain one modal control"),
+        (modal({"type": 18, "label": "x" * 46, "component": modal_control(4)}), "label"),
+        (modal(label(modal_control(4), description="x" * 101)), "description"),
+        (modal({"type": 1, "components": []}), "exactly one control"),
+        (modal({"type": 1, "components": [None]}), "must be an object"),
+        (modal({"type": 1, "components": [modal_control(10)]}), "must contain one modal control"),
+        (modal(label(modal_control(4, "same")), label(modal_control(4, "same"))), "not unique"),
+        (modal(label(modal_control(4, id=-1))), "id"),
+        (modal(label(modal_control(4, id=True))), "positive 32-bit"),
+        (modal(label(modal_control(4, id=1)), label(modal_control(4, id=1))), "not unique"),
+    ],
+)
+def test_modal_definition_shape_errors_are_reported(payload, message):
+    raises(message, validate_modal, payload)
+
+
+@pytest.mark.parametrize(
+    ("control", "message"),
+    [
+        (modal_control(4, "text", style=True), "style"),
+        (modal_control(4, "text", label="x" * 46), "label"),
+        (modal_control(4, "text", placeholder="x" * 101), "placeholder"),
+        (modal_control(4, "text", default=1), "default"),
+        (modal_control(4, "text", min_length=True), "min_length"),
+        (modal_control(4, "text", max_length=0), "max_length"),
+        (modal_control(4, "text", min_length=3, max_length=2), "cannot exceed"),
+        (modal_control(3, "select", required="yes"), "required"),
+        (modal_control(3, "select", min_values=True), "min_values"),
+        (modal_control(3, "select", max_values=0), "max_values"),
+        (modal_control(3, "select", min_values=2, max_values=1), "cannot exceed"),
+        (modal_control(3, "select", disabled="no"), "disabled"),
+        (modal_control(3, "select", placeholder="x" * 151), "placeholder"),
+        (modal_control(3, "select", options=None), "between 1 and 25"),
+        (modal_control(21, "radio", options=[{"label": "a", "value": "a"}]), "between 2 and 10"),
+        (modal_control(22, "checks", options=[{"label": "a", "value": "a", "default": "yes"}]), "default"),
+        (modal_control(23, "check", default="yes"), "default"),
+    ],
+)
+def test_modal_control_constraints_are_validated(control, message):
+    raises(message, validate_modal, modal(label(control)))
+
+
+def test_modal_options_validate_optional_fields_and_duplicates():
+    valid = modal(
+        label(
+            modal_control(
+                3,
+                "choice",
+                options=[
+                    {
+                        "label": "A",
+                        "value": "a",
+                        "description": None,
+                        "emoji": None,
+                        "default": False,
+                    }
+                ],
+            )
+        )
+    )
+    assert validate_modal(valid)["components"][0]["component"]["custom_id"] == "choice"
+    for options, message in [
+        ([None], "must be an object"),
+        ([{"label": "A", "value": "a"}, {"label": "B", "value": "a"}], "not unique"),
+        ([{"label": "A", "value": "a", "description": "x" * 101}], "description"),
+        ([{"label": "A", "value": "a", "emoji": "bad"}], "emoji"),
+        ([{"label": "A", "value": "a", "default": "bad"}], "default"),
+    ]:
+        raises(message, validate_modal, modal(label(modal_control(3, "choice", options=options))))
 
 
 def validate_v2(*components):
@@ -154,6 +285,12 @@ def test_action_rows_validate_children(children, message):
     if children is not None:
         component["components"] = children
     raises(message, validate_components, [component], flags=V2)
+    raises(
+        "up to five buttons or exactly one select",
+        validate_components,
+        [row(select(custom_id="menu"), button(custom_id="extra"))],
+        flags=V2,
+    )
 
 
 @pytest.mark.parametrize("style", [None, True, 0, 7, "1"])
@@ -174,6 +311,7 @@ def test_buttons_validate_style(style):
 )
 def test_regular_buttons_validate_fields(component, message):
     raises(message, validate_components, [row(component)])
+    raises("regular buttons cannot have url", validate_components, [row(button(url="https://example.test"))])
 
 
 def test_buttons_accept_labels_and_emoji_and_reject_duplicate_custom_ids():
@@ -195,6 +333,16 @@ def test_link_buttons_require_url_and_forbid_custom_id():
     raises("url: must be a string", validate_components, [row(button(style=5, custom_id=None))])
     raises("link buttons cannot have custom_id", validate_components, [row(button(style=5, url="u"))])
     raises("url: must be at least 1", validate_components, [row(button(style=5, custom_id=None, url=""))])
+    validate_components([section(accessory=valid_thumbnail())], flags=V2)
+    raises(
+        "custom_id 'menu' is not unique",
+        validate_components,
+        [
+            row(select(custom_id="menu", options=[{"label": "A", "value": "a"}])),
+            row(select(custom_id="menu", options=[{"label": "B", "value": "b"}])),
+        ],
+    )
+    validate_modal(modal(label(modal_control(23, "unchecked"))))
 
 
 @pytest.mark.parametrize("sku_id", [None, True, False, "", []])
@@ -407,6 +555,14 @@ def test_validate_message_state_accepts_legacy_and_v2_states():
     v2 = validate_message_state([text()], flags=V2, content=None, embeds=[], poll=None, stickers=None)
     assert v2[0]["id"] == 1
     assert validate_message_state([text()], flags=V2, content="", embeds=[], stickers=[])[0]["id"] == 1
+    raises(
+        "require at least one component",
+        validate_message_state,
+        [],
+        flags=V2,
+        content=None,
+        embeds=[],
+    )
 
 
 def test_attachment_references_resolve_for_thumbnails_galleries_and_files_without_mutating_input():
