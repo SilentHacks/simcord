@@ -6,6 +6,7 @@ no test-side re-settle loops, no sleeps, no flaking on executor-backed work.
 
 import asyncio
 import gc
+import sys
 import threading
 import time
 import weakref
@@ -733,7 +734,18 @@ async def test_continuous_progress_cannot_extend_settlement_deadline():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("eager", [False, True])
+@pytest.mark.parametrize(
+    "eager",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                sys.version_info[:2] == (3, 11), reason="Python 3.11 has no eager task factory"
+            ),
+        ),
+    ],
+)
 async def test_custom_and_eager_task_factories_are_supported(eager: bool):
     loop = asyncio.get_running_loop()
     original = loop.get_task_factory()

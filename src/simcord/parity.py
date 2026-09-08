@@ -21,6 +21,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from .http import routes as _routes  # noqa: F401  — importing registers every route handler
 from .http.router import _ROUTES
@@ -32,7 +33,10 @@ GAPS_END_MARKER = "<!-- gaps:end -->"
 OOS_BEGIN_MARKER = "<!-- out-of-scope:begin (generated — do not edit by hand) -->"
 OOS_END_MARKER = "<!-- out-of-scope:end -->"
 
+_R = TypeVar("_R", bound=tuple[str, ...])
+
 _METHOD_ORDER = {"GET": 0, "POST": 1, "PUT": 2, "PATCH": 3, "DELETE": 4}
+
 
 # Friendly titles for the top-level resource each route lives under (its first path
 # segment). Used to group the long flat route lists into per-area sections in the
@@ -65,13 +69,13 @@ def _area_title(area: str) -> str:
     return _AREA_TITLES.get(area, area.replace("-", " ").capitalize())
 
 
-def _grouped_tables[R: tuple[str, ...]](
-    rows: list[R],
+def _grouped_tables(
+    rows: list[_R],
     *,
-    area_of: Callable[[R], str],
+    area_of: Callable[[_R], str],
     admonition: str,
     header: str,
-    row: Callable[[R], str],
+    row: Callable[[_R], str],
 ) -> list[str]:
     """Render ``rows`` as one collapsible table per resource area.
 
@@ -80,7 +84,7 @@ def _grouped_tables[R: tuple[str, ...]](
     care about), titled with the friendly area name and its route count. ``rows``
     are pre-sorted, so each group preserves that order.
     """
-    groups: dict[str, list[R]] = {}
+    groups: dict[str, list[_R]] = {}
     for item in rows:
         groups.setdefault(area_of(item), []).append(item)
     lines: list[str] = []

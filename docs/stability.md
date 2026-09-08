@@ -28,14 +28,14 @@ enumerated with a reason and drift-guarded, so the boundary stays explicit.
 
 ## Supported discord.py
 
-SimCord targets **discord.py 2.7.x** (`discord.py>=2.7,<3`) and is exercised
+SimCord targets **discord.py 2.7.1+** (`discord.py>=2.7.1,<3`) and is exercised
 against it in CI. Because a faithful fake must shadow a few discord.py internals
 (view timeout tasks, parser entry points), simcord verifies them at import via
 `simcord._dpy_internals.verify()` and fails **loudly** with an `ImportError`
 naming what moved, rather than miscompiling silently against an untested release.
 The `<3` ceiling is deliberate: a new discord.py major may move those internals,
 so the range widens only once a release has been tested.
-SimCord supports Python **3.12–3.14**. The settlement engine requires the standard
+SimCord supports and tests Python **3.11–3.14**. The settlement engine uses the standard
 `asyncio` task factory, callback scheduling, and timer-heap capabilities provided there.
 
 ## Public API

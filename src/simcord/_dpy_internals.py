@@ -6,6 +6,7 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 """
 
 import asyncio
+import sys
 from typing import Any
 
 import discord
@@ -25,11 +26,12 @@ def listener_futures(client: discord.Client) -> list[Any]:
 
 def verify() -> None:
     """Sanity-check the discord.py internals this framework relies on."""
-    if (
-        discord.version_info.major != 2 or discord.version_info.minor < 7
+    if discord.version_info.major != 2 or (discord.version_info.minor, discord.version_info.micro) < (
+        7,
+        1,
     ):  # pragma: no cover - guards an unsupported discord.py
         raise ImportError(
-            f"simcord requires discord.py 2.7+; found {discord.__version__}. "
+            f"simcord requires discord.py 2.7.1+; found {discord.__version__}. "
             "Check https://github.com/SilentHacks/simcord for supported versions."
         )
     problems = []
@@ -84,6 +86,25 @@ def verify_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 def is_listener_future(client: discord.Client, waiter: Any) -> bool:
     return any(future is waiter and not future.done() for future in listener_futures(client))
+
+
+def is_wait_for_listener(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
+    """Recognize the CPython 3.11 ``wait_for`` wrapper around a listener future."""
+    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
+        return False
+    wait_for_code = getattr(asyncio.wait_for, "__code__", None)
+    if wait_for_code is None:
+        return False
+    coroutine: Any = task.get_coro()
+    seen: set[int] = set()
+    while coroutine is not None and id(coroutine) not in seen:
+        seen.add(id(coroutine))
+        frame = getattr(coroutine, "cr_frame", None)
+        if frame is not None and frame.f_code is wait_for_code:
+            if is_listener_future(client, frame.f_locals.get("fut")):
+                return True
+        coroutine = getattr(coroutine, "cr_await", None)
+    return False
 
 
 def _stored_wait_futures(client: discord.Client) -> set[Any]:

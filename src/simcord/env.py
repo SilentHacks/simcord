@@ -554,7 +554,9 @@ class Env:
         reason = self._external_waits.get(task)
         if reason:
             return reason
-        if _dpy_internals.is_listener_future(self.bot, waiter):
+        if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
+            self.bot, task
+        ):
             return "discord Client.wait_for listener"
         if _dpy_internals.is_view_wait_future(self.bot, waiter):
             return "discord View/Modal completion"
@@ -590,7 +592,9 @@ class Env:
             waiter = getattr(task, "_fut_waiter", None)
             reason = self._external_waits.get(task)
             if reason is None:
-                if _dpy_internals.is_listener_future(self.bot, waiter):
+                if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
+                    self.bot, task
+                ):
                     reason = "Client.wait_for listener"
                 elif _dpy_internals.is_view_wait_future(self.bot, waiter):
                     reason = "View/Modal completion"

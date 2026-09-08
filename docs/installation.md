@@ -9,8 +9,8 @@ description: "Install SimCord, the discord.py testing framework. Requirements, t
 
 | Requirement | Version |
 | --- | --- |
-| Python | 3.12 or newer |
-| discord.py | 2.7 or newer (`>=2.7,<3`) |
+| Python | 3.11 or newer (tested on 3.11–3.14) |
+| discord.py | 2.7.1 or newer (`>=2.7.1,<3`) |
 
 SimCord has **zero runtime dependencies beyond discord.py itself**. It deliberately never
 opens a socket, so there is no networking stack to install or configure.
@@ -69,8 +69,8 @@ than misbehaving silently mid-test.
 
 ## discord.py compatibility
 
-SimCord targets the discord.py `2.7+` line and is tested in CI against discord.py's
-released versions **and** its `master` branch weekly, so drift is caught early. Because the
+SimCord targets discord.py `2.7.1+` and is tested in CI against released versions
+and its `master` branch weekly, so drift is caught early. Because the
 framework reuses discord.py's own `discord.types` TypedDicts for every payload, wire-shape
 mismatches against a new release surface as static type errors before they reach you.
 

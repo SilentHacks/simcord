@@ -7,7 +7,7 @@
 [![CI](https://github.com/SilentHacks/simcord/actions/workflows/ci.yml/badge.svg)](https://github.com/SilentHacks/simcord/actions/workflows/ci.yml)
 [![Docs](https://app.readthedocs.org/projects/simcord/badge/?version=latest)](https://simcord.readthedocs.io/)
 [![PyPI](https://img.shields.io/pypi/v/simcord)](https://pypi.org/project/simcord/)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://pypi.org/project/simcord/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/simcord/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.7%2B-5865F2)](https://github.com/Rapptz/discord.py)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -68,7 +68,7 @@ Or with uv:
 uv add --dev "simcord[pytest]"
 ```
 
-Requires **Python 3.12+** and **discord.py 2.7+**. No dependencies beyond discord.py itself.
+Requires **Python 3.11+** and **discord.py 2.7.1+**. SimCord is tested on Python **3.11–3.14**. No dependencies beyond discord.py itself.
 
 ## Quickstart
 
