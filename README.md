@@ -68,7 +68,10 @@ Or with uv:
 uv add --dev "simcord[pytest]"
 ```
 
-Requires **Python 3.11+** and **discord.py 2.7.1+**. SimCord is tested on Python **3.11–3.14**. No dependencies beyond discord.py itself.
+Requires **Python >=3.11** (tested on **3.11–3.14**) and **discord.py >=2.7.1,<3**.
+The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow runs against
+upstream `master`, rather than continuously testing every released 2.x version. No
+dependencies beyond discord.py itself.
 
 ## Quickstart
 

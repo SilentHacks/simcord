@@ -50,6 +50,13 @@ using the project's own pinned tools, so a clean commit means a green CI lint.
 - Add a towncrier news fragment in `changes/` for user-visible changes
   (e.g. `changes/42.feature.md`).
 
+## Release
+
+Maintainers update `pyproject.toml`, then consume fragments with
+`uv run towncrier build --version X.Y.Z --yes`. The resulting `CHANGELOG.md` and
+version commit are tagged `vX.Y.Z`; the release workflow verifies the tag,
+quality gates, documentation, and built metadata before publishing.
+
 ## Reporting bugs
 
 A failing test using `simcord` is the perfect bug report. If your bot hits an

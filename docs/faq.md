@@ -96,8 +96,10 @@ Rate limits are deliberately out of scope so tests stay fast; use `inject_error`
 
 ## Which Python and discord.py versions are supported?
 
-Python **3.11–3.14** and discord.py **2.7.1+** are supported and tested. Deterministic
-settlement includes a narrowly bounded compatibility path for Python 3.11. See
+Python **>=3.11** (tested on **3.11–3.14**) and discord.py
+**>=2.7.1,<3** are supported. The locked CI matrix tests discord.py 2.7.1,
+and a separate weekly workflow runs against upstream `master`; other released
+2.x versions in the declared range are not each continuously tested. See
 [Installation](installation.md).
 
 ## Still stuck?
