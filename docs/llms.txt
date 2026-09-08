@@ -35,4 +35,17 @@ The tested bot must be constructible without calling `bot.run()`. Provide a pyte
 - Keep tests offline. Never request or invent a Discord token.
 - Check the parity matrix before assuming a Discord route or event is implemented.
 - Treat `RouteNotImplemented` as a visible parity gap, not as permission to fake success.
-- SimCord supports discord.py 2.7 or newer and Python 3.11 or newer.
+- SimCord requires Python >=3.11, tests Python 3.11–3.14, and declares discord.py
+  >=2.7.1,<3. Locked CI tests discord.py 2.7.1; a separate weekly workflow runs
+  against upstream `master`, not every released 2.x version.
+- In 2.0, dispatched handlers join runnable bot work. Declare intentional external
+  waits with `await env.external_wait(awaitable, reason="...")`; unknown waits time
+  out with diagnostics and can be recovered by a later operation or `env.settle()`.
+  Public operations reject overlap before mutating state.
+
+## Migrating from 1.x
+
+- Replace implicit or coroutine-name parking with `env.external_wait(..., reason="...")`.
+- To avoid production coupling, inject the test environment's wait adapter only in
+  tests and use the normal awaitable in production, or keep indefinite waits outside
+  dispatched handlers in your application's supervisor.

@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import math
 import time
-from typing import Any
+import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import wraps
+from typing import Any, cast
 
 import discord
 
@@ -16,20 +23,35 @@ from .builders import GuildHandle, UserHandle
 from .gateway import ShardRouter
 from .http import FakeHTTPClient, FakeWebhookAdapter
 
+_BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.ContextVar(
+    "simcord_bot_scope", default=None
+)
+
+
+@dataclass(slots=True)
+class _TaskRecord:
+    generation: int
+    label: str
+    owner: weakref.ReferenceType[asyncio.Task[Any]] | None
+    inspection_waiting: bool = False
+
+
+@dataclass(slots=True)
+class _CallbackRecord:
+    handle: asyncio.Handle | None
+    when: float | None
+    label: str
+
+
+def _current_task() -> asyncio.Task[Any] | None:
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
 
 class Env:
-    """A running test environment around a single bot.
-
-    Use via :func:`simcord.run`::
-
-        async with simcord.run(bot) as env:
-            guild = env.create_guild()
-            ...
-
-    Only one ``Env`` may be live per event loop at a time: ``start()``
-    monkeypatches ``loop.create_task`` to track the bot's tasks, and nesting two
-    environments on one loop would corrupt each other's task bookkeeping.
-    """
+    """A running test environment around a single bot."""
 
     def __init__(
         self,
@@ -39,25 +61,33 @@ class Env:
         check_errors: bool = True,
         approved_intents: discord.Intents | None = None,
         shard_count: int | None = None,
+        settle_timeout: float = 5.0,
     ) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
         self.check_errors = check_errors
-        #: Simulates the developer-portal privileged-intent toggles. ``None``
-        #: (the default) means everything is approved; pass an Intents with
-        #: e.g. ``members=False`` to make start() fail with
-        #: :class:`discord.PrivilegedIntentsRequired`, as a real connect would.
         self.approved_intents = approved_intents
-        #: Simulator-side shard recommendation for an AutoShardedClient that
-        #: normally discovers its count from Discord's Get Gateway Bot endpoint.
         self.requested_shard_count = shard_count
+        self.settle_timeout = self._validate_timeout(settle_timeout, "settle_timeout")
         self.backend = Backend()
         self._errors: list[BaseException] = []
+        self._error_ids: set[int] = set()
         self._errors_inspected = False
         self._guilds: list[GuildHandle] = []
-        self._tasks: list[asyncio.Task[Any]] = []
+        self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
+        self._callbacks: list[_CallbackRecord] = []
+        self._generation = 0
+        self._external_waits: dict[asyncio.Task[Any], str] = {}
+        self._operation_task: asyncio.Task[Any] | None = None
+        self._operation_depth = 0
+        self._operation_label: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._orig_create_task: Any = None
+        self._orig_call_soon: Any = None
+        self._orig_call_later: Any = None
+        self._orig_call_at: Any = None
+        self._orig_call_soon_threadsafe: Any = None
+        self._orig_run_in_executor: Any = None
         self._orig_monotonic: Any = None
         self._time_offset = 0.0
         self._adapter_token: Any = None
@@ -65,40 +95,80 @@ class Env:
         self._shard_count = 1
         self._shard_ids = (0,)
         self._started = False
+        self._last_dispatch: str | None = None
 
-    # ------------------------------------------------------------- lifecycle
+    @staticmethod
+    def _validate_timeout(value: float, name: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise SetupError(f"{name} must be a finite non-negative number")
+        if value < 0:
+            raise SetupError(f"{name} must be a finite non-negative number")
+        return float(value)
+
+    @staticmethod
+    def _validate_idle(value: float) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise SetupError("idle must be a finite positive number")
+        if value <= 0:
+            raise SetupError("idle must be a finite positive number")
+        return float(value)
+
+    @contextmanager
+    def _bot_scope(self) -> Iterator[None]:
+        token = _BOT_SCOPE.set((self, self._generation))
+        try:
+            yield
+        finally:
+            _BOT_SCOPE.reset(token)
+
+    def _begin_operation(self, label: str) -> asyncio.Task[Any] | None:
+        scope = _BOT_SCOPE.get()
+        if scope is not None and scope[0] is self:
+            raise SetupError(f"bot-owned work cannot call simcord operation {label}")
+        current = _current_task()
+        if self._operation_task is not None and self._operation_task is not current:
+            active = self._operation_label or "another operation"
+            raise SetupError(f"operation overlaps active {active}")
+        if self._operation_task is None:
+            self._operation_task = current
+            self._operation_label = label
+        self._operation_depth += 1
+        return current
+
+    def _end_operation(self, _token: asyncio.Task[Any] | None) -> None:
+        if self._operation_depth:
+            self._operation_depth -= 1
+        if not self._operation_depth:
+            self._operation_task = None
+            self._operation_label = None
 
     async def start(self) -> None:
-        if self._started:
-            raise SetupError("Env already started")
-        self._started = True
-        self._loop = asyncio.get_running_loop()
-        await self._attach_bot(self.bot)
+        token = self._begin_operation("start")
+        try:
+            if self._started:
+                raise SetupError("Env already started")
+            self._started = True
+            self._loop = asyncio.get_running_loop()
+            await self._attach_bot(self.bot)
+        finally:
+            self._end_operation(token)
 
     async def restart_bot(self, bot: discord.Client | None = None) -> None:
-        """Simulate a bot restart while the virtual world persists.
-
-        Detaches the current bot, attaches ``bot`` (or the same instance if
-        omitted), and replays ``GUILD_CREATE`` for every existing guild so the
-        new client's cache repopulates exactly as on a first run — letting tests
-        prove that persistent views (``bot.add_view`` in ``setup_hook``)
-        re-attach to messages they never saw created.
-
-        Pass a freshly built client for a faithful restart: re-running the same
-        instance re-executes ``setup_hook`` (which typically reloads extensions
-        and would fail). The virtual clock is preserved — the world does not
-        rewind. Errors the old bot raised are preserved too: a restart does not
-        launder away un-inspected bot bugs.
-        """
-        if not self._started:
-            raise SetupError("Env not started; use restart_bot() only inside simcord.run()")
-        await self.settle()
-        await self._detach_bot()
-        await self._attach_bot(bot or self.bot)
-        for handle in self._guilds:
-            guild = self.backend.get_guild(handle.id)
-            self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
-        await self.settle()
+        """Drain the old generation, detach it, and attach a fresh bot."""
+        token = self._begin_operation("restart_bot")
+        try:
+            if not self._started:
+                raise SetupError("Env not started; use restart_bot() only inside simcord.run()")
+            await self._settle_internal()
+            await self._detach_bot()
+            await self._attach_bot(bot or self.bot)
+            for handle in self._guilds:
+                guild = self.backend.get_guild(handle.id)
+                with self._bot_scope():
+                    self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
+            await self._settle_internal(timeout=5.0)
+        finally:
+            self._end_operation(token)
 
     def _resolve_shards(self, bot: discord.Client) -> tuple[int, tuple[int, ...]]:
         requested = self.requested_shard_count
@@ -106,7 +176,6 @@ class Env:
             if requested is not None:
                 raise SetupError("shard_count is only valid for discord.AutoShardedClient")
             return 1, (0,)
-
         configured = bot.shard_count
         if configured is not None and requested is not None and configured != requested:
             raise SetupError(
@@ -120,7 +189,6 @@ class Env:
             )
         if not isinstance(shard_count, int) or isinstance(shard_count, bool) or shard_count < 1:
             raise SetupError("shard_count must be a positive integer")
-
         shard_ids = tuple(bot.shard_ids) if bot.shard_ids is not None else tuple(range(shard_count))
         if not shard_ids:
             raise SetupError("AutoShardedClient must have at least one active shard")
@@ -131,36 +199,214 @@ class Env:
             raise SetupError(f"shard_ids must be unique integers between 0 and {shard_count - 1}")
         return shard_count, shard_ids
 
+    def _context_for_scope(
+        self,
+        context: contextvars.Context,
+        scope: tuple[Any, int] | None,
+    ) -> contextvars.Context:
+        context = context.copy()
+        context.run(_BOT_SCOPE.set, scope if scope is not None and scope[0] is self else None)
+        return context
+
+    def _inspect_task_result(
+        self,
+        completed: asyncio.Task[Any],
+        record: _TaskRecord | None,
+        *,
+        force: bool = False,
+    ) -> None:
+        if record is None or self._task_records.get(completed) is not record:
+            return
+        if not completed.done():
+            return
+        if completed.cancelled():
+            self._task_records.pop(completed, None)
+            return
+        error = getattr(completed, "_exception", None)
+        if error is None or not getattr(completed, "_log_traceback", False):
+            self._task_records.pop(completed, None)
+            return
+        owner = record.owner() if record.owner is not None else None
+        if not force and owner is not None and owner is not completed and not owner.done():
+            if not record.inspection_waiting:
+                record.inspection_waiting = True
+
+                def retry(_owner: asyncio.Task[Any]) -> None:
+                    if self._loop is None:
+                        self._inspect_task_result(completed, record)
+                    else:
+                        self._loop.call_soon(self._inspect_task_result, completed, record)
+
+                owner.add_done_callback(retry)
+            return
+        self._record_error(error)
+        completed.exception()
+        self._task_records.pop(completed, None)
+
+    def _track_task(self, task: asyncio.Task[Any], generation: int, label: str) -> None:
+        owner = _current_task()
+        self._task_records[task] = _TaskRecord(
+            generation,
+            label,
+            weakref.ref(owner) if owner is not None else None,
+        )
+
+        def done(completed: asyncio.Task[Any]) -> None:
+            record = self._task_records.get(completed)
+            if self._loop is None:
+                self._inspect_task_result(completed, record)
+                return
+            self._loop.call_soon(self._inspect_task_result, completed, record)
+
+        task.add_done_callback(done)
+
+    def _track_callback(
+        self,
+        original: Any,
+        callback: Any,
+        args: tuple[Any, ...],
+        *,
+        context: contextvars.Context | None,
+        when: float | None,
+        schedule_args: tuple[Any, ...] = (),
+    ) -> asyncio.Handle:
+        bound_task = getattr(callback, "__self__", None)
+        if isinstance(bound_task, asyncio.Task):
+            owner_record = self._task_records.get(bound_task)
+            scope = (
+                (self, owner_record.generation)
+                if owner_record is not None
+                else context.get(_BOT_SCOPE)
+                if context is not None
+                else None
+            )
+        else:
+            scope = _BOT_SCOPE.get()
+        schedule_context = self._context_for_scope(context, scope) if context is not None else context
+        if scope is None or scope[0] is not self:
+            return original(*schedule_args, callback, *args, context=schedule_context)
+        label = getattr(callback, "__qualname__", None) or getattr(
+            callback, "__name__", type(callback).__name__
+        )
+        record = _CallbackRecord(None, when, label)
+        called = False
+
+        def invoke(*call_args: Any) -> None:
+            nonlocal called
+            called = True
+            if record.handle is not None:
+                try:
+                    self._callbacks.remove(record)
+                except ValueError:
+                    pass
+            try:
+                callback(*call_args)
+            except BaseException as error:
+                self._record_error(error)
+                raise
+
+        invoke.__simcord_original_callback__ = callback
+        handle = original(*schedule_args, invoke, *args, context=schedule_context)
+        record.handle = handle
+        if not called:
+            self._callbacks.append(record)
+        return handle
+
     async def _attach_bot(self, bot: discord.Client) -> None:
-        """Install the fakes onto ``bot`` and bring it to READY. Shared by
-        :meth:`start` and :meth:`restart_bot`."""
+        """Install fakes, start a new bot generation, and bring it to READY."""
         self.bot = bot
         loop = self._loop
         assert loop is not None
-        # Validate before installing process-wide patches so a bad topology
-        # cannot leak task/clock/webhook replacements into the next test.
+        _dpy_internals.verify_loop(loop)
+        self._generation += 1
         self._shard_count, self._shard_ids = self._resolve_shards(bot)
 
-        # Track every task spawned while the env is live so settle() can wait
-        # for the bot to finish reacting without guessing with sleeps.
         self._orig_create_task = loop.create_task
+        self._orig_call_soon = loop.call_soon
+        self._orig_call_later = loop.call_later
+        self._orig_call_at = loop.call_at
+        self._orig_call_soon_threadsafe = loop.call_soon_threadsafe
+        self._orig_run_in_executor = loop.run_in_executor
 
         def tracking_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+            scope = _BOT_SCOPE.get()
+            context = kwargs.get("context")
+            if context is not None:
+                kwargs["context"] = self._context_for_scope(context, scope)
+            label = _dpy_internals.task_label(coro) if scope is not None and scope[0] is self else None
             task = self._orig_create_task(coro, **kwargs)
-            self._tasks.append(task)
+            if not isinstance(task, asyncio.Task):
+                raise SetupError("simcord requires the loop task factory to return asyncio.Task objects")
+            if label is not None:
+                assert scope is not None
+                self._track_task(task, scope[1], label)
             return task
 
-        loop.create_task = tracking_create_task  # type: ignore[method-assign]
+        def call_soon(
+            callback: Any, *args: Any, context: contextvars.Context | None = None
+        ) -> asyncio.Handle:
+            return self._track_callback(self._orig_call_soon, callback, args, context=context, when=None)
 
-        # Virtual clock: time.monotonic() = real monotonic + offset, so
-        # advance_time() can fast-forward view timeouts, cooldown buckets and
-        # asyncio timers without real waiting. One patch covers everything:
-        # BaseEventLoop.time() and discord.py's deadline checks both read
-        # time.monotonic at call time. Restored on shutdown. The offset survives
-        # restarts so the world's clock does not rewind.
+        def call_later(
+            delay: float, callback: Any, *args: Any, context: contextvars.Context | None = None
+        ) -> asyncio.TimerHandle:
+            return cast(
+                asyncio.TimerHandle,
+                self._track_callback(
+                    self._orig_call_later,
+                    callback,
+                    args,
+                    context=context,
+                    when=loop.time() + delay,
+                    schedule_args=(delay,),
+                ),
+            )
+
+        def call_at(
+            when: float, callback: Any, *args: Any, context: contextvars.Context | None = None
+        ) -> asyncio.TimerHandle:
+            return cast(
+                asyncio.TimerHandle,
+                self._track_callback(
+                    self._orig_call_at,
+                    callback,
+                    args,
+                    context=context,
+                    when=when,
+                    schedule_args=(when,),
+                ),
+            )
+
+        def call_soon_threadsafe(
+            callback: Any, *args: Any, context: contextvars.Context | None = None
+        ) -> asyncio.Handle:
+            return self._track_callback(
+                self._orig_call_soon_threadsafe, callback, args, context=context, when=None
+            )
+
+        def run_in_executor(executor: Any, func: Any, *args: Any) -> Any:
+            scope = _BOT_SCOPE.get()
+            if scope is None or scope[0] is not self:
+                return self._orig_run_in_executor(executor, func, *args)
+
+            def owned_call(*call_args: Any) -> Any:
+                token = _BOT_SCOPE.set(scope)
+                try:
+                    return func(*call_args)
+                finally:
+                    _BOT_SCOPE.reset(token)
+
+            return self._orig_run_in_executor(executor, owned_call, *args)
+
+        loop.create_task = tracking_create_task  # type: ignore[method-assign]
+        loop.call_soon = call_soon  # type: ignore[method-assign]
+        loop.call_later = call_later  # type: ignore[method-assign]
+        loop.call_at = call_at  # type: ignore[method-assign]
+        loop.call_soon_threadsafe = call_soon_threadsafe  # type: ignore[method-assign]
+        loop.run_in_executor = run_in_executor  # type: ignore[method-assign]
+
         self._orig_monotonic = time.monotonic
         time.monotonic = lambda: self._orig_monotonic() + self._time_offset
-
         _dpy_internals.install_http(bot, FakeHTTPClient(self.backend, loop))
         _dpy_internals.set_guild_ready_timeout(bot, 0.0)
         self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
@@ -169,44 +415,44 @@ class Env:
         state.shard_count = self._shard_count
         state.shard_ids = list(self._shard_ids)
         router = ShardRouter(self.backend, state, bot.dispatch, self._shard_count, self._shard_ids)
-        self._gateway_feed = router.feed
-        self.backend.subscribers.append(router.feed)
+        raw_feed = router.feed
+
+        def windowed_feed(event: str, payload: Any) -> None:
+            with self._bot_scope():
+                raw_feed(event, payload)
+
+        self._gateway_feed = windowed_feed
+        self.backend.subscribers.append(windowed_feed)
         if not isinstance(bot, discord.AutoShardedClient):
             _dpy_internals.install_websocket(bot, router.websockets[0])
-
         try:
             self._capture_errors()
-            # Simulated developer-portal check: a real IDENTIFY with an
-            # unapproved privileged intent is rejected with close code 4014,
-            # which discord.py surfaces as PrivilegedIntentsRequired.
             if self.approved_intents is not None and _intents.missing_privileged_intents(
                 bot.intents, self.approved_intents
             ):
                 raise discord.PrivilegedIntentsRequired(shard_id=self._shard_ids[0])
-            # Runs the real login flow: identity, application info, setup_hook
-            # (where bots typically load extensions and sync their command tree).
-            await bot.login("simcord.fake.token")
-            # Production does not expose launched shards during setup_hook:
-            # connect() populates them only after login has completed.
-            if isinstance(bot, discord.AutoShardedClient):
-                bot.shard_count = self._shard_count
-                _dpy_internals.install_shards(bot, router.shards)
-            for shard_id in self._shard_ids:
-                router.identify(shard_id)
-            await self.settle()
+            with self._bot_scope():
+                await bot.login("simcord.fake.token")
+                if isinstance(bot, discord.AutoShardedClient):
+                    bot.shard_count = self._shard_count
+                    _dpy_internals.install_shards(bot, router.shards)
+                for shard_id in self._shard_ids:
+                    router.identify(shard_id)
+            await self._settle_internal(timeout=5.0)
         except BaseException:
-            # Setup (e.g. setup_hook) blew up: undo the global monkeypatches so
-            # we don't leak the patched loop.create_task / webhook adapter into
-            # whatever runs next on this loop.
             await self._detach_bot()
             raise
 
     async def shutdown(self) -> None:
-        await self._detach_bot()
+        token = self._begin_operation("shutdown")
+        try:
+            await self._detach_bot()
+            self._started = False
+        finally:
+            self._end_operation(token)
 
     async def _detach_bot(self) -> None:
-        """Undo the current bot's patches and stop tracking it. Leaves the
-        backend (the virtual world) intact so a restart can re-attach to it."""
+        """Detach bot machinery and cancel bot-owned work only."""
         if self._gateway_feed is not None:
             try:
                 self.backend.subscribers.remove(self._gateway_feed)
@@ -218,120 +464,303 @@ class Env:
         if self._adapter_token is not None:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
             self._adapter_token = None
+        current = _current_task()
+        while True:
+            to_cancel = [task for task in self._task_records if task is not current and not task.done()]
+            if not to_cancel:
+                await asyncio.sleep(0)
+                if not any(task is not current and not task.done() for task in self._task_records):
+                    break
+                continue
+            for task in to_cancel:
+                task.cancel()
+            await asyncio.gather(*to_cancel, return_exceptions=True)
+            for task in to_cancel:
+                if not task.cancelled() and (error := task.exception()) is not None:
+                    self._record_error(error)
+            await asyncio.sleep(0)
+
+        for task, record in list(self._task_records.items()):
+            if task.done():
+                self._inspect_task_result(task, record, force=True)
+        for record in self._callbacks:
+            if record.handle is not None:
+                record.handle.cancel()
+        self._callbacks.clear()
         if self._loop is not None and self._orig_create_task is not None:
             self._loop.create_task = self._orig_create_task  # type: ignore[method-assign]
+            self._loop.call_soon = self._orig_call_soon  # type: ignore[method-assign]
+            self._loop.call_later = self._orig_call_later  # type: ignore[method-assign]
+            self._loop.call_at = self._orig_call_at  # type: ignore[method-assign]
+            self._loop.call_soon_threadsafe = self._orig_call_soon_threadsafe  # type: ignore[method-assign]
+            self._loop.run_in_executor = self._orig_run_in_executor  # type: ignore[method-assign]
             self._orig_create_task = None
+            self._orig_call_soon = None
+            self._orig_call_later = None
+            self._orig_call_at = None
+            self._orig_call_soon_threadsafe = None
+            self._orig_run_in_executor = None
         if self._orig_monotonic is not None:
             time.monotonic = self._orig_monotonic
             self._orig_monotonic = None
-        current = asyncio.current_task()
-        to_cancel = [t for t in self._tasks if t is not current and not t.done()]
-        for task in to_cancel:
-            task.cancel()
-        await asyncio.gather(*to_cancel, return_exceptions=True)
-        self._tasks = []
+        self._task_records.clear()
+        self._external_waits.clear()
 
-    async def settle(self, timeout: float = 5.0, idle: float = 0.05) -> None:  # noqa: ASYNC109
-        # `timeout` is deliberate public API: settle() polls for quiescence and
-        # decides between "parked on a future" and "still working", so it can't
-        # be replaced by wrapping the body in asyncio.timeout().
-        """Wait until the bot has finished reacting to injected events.
+    async def external_wait(self, awaitable: Any, *, reason: str) -> Any:
+        """Await one explicitly declared external input without blocking settlement."""
+        task = _current_task()
+        record = self._task_records.get(task) if task is not None else None
+        if not isinstance(reason, str) or not reason.strip():
+            message = "external_wait reason must be a non-empty string"
+        elif record is None:
+            message = "external_wait must run inside bot-owned work"
+        elif task in self._external_waits:
+            message = "external_wait declarations cannot be nested"
+        else:
+            message = None
+        if message is not None:
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise SetupError(message)
+        assert task is not None
+        self._external_waits[task] = reason.strip()
+        try:
+            return await awaitable
+        finally:
+            self._external_waits.pop(task, None)
 
-        Waits for all tracked tasks to complete. A task that completes no work
-        within an ``idle`` window is only abandoned if it is genuinely parked on
-        a future (e.g. blocked in ``wait_for`` for a later user action) — if the
-        loop still has timers scheduled to fire before ``timeout`` (e.g. an
-        ``asyncio.sleep`` in a cooldown or backoff), we keep waiting for them.
-        If pending tasks neither finish nor park before ``timeout``, a
-        ``TimeoutError`` with the pending tasks is raised.
-        """
+    async def settle(
+        self,
+        timeout: float | None = None,  # noqa: ASYNC109
+        idle: float = 0.05,
+    ) -> None:
+        """Join all runnable bot-owned work, leaving only recognized waits."""
+        token = self._begin_operation("settle")
+        try:
+            await self._settle_internal(timeout=timeout, idle=idle)
+        finally:
+            self._end_operation(token)
+
+    async def _settle_internal(
+        self,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109
+        idle: float = 0.05,
+        dispatch: str | None = None,
+    ) -> None:
+        effective = self.settle_timeout if timeout is None else self._validate_timeout(timeout, "timeout")
+        interval = self._validate_idle(idle)
         assert self._loop is not None
-        deadline = self._loop.time() + timeout
-        # Give freshly-scheduled callbacks a chance to run first.
-        for _ in range(3):
-            await asyncio.sleep(0)
+        self._last_dispatch = dispatch
+        deadline = self._loop.time() + effective
+        stable_empty = 0
         while True:
-            self._tasks = [t for t in self._tasks if not t.done()]
-            pending = [
-                t
-                for t in self._tasks
-                if getattr(t.get_coro(), "__qualname__", "").split(".")[-1]
-                not in _dpy_internals.BACKGROUND_CORO_NAMES
+            await asyncio.sleep(0)
+            pending = [task for task in self._owned_tasks() if not task.done()]
+            callbacks = self._active_callbacks(deadline)
+            if not pending and not callbacks:
+                stable_empty += 1
+                if stable_empty >= 2:
+                    return
+                continue
+            stable_empty = 0
+            parked = [task for task in pending if self._is_parked(task, deadline)]
+            active_callbacks = [
+                record for record in callbacks if not self._callback_is_parked(record, deadline)
             ]
-            if not pending:
-                return
-            done, _ = await asyncio.wait(pending, timeout=idle, return_when=asyncio.FIRST_COMPLETED)
-            if done:
-                continue  # progress made — re-evaluate what is still pending
-            if self._loop.time() > deadline:
-                raise TimeoutError(f"bot did not settle; pending tasks: {pending}")
-            next_timer = self._next_scheduled_timer()
-            if next_timer is None or next_timer > deadline:
-                # No imminent timer: the remaining tasks are parked on futures
-                # waiting for input we will never deliver. Leave them running.
-                return
-            # A timer (e.g. asyncio.sleep) is due before the deadline; loop and
-            # wait for the work it will wake up.
+            if not active_callbacks and len(parked) == len(pending):
+                # Recheck after another loop turn so a resumed continuation or
+                # callback scheduled by a just-finished task cannot escape.
+                await asyncio.sleep(0)
+                again = [task for task in self._owned_tasks() if not task.done()]
+                again_callbacks = [
+                    record
+                    for record in self._active_callbacks(deadline)
+                    if not self._callback_is_parked(record, deadline)
+                ]
+                if not again_callbacks and all(self._is_parked(task, deadline) for task in again):
+                    return
+                continue
+            remaining = deadline - self._loop.time()
+            if remaining <= 0:
+                stuck = [task for task in pending if task not in parked]
+                raise TimeoutError(self._settle_timeout_message(stuck, pending, effective, active_callbacks))
+            wait_for = min(interval, remaining)
+            if pending:
+                await asyncio.wait(pending, timeout=wait_for, return_when=asyncio.FIRST_COMPLETED)
+            else:
+                await asyncio.sleep(wait_for)
+            # A busy task can make progress forever. The deadline is absolute,
+            # so progress never extends it.
+            if self._loop.time() >= deadline:
+                pending = [task for task in self._owned_tasks() if not task.done()]
+                parked = [task for task in pending if self._is_parked(task, deadline)]
+                active_callbacks = [
+                    record
+                    for record in self._active_callbacks(deadline)
+                    if not self._callback_is_parked(record, deadline)
+                ]
+                if active_callbacks or len(parked) != len(pending):
+                    raise TimeoutError(
+                        self._settle_timeout_message(
+                            [task for task in pending if task not in parked],
+                            pending,
+                            effective,
+                            active_callbacks,
+                        )
+                    )
+
+    def _owned_tasks(self) -> list[asyncio.Task[Any]]:
+        return [task for task in self._task_records if not task.done()]
+
+    def _active_callbacks(self, _deadline: float) -> list[_CallbackRecord]:
+        live = [
+            record
+            for record in self._callbacks
+            if record.handle is not None and not record.handle.cancelled()
+        ]
+        self._callbacks = live
+        return live
+
+    def _callback_is_parked(self, record: _CallbackRecord, deadline: float) -> bool:
+        return record.when is not None and record.when > deadline
+
+    def _is_parked(self, task: asyncio.Task[Any], deadline: float) -> bool:
+        return self._park_reason(task, deadline) is not None
+
+    def _park_reason(
+        self, task: asyncio.Task[Any], deadline: float, seen: set[int] | None = None
+    ) -> str | None:
+        if task.done():
+            return "completed"
+        seen = set() if seen is None else seen
+        if id(task) in seen:
+            return None
+        seen.add(id(task))
+        waiter = getattr(task, "_fut_waiter", None)
+        if waiter is None or waiter.done():
+            return None
+        reason = self._external_waits.get(task)
+        if reason:
+            return reason
+        if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
+            self.bot, task
+        ):
+            return "discord Client.wait_for listener"
+        if _dpy_internals.is_view_wait_future(self.bot, waiter):
+            return "discord View/Modal completion"
+        dependencies = _dpy_internals.composed_tasks(task, waiter)
+        unresolved = [dependency for dependency in dependencies if not dependency.done()]
+        if unresolved:
+            reasons: list[str] = []
+            for dependency in unresolved:
+                if isinstance(dependency, asyncio.Task):
+                    if dependency not in self._task_records:
+                        break
+                    reason = self._park_reason(dependency, deadline, seen)
+                elif _dpy_internals.is_listener_future(self.bot, dependency):
+                    reason = "discord Client.wait_for listener"
+                elif _dpy_internals.is_view_wait_future(self.bot, dependency):
+                    reason = "discord View/Modal completion"
+                else:
+                    break
+                if reason is None:
+                    break
+                reasons.append(reason)
+            else:
+                if reasons and all(reason is not None for reason in reasons):
+                    return "composed external wait"
+        if _dpy_internals.is_sleep_waiter(waiter, self._loop, deadline):
+            return "sleep timer beyond settlement deadline"
+        return None
+
+    def _settle_timeout_message(
+        self,
+        stuck: list[asyncio.Task[Any]],
+        all_pending: list[asyncio.Task[Any]],
+        effective: float,
+        callbacks: list[_CallbackRecord],
+    ) -> str:
+        lines = ["bot did not settle"]
+        if self._last_dispatch:
+            lines[0] += f" after {self._last_dispatch}"
+        lines[0] += (
+            f" (timeout={effective:g}s); state may already have changed and outstanding work remains tracked"
+        )
+        for task in stuck:
+            record = self._task_records.get(task)
+            label = record.label if record is not None else _dpy_internals.task_label(task.get_coro())
+            waiter = getattr(task, "_fut_waiter", None)
+            reason = self._external_waits.get(task)
+            if reason is None:
+                if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
+                    self.bot, task
+                ):
+                    reason = "Client.wait_for listener"
+                elif _dpy_internals.is_view_wait_future(self.bot, waiter):
+                    reason = "View/Modal completion"
+                elif waiter is None:
+                    reason = "runnable continuation"
+                else:
+                    reason = f"unknown wait ({type(waiter).__name__})"
+            generation = record.generation if record is not None else self._generation
+            lines.append(f"  bot-owned generation {generation} {label}: {reason}")
+        if callbacks:
+            lines.append("  bot-owned callbacks pending:")
+            for record in callbacks:
+                lines.append(f"    {record.label}")
+        lines.append(
+            "  use await env.external_wait(...) for intentional external input; "
+            "use await env.advance_time(...) for virtual timers"
+        )
+        if len(all_pending) > len(stuck):
+            lines.append(f"  {len(all_pending) - len(stuck)} recognized waits remain parked")
+        return "\n".join(lines)
 
     def _next_scheduled_timer(self) -> float | None:
-        """The earliest live ``call_later`` deadline on the loop, if any.
-
-        Used by :meth:`settle` to tell ``asyncio.sleep``-style pauses (which
-        schedule a timer) apart from tasks parked indefinitely on a future
-        (which do not). Best-effort: relies on the standard loop's internals
-        and degrades to ``None`` if they are unavailable.
-        """
-        scheduled = getattr(self._loop, "_scheduled", None)
-        if not scheduled:
-            return None
-        times = [h.when() for h in scheduled if not h.cancelled()]
+        scheduled = getattr(self._loop, "_scheduled", ())
+        times = [handle.when() for handle in scheduled if not handle.cancelled()]
         return min(times) if times else None
 
     async def advance_time(self, seconds: float) -> None:
-        """Fast-forward the virtual clock, firing every timer that becomes due.
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
+            raise SetupError("seconds must be a finite non-negative number")
+        if seconds < 0:
+            raise SetupError("seconds must be a finite non-negative number")
+        token = self._begin_operation("advance_time")
+        try:
+            assert self._loop is not None
+            await self._settle_internal()
+            self.backend.advance_clock(float(seconds))
+            self.backend.expire_due_polls()
+            self.backend.activate_due_scheduled_events()
+            await self._settle_internal()
+            remaining = float(seconds)
+            while remaining > 0:
+                next_timer = self._next_scheduled_timer()
+                now = self._loop.time()
+                if next_timer is None or next_timer - now > remaining:
+                    self._time_offset += remaining
+                    break
+                step = max(next_timer - now, 0.0)
+                self._time_offset += step
+                remaining -= step
+                await asyncio.sleep(0)
+                await self._settle_internal()
+        finally:
+            self._end_operation(token)
 
-        View timeouts, cooldown resets, ``asyncio.sleep`` chains — anything the
-        bot scheduled against the loop's clock — fire as if ``seconds`` of real
-        time had passed, without waiting. Timers are consumed in order (a chain
-        of three 60s sleeps completes within ``advance_time(180)``), and the
-        bot's reactions are settled after each step.
-        """
-        assert self._loop is not None
-        await self.settle()
-        # Cooldowns and age math derive from message/interaction timestamps, so
-        # the backend's virtual wall clock must advance in step with the loop's.
-        self.backend.advance_clock(seconds)
-        # Polls finalize on a wall-clock deadline rather than a loop timer, so
-        # fast-forwarding time must finalize any that just expired. Settle once
-        # afterwards so the MESSAGE_UPDATE(s) this emits reach the bot's
-        # listeners even when no loop timer fires during this window.
-        self.backend.expire_due_polls()
-        # Scheduled events transition on wall-clock deadlines, like polls.
-        self.backend.activate_due_scheduled_events()
-        await self.settle()
-        remaining = float(seconds)
-        while remaining > 0:
-            next_timer = self._next_scheduled_timer()
-            now = self._loop.time()
-            if next_timer is None or next_timer - now > remaining:
-                self._time_offset += remaining
-                break
-            step = max(next_timer - now, 0.0)
-            self._time_offset += step
-            remaining -= step
-            # The earliest timer is now due: let it fire and the bot react.
-            await asyncio.sleep(0)
-            await self.settle()
-
-    # -------------------------------------------------------- error capture
+    def _record_error(self, error: BaseException) -> None:
+        identity = id(error)
+        if identity in self._error_ids:
+            return
+        self._error_ids.add(identity)
+        self._errors.append(error)
 
     @property
     def errors(self) -> list[BaseException]:
-        """Errors the bot raised (command handlers, app commands, listeners).
-
-        Reading this marks the errors as inspected: ``simcord.run`` then trusts the
-        test's own assertions instead of failing it at teardown.
-        """
+        """Errors the bot raised; reading marks them inspected."""
         self._errors_inspected = True
         return self._errors
 
@@ -339,18 +768,13 @@ class Env:
         from discord.ext import commands
 
         async def on_command_error(_ctx: Any, error: BaseException) -> None:
-            # CommandNotFound just means the message wasn't a command — that is
-            # not a bot bug, so don't pollute env.errors with it.
             if not isinstance(error, commands.CommandNotFound):
-                self._errors.append(error)
+                self._record_error(error)
 
         add_listener = getattr(self.bot, "add_listener", None)
         if add_listener is not None:
             add_listener(on_command_error, "on_command_error")
 
-        # Exceptions raised inside plain event listeners (e.g. on_member_join)
-        # go to Client.on_error, which by default only logs them. Capture them
-        # too so listener bugs surface in env.errors instead of vanishing.
         original_on_error = self.bot.on_error
 
         async def on_error(event_method: str, /, *args: Any, **kwargs: Any) -> None:
@@ -358,17 +782,16 @@ class Env:
 
             exc = sys.exc_info()[1]
             if exc is not None:
-                self._errors.append(exc)
+                self._record_error(exc)
             await original_on_error(event_method, *args, **kwargs)
 
         self.bot.on_error = on_error  # type: ignore[method-assign]
-
         tree = getattr(self.bot, "tree", None)
         if tree is not None:
             original = tree.on_error
 
             async def on_tree_error(interaction: Any, error: BaseException) -> None:
-                self._errors.append(error)
+                self._record_error(error)
                 await original(interaction, error)
 
             tree.on_error = on_tree_error
@@ -540,6 +963,23 @@ class Env:
                 "times": times,
             }
         )
+
+
+def _guard_env_sync(method: Any) -> Any:
+    @wraps(method)
+    def guarded(self: Env, *args: Any, **kwargs: Any) -> Any:
+        token = self._begin_operation(method.__name__)
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._end_operation(token)
+
+    return guarded
+
+
+Env.create_user = _guard_env_sync(Env.create_user)  # type: ignore[method-assign]
+Env.create_guild = _guard_env_sync(Env.create_guild)  # type: ignore[method-assign]
+Env.inject_error = _guard_env_sync(Env.inject_error)  # type: ignore[method-assign]
 
 
 def _summarize(payload: Any, limit: int = 140) -> str:

@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from ...components import ComponentValidationError, component_mentions, validate_message_state
 from ...enums import MessageType
 from .. import errors, permissions, serializers
 from ..models import AutoModRule, Channel, Message, Poll
@@ -15,6 +16,10 @@ _USER_MENTION = re.compile(r"<@!?(\d+)>")
 _ROLE_MENTION = re.compile(r"<@&(\d+)>")
 
 
+def _component_error(exc: ComponentValidationError) -> errors.BackendError:
+    return errors.invalid_form_body(str(exc))
+
+
 class MessageMixin(BackendBase):
     # -------------------------------------------------------------- messages
 
@@ -22,7 +27,7 @@ class MessageMixin(BackendBase):
         self,
         channel_id: int,
         author_id: int,
-        content: str = "",
+        content: str | None = "",
         *,
         embeds: list[dict[str, Any]] | None = None,
         components: list[dict[str, Any]] | None = None,
@@ -36,34 +41,48 @@ class MessageMixin(BackendBase):
         broadcast: bool = True,
     ) -> Message:
         channel = self.get_channel(channel_id)
-        if content and len(content) > 2000:
-            raise errors.invalid_form_body("content must be 2000 or fewer in length")
-        if self._auto_mod_blocks(channel, author_id, content or ""):
+        content_value = content or ""
+        embed_value = [] if embeds is None else embeds
+        component_value = [] if components is None else components
+        try:
+            normalized_components = validate_message_state(
+                component_value,
+                flags=int(flags),
+                content=content,
+                embeds=embed_value,
+                poll=poll,
+            )
+        except (ComponentValidationError, TypeError, ValueError) as exc:
+            raise _component_error(
+                exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
+            ) from exc
+        mention_content = f"{content_value}\n{component_mentions(normalized_components)}"
+        if self._auto_mod_blocks(channel, author_id, mention_content):
             # Blocked by an auto-moderation rule: the execution event already
             # fired; build the message object for the caller but never store or
             # broadcast it, so it appears nowhere — exactly as on real Discord.
             return Message(
-                id=self.snowflake(), channel_id=channel_id, author_id=author_id, content=content or ""
+                id=self.snowflake(), channel_id=channel_id, author_id=author_id, content=content_value
             )
         message = Message(
             id=self.snowflake(),
             channel_id=channel_id,
             author_id=author_id,
-            content=content or "",
+            content=content_value,
             timestamp=self.now_iso(),
             type=MessageType.REPLY if reference else MessageType.DEFAULT,
-            flags=flags,
-            embeds=embeds or [],
-            components=components or [],
-            attachments=attachments or [],
+            flags=int(flags),
+            embeds=list(embed_value),
+            components=normalized_components,
+            attachments=list(attachments or []),
             reference=reference,
             interaction_metadata=interaction_metadata,
             webhook_id=webhook_id,
             author_name=author_name,
             poll=poll,
-            mention_user_ids=[int(m) for m in _USER_MENTION.findall(content or "")],
-            mention_role_ids=[int(m) for m in _ROLE_MENTION.findall(content or "")],
-            mention_everyone=self._mentions_everyone(channel, author_id, content or ""),
+            mention_user_ids=[int(m) for m in _USER_MENTION.findall(mention_content)],
+            mention_role_ids=[int(m) for m in _ROLE_MENTION.findall(mention_content)],
+            mention_everyone=self._mentions_everyone(channel, author_id, mention_content),
         )
         self.messages[channel_id][message.id] = message
         channel.last_message_id = message.id
@@ -91,13 +110,36 @@ class MessageMixin(BackendBase):
 
     def edit_message(self, channel_id: int, message_id: int, fields: dict[str, Any]) -> Message:
         message = self.get_message(channel_id, message_id)
-        if "content" in fields and fields["content"] is not None:
-            message.content = fields["content"]
-        for key in ("embeds", "components", "attachments"):
-            if key in fields and fields[key] is not None:
-                setattr(message, key, fields[key])
-        if "flags" in fields and fields["flags"] is not None:
-            message.flags = int(fields["flags"])
+        channel = self.get_channel(channel_id)
+        content = fields["content"] if "content" in fields else message.content
+        embeds = fields["embeds"] if "embeds" in fields else message.embeds
+        components = fields["components"] if "components" in fields else message.components
+        attachments = fields["attachments"] if "attachments" in fields else message.attachments
+        flags = int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
+        try:
+            normalized_components = validate_message_state(
+                [] if components is None else components,
+                flags=flags,
+                content=content,
+                embeds=[] if embeds is None else embeds,
+                poll=message.poll,
+                previous_flags=message.flags,
+            )
+        except (ComponentValidationError, TypeError, ValueError) as exc:
+            raise _component_error(
+                exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
+            ) from exc
+        content_value = content or ""
+        mention_content = f"{content_value}\n{component_mentions(normalized_components)}"
+        # Commit only after every resulting field has passed validation.
+        message.content = content_value
+        message.embeds = list(embeds or [])
+        message.components = normalized_components
+        message.attachments = list(attachments or [])
+        message.flags = flags
+        message.mention_user_ids = [int(m) for m in _USER_MENTION.findall(mention_content)]
+        message.mention_role_ids = [int(m) for m in _ROLE_MENTION.findall(mention_content)]
+        message.mention_everyone = self._mentions_everyone(channel, message.author_id, mention_content)
         message.edited_timestamp = self.now_iso()
         self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
@@ -226,7 +268,7 @@ class MessageMixin(BackendBase):
 
         Keyword rules (trigger_type 1) return the offending keyword; mention-spam
         rules (trigger_type 5) return an empty string (no keyword) when the
-        count of *unique* user+role mentions exceeds ``mention_total_limit``.
+        count of unique user+role mentions exceeds ``mention_total_limit``.
         Other trigger types are not evaluated yet.
         """
         if rule.trigger_type == 1:

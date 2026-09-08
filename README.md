@@ -68,7 +68,10 @@ Or with uv:
 uv add --dev "simcord[pytest]"
 ```
 
-Requires **Python 3.11+** and **discord.py 2.7+**. No dependencies beyond discord.py itself.
+Requires **Python >=3.11** (tested on **3.11–3.14**) and **discord.py >=2.7.1,<3**.
+The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow runs against
+upstream `master`, rather than continuously testing every released 2.x version. No
+dependencies beyond discord.py itself.
 
 ## Quickstart
 
@@ -196,7 +199,9 @@ on the `simcord_env` fixture:
 | `check_errors` | `True` | Errors your bot swallowed are re-raised at test teardown unless inspected, so bugs can't pass silently. |
 | `approved_intents` | all | Simulate the developer-portal privileged-intent toggles; a missing intent raises `PrivilegedIntentsRequired` on connect. |
 | `shard_count` | client setting | Shard count to use when an `AutoShardedClient` normally discovers it from Discord. |
+| `settle_timeout` | `5.0` seconds | Maximum time an actor or `env.settle()` waits for runnable bot work. Per-call `timeout=` overrides it. |
 
+Bot work remains owned across recognized external waits, timeout, cancellation, and restart. Declare exactly one intentional external wait with `await env.external_wait(awaitable, reason="...")`; unknown waits time out with diagnostics. Operations overlap-guard before mutating the virtual world, and teardown cancels bot-owned work without cancelling caller tasks.
 ```python
 @pytest.mark.simcord(strict_sync=False)
 async def test_unsynced_command(simcord_env):

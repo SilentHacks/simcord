@@ -4,6 +4,24 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 2.0.0 (2026-09-08)
+
+### Features
+
+- Settlement is now deterministic in 2.0: handlers now join all runnable bot-owned work,
+  including executor/thread-backed work (`run_in_executor`, `asyncio.to_thread`, aiosqlite),
+  instead of returning while a reaction is still in flight. This is a breaking change for
+  1.x tests that relied on implicit coroutine-name parking or reconstructed ownership.
+  Intentional external waits must use `await env.external_wait(awaitable, reason="...")`;
+  unknown waits time out with diagnostics, while ownership survives timeout or cancellation
+  so a later operation can recover the work without replaying the action. Public operations
+  reject overlap before mutating state, and caller tasks survive teardown.
+- Python 3.11+ is required; CI exercises Python 3.11, 3.12, 3.13, and 3.14.
+- Components V2 parity now covers `discord.ui.LayoutView` wire-tree nesting, stable component
+  IDs, custom ID and component limits, V2 message invariants, deterministic uploaded media
+  metadata, and incoming-webhook `with_components` and message-edit handling. Remote media URLs
+  remain offline metadata only; `attachment://` references resolve to uploaded files.
+
 ## 1.2.2 (2026-07-23)
 
 ### Documentation

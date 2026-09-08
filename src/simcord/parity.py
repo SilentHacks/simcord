@@ -33,7 +33,10 @@ GAPS_END_MARKER = "<!-- gaps:end -->"
 OOS_BEGIN_MARKER = "<!-- out-of-scope:begin (generated — do not edit by hand) -->"
 OOS_END_MARKER = "<!-- out-of-scope:end -->"
 
+_R = TypeVar("_R", bound=tuple[str, ...])
+
 _METHOD_ORDER = {"GET": 0, "POST": 1, "PUT": 2, "PATCH": 3, "DELETE": 4}
+
 
 # Friendly titles for the top-level resource each route lives under (its first path
 # segment). Used to group the long flat route lists into per-area sections in the
@@ -64,9 +67,6 @@ def _area(path: str) -> str:
 
 def _area_title(area: str) -> str:
     return _AREA_TITLES.get(area, area.replace("-", " ").capitalize())
-
-
-_R = TypeVar("_R", bound=tuple[str, ...])
 
 
 def _grouped_tables(

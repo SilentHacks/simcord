@@ -8,21 +8,112 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tag matches project version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+
+          tag = os.environ["RELEASE_TAG"]
+          if not tag.startswith("v"):
+              raise SystemExit(f"release tag must start with v: {tag!r}")
+          project_version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          tag_version = tag[1:]
+          if tag_version != project_version:
+              raise SystemExit(
+                  f"release tag {tag!r} does not match pyproject version {project_version!r}"
+              )
+          print(f"Releasing simcord {project_version}")
+          PY
+
+  lint:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra dev
-      - run: uv run pytest tests examples -q
+      - run: uv run ruff check src tests examples benchmarks scripts
+      - run: uv run ruff format --check src tests examples benchmarks scripts
+      - run: uv run pyright src
+
+  test:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --extra dev
+      - run: uv run coverage run -m pytest tests examples -q
+      - run: uv run coverage report
+
+  docs:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --extra docs
+      - run: uv run mkdocs build --strict
+      - run: uv run python scripts/check_discoverability.py site
+
+  benchmark:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --extra bench
+      - run: uv run pytest benchmarks
 
   build:
-    needs: test
+    needs: [version, lint, test, docs, benchmark]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uv build
+      - name: Inspect built metadata
+        run: |
+          python - <<'PY'
+          from email.parser import Parser
+          from pathlib import Path
+          import tarfile
+          import tomllib
+          import zipfile
+
+          expected = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          artifacts = list(Path("dist").glob("*"))
+          metadata = []
+          for artifact in artifacts:
+              if artifact.suffix == ".whl":
+                  with zipfile.ZipFile(artifact) as archive:
+                      names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+                      metadata.extend((artifact, archive.read(name)) for name in names)
+              elif artifact.name.endswith((".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst")):
+                  with tarfile.open(artifact, "r:*") as archive:
+                      names = [member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")]
+                      metadata.extend((artifact, archive.extractfile(member).read()) for member in names)
+          if not metadata:
+              raise SystemExit("uv build produced no inspectable package metadata")
+          for artifact, raw in metadata:
+              actual = Parser().parsestr(raw.decode())["Version"]
+              if actual != expected:
+                  raise SystemExit(f"{artifact}: metadata version {actual!r} != {expected!r}")
+              print(f"{artifact}: version {actual}")
+          PY
       - uses: actions/upload-artifact@v7
         with:
           name: dist
@@ -39,7 +130,5 @@ jobs:
         with:
           name: dist
           path: dist/
-      # Pinned to a commit SHA (v1.14.0) rather than the mutable release/v1
-      # branch: this job holds id-token: write, so a moved tag/branch could be
-      # used to mint a trusted-publishing token.
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+      # Pinned to a commit SHA rather than the mutable release/v1 branch.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33

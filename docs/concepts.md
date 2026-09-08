@@ -84,8 +84,9 @@ lifecycle bugs testable.
 ### Why actors await
 
 Every actor verb is `async` and **waits for the bot to finish reacting** before returning.
-SimCord tracks every task your bot spawns and "settles" the event loop — running callbacks,
-awaiting handlers, even draining `asyncio.sleep` chains — until the bot is quiescent. So
+SimCord tracks which tasks the dispatched event spawned — the handler and everything it
+created, including work running on thread executors (`run_in_executor`, `asyncio.to_thread`,
+aiosqlite) that schedules nothing on the event loop — and joins them all to completion. So
 this is race-free with no sleeps:
 
 ```python
@@ -93,9 +94,18 @@ await alice.send(channel, "!ping")
 assert channel.last_message.content == "Pong!"   # the reply is already here
 ```
 
-If a handler hangs, settling fails fast with the pending tasks listed, rather than your
-assertion flaking. (Tasks genuinely parked waiting for *future* user input — like a `View`
-in `wait_for` — are correctly left running.)
+Bot-owned work stays bot-owned across parking, timeout, cancellation, later actions, startup,
+and restart. Recognized waits — `Client.wait_for`, View/Modal completion, composed
+`gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`, and verified
+far-future sleeps — may remain. Unknown waits remain active and time out. Use a reasoned,
+scoped declaration for external input:
+
+```python
+await env.external_wait(stop.wait(), reason="wait for the next message")
+```
+
+Successful settlement means no runnable tracked bot work remains. Public operations reject
+overlap before mutating state, and teardown cancels only bot-owned work; caller tasks survive.
 
 The actor verbs, by area:
 

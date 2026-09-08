@@ -11,6 +11,25 @@ click a button that's missing, disabled, or on a message you can't see. Trying t
 `SetupError` against your test setup — surfacing the kind of bug that would otherwise only
 show up in production.
 
+## Components V2 layouts
+
+`discord.ui.LayoutView` is supported on send, edit, interaction responses, and incoming
+webhooks. V2 layouts are validated as Discord would validate them: at most 40 components,
+legal nesting, unique `custom_id` values (1–100 characters), and stable positive component
+IDs. A LayoutView message must set the `components_v2` flag; V2 messages cannot also carry
+content, embeds, polls, or stickers. Component text displays contribute to message mentions.
+
+Media gallery and file components preserve arbitrary remote URLs without fetching them.
+`attachment://filename` references are resolved against uploaded files in the same request;
+the offline CDN supplies deterministic URL, size, and content-type metadata, but does not
+inspect remote media dimensions or contents.
+
+Nested buttons and selects dispatch through their real discord.py callbacks. The same
+`click`, `select`, and `submit_modal` methods are available on `UserHandle` for component
+flows in DMs. Use `component_text=` and `component_custom_id=` with `assert_message`,
+`assert_sent`, or `assert_responded` to inspect layouts without treating TextDisplay text
+as legacy message content.
+
 ## Clicking buttons
 
 `actor.click(message, *, label=… | custom_id=…)` clicks a button by its visible label or its
@@ -77,6 +96,13 @@ assert submitted.response.content == "Thanks Alice"
 `submit_modal` dispatches a real `MODAL_SUBMIT` interaction, so your `Modal.on_submit`
 callback runs and you assert on the returned result the same way as everywhere else.
 
+Modern modal controls use the same mapping. Pass a string for TextInput and RadioGroup,
+a sequence of strings for StringSelect and CheckboxGroup, existing SimCord handles for
+entity selects, a boolean for Checkbox, and `(filename, bytes)` tuples for FileUpload.
+Required fields, option membership, and selection limits are checked before dispatch.
+When a message component opens the modal, `interaction.message` remains available and
+`interaction.response.edit_message()` updates the originating message.
+
 ## A full confirm-flow example
 
 ```python
@@ -139,3 +165,8 @@ Pass a freshly built client — re-running the same instance would re-execute `s
 - [Slash commands](interactions.md) — invoking commands and the interaction lifecycle.
 - [Time control](time-control.md) — firing view timeouts and cooldowns instantly.
 - [Recipes](../cookbook.md) — a reusable paginator test, among others.
+## Settlement and external input
+
+View/Modal completion waits are recognized by settlement. If a component flow waits on a
+different external source, declare that one dependency explicitly with
+`await env.external_wait(awaitable, reason="...")`; arbitrary unresolved futures remain active.

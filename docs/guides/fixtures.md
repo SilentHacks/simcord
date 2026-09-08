@@ -1,6 +1,6 @@
 ---
 title: "Fixtures & configuration"
-description: "Wire SimCord into pytest with the simcord_bot and simcord_env fixtures, or drive it manually with simcord.run(). Configure strict_sync and check_errors for your test style."
+description: "Wire SimCord into pytest with the simcord_bot and simcord_env fixtures, or drive it manually with simcord.run(). Configure settlement, strict_sync and check_errors for your test style."
 ---
 
 # Fixtures & configuration
@@ -98,6 +98,8 @@ Both `simcord.run(bot, **options)` and the underlying `Env` accept these keyword
 | `check_errors` | `True` | At teardown, errors the bot raised but the test never inspected are re-raised as an `ExceptionGroup`, so bot bugs can't pass silently. Set `False` to opt out. |
 | `approved_intents` | all | Simulates developer-portal privileged-intent toggles. |
 | `shard_count` | client setting | Supplies the Get Gateway Bot recommendation when an `AutoShardedClient` does not configure `shard_count` itself. |
+| `settle_timeout` | `5.0` seconds | Default maximum time for joining runnable bot work; a direct settle `timeout=` overrides it. |
+External waits must be scoped with `await env.external_wait(awaitable, reason="...")`; unknown waits time out. Overlapping actor, builder, lifecycle, and time-control operations reject before mutation. Teardown cancels bot-owned work but leaves caller-owned tasks alive.
 
 ```python
 # An isolated unit test that doesn't care about sync, and inspects errors itself:

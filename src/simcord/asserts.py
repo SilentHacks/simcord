@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from .components import walk_components
 from .results import InteractionResult, ResponseMessage
 
 if TYPE_CHECKING:
@@ -41,12 +42,27 @@ def _embed_titles(message: MessageLike) -> list[str | None]:
     return [embed.title for embed in message.embeds]
 
 
+def _component_values(message: MessageLike, key: str, kind: int | None = None) -> list[str]:
+    roots = (
+        message.components
+        if isinstance(message, ResponseMessage)
+        else [component.to_dict() for component in message.components]
+    )
+    return [
+        value
+        for component in walk_components(roots)
+        if (kind is None or component.get("type") == kind) and isinstance((value := component.get(key)), str)
+    ]
+
+
 def _check_fields(
     message: MessageLike,
     *,
     content: str | None,
     contains: str | None,
     embed_title: str | None,
+    component_text: str | None,
+    component_custom_id: str | None,
     ephemeral: bool | None,
 ) -> list[str]:
     """Return a list of human-readable mismatches (empty means it matched)."""
@@ -59,6 +75,16 @@ def _check_fields(
         titles = _embed_titles(message)
         if embed_title not in titles:
             problems.append(f"  no embed titled {embed_title!r} (embed titles: {titles!r})")
+    if component_text is not None:
+        texts = _component_values(message, "content", 10)
+        if component_text not in texts:
+            problems.append(f"  no TextDisplay containing {component_text!r} (texts: {texts!r})")
+    if component_custom_id is not None:
+        custom_ids = _component_values(message, "custom_id")
+        if component_custom_id not in custom_ids:
+            problems.append(
+                f"  no component with custom_id {component_custom_id!r} (custom_ids: {custom_ids!r})"
+            )
     if ephemeral is not None and _ephemeral(message) != ephemeral:
         problems.append(f"  ephemeral: expected {ephemeral}, got {_ephemeral(message)}")
     return problems
@@ -70,12 +96,19 @@ def assert_message(
     content: str | None = None,
     contains: str | None = None,
     embed_title: str | None = None,
+    component_text: str | None = None,
+    component_custom_id: str | None = None,
     ephemeral: bool | None = None,
 ) -> None:
-    """Assert a single message matches the given fields. Each field is checked
-    only when provided. Accepts a ``ResponseMessage`` or a real ``discord.Message``."""
+    """Assert a single message matches the provided legacy or component fields."""
     problems = _check_fields(
-        message, content=content, contains=contains, embed_title=embed_title, ephemeral=ephemeral
+        message,
+        content=content,
+        contains=contains,
+        embed_title=embed_title,
+        component_text=component_text,
+        component_custom_id=component_custom_id,
+        ephemeral=ephemeral,
     )
     if problems:
         raise AssertionError("message did not match:\n" + "\n".join(problems) + f"\nactual: {message!r}")
@@ -87,19 +120,23 @@ def assert_sent(
     content: str | None = None,
     contains: str | None = None,
     embed_title: str | None = None,
+    component_text: str | None = None,
+    component_custom_id: str | None = None,
     viewer: MemberActor | UserHandle | None = None,
 ) -> None:
-    """Assert the channel's most recent (visible) message matches.
-
-    ``viewer=`` filters to what that user can see, hiding ephemeral messages
-    addressed to others — the same rule as :meth:`ChannelHandle.history`.
-    """
+    """Assert the channel's most recent visible message matches."""
     history = channel.history(viewer=viewer)
     if not history:
         raise AssertionError(f"expected a message in {channel!r}, but none was sent")
     last = history[-1]
     problems = _check_fields(
-        last, content=content, contains=contains, embed_title=embed_title, ephemeral=None
+        last,
+        content=content,
+        contains=contains,
+        embed_title=embed_title,
+        component_text=component_text,
+        component_custom_id=component_custom_id,
+        ephemeral=None,
     )
     if problems:
         recent = "\n".join(f"  - {m.content!r}" for m in history[-5:])
@@ -114,17 +151,22 @@ def assert_responded(
     content: str | None = None,
     contains: str | None = None,
     embed_title: str | None = None,
+    component_text: str | None = None,
+    component_custom_id: str | None = None,
     ephemeral: bool | None = None,
 ) -> None:
-    """Assert the interaction produced a response message matching the given fields.
-
-    On failure the message includes the interaction's repr, which shows whether it
-    acknowledged, deferred, or opened a modal instead of sending a response."""
+    """Assert the interaction produced a matching response message."""
     response = result.response
     if response is None:
         raise AssertionError(f"interaction produced no response message\nactual: {result!r}")
     problems = _check_fields(
-        response, content=content, contains=contains, embed_title=embed_title, ephemeral=ephemeral
+        response,
+        content=content,
+        contains=contains,
+        embed_title=embed_title,
+        component_text=component_text,
+        component_custom_id=component_custom_id,
+        ephemeral=ephemeral,
     )
     if problems:
         raise AssertionError(

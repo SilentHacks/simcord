@@ -58,8 +58,8 @@ The `pytest` extra installs `pytest-asyncio`. With `asyncio_mode = "auto"` set i
 ## Do I need `asyncio.sleep` to wait for the bot to reply?
 
 No, and you shouldn't. Every [actor](concepts.md#actors-act-as-a-real-user) verb waits for
-the bot to finish reacting before returning, so your assertions never race. SimCord tracks
-the bot's tasks and settles the event loop deterministically. If you need to advance *time*
+the bot to finish reacting before returning, so your assertions never race. SimCord joins
+the spawned handler tasks — even executor-backed ones — until they finish or provably park. If you need to advance *time*
 (for cooldowns or view timeouts), use [`env.advance_time`](guides/time-control.md), not a
 real sleep.
 
@@ -96,7 +96,11 @@ Rate limits are deliberately out of scope so tests stay fast; use `inject_error`
 
 ## Which Python and discord.py versions are supported?
 
-Python **3.11+** and discord.py **2.7+**. See [Installation](installation.md).
+Python **>=3.11** (tested on **3.11–3.14**) and discord.py
+**>=2.7.1,<3** are supported. The locked CI matrix tests discord.py 2.7.1,
+and a separate weekly workflow runs against upstream `master`; other released
+2.x versions in the declared range are not each continuously tested. See
+[Installation](installation.md).
 
 ## Still stuck?
 

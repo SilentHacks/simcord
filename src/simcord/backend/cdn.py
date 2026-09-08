@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from typing import Any
 
 CDN_BASE = "https://cdn.simcord.invalid"
@@ -23,7 +24,7 @@ class CdnStore:
             "size": len(data),
             "url": url,
             "proxy_url": url,
-            "content_type": None,
+            "content_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
         }
 
     def get(self, url: str) -> bytes | None:

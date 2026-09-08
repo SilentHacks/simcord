@@ -19,6 +19,13 @@ top-level `simcord` package.
 
 ::: simcord.Env
 
+### `Env(settle_timeout=5.0)`
+
+`settle_timeout` is the default maximum time spent joining runnable bot work. A direct
+`await env.settle(timeout=...)` override is available; `idle=` is only the polling interval.
+Use `await env.external_wait(awaitable, reason="...")` for one explicitly scoped external
+input wait. Unknown waits remain active and produce a diagnostic timeout.
+
 ## Builders
 
 Synchronous, omnipotent handles for arranging the virtual Discord. Returned by `env`/`guild`

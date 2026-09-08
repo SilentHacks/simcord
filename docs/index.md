@@ -26,8 +26,8 @@ async def test_ping(simcord_env):
 [Browse the API :material-arrow-right:](api.md){ .md-button }
 
 !!! success "Stable API"
-    The public surface is settled and follows semantic versioning as of 1.0.
-    See [Stability & versioning](stability.md). The [parity matrix](parity-matrix.md)
+    The public surface is covered by semantic versioning; see
+    [Stability & versioning](stability.md). The [parity matrix](parity-matrix.md)
     records exactly what is implemented; the remaining routes are a deliberate, demand-driven
     backlog that always fails **loudly**. SimCord never silently fakes success.
 
@@ -62,8 +62,7 @@ of Discord's REST API and gateway, entirely in-process.
 
     ---
 
-    No sleeps, no network, reproducible IDs and timestamps. The framework tracks the bot's
-    tasks and settles after every action. There is never an `asyncio.sleep` in your tests.
+    No sleeps, no network, reproducible IDs and timestamps. The framework joins the spawned handler tasks after every action. There is never an `asyncio.sleep` in your tests.
 
 -   :fast_forward: __Time control__
 

@@ -171,7 +171,6 @@ def _param(name: str, template: str, w: World) -> object | None:
         "user_id": w.member_uid,
         "target_id": w.role,
         "role_id": w.role,
-        "webhook_id": w.webhook,
         "rule_id": w.rule,
         "event_id": w.event,
         "sticker_id": w.sticker,
@@ -186,6 +185,8 @@ def _param(name: str, template: str, w: World) -> object | None:
         return _channel_for(template, w)
     if name == "message_id":
         return w.news_msg if "crosspost" in template else w.msg
+    if name == "webhook_id":
+        return w.backend.application_id if "/messages/" in template else w.webhook
     if name == "token":
         # The ``/webhooks/{id}/{token}/messages/...`` family are interaction-response
         # routes keyed by an interaction token; plain webhook routes use the

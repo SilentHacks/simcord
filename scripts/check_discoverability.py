@@ -85,13 +85,32 @@ def main() -> int:
         require(bool(home.meta.get(("property", prop))), f"home: missing {prop}", failures)
     for name in ("twitter:card", "twitter:title", "twitter:description", "twitter:image"):
         require(bool(home.meta.get(("name", name))), f"home: missing {name}", failures)
-    require(
-        any(item.get("@type") == "SoftwareSourceCode" for item in home.json_ld),
-        "home: missing SoftwareSourceCode JSON-LD",
-        failures,
+    software_source = next(
+        (item for item in home.json_ld if item.get("@type") == "SoftwareSourceCode"),
+        None,
     )
+    require(software_source is not None, "home: missing SoftwareSourceCode JSON-LD", failures)
+    if software_source is not None:
+        require(
+            software_source.get("runtimePlatform") == "Python 3.11 or newer",
+            "home: JSON-LD runtimePlatform must be Python 3.11 or newer",
+            failures,
+        )
+        for key, expected in (
+            ("codeRepository", "https://github.com/SilentHacks/simcord"),
+            ("downloadUrl", "https://pypi.org/project/simcord/"),
+        ):
+            require(
+                software_source.get(key) == expected,
+                f"home: JSON-LD {key} must be {expected}",
+                failures,
+            )
 
     required_paths = (
+        "api/index.html",
+        "parity-matrix/index.html",
+        "stability/index.html",
+        "changelog/index.html",
         "guides/testing-discord-py-bots/index.html",
         "guides/test-without-token/index.html",
         "guides/testing-slash-commands/index.html",
@@ -109,6 +128,10 @@ def main() -> int:
             node.text for node in ET.parse(site / "sitemap.xml").getroot().iter() if node.tag.endswith("loc")
         }
         for slug in (
+            "api/",
+            "parity-matrix/",
+            "stability/",
+            "changelog/",
             "guides/testing-discord-py-bots/",
             "guides/test-without-token/",
             "guides/testing-slash-commands/",

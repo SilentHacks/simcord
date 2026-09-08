@@ -52,6 +52,16 @@ class ResponseMessage:
         return list(self._message.components)
 
     @property
+    def flags(self) -> discord.MessageFlags:
+        """The message flags, including ``ephemeral``."""
+        return discord.MessageFlags._from_value(self._message.flags)
+
+    @property
+    def attachments(self) -> list[discord.Attachment]:
+        """Uploaded files as the same ``discord.Attachment`` objects as a message."""
+        return self.message.attachments
+
+    @property
     def ephemeral(self) -> bool:
         return bool(self._message.flags & EPHEMERAL_FLAG)
 

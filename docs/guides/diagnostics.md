@@ -153,6 +153,13 @@ simcord_env.inject_error("PUT", "/guilds/*/bans/*", status=403, code=50013, time
 
 Because failures surface as genuine `discord.Forbidden` / `discord.HTTPException` with real
 codes, your `except discord.HTTPException:` branches are exercised exactly as in production.
+## Settlement timeouts and recovery
+
+`TimeoutError` reports the operation, effective timeout, bot-owned task or callback, wait
+reason, and any recognized waits left parked. A timeout or cancellation does not release
+ownership or pretend work completed; state may already have changed. Release the real
+dependency, then invoke a later actor action or `env.settle()` to join the resumed work.
+Do not rerun the actor action to recover.
 
 ## Unimplemented routes
 

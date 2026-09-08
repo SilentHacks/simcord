@@ -8,7 +8,9 @@ doubles as a continuous check that gateway dispatch populated the cache.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -84,8 +86,38 @@ class UserHandle:
         """DM the bot as this user."""
         channel = self._env.backend.get_dm_channel(self.id)
         message = self._env.backend.create_message(channel.id, self.id, content, **kwargs)
-        await self._env.settle()
+        await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
+
+    async def click(
+        self,
+        message: Any,
+        *,
+        label: str | None = None,
+        custom_id: str | None = None,
+    ) -> Any:
+        """Click an interactive component in this user's DM."""
+        from .actors import _component_click
+
+        return await _component_click(self, message, label=label, custom_id=custom_id)
+
+    async def select(
+        self,
+        message: Any,
+        values: Sequence[Any],
+        *,
+        custom_id: str | None = None,
+    ) -> Any:
+        """Select values in a DM component using the same handle/value contract as guild actors."""
+        from .actors import _component_select
+
+        return await _component_select(self, message, values, custom_id=custom_id)
+
+    async def submit_modal(self, shown: Any, values: dict[str, Any]) -> Any:
+        """Submit a DM modal using strings, entity handles, booleans, or file tuples."""
+        from .actors import _submit_modal
+
+        return await _submit_modal(self, shown, values)
 
     def __repr__(self) -> str:
         return f"<UserHandle id={self.id} name={self.name!r}>"
@@ -147,7 +179,7 @@ class WebhookHandle:
             webhook_id=self._webhook.id,
             author_name=username,
         )
-        await self._env.settle()
+        await self._env._settle_internal(dispatch="WEBHOOK.send")
         return to_discord_message(self._env, message)
 
     def __repr__(self) -> str:
@@ -470,3 +502,50 @@ class ChannelHandle:
 
     def __repr__(self) -> str:
         return f"<ChannelHandle id={self.id} name={self.name!r}>"
+
+
+def _guard_builder_operation(method: Any) -> Any:
+    if inspect.iscoroutinefunction(method):
+
+        @wraps(method)
+        async def guarded_async(self: Any, *args: Any, **kwargs: Any) -> Any:
+            token = self._env._begin_operation(method.__name__)
+            try:
+                return await method(self, *args, **kwargs)
+            finally:
+                self._env._end_operation(token)
+
+        return guarded_async
+
+    @wraps(method)
+    def guarded_sync(self: Any, *args: Any, **kwargs: Any) -> Any:
+        token = self._env._begin_operation(method.__name__)
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._env._end_operation(token)
+
+    return guarded_sync
+
+
+for _operation_name in ("send_dm", "click", "select", "submit_modal"):
+    setattr(UserHandle, _operation_name, _guard_builder_operation(getattr(UserHandle, _operation_name)))
+WebhookHandle.send = _guard_builder_operation(WebhookHandle.send)
+for _operation_name in (
+    "create_text_channel",
+    "create_voice_channel",
+    "create_stage_channel",
+    "create_news_channel",
+    "create_category",
+    "create_forum_channel",
+    "create_scheduled_event",
+    "create_webhook",
+    "create_emoji",
+    "create_sticker",
+    "set_command_permissions",
+    "set_vanity_url",
+    "create_role",
+    "add_member",
+    "remove_member",
+):
+    setattr(GuildHandle, _operation_name, _guard_builder_operation(getattr(GuildHandle, _operation_name)))

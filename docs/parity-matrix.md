@@ -39,6 +39,7 @@ serializer payloads are conformance-tested against discord.py's own model parser
 | Ephemeral semantics | ✅ | Visibility-aware history and component access |
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
+| Components V2 / `LayoutView` | ✅ | Legal wire-tree nesting, 40-component limit, stable IDs, V2 flag/content invariants, media attachments and webhook `with_components`; arbitrary remote media is metadata-only offline |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
@@ -254,7 +255,7 @@ These discord.py REST routes have no handler yet, derived by comparing simcord's
 route table against `discord.http.HTTPClient` (`python -m simcord.parity`), so the
 list stays honest as discord.py evolves.
 
-This is the **frozen gap surface heading into 1.0**: the omissions are deliberate
+This is the current intentionally incomplete gap surface: omissions are deliberate
 and demand-driven, not unfinished work. Most are niche (monetization, soundboard,
 guild templates) or have a working common path already — individual application
 command CRUD is unlisted because `CommandTree.sync` (the bulk overwrite) is fully

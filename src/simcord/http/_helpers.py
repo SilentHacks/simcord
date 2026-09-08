@@ -6,6 +6,7 @@ from typing import Any
 
 from ..backend import errors, serializers
 from ..backend.models import EPHEMERAL_FLAG, Interaction, Message, Poll, PollAnswer
+from ..components import ComponentValidationError, resolve_attachment_references, validate_message_state
 from .router import RequestContext
 
 
@@ -70,26 +71,11 @@ def bot_message(
     body: dict[str, Any] | None = None,
     webhook_execute: bool = False,
 ) -> Message:
-    """Create a message from a request body, authored by the bot (or a webhook user).
-
-    ``body`` defaults to the request's JSON body, but callers (e.g. interaction
-    callbacks, where the message payload is nested under ``data``) may pass an
-    explicit body instead of mutating the shared request context. Either way the
-    payload is vetted through :meth:`RequestContext.fields`, so an unmodelled key
-    raises :class:`UnsupportedField` rather than being silently dropped.
-
-    ``webhook_execute`` widens the field contract for the ``POST /webhooks`` route,
-    whose ``Webhook.send`` payload carries ``username``/``avatar_url`` and the
-    forum-thread fields a plain channel send never does (see ``_WEBHOOK_*``). An
-    incoming webhook (``webhook_id`` set) honours the ``username`` override; an
-    application webhook (interaction followup) does not, matching Discord.
-    """
+    """Create a message from a request body, authored by the bot or a webhook."""
     backend = ctx.backend
     handled = _MESSAGE_HANDLED
     ignore = _MESSAGE_IGNORED
     reject = _MESSAGE_REJECTED
-    # Only an incoming webhook honours a per-message identity; an application
-    # webhook (interaction followup, keyed by token, no webhook_id) ignores it.
     apply_username = webhook_execute and webhook_id is not None
     if webhook_execute:
         reject = {**_MESSAGE_REJECTED, **_WEBHOOK_REJECTED}
@@ -120,13 +106,19 @@ def bot_message(
     embeds = body.get("embeds") or ([body["embed"]] if body.get("embed") else [])
     _validate_embeds(embeds)
     poll = poll_from_wire(backend, body["poll"]) if body.get("poll") else None
+    uploads = ctx.store_files(channel_id)
+    components = body.get("components") or []
+    try:
+        components = resolve_attachment_references(components, uploads)
+    except ComponentValidationError as exc:
+        raise errors.invalid_form_body(str(exc)) from exc
     return backend.create_message(
         channel_id,
         author_id if author_id is not None else backend.bot_user.id,
-        body.get("content") or "",
+        body.get("content"),
         embeds=embeds,
-        components=body.get("components") or [],
-        attachments=ctx.store_files(channel_id),
+        components=components,
+        attachments=uploads,
         flags=flags,
         reference=reference,
         interaction_metadata=interaction_metadata,
@@ -150,18 +142,140 @@ def _validate_embeds(embeds: list[dict[str, Any]]) -> None:
             raise errors.invalid_form_body("embeds: total size of embeds exceeds 6000 characters")
 
 
-def message_edit_changes(ctx: RequestContext) -> dict[str, Any]:
-    """The message fields an edit honours, vetted for parity.
+def _preview_uploads(ctx: RequestContext) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(index),
+            "filename": file.filename,
+            "description": file.description,
+            "size": 0,
+            "url": f"https://cdn.simcord.invalid/pending/{index}",
+            "proxy_url": f"https://cdn.simcord.invalid/pending/{index}",
+            "content_type": "application/octet-stream",
+        }
+        for index, file in enumerate(ctx.files)
+    ]
 
-    Shared by channel message edits and interaction response/followup edits,
-    which are all webhook-message-shaped. ``allowed_mentions`` and ``tts`` are
-    accepted and discarded (simcord derives mentions from content and never
-    speaks); any other unrecognised field fails loudly with ``UnsupportedField``
-    rather than being silently dropped.
-    """
-    return ctx.fields(
-        "content", "embeds", "components", "attachments", "flags", ignore=("allowed_mentions", "tts")
+
+def _store_upload(ctx: RequestContext, channel_id: int, index: int) -> dict[str, Any]:
+    file = ctx.files[index]
+    return ctx.backend.cdn.store_attachment(
+        ctx.backend.snowflake(), channel_id, file.filename, file.fp.read(), file.description
     )
+
+
+def _validate_edit_state(
+    message: Message | None,
+    fields: dict[str, Any],
+    components: list[dict[str, Any]],
+    *,
+    flags: int,
+) -> None:
+    current_content = message.content if message is not None else None
+    current_embeds = message.embeds if message is not None else []
+    try:
+        _validate_embeds(fields.get("embeds", current_embeds) or [])
+        validate_message_state(
+            components,
+            flags=flags,
+            content=fields.get("content", current_content),
+            embeds=fields.get("embeds", current_embeds) or [],
+            poll=message.poll if message is not None else None,
+            previous_flags=message.flags if message is not None else 0,
+        )
+    except (ComponentValidationError, TypeError, ValueError) as exc:
+        detail = exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
+        raise errors.invalid_form_body(str(detail)) from exc
+
+
+def message_edit_changes(
+    ctx: RequestContext, message: Message | None = None, *, body: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return an atomically applicable webhook-message edit payload."""
+    fields = ctx.fields(
+        "content",
+        "embeds",
+        "components",
+        "attachments",
+        "flags",
+        ignore=("allowed_mentions", "tts"),
+        body=ctx.body() if body is None else body,
+    )
+    current_attachments = list(message.attachments) if message is not None else []
+    preview_uploads = _preview_uploads(ctx)
+    upload_indices: list[int] = []
+    selected_indices: list[int | None] = []
+    if "attachments" in fields:
+        declared = fields["attachments"]
+        if declared is None:
+            declared = []
+        if not isinstance(declared, list):
+            raise errors.invalid_form_body("attachments must be an array")
+        existing = {str(item.get("id")): item for item in current_attachments}
+        selected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in declared:
+            if not isinstance(item, dict):
+                raise errors.invalid_form_body("attachments entries must be objects")
+            key = str(item.get("id"))
+            if key in seen:
+                raise errors.invalid_form_body(f"attachments: duplicate id {key}")
+            seen.add(key)
+            if key in existing:
+                retained = dict(existing[key])
+                retained.update({k: item[k] for k in ("filename", "description") if k in item})
+                selected.append(retained)
+                selected_indices.append(None)
+                continue
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                raise errors.invalid_form_body(f"attachments: unknown attachment id {key}") from None
+            if index < 0 or index >= len(preview_uploads):
+                raise errors.invalid_form_body(f"attachments: unknown attachment id {key}")
+            selected.append(preview_uploads[index])
+            selected_indices.append(index)
+            upload_indices.append(index)
+        fields["attachments"] = selected
+    elif ctx.files:
+        fields["attachments"] = current_attachments + preview_uploads
+        selected_indices = [None] * len(current_attachments) + list(range(len(preview_uploads)))
+        upload_indices = list(range(len(preview_uploads)))
+
+    current_components = message.components if message is not None else []
+    effective_components = fields.get("components", current_components) or []
+    preview_attachments = fields.get("attachments", current_attachments)
+    try:
+        preview_components = resolve_attachment_references(effective_components, preview_attachments)
+    except ComponentValidationError as exc:
+        raise errors.invalid_form_body(str(exc)) from exc
+    try:
+        flags = (
+            int(fields["flags"])
+            if "flags" in fields and fields["flags"] is not None
+            else (message.flags if message is not None else 0)
+        )
+    except (TypeError, ValueError) as exc:
+        raise errors.invalid_form_body("flags must be an integer") from exc
+    _validate_edit_state(message, fields, preview_components, flags=flags)
+
+    if upload_indices:
+        stored_by_index = {
+            index: _store_upload(ctx, message.channel_id if message is not None else 0, index)
+            for index in set(upload_indices)
+        }
+        fields["attachments"] = [
+            stored_by_index[index] if index is not None else attachment
+            for index, attachment in zip(selected_indices, fields["attachments"], strict=True)
+        ]
+    if "components" in fields:
+        try:
+            fields["components"] = resolve_attachment_references(
+                fields["components"] or [], fields.get("attachments", current_attachments)
+            )
+        except ComponentValidationError as exc:
+            raise errors.invalid_form_body(str(exc)) from exc
+    return fields
 
 
 def message_response(ctx: RequestContext, message: Message) -> dict[str, Any]:

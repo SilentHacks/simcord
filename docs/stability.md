@@ -1,15 +1,39 @@
 ---
 title: "Stability & versioning"
-description: "What SimCord's public API covers, what stays internal, and how versioning works now that 1.0 has landed."
+description: "What SimCord's public API covers, what stays internal, and how versioning works for the 2.0 release."
 ---
 
 # Stability & versioning
 
-SimCord follows [semantic versioning](https://semver.org/). As of 1.0, the
+!!! warning "What changed in 2.0"
+    Settlement now joins all runnable bot-owned work, including executor-backed work and
+    finite callback chains. Recognized external waits may park only through
+    `env.external_wait(awaitable, reason=...)`; unknown waits time out. Ownership survives
+    timeout, cancellation, later operations, restart, and teardown boundaries.
+
+## Migrating from 1.x
+
+In 2.0, every dispatched handler joins its runnable bot-owned work before the
+actor or public operation returns. Replace implicit parking with an explicit
+external-input declaration:
+
+- Use `await env.external_wait(awaitable, reason="...")` for an intentional
+  external wait.
+- Unknown waits time out with diagnostics; release the dependency, then call a
+  later operation or `env.settle()` to recover. Do not replay the original action.
+- Actor, builder, lifecycle, and time-control operations reject overlap before
+  mutating the virtual world.
+
+To keep production code independent of SimCord, inject the test environment's
+`external_wait` adapter only in tests and use the normal awaitable in production,
+or keep an indefinite wait outside a dispatched handler in the application's
+own supervisor.
+
+SimCord follows [semantic versioning](https://semver.org/). The
 **public API** below is covered by that promise: no breaking change to it without
-a major version bump. The surface is settled, and the two gates 1.0 waited
-on are in place: property-based fuzzing of the honesty layer and a
-[performance baseline](performance.md) guarding the offline-speed value proposition.
+a major version bump. The 2.0 release keeps this contract while changing
+settlement ownership as described above. CI continues to enforce honest parity,
+coverage, and offline-performance checks.
 
 The fuzzer proves that across every route whose body is a field set — message
 send and edits, webhook execute, bulk delete, and the rest — an unrecognised
@@ -22,13 +46,18 @@ enumerated with a reason and drift-guarded, so the boundary stays explicit.
 
 ## Supported discord.py
 
-SimCord targets **discord.py 2.7.x** (`discord.py>=2.7,<3`) and is exercised
-against it in CI. Because a faithful fake must shadow a few discord.py internals
-(view timeout tasks, parser entry points), simcord verifies them at import via
-`simcord._dpy_internals.verify()` and fails **loudly** with an `ImportError`
-naming what moved, rather than miscompiling silently against an untested release.
-The `<3` ceiling is deliberate: a new discord.py major may move those internals,
-so the range widens only once a release has been tested.
+SimCord targets **discord.py 2.7.1+** (`discord.py>=2.7.1,<3`). The locked CI
+matrix tests 2.7.1, and a separate weekly workflow runs against upstream
+`master`; other released 2.x versions in the declared range are not each
+continuously tested. Because a faithful fake must shadow a few discord.py
+internals (view timeout tasks, parser entry points), simcord verifies them at
+import via `simcord._dpy_internals.verify()` and fails **loudly** with an
+`ImportError` naming what moved, rather than miscompiling silently. The `<3`
+ceiling is deliberate: a new discord.py major may move those internals, so the
+range widens only once a release has been tested.
+SimCord supports **Python >=3.11** and CI tests **3.11–3.14**. The settlement
+engine uses the standard `asyncio` task factory, callback scheduling, and
+timer-heap capabilities provided there.
 
 ## Public API
 

@@ -121,6 +121,10 @@ assert "expired" in channel.last_message.content
 ```
 
 See the dedicated [Time control](time-control.md) guide.
+Settlement ownership follows command, prefix, slash, and component dispatch uniformly. If a
+callback intentionally waits for external input, use `await env.external_wait(...)` with a
+specific reason. The actor operation still returns only after all runnable owned continuations
+finish; overlap and unknown waits fail loudly before state is silently misreported.
 
 ## Next
 
