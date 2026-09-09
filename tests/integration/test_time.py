@@ -3,8 +3,6 @@ import time
 
 from discord.ext import commands
 
-_ORIGINAL_MONOTONIC = time.monotonic
-
 
 async def test_view_timeout_fast_forward(env, channel, alice):
     result = await alice.slash(channel, "offer")
@@ -43,7 +41,7 @@ async def test_cooldown_reset_fast_forward(env, channel, alice):
 
 async def test_external_timers_stay_on_real_clock(env):
     loop = asyncio.get_running_loop()
-    assert time.monotonic is _ORIGINAL_MONOTONIC
+    real_start = time.monotonic()
     external_fired = asyncio.Event()
     bot_fired = asyncio.Event()
     external = loop.call_later(30, external_fired.set)
@@ -55,6 +53,8 @@ async def test_external_timers_stay_on_real_clock(env):
     with env._bot_scope():
         task = loop.create_task(bot_timer())
     before = env.backend.now_iso()
+    with env._bot_scope():
+        virtual_start = time.monotonic()
     try:
         await env.advance_time(10)
         assert bot_fired.is_set()
@@ -62,5 +62,8 @@ async def test_external_timers_stay_on_real_clock(env):
         assert not external_fired.is_set()
         assert not external.cancelled()
         assert env.backend.now_iso() > before
+        assert time.monotonic() - real_start < 2
+        with env._bot_scope():
+            assert time.monotonic() - virtual_start == 10
     finally:
         external.cancel()

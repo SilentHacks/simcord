@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import inspect
 import math
+import time
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -107,6 +108,7 @@ class Env:
         self._orig_call_soon_threadsafe: Any = None
         self._orig_run_in_executor: Any = None
         self._orig_view_time: Any = None
+        self._orig_monotonic: Any = None
         self._virtual_time = 0.0
         self._pre_shutdown_hooks: list[Callable[[], Any]] = []
         self._pre_shutdown_task: asyncio.Task[Any] | None = None
@@ -503,6 +505,15 @@ class Env:
 
         if self._virtual_time == 0.0:
             self._virtual_time = loop.time()
+        self._orig_monotonic = time.monotonic
+
+        def monotonic() -> float:
+            scope = _BOT_SCOPE.get()
+            if scope is not None and scope[0] is self:
+                return self._virtual_time
+            return self._orig_monotonic()
+
+        time.monotonic = monotonic
         self._orig_view_time = _dpy_internals.view_time()
         _dpy_internals.swap_view_time(_VirtualTime(self, self._orig_view_time))
         _dpy_internals.install_http(bot, FakeHTTPClient(self.backend, loop))
@@ -604,6 +615,9 @@ class Env:
         if self._orig_view_time is not None:
             _dpy_internals.swap_view_time(self._orig_view_time)
             self._orig_view_time = None
+        if self._orig_monotonic is not None:
+            time.monotonic = self._orig_monotonic
+            self._orig_monotonic = None
         self._task_records.clear()
         self._external_waits.clear()
 
