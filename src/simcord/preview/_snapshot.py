@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import discord
 
 from ..backend.errors import BackendError, SetupError
 from ..backend.models import EPHEMERAL_FLAG, Message
+from ..components import COMPONENTS_V2_FLAG
 from ..enums import ChannelType, ComponentType
+from ._markdown import markdown_tokens
 
 if TYPE_CHECKING:
     from ..env import Env
@@ -86,6 +89,17 @@ def _clean(value: Any, *, drop_urls: bool = False) -> Any:
     return value
 
 
+def _safe_link(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme.lower() not in {"http", "https", "mailto"}:
+        return None
+    if parsed.scheme.lower() != "mailto" and not parsed.netloc:
+        return None
+    return value
+
+
 def _author(env: Env, user_id: int, *, override: str | None = None) -> dict[str, Any]:
     user = env.backend.get_user(user_id)
     name = override if override is not None else user.global_name or user.name
@@ -94,18 +108,120 @@ def _author(env: Env, user_id: int, *, override: str | None = None) -> dict[str,
 
 def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _Page) -> dict[str, Any]:
     attachment_id = str(attachment.get("id", ""))
-    asset_id = page.asset_id(f"attachment:{message.channel_id}:{message.id}:{attachment_id}", attachment)
+    url = attachment.get("url")
+    key = f"url:{url}" if isinstance(url, str) else f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
+    asset_id = page.asset_id(key, attachment)
+    content_type = str(attachment.get("content_type") or "application/octet-stream")
     return {
         "id": attachment_id,
         "filename": str(attachment.get("filename", "attachment")),
+        "description": attachment.get("description"),
         "size": int(attachment.get("size", 0) or 0),
-        "content_type": attachment.get("content_type"),
+        "content_type": content_type,
+        "inline": content_type.startswith("image/"),
         "asset_id": asset_id,
+        "available": bool(page.assets.get(asset_id, {}).get("available", False)),
     }
+
+
+def _asset_meta(page: _Page, url: Any, fallback: dict[str, Any] | None = None) -> str | None:
+    if not isinstance(url, str) or not url:
+        return None
+    metadata = dict(fallback or {})
+    metadata.setdefault("url", url)
+    return page.asset_id(f"url:{url}", metadata)
+
+
+def _decorate_components(page: _Page, components: Any, attachments: list[dict[str, Any]]) -> Any:
+    rows = deepcopy(components)
+    by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
+    by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        typ = int(node.get("type", -1)) if isinstance(node.get("type"), int) else -1
+        media_nodes: list[dict[str, Any]] = []
+        if typ == int(ComponentType.THUMBNAIL) and isinstance(node.get("media"), dict):
+            media_nodes.append(node["media"])
+        elif typ == int(ComponentType.MEDIA_GALLERY):
+            media_nodes.extend(
+                media
+                for item in node.get("items", [])
+                if isinstance(item, dict) and isinstance((media := item.get("media")), dict)
+            )
+        elif typ == int(ComponentType.FILE) and isinstance(node.get("file"), dict):
+            media_nodes.append(node["file"])
+        for media in media_nodes:
+            if not isinstance(media, dict):
+                continue
+            url = media.get("url")
+            attachment = by_url.get(str(url)) if isinstance(url, str) else None
+            if attachment is None and isinstance(url, str) and url.startswith("attachment://"):
+                attachment = by_name.get(url.removeprefix("attachment://"))
+            asset_id = _asset_meta(page, url, attachment)
+            if asset_id:
+                media["asset_id"] = asset_id
+                media["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
+                if attachment is not None:
+                    media["attachment_id"] = str(attachment.get("id", ""))
+        if typ == int(ComponentType.TEXT_DISPLAY) and isinstance(node.get("content"), str):
+            node["markdown_tokens"] = markdown_tokens(node["content"], "text_display")
+        for key in ("components", "component", "accessory"):
+            child = node.get(key)
+            if isinstance(child, dict):
+                visit(child)
+            elif isinstance(child, list):
+                for item in child:
+                    visit(item)
+
+    if isinstance(rows, list):
+        for row in rows:
+            visit(row)
+    elif isinstance(rows, dict):
+        visit(rows)
+    return _clean(rows, drop_urls=True)
+
+
+def _embed_projection(page: _Page, embed: dict[str, Any], attachments: list[dict[str, Any]]) -> dict[str, Any]:
+    value = _clean(deepcopy(embed), drop_urls=True)
+    link = _safe_link(embed.get("url"))
+    if link:
+        value["url"] = link
+    by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
+    for key in ("image", "thumbnail", "video"):
+        media = embed.get(key)
+        if not isinstance(media, dict):
+            continue
+        url = media.get("url")
+        if not isinstance(url, str):
+            continue
+        item = by_url.get(url)
+        asset_id = _asset_meta(page, url, item)
+        if asset_id:
+            value.setdefault(key, {})["asset_id"] = asset_id
+            value[key]["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
+            if item is not None:
+                value[key]["attachment_id"] = str(item.get("id", ""))
+    for key in ("title", "description"):
+        if isinstance(embed.get(key), str):
+            value[f"{key}_tokens"] = markdown_tokens(embed[key], "embed_title" if key == "title" else "embed_description")
+    if isinstance(embed.get("footer"), dict) and isinstance(embed["footer"].get("text"), str):
+        value["footer_tokens"] = markdown_tokens(embed["footer"]["text"], "embed_footer")
+    for index, field in enumerate(embed.get("fields", []) if isinstance(embed.get("fields"), list) else []):
+        if isinstance(field, dict):
+            target = value.get("fields", [])[index] if index < len(value.get("fields", [])) else None
+            if isinstance(target, dict):
+                if isinstance(field.get("name"), str):
+                    target["name_tokens"] = markdown_tokens(field["name"], "embed_field")
+                if isinstance(field.get("value"), str):
+                    target["value_tokens"] = markdown_tokens(field["value"], "embed_field")
+    return value
 
 
 def _message_projection(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
     env = preview.env
+    attachments = list(message.attachments)
     data = {
         "id": str(message.id),
         "channel_id": str(message.channel_id),
@@ -113,14 +229,22 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "timestamp": message.timestamp,
         "edited_timestamp": message.edited_timestamp,
         "content": message.content,
-        "embeds": _clean(deepcopy(message.embeds), drop_urls=True),
-        "components": _clean(deepcopy(message.components), drop_urls=True),
+        "content_tokens": markdown_tokens(message.content, "message"),
+        "embeds": [_embed_projection(page, item, attachments) for item in message.embeds],
+        "components": _decorate_components(page, message.components, attachments),
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
-        "attachments": [_attachment(env, message, item, page) for item in message.attachments],
+        "components_v2": bool(int(message.flags) & COMPONENTS_V2_FLAG),
+        "attachments": [_attachment(env, message, item, page) for item in attachments],
         "mention_user_ids": [str(uid) for uid in message.mention_user_ids if _mention_allowed(preview, page, uid)],
         "mention_role_ids": [str(rid) for rid in message.mention_role_ids if _role_allowed(preview, page, rid)],
     }
+    data["mention_names"] = {}
+    for uid in data["mention_user_ids"]:
+        try:
+            data["mention_names"][uid] = _author(env, int(uid))["name"]
+        except (BackendError, ValueError):
+            pass
     reference = message.reference
     if reference:
         try:
@@ -152,7 +276,8 @@ def _user_allowed(preview: Preview, page: _Page, user_id: int) -> bool:
 def _role_allowed(preview: Preview, page: _Page, role_id: int) -> bool:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
-    return channel.guild_id is not None and role_id in env.backend.guilds[channel.guild_id].roles
+    guild = env.backend.guilds.get(channel.guild_id) if channel.guild_id is not None else None
+    return guild is not None and role_id in guild.roles and role_id != guild.id
 
 
 def _components(page: _Page) -> list[dict[str, Any]]:
@@ -168,8 +293,10 @@ def _components(page: _Page) -> list[dict[str, Any]]:
 def _walk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         out.append(row)
-        for key in ("components", "component"):
+        for key in ("components", "component", "accessory"):
             child = row.get(key)
             if isinstance(child, dict):
                 out.extend(_walk([child]))
@@ -183,7 +310,10 @@ def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]])
     channel = env.backend.get_channel(page.channel_id)
     result: dict[str, list[dict[str, Any]]] = {}
     for component in _walk(components):
-        kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
+        try:
+            kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
+        except (TypeError, ValueError):
+            kind = None
         custom_id = component.get("custom_id")
         if kind is None or not isinstance(custom_id, str):
             continue
@@ -200,16 +330,21 @@ def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]])
                 continue
             if kind in {"users", "mentionables"}:
                 for uid, member in guild.members.items():
-                    if can_access_channel(env, channel.id, page.viewer) and _user_allowed(preview, page, uid):
+                    if _user_allowed(preview, page, uid):
                         user = env.backend.get_user(uid)
                         entries.append({"id": str(uid), "label": member.nick or user.global_name or user.name, "kind": "user"})
             if kind in {"roles", "mentionables"}:
                 for rid, role in guild.roles.items():
-                    entries.append({"id": str(rid), "label": role.name, "kind": "role"})
+                    if rid != guild.id:
+                        entries.append({"id": str(rid), "label": role.name, "kind": "role"})
             if kind == "channels":
-                for candidate in env.backend.channels.values():
-                    if candidate.guild_id == channel.guild_id and can_access_channel(env, candidate.id, page.viewer):
-                        entries.append({"id": str(candidate.id), "label": candidate.name or str(candidate.id), "kind": "channel"})
+                allowed_types = component.get("channel_types")
+                for candidate in sorted(env.backend.channels.values(), key=lambda item: (item.position, item.id)):
+                    if candidate.guild_id != channel.guild_id or not can_access_channel(env, candidate.id, page.viewer):
+                        continue
+                    if isinstance(allowed_types, list) and allowed_types and candidate.type not in allowed_types:
+                        continue
+                    entries.append({"id": str(candidate.id), "label": candidate.name or str(candidate.id), "kind": "channel", "type": candidate.type})
         result[custom_id] = entries
     return result
 
@@ -221,6 +356,8 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     allowed = can_access_channel(env, channel.id, page.viewer, history=True)
     messages: list[Message] = []
     if allowed:
+        # ponytail: explicit refresh rebuilds the small in-memory world; add an
+        # index only when previews routinely exceed fixture-sized histories.
         for message in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id):
             if can_access_message(env, channel.id, message, page.viewer, history=True):
                 messages.append(message)
@@ -231,7 +368,14 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             selected = _message_projection(preview, page, selected_message)
     modal = None
     if page.modal is not None and page.modal._interaction.user_id == _viewer_id(page.viewer):
-        modal = {"handle": page.modal_handle, "payload": _clean(deepcopy(page.modal.modal), drop_urls=True)}
+        payload = _clean(deepcopy(page.modal.modal), drop_urls=True)
+        for component in _walk(payload.get("components", []) if isinstance(payload, dict) else []):
+            if isinstance(component.get("content"), str):
+                component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
+        modal = {"handle": page.modal_handle, "payload": payload}
+    candidate_components = list((selected or {}).get("components", []))
+    if modal:
+        candidate_components.extend(modal["payload"].get("components", []))
     return {
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,
@@ -245,8 +389,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "messages": [_message_projection(preview, page, item) for item in messages],
         "selected": selected,
         "modal": modal,
-        "candidates": _candidates(preview, page, (selected or {}).get("components", [])) if selected else {},
+        "candidates": _candidates(preview, page, candidate_components),
         "assets": dict(page.assets),
+        "profile": {"theme": preview.theme, "width": preview.width, "height": preview.height, "locale": preview.locale, "timezone": preview.timezone},
         "status": page.status,
         "diagnostics": list(page.diagnostics),
         "lastAction": page.last_action,

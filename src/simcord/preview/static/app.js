@@ -205,6 +205,24 @@ async function request(path, method = "GET", body, context = state.contextId) {
   return response.status === 204 ? null : response.json();
 }
 
+async function requestAction(body) {
+  const values = body.values;
+  const uploads = [];
+  const payload = { ...body, values: { ...(values || {}) } };
+  Object.entries(payload.values || {}).forEach(([id, value]) => {
+    if (!Array.isArray(value) || !value.some((item) => item instanceof File)) return;
+    payload.values[id] = [];
+    value.forEach((item) => { if (item instanceof File) uploads.push([id, item]); });
+  });
+  if (!uploads.length) return request("/api/action", "POST", body);
+  const form = new FormData();
+  form.append("payload", JSON.stringify(payload));
+  uploads.forEach(([id, file]) => form.append(`file:${id}`, file, file.name));
+  const response = await fetch("/api/action", { method: "POST", headers: authHeaders(), body: form, cache: "no-store" });
+  if (!response.ok) throw new Error((await response.text().catch(() => "")) || `preview request failed (${response.status})`);
+  return response.json();
+}
+
 function messageFingerprint(message) {
   return message ? JSON.stringify(message) : "";
 }
@@ -279,14 +297,9 @@ function openDropdown(key, selected, multi, minimum, maximum, highlight) {
 function updateDraft(key, value, multi, minimum, maximum, selected) {
   const drafts = currentDrafts(key);
   const current = Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : [...selected];
-  let next = multi ? (current.includes(String(value)) ? current.filter((item) => item !== String(value)) : [...current, String(value)]) : [String(value)];
+  const next = multi ? (current.includes(String(value)) ? current.filter((item) => item !== String(value)) : [...current, String(value)]) : [String(value)];
   if (multi && next.length > maximum) {
     addDiagnostic({ code: "select-max", message: `Selection cannot exceed ${maximum} values` });
-    localRender(false);
-    return;
-  }
-  if (multi && next.length < minimum) {
-    addDiagnostic({ code: "select-min", message: `Select at least ${minimum} values before applying` });
     localRender(false);
     return;
   }
@@ -349,13 +362,17 @@ function renderSnapshot(snapshot, generation, force = false) {
   const selectedKey = selected ? String(selected.id) : null;
   const selectedFingerprint = messageFingerprint(selected);
   const shouldRenderMessage = force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
-  let pendingMedia = [];
+  const pendingMedia = [];
   if (shouldRenderMessage) {
     state.lastMessageKey = selectedKey;
     state.lastMessageFingerprint = selectedFingerprint;
-    const options = {
+    renderMessage(ui.surface, selected, {
       drafts: state.drafts,
       candidates: snapshot.candidates || {},
+      assets: snapshot.assets || {},
+      mentions: selected?.mention_names || {},
+      locale: state.profile.locale,
+      timezone: state.profile.timezone,
       dropdown: state.dropdown,
       onInit: initDraft,
       onOpen: openDropdown,
@@ -365,9 +382,9 @@ function renderSnapshot(snapshot, generation, force = false) {
       loadAsset: (id) => loadAsset(id, generation),
       isCurrent: () => generation === state.renderGeneration,
       onDiagnostic: addDiagnostic,
+      onLocalRender: () => localRender(true),
       pendingMedia,
-    };
-    renderMessage(ui.surface, selected, options);
+    });
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
   const modalKey = modal ? modalFingerprint(modal) : "";
@@ -375,15 +392,16 @@ function renderSnapshot(snapshot, generation, force = false) {
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
       candidates: snapshot.candidates || {},
+      locale: state.profile.locale,
+      timezone: state.profile.timezone,
       onInit: initDraft,
       onDraft: (key, value) => { state.modalDrafts.set(key, value); localRender(false); },
+      onFiles: (key, files) => { state.modalDrafts.set(key, files); localRender(true); },
       onCancel: () => {
-        if (state.dropdown) {
-          cancelDropdown(state.dropdown.key);
-          return;
-        }
+        if (state.dropdown) { cancelDropdown(state.dropdown.key); return; }
         state.dismissedModal = state.modalHandle;
         state.modalControls = {};
+        state.modalDrafts.clear();
         localRender(true);
       },
       onSubmit: submitModal,
@@ -391,7 +409,9 @@ function renderSnapshot(snapshot, generation, force = false) {
     });
     state.modalControls = rendered.controls;
     state.modalHandle = modal?.handle || null;
+    if (rendered.focus instanceof HTMLElement) requestAnimationFrame(() => rendered.focus.focus());
   }
+  state.lastModalFingerprint = modalKey;
   renderDiagnostics();
   updateActionStatus();
   waitReady(generation, pendingMedia);
@@ -442,25 +462,23 @@ async function dispatch(kind, extra = {}) {
     generation: state.contextGeneration,
     bot_generation: state.botGeneration,
     kind,
+    published_revision: state.publishedRevision,
     ...extra,
   };
   state.pendingAction = { kind, requestId, sequence };
   localRender(false);
   try {
-    const result = await request("/api/action", "POST", body);
+    const result = await requestAction(body);
     state.lastAction = result;
     state.pendingAction = null;
     if (Array.isArray(result.diagnostics)) result.diagnostics.forEach((item) => addDiagnostic(item));
-    if (kind === "close") {
-      state.closed = true;
-      state.ready = false;
-      updateActionStatus();
-      return;
-    }
+    if (kind === "close") { state.closed = true; state.ready = false; updateActionStatus(); return; }
     const snapshot = await request("/api/state");
     if (snapshot.context?.generation !== state.contextGeneration) {
       state.dropdown = null;
+      state.drafts.clear();
       state.modalDrafts.clear();
+      state.dismissedModal = null;
     }
     state.dismissedModal = null;
     await installSnapshot(snapshot, true);
@@ -524,5 +542,24 @@ ui.width.addEventListener("change", () => updateViewport(ui.width, 240, 32768));
 ui.height.addEventListener("change", () => updateViewport(ui.height, 180, 32768));
 ui.refresh.addEventListener("click", () => dispatch("refresh"));
 ui.close.addEventListener("click", () => dispatch("close"));
+ui.modal.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    if (state.dropdown) { event.preventDefault(); cancelDropdown(state.dropdown.key); return; }
+    if (state.modalHandle) {
+      event.preventDefault();
+      state.dismissedModal = state.modalHandle;
+      state.modalDrafts.clear();
+      localRender(true);
+    }
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...ui.modal.querySelectorAll("button, input, textarea, [tabindex]:not([tabindex='-1'])")].filter((item) => !item.disabled && item.offsetParent !== null);
+  if (focusable.length < 2) return;
+  const index = focusable.indexOf(document.activeElement);
+  const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index === focusable.length - 1 ? 0 : index + 1);
+  event.preventDefault();
+  focusable[next].focus();
+});
 
 bootstrap();

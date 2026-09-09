@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import mimetypes
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -20,8 +21,13 @@ from ..builders import ChannelHandle, UserHandle
 from ..components import walk_components
 from ..enums import ComponentType
 from ..results import InteractionResult, ResponseMessage
+from ._media import MediaError, MediaWorker
 from ._server import PreviewServer
 from ._snapshot import build_snapshot, can_access_channel, can_access_message
+
+
+def _content_type(filename: str) -> str:
+    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +73,7 @@ class _Page:
     assets: dict[str, dict[str, Any]] = field(default_factory=dict)
     asset_blobs: dict[str, tuple[str, bytes, str]] = field(default_factory=dict)
     snapshot: dict[str, Any] = field(default_factory=dict)
+
     def asset_id(self, key: str, metadata: Mapping[str, Any]) -> str:
         existing = next((asset for asset, item in self.assets.items() if item.get("key") == key), None)
         if existing is not None:
@@ -74,26 +81,43 @@ class _Page:
         asset = "a_" + secrets.token_urlsafe(12)
         filename = str(metadata.get("filename", "asset"))
         content_type = str(metadata.get("content_type") or "application/octet-stream")
-        self.assets[asset] = {"id": asset, "filename": filename, "contentType": content_type, "key": key}
+        if content_type == "application/octet-stream":
+            content_type = _content_type(filename if filename != "asset" else str(metadata.get("url", "")))
+        self.assets[asset] = {
+            "id": asset,
+            "filename": filename,
+            "contentType": content_type,
+            "key": key,
+            "available": False,
+        }
         blob: bytes | None = None
-        if key.startswith("attachment:"):
-            url = metadata.get("url")
-            if isinstance(url, str):
-                try:
-                    blob = self.preview.env.backend.cdn.get(url)
-                except BackendError:
-                    supplied = self.preview.explicit_assets.get(url)
-                    if supplied is not None:
-                        filename, blob = supplied
-            else:
-                supplied = None
-        else:
+        url = metadata.get("url")
+        if isinstance(url, str):
+            blob = self.preview.env.backend.cdn.get(url)
+            if blob is None:
+                supplied = self.preview.explicit_assets.get(url)
+                if supplied is not None:
+                    filename, blob = supplied
+                    content_type = content_type if content_type != "application/octet-stream" else _content_type(filename)
+        if blob is None and key.startswith("url:"):
+            supplied = self.preview.explicit_assets.get(key.removeprefix("url:"))
+            if supplied is not None:
+                filename, blob = supplied
+                content_type = content_type if content_type != "application/octet-stream" else _content_type(filename)
+        if blob is None and not isinstance(url, str):
             supplied = self.preview.explicit_assets.get(key)
             if supplied is not None:
                 filename, blob = supplied
-                content_type = "application/octet-stream"
+                content_type = content_type if content_type != "application/octet-stream" else _content_type(filename)
         if blob is not None:
-            self.asset_blobs[asset] = (filename, blob, content_type)
+            if self.preview._retained_media_bytes + len(blob) > Preview._MAX_MEDIA_BYTES:
+                self.assets[asset]["diagnostic"] = "session media budget exceeded"
+            else:
+                self.preview._retained_media_bytes += len(blob)
+                self.asset_blobs[asset] = (filename, blob, content_type)
+                self.assets[asset].update(
+                    {"filename": filename, "contentType": content_type, "available": True, "bytes": len(blob)}
+                )
         return asset
 
 
@@ -101,6 +125,7 @@ class Preview:
     """An async context manager owning one bounded, local preview session."""
 
     _MAX_PAGES = 16
+    _MAX_MEDIA_BYTES = 128 * 1024 * 1024
     _LOCALES: ClassVar[set[str]] = {
         "en-US", "en-GB", "de", "de-DE", "es-ES", "fr", "fr-FR", "ja", "ja-JP"
     }
@@ -138,6 +163,8 @@ class Preview:
         self._unregister_shutdown: Any = None
         self._unregister_dispatch: Any = None
         self._active_action: _Action | None = None
+        self._media_worker: MediaWorker | None = None
+        self._retained_media_bytes = 0
         self._active_task: asyncio.Task[Any] | None = None
 
     @property
@@ -321,6 +348,9 @@ class Preview:
                 self._unregister_dispatch()
                 self._unregister_dispatch = None
             await self._server.close()
+            if self._media_worker is not None:
+                await self._media_worker.close()
+                self._media_worker = None
             if self._unregister_shutdown is not None:
                 self._unregister_shutdown()
                 self._unregister_shutdown = None
@@ -473,24 +503,27 @@ class Preview:
         if not can_access_message(self.env, page.channel_id, message, page.viewer, history=True):
             raise SetupError("focused message is inaccessible")
         return message
+
     def _select_values(self, page: _Page, values: Any, custom_id: Any) -> list[Any]:
         if not isinstance(values, list):
             raise SetupError("select values must be a list")
+        try:
+            if len(values) != len(set(values)):
+                raise SetupError("select values must be unique")
+        except TypeError as exc:
+            raise SetupError("select values must be scalar") from exc
         message = self._target_message(page)
-        component = next(
-            (
-                item
-                for item in walk_components(message.components)
-                if item.get("custom_id") == custom_id
-            ),
-            None,
-        )
+        component = next((item for item in walk_components(message.components) if item.get("custom_id") == custom_id), None)
         if component is None:
             raise SetupError("select is unavailable")
         try:
             kind = ComponentType(component["type"])
         except (KeyError, TypeError, ValueError) as exc:
             raise SetupError("select is unavailable") from exc
+        minimum = component.get("min_values", 1)
+        maximum = component.get("max_values", 1)
+        if not isinstance(minimum, int) or not isinstance(maximum, int) or not minimum <= len(values) <= maximum:
+            raise SetupError(f"Select expects between {minimum} and {maximum} value(s), got {len(values)}")
         if any(not isinstance(value, str) for value in values):
             raise SetupError("select values must be strings")
         if kind == ComponentType.STRING_SELECT:
@@ -498,6 +531,15 @@ class Preview:
             if any(value not in valid for value in values):
                 raise SetupError("select option is unavailable")
             return list(values)
+        if kind == ComponentType.CHANNEL_SELECT and isinstance(component.get("channel_types"), list):
+            allowed = set(component["channel_types"])
+            for value in values:
+                try:
+                    candidate = self.env.backend.channels.get(int(value))
+                except (TypeError, ValueError):
+                    candidate = None
+                if candidate is None or (allowed and candidate.type not in allowed):
+                    raise SetupError("select channel is unavailable")
         handles = [self._resolve_entity(page, value, kind) for value in values]
         if any(handle is None for handle in handles):
             raise SetupError("select entity is unavailable")
@@ -519,17 +561,14 @@ class Preview:
             return None
         if kind in {ComponentType.USER_SELECT, ComponentType.MENTIONABLE_SELECT} and entity_id in guild.members:
             return self._member_handle(page, entity_id)
-        if kind in {ComponentType.ROLE_SELECT, ComponentType.MENTIONABLE_SELECT} and entity_id in guild.roles:
+        if kind in {ComponentType.ROLE_SELECT, ComponentType.MENTIONABLE_SELECT} and entity_id in guild.roles and entity_id != guild.id:
             from ..builders import GuildHandle, RoleHandle
-
             return RoleHandle(self.env, GuildHandle(self.env, guild), guild.roles[entity_id])
         if kind == ComponentType.CHANNEL_SELECT:
             candidate = self.env.backend.channels.get(entity_id)
-            if candidate is not None and candidate.guild_id == channel.guild_id:
-                if can_access_channel(self.env, candidate.id, page.viewer):
-                    from ..builders import GuildHandle
-
-                    return ChannelHandle(self.env, GuildHandle(self.env, guild), candidate)
+            if candidate is not None and candidate.guild_id == channel.guild_id and can_access_channel(self.env, candidate.id, page.viewer):
+                from ..builders import GuildHandle
+                return ChannelHandle(self.env, GuildHandle(self.env, guild), candidate)
         return None
 
     def _member_handle(self, page: _Page, user_id: int) -> MemberActor:
@@ -559,15 +598,33 @@ class Preview:
             elif isinstance(node, list):
                 stack.extend(node)
         converted: dict[str, Any] = {}
+        entity_types = {
+            ComponentType.USER_SELECT,
+            ComponentType.ROLE_SELECT,
+            ComponentType.CHANNEL_SELECT,
+            ComponentType.MENTIONABLE_SELECT,
+        }
         for key, value in values.items():
             kind = kinds.get(key)
-            if kind in {
-                ComponentType.USER_SELECT,
-                ComponentType.ROLE_SELECT,
-                ComponentType.CHANNEL_SELECT,
-                ComponentType.MENTIONABLE_SELECT,
-            } and isinstance(value, list):
-                converted[key] = [self._resolve_entity(page, item, kind) or item for item in value]
+            if kind is None:
+                raise SetupError(f"unknown modal control {key!r}")
+            if kind in entity_types:
+                if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                    raise SetupError(f"modal control {key!r} expects entity IDs")
+                resolved = [self._resolve_entity(page, item, kind) for item in value]
+                if any(item is None for item in resolved):
+                    raise SetupError(f"modal entity selection {key!r} is unavailable")
+                converted[key] = resolved
+            elif kind == ComponentType.FILE_UPLOAD:
+                if not isinstance(value, list) or any(
+                    not isinstance(item, (list, tuple))
+                    or len(item) != 2
+                    or not isinstance(item[0], str)
+                    or not isinstance(item[1], bytes)
+                    for item in value
+                ):
+                    raise SetupError(f"modal file upload {key!r} is invalid")
+                converted[key] = [(item[0], item[1]) for item in value]
             else:
                 converted[key] = value
         return converted
@@ -622,6 +679,30 @@ class Preview:
         except KeyError as exc:
             raise SetupError("asset is unavailable") from exc
         return content_type, body, filename
+
+    async def prepare_asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
+        content_type, body, filename = self.asset(context_id, asset_id)
+        page = self.get_page(context_id)
+        if not content_type.startswith("image/"):
+            return content_type, body, filename
+        if self._media_worker is None:
+            self._media_worker = MediaWorker()
+        metadata = page.assets.get(asset_id, {})
+        try:
+            info = await self._media_worker.validate(metadata.get("key", asset_id), body)
+        except MediaError as exc:
+            metadata["available"] = False
+            metadata["diagnostic"] = str(exc)
+            raise SetupError(str(exc)) from exc
+        if "normalizedBytes" not in metadata:
+            if self._retained_media_bytes + len(info.normalized) > self._MAX_MEDIA_BYTES:
+                metadata["available"] = False
+                metadata["diagnostic"] = "session media budget exceeded after normalization"
+                raise SetupError(metadata["diagnostic"])
+            self._retained_media_bytes += len(info.normalized)
+            metadata["normalizedBytes"] = len(info.normalized)
+        metadata.update({"width": info.width, "height": info.height, "frames": info.frames, "validated": True})
+        return info.content_type, info.normalized, filename
 
 
 def _validate_preview(

@@ -155,14 +155,73 @@ class PreviewServer:
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
         try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            raise web.HTTPBadRequest(text="invalid JSON") from None
+            if request.content_type.startswith("multipart/"):
+                body = await self._multipart_action(request)
+            else:
+                raw = await request.content.read(256 * 1024 + 1)
+                if len(raw) > 256 * 1024:
+                    raise web.HTTPRequestEntityTooLarge(max_size=256 * 1024, actual_size=len(raw))
+                body = json.loads(raw)
+        except web.HTTPException:
+            raise
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text="invalid JSON") from exc
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="JSON object required")
         try:
             result = await self.preview.action(context_id, body)
         except Exception as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
         return web.json_response(result, headers=self._SECURITY_HEADERS)
+
+    async def _multipart_action(self, request: Any) -> dict[str, Any]:
+        from aiohttp import web
+
+        reader = await request.multipart()
+        payload: dict[str, Any] | None = None
+        files: dict[str, list[tuple[str, bytes]]] = {}
+        parts = 0
+        total = 0
+        aggregate = 0
+        async for part in reader:
+            parts += 1
+            if parts > 11:
+                raise web.HTTPRequestEntityTooLarge(max_size=11, actual_size=parts)
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = await part.read_chunk(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 26 * 1024 * 1024:
+                    raise web.HTTPRequestEntityTooLarge(max_size=26 * 1024 * 1024, actual_size=total)
+                size += len(chunk)
+                if part.name == "payload" and size > 256 * 1024:
+                    raise web.HTTPRequestEntityTooLarge(max_size=256 * 1024, actual_size=size)
+                if part.name != "payload" and size > 10 * 1024 * 1024:
+                    raise web.HTTPRequestEntityTooLarge(max_size=10 * 1024 * 1024, actual_size=size)
+                chunks.append(chunk)
+            blob = b"".join(chunks)
+            if part.name == "payload":
+                try:
+                    payload = json.loads(blob)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    raise web.HTTPBadRequest(text="invalid multipart JSON envelope") from exc
+            elif isinstance(part.name, str) and part.name.startswith("file:"):
+                custom_id = part.name.removeprefix("file:")
+                files.setdefault(custom_id, []).append((part.filename or "upload", blob))
+                aggregate += size
+                if aggregate > 25 * 1024 * 1024:
+                    raise web.HTTPRequestEntityTooLarge(max_size=25 * 1024 * 1024, actual_size=aggregate)
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="multipart payload is required")
+        values = payload.get("values")
+        if not isinstance(values, dict):
+            raise web.HTTPBadRequest(text="multipart values are required")
+        for custom_id, uploads in files.items():
+            values[custom_id] = uploads
+        return payload
 
     async def _asset(self, request: Any) -> Any:
         from aiohttp import web
@@ -171,7 +230,9 @@ class PreviewServer:
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
         try:
-            content_type, body, filename = self.preview.asset(context_id, request.match_info["asset_id"])
+            content_type, body, filename = await self.preview.prepare_asset(
+                context_id, request.match_info["asset_id"]
+            )
         except Exception as exc:
             raise web.HTTPNotFound(text=str(exc)) from exc
         safe_filename = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
