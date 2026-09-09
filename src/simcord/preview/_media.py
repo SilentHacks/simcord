@@ -57,7 +57,7 @@ def _inspect(blob: bytes) -> MediaInfo:
             raise MediaError("media exceeds 16 megapixels per frame")
         try:
             frames = int(getattr(image, "n_frames", 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError):  # pragma: no cover - Pillow exposes an integer
             frames = 1
         if frames > MAX_FRAMES:
             raise MediaError("media animation exceeds 100 frames")

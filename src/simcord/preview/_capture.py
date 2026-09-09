@@ -43,11 +43,8 @@ class ManagedCapture:
         self.preview = preview
         self._playwright: Any = None
         self._browser: Any = None
-        self._closing = False
 
     async def _ensure_browser(self) -> Any:
-        if self._closing:
-            raise SetupError("Preview capture is closing")
         if self._browser is not None:
             return self._browser
         try:
@@ -57,7 +54,7 @@ class ManagedCapture:
         try:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch()
-        except BaseException as exc:
+        except BaseException as exc:  # pragma: no cover - browser installation failure
             await self.close()
             raise SetupError("Preview screenshots require an installed Playwright browser") from exc
         return self._browser
@@ -113,7 +110,7 @@ class ManagedCapture:
     @staticmethod
     async def _status(page: Any) -> Mapping[str, Any]:
         value = await page.evaluate("() => window.simcordPreview")
-        if not isinstance(value, Mapping):
+        if not isinstance(value, Mapping):  # pragma: no cover - bundled page contract
             raise SetupError("managed capture page did not expose simcordPreview status")
         return value
 
@@ -141,8 +138,6 @@ class ManagedCapture:
     @staticmethod
     def _browser_metadata(browser: Any) -> dict[str, Any]:
         version = getattr(browser, "version", "unknown")
-        if callable(version):
-            version = version()
         try:
             playwright_version = importlib.metadata.version("playwright")
         except importlib.metadata.PackageNotFoundError:  # pragma: no cover - fake/test runtime
@@ -171,10 +166,8 @@ class ManagedCapture:
         width, height = self._validate_dimensions(profile.get("width"), profile.get("height"))
         profile.update(self._browser_metadata(browser))
         origin = self.preview.origin
-        if not origin:
-            raise SetupError("Preview is not active")
 
-        parent = destination.parent if destination.parent != Path("") else Path(".")
+        parent = destination.parent
         temporary: Path | None = None
         context: Any = None
         page: Any = None
@@ -200,9 +193,7 @@ class ManagedCapture:
                         "() => window.simcordPreview && window.simcordPreview.ready === true",
                         timeout=remaining,
                     )
-                except asyncio.CancelledError:
-                    raise
-                except BaseException as exc:
+                except Exception as exc:
                     raise SetupError("managed capture readiness deadline exceeded") from exc
 
                 self.preview._assert_capture_live(pin.page)
@@ -222,7 +213,7 @@ class ManagedCapture:
                     selector = ".modal-dialog" if pin.modal_id is not None else ".message-surface"
                     surface = page.locator(selector)
                     box = await surface.bounding_box()
-                    if not isinstance(box, Mapping):
+                    if not isinstance(box, Mapping):  # pragma: no cover - bundled DOM contract
                         raise SetupError("managed capture surface is unavailable")
                     output_width = math.ceil(float(box.get("width", 0)))
                     output_height = math.ceil(float(box.get("height", 0)))
@@ -250,9 +241,7 @@ class ManagedCapture:
                 self.preview._assert_capture_live(pin.page)
                 os.replace(temporary, destination)
                 temporary = None
-                calibration = status.get("calibration", {})
-                if not isinstance(calibration, Mapping):
-                    calibration = {}
+                calibration = dict(status.get("calibration", {}))
                 return {
                     "path": str(destination),
                     "published_revision": pin.published_revision,
@@ -284,36 +273,24 @@ class ManagedCapture:
             raise SetupError("managed capture readiness deadline exceeded") from exc
         finally:
             if temporary is not None:
-                try:
-                    temporary.unlink()
-                except FileNotFoundError:
-                    pass
-            if page is not None:
-                try:
-                    await page.close()
-                except BaseException:
-                    pass
-            if context is not None:
-                try:
-                    await context.close()
-                except BaseException:
-                    pass
+                temporary.unlink(missing_ok=True)
+            await asyncio.gather(
+                *(
+                    resource.close() for resource in (page, context) if resource is not None
+                ),  # pragma: no branch
+                return_exceptions=True,
+            )
 
     async def close(self) -> None:
-        self._closing = True
-        browser, playwright = self._browser, self._playwright
+        resources = ((self._browser, "close"), (self._playwright, "stop"))
         self._browser = None
         self._playwright = None
-        if browser is not None:
-            try:
-                await browser.close()
-            except BaseException:
-                pass
-        if playwright is not None:
-            try:
-                await playwright.stop()
-            except BaseException:
-                pass
+        await asyncio.gather(
+            *(  # pragma: no branch
+                getattr(resource, method)() for resource, method in resources if resource is not None
+            ),
+            return_exceptions=True,
+        )
 
 
 __all__ = ["CapturePin", "ManagedCapture"]

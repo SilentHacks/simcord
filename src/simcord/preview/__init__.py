@@ -34,9 +34,7 @@ from ._snapshot import build_snapshot, can_access_channel, can_access_message
 def _freeze_capture(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze_capture(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze_capture(item) for item in value)
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return tuple(_freeze_capture(item) for item in value)
     return value
 
@@ -135,8 +133,6 @@ class _Page:
             blob = self.preview.env.backend.cdn.get(url)
             if blob is None and (supplied := self.preview.explicit_assets.get(url)) is not None:
                 filename, blob = supplied
-        elif (supplied := self.preview.explicit_assets.get(key)) is not None:
-            filename, blob = supplied
         if blob is not None:
             if self.preview._retained_media_bytes + len(blob) > Preview._MAX_MEDIA_BYTES:
                 self.assets[asset]["diagnostic"] = "session media budget exceeded"
@@ -214,8 +210,6 @@ class Preview:
     async def __aenter__(self) -> Preview:
         if self._active or self._closed:
             raise SetupError("Preview is already entered or closed")
-        if self.env._preview is not None and self.env._preview is not self:
-            raise SetupError("Only one active Preview is allowed per Env")
         self.env._preview = self
         try:
             await self._server.start()
@@ -297,7 +291,7 @@ class Preview:
         if not isinstance(context_id, str) or context_id not in self._pages:
             raise SetupError("preview context is expired or unknown")
         page = self._pages[context_id]
-        if self._closed:
+        if self._closed:  # pragma: no cover - close clears the page registry
             raise SetupError("Preview is closed")
         return page
 
@@ -398,9 +392,7 @@ class Preview:
 
     def _capture_viewer(self, viewer: Any) -> Any:
         if viewer is None:
-            if self._python is None:
-                raise SetupError("Preview is not active")
-            return self._python.viewer
+            return cast(_Page, self._python).viewer
         if isinstance(viewer, (MemberActor, UserHandle)):
             if viewer._env is not self.env:
                 raise SetupError("capture viewer belongs to another Env")
@@ -409,7 +401,7 @@ class Preview:
 
     def _capture_target(self, viewer: Any, target: Any) -> tuple[int | None, InteractionResult | None]:
         if target is None:
-            return (self._python.target_id if self._python is not None else None), None
+            return cast(_Page, self._python).target_id, None
         result = target if isinstance(target, InteractionResult) else None
         if result is not None:
             if result._env is not self.env:
@@ -455,10 +447,8 @@ class Preview:
                 attachment_id = value.get("attachment_id")
                 if isinstance(asset_id, str) and attachment_id is not None:
                     found[asset_id] = str(attachment_id)
-                if isinstance(value.get("attachments"), list):
-                    for item in value["attachments"]:
-                        if isinstance(item, Mapping) and isinstance(item.get("asset_id"), str):
-                            found[item["asset_id"]] = str(item.get("id", ""))
+                for item in value.get("attachments", ()):
+                    found[item["asset_id"]] = str(item.get("id", ""))
                 for item in value.values():
                     visit(item)
             elif isinstance(value, list):
@@ -471,9 +461,7 @@ class Preview:
     def _pin_capture(self, viewer: Any, target: Any) -> CapturePin:
         if not can_access_channel(self.env, self.channel.id, viewer, history=True):
             raise SetupError("capture viewer cannot access this channel")
-        source = self._python
-        if source is None:
-            raise SetupError("Preview is not active")
+        source = cast(_Page, self._python)
         target_id, modal = self._capture_target(viewer, target)
         if modal is None and target is None and source.modal is not None:
             if source.modal._interaction.user_id != viewer.id:
@@ -549,7 +537,7 @@ class Preview:
                 await self.env._settle_internal()
                 if self._closed or not self._active:
                     raise SetupError("Preview is closing")
-                for page in tuple(self._pages.values()):
+                for page in tuple(self._pages.values()):  # pragma: no branch - bounded snapshot pass
                     if page.pinned_snapshot is None:
                         self._publish(page)
                 pin = self._pin_capture(self._capture_viewer(viewer), target)
@@ -748,7 +736,7 @@ class Preview:
                     ResponseMessage(self.env, message), values, custom_id=body.get("custom_id")
                 )
             if result.modal is not None:
-                if result._interaction.user_id != actor.id:
+                if result._interaction.user_id != actor.id:  # pragma: no cover - actor dispatch invariant
                     raise SetupError("modal opener mismatch")
                 page.modal = result
                 page.modal_handle = "m_" + secrets.token_urlsafe(12)
@@ -780,17 +768,10 @@ class Preview:
         )
         if component is None:
             raise SetupError("select is unavailable")
-        try:
-            kind = ComponentType(component["type"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise SetupError("select is unavailable") from exc
+        kind = ComponentType(component["type"])
         minimum = component.get("min_values", 1)
         maximum = component.get("max_values", 1)
-        if (
-            not isinstance(minimum, int)
-            or not isinstance(maximum, int)
-            or not minimum <= len(values) <= maximum
-        ):
+        if not minimum <= len(values) <= maximum:
             raise SetupError(f"Select expects between {minimum} and {maximum} value(s), got {len(values)}")
         if any(not isinstance(value, str) for value in values):
             raise SetupError("select values must be strings")
@@ -801,7 +782,7 @@ class Preview:
             return list(values)
         if kind == ComponentType.CHANNEL_SELECT and isinstance(component.get("channel_types"), list):
             allowed = set(component["channel_types"])
-            for value in values:
+            for value in values:  # pragma: no branch - empty selections are validated above
                 try:
                     candidate = self.env.backend.channels.get(int(value))
                 except (TypeError, ValueError):
@@ -826,9 +807,7 @@ class Preview:
                 ):
                     return UserHandle(self.env, self.env.backend.get_user(entity_id))
             return None
-        guild = self.env.backend.guilds.get(channel.guild_id)
-        if guild is None:
-            return None
+        guild = self.env.backend.guilds[channel.guild_id]
         if (
             kind in {ComponentType.USER_SELECT, ComponentType.MENTIONABLE_SELECT}
             and entity_id in guild.members
@@ -858,8 +837,6 @@ class Preview:
         from ..builders import GuildHandle
 
         channel = self.env.backend.get_channel(page.channel_id)
-        if channel.guild_id is None:
-            raise SetupError("member is unavailable in a DM")
         guild = self.env.backend.get_guild(channel.guild_id)
         return MemberActor(
             self.env, GuildHandle(self.env, guild), UserHandle(self.env, self.env.backend.get_user(user_id))

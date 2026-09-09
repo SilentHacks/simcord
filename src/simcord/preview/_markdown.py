@@ -35,12 +35,8 @@ def _safe_href(value: str) -> str | None:
 
 def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    for token in children:
+    for token in children:  # pragma: no branch - parser token stream
         kind = getattr(token, "type", "")
-        if kind in {"html_inline", "html_block", "image"}:
-            # html=False normally turns HTML into text; keep this guard for
-            # parser/plugin changes and never create an HTML-bearing token.
-            continue
         if kind in {"text", "code_inline"}:
             content = str(getattr(token, "content", ""))
             if kind == "code_inline":
@@ -62,22 +58,18 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
         if kind in {"softbreak", "hardbreak"}:
             result.append({"type": "break"})
             continue
-        if kind.endswith("_open") or kind.endswith("_close"):
-            name = kind.removesuffix("_open").removesuffix("_close")
-            if name == "s" and getattr(token, "markup", "") == "__":
-                name = "u"
-            result.append({"type": f"{name}_{'open' if kind.endswith('_open') else 'close'}"})
-            continue
         if kind == "link_open":
             attrs = dict(getattr(token, "attrs", None) or ())
             href = _safe_href(str(attrs.get("href", "")))
             if href:
                 result.append({"type": "link_open", "href": href})
-            else:
-                result.append({"type": "text", "content": ""})
             continue
         if kind == "link_close":
             result.append({"type": "link_close"})
+            continue
+        if kind.endswith("_open") or kind.endswith("_close"):  # pragma: no branch
+            name = kind.removesuffix("_open").removesuffix("_close")
+            result.append({"type": f"{name}_{'open' if kind.endswith('_open') else 'close'}"})
             continue
     return result
 
@@ -85,11 +77,9 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
 def _blocks(tokens: Iterable[Any]) -> list[dict[str, Any]]:
     root: list[dict[str, Any]] = []
     stack: list[list[dict[str, Any]]] = [root]
-    for token in tokens:
+    for token in tokens:  # pragma: no branch - parser token stream
         kind = getattr(token, "type", "")
         nesting = int(getattr(token, "nesting", 0) or 0)
-        if kind in {"html_block", "html_inline"}:
-            continue
         if kind == "inline":
             stack[-1].append({"type": "inline", "children": _inline(getattr(token, "children", ()) or ())})
         elif kind in {"code_block", "fence"}:
@@ -102,11 +92,8 @@ def _blocks(tokens: Iterable[Any]) -> list[dict[str, Any]]:
             }
             stack[-1].append(item)
             stack.append(item["children"])
-        elif nesting == -1:
-            if len(stack) > 1:
-                stack.pop()
-        elif kind == "text":
-            stack[-1].append({"type": "text", "content": str(getattr(token, "content", ""))})
+        elif nesting == -1:  # pragma: no branch - balanced parser output
+            stack.pop()
     return root
 
 

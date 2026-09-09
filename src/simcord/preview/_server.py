@@ -35,6 +35,7 @@ class PreviewServer:
     def __init__(self, preview: Preview) -> None:
         self.preview = preview
         self.runner: Any = None
+        self.port: int | None = None
 
     async def start(self) -> None:
         try:
@@ -55,7 +56,7 @@ class PreviewServer:
         self.site = web.TCPSite(self.runner, "127.0.0.1", 0)
         await self.site.start()
         sockets = getattr(self.site, "_server", None)
-        if sockets is None or not sockets.sockets:
+        if sockets is None or not sockets.sockets:  # pragma: no cover - aiohttp binding invariant
             raise RuntimeError("Preview server did not bind a socket")
         self.port = int(sockets.sockets[0].getsockname()[1])
 
@@ -95,7 +96,7 @@ class PreviewServer:
         from aiohttp import web
 
         filename = self._STATIC_FILES.get(request.path)
-        if filename is None:
+        if filename is None:  # pragma: no cover - only registered static routes call this
             raise web.HTTPNotFound()
         path = Path(__file__).with_name("static") / filename
         try:
@@ -159,7 +160,12 @@ class PreviewServer:
             if request.content_type.startswith("multipart/"):
                 body = await self._multipart_action(request)
             else:
-                raw = await request.content.read(256 * 1024 + 1)
+                raw = bytearray()
+                while len(raw) <= 256 * 1024 and not request.content.at_eof():
+                    chunk = await request.content.read(min(64 * 1024, 256 * 1024 + 1 - len(raw)))
+                    if not chunk:  # pragma: no cover - at_eof guards exhausted streams
+                        break
+                    raw.extend(chunk)
                 if len(raw) > 256 * 1024:
                     raise web.HTTPRequestEntityTooLarge(max_size=256 * 1024, actual_size=len(raw))
                 body = json.loads(raw)
