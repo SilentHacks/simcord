@@ -410,12 +410,12 @@ def _visible_message(actor: Any, message: MessageLike) -> Any:
     backend = actor._env.backend
     fallback = actor.dm_channel.id if isinstance(actor, UserHandle) else None
     channel_id = _channel_id_of(message, fallback)
+    from .preview._snapshot import can_access_message
+
     _check_user_dm_channel(actor, channel_id)
     stored = backend.get_message(channel_id, message.id)
-    if not stored.visible_to(actor.id):
-        raise SetupError(
-            "That message is ephemeral and not visible to this user — a real user could not interact with it"
-        )
+    if not can_access_message(actor._env, channel_id, stored, actor):
+        raise SetupError("That message is not visible to this user")
     return stored
 
 
@@ -776,17 +776,28 @@ def _commit_modal_uploads(
 
 
 async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, Any]) -> InteractionResult:
-    spec = shown.modal
-    if spec is None:
+    if not isinstance(shown, InteractionResult) or shown._env is not actor._env:
+        raise SetupError("That modal belongs to another Env")
+    interaction = shown._interaction
+    if interaction.user_id != actor.id:
+        raise SetupError("Only the modal opener can submit it")
+    if interaction.modal is None:
         raise SetupError("That interaction did not respond with a modal")
+    if getattr(interaction, "modal_consumed", False):
+        raise SetupError("That modal has already been submitted")
+    spec = interaction.modal
     if not isinstance(values, dict):
         raise SetupError("Modal values must be a dict keyed by custom_id")
     try:
         spec = validate_modal(spec)
     except ValueError as exc:
         raise SetupError(str(exc)) from exc
-    channel_id = shown._interaction.channel_id
+    channel_id = interaction.channel_id
     _check_user_dm_channel(actor, channel_id)
+    from .preview._snapshot import can_access_channel
+
+    if not can_access_channel(actor._env, channel_id, actor):
+        raise SetupError("That modal is no longer available to this user")
     controls = _modal_control_map(spec)
     unknown = set(values) - set(controls)
     if unknown:
@@ -805,6 +816,7 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
     data: dict[str, Any] = {"custom_id": spec["custom_id"], "components": components}
     if resolved:
         data["resolved"] = resolved
+    interaction.modal_consumed = True
     return await _dispatch_actor_interaction(
         actor,
         InteractionType.MODAL_SUBMIT,
@@ -852,6 +864,7 @@ async def _dispatch_actor_interaction(
         payload.update(extra)
     if source_message_id is not None:
         record.source_message_id = source_message_id
+    actor._env._notify_dispatch_observers(record)
     backend.emit("INTERACTION_CREATE", payload)
     await actor._env._settle_internal(dispatch="INTERACTION_CREATE")
     return InteractionResult(actor._env, record)

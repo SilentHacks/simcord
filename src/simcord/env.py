@@ -7,7 +7,7 @@ import contextvars
 import inspect
 import math
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
@@ -111,6 +111,8 @@ class Env:
         self._pre_shutdown_hooks: list[Callable[[], Any]] = []
         self._pre_shutdown_task: asyncio.Task[Any] | None = None
         self._pre_shutdown_complete = False
+        self._dispatch_observers: list[Callable[[Any], Any]] = []
+        self._preview: Any | None = None
         self._adapter_token: Any = None
         self._gateway_feed: Any = None
         self._shard_count = 1
@@ -155,6 +157,23 @@ class Env:
                 pass
 
         return unregister
+    def _register_dispatch_observer(self, observer: Callable[[Any], Any]) -> Callable[[], None]:
+        """Observe backend interactions immediately before gateway emission."""
+        if not callable(observer):
+            raise SetupError("dispatch observer must be callable")
+        self._dispatch_observers.append(observer)
+
+        def unregister() -> None:
+            try:
+                self._dispatch_observers.remove(observer)
+            except ValueError:
+                pass
+
+        return unregister
+
+    def _notify_dispatch_observers(self, interaction: Any) -> None:
+        for observer in tuple(self._dispatch_observers):
+            observer(interaction)
 
     async def _run_pre_shutdown(self) -> None:
         if self._pre_shutdown_complete:
@@ -855,6 +874,7 @@ class Env:
     async def advance_time(self, seconds: float) -> None:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
             raise SetupError("seconds must be a finite non-negative number")
+
         if seconds < 0:
             raise SetupError("seconds must be a finite non-negative number")
         token = self._begin_operation("advance_time")
@@ -873,6 +893,15 @@ class Env:
             await self._settle_internal()
         finally:
             self._end_operation(token)
+    @property
+    def error_cursor(self) -> int:
+        """Non-consuming position used by internal operation diagnostics."""
+        return len(self._errors)
+
+    def errors_since(self, cursor: int) -> tuple[BaseException, ...]:
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+            raise SetupError("error cursor must be a non-negative integer")
+        return tuple(self._errors[cursor:])
 
     def _record_error(self, error: BaseException) -> None:
         identity = id(error)
@@ -918,6 +947,41 @@ class Env:
                 await original(interaction, error)
 
             tree.on_error = on_tree_error
+
+    def preview(
+        self,
+        channel: Any,
+        *,
+        viewers: Any,
+        theme: str = "dark",
+        width: int = 960,
+        height: int = 720,
+        locale: str = "en-US",
+        timezone: str = "UTC",
+        assets: Mapping[str, tuple[str, bytes]] | None = None,
+    ) -> Any:
+        """Create one eagerly validated local preview context manager."""
+        if not self._started:
+            raise SetupError("Env is not running")
+        if self._preview is not None and not getattr(self._preview, "_closed", False):
+            raise SetupError("Only one active Preview is allowed per Env")
+        token = self._begin_operation("preview")
+        try:
+            from .preview import make_preview
+
+            return make_preview(
+                self,
+                channel,
+                viewers=viewers,
+                theme=theme,
+                width=width,
+                height=height,
+                locale=locale,
+                timezone=timezone,
+                assets=assets,
+            )
+        finally:
+            self._end_operation(token)
 
     # -------------------------------------------------------------- builders
 
