@@ -3,6 +3,7 @@
 The optional parser is imported only when a snapshot is built.  The browser
 receives tokens and creates DOM nodes; untrusted HTML is never sent as markup.
 """
+
 from __future__ import annotations
 
 import re
@@ -10,14 +11,24 @@ from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
-_ALLOWED_PROFILES = {"message", "text_display", "embed_title", "embed_description", "embed_field", "embed_footer", "label"}
+_ALLOWED_PROFILES = {
+    "message",
+    "text_display",
+    "embed_title",
+    "embed_description",
+    "embed_field",
+    "embed_footer",
+    "label",
+}
 _TIMESTAMP = re.compile(r"<t:(-?\d{1,12})(?::([tTdDfFR]))?>")
 _SPOILER = re.compile(r"\|\|([^|]*(?:\|[^|]+)*)\|\|")
 
 
 def _safe_href(value: str) -> str | None:
     parsed = urlparse(value)
-    if parsed.scheme.lower() not in {"http", "https", "mailto"} or (not parsed.netloc and parsed.scheme != "mailto"):
+    if parsed.scheme.lower() not in {"http", "https", "mailto"} or (
+        not parsed.netloc and parsed.scheme != "mailto"
+    ):
         return None
     return value
 
@@ -39,7 +50,9 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
             for match in _TIMESTAMP.finditer(content):
                 if match.start() > pos:
                     result.append({"type": "text", "content": content[pos : match.start()]})
-                result.append({"type": "timestamp", "unix": int(match.group(1)), "style": match.group(2) or "f"})
+                result.append(
+                    {"type": "timestamp", "unix": int(match.group(1)), "style": match.group(2) or "f"}
+                )
                 pos = match.end()
             if pos < len(content):
                 result.append({"type": "text", "content": content[pos:]})

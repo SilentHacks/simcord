@@ -68,13 +68,17 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the world builders — `GuildHandle`, `ChannelHandle`, `UserHandle`,
   `RoleHandle` — and the `MemberActor` that drives simulated users;
 - the result objects `ResponseMessage` and `InteractionResult`;
+- `Preview`, `PreviewCapture`, and the documented `window.simcordPreview` readiness fields for
+  the optional local component preview;
 - the assertion helpers (`assert_responded`, `assert_sent`, `assert_message`,
   `assert_error`, `assert_no_errors`);
 - the error and parity-signal types `BackendError`, `SetupError`,
   `RouteNotImplemented` and `UnsupportedField`.
 
-The `pytest` plugin (the `simcord_env` fixture) is part of the public surface
-too.
+Preview's public Python lifecycle, capture report fields, and readiness semantics are covered by
+semantic versioning. Its internal HTTP payloads, endpoint names, DOM structure, and CSS classes are
+implementation details, not general extension APIs. The `pytest` plugin (the `simcord_env` fixture)
+is part of the public surface too.
 
 ## What is intentionally internal
 

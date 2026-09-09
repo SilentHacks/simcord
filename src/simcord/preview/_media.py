@@ -1,4 +1,5 @@
 """Optional Pillow-backed media validation for authorized preview assets."""
+
 from __future__ import annotations
 
 import asyncio
@@ -106,4 +107,12 @@ class MediaWorker:
         self._cache.clear()
 
 
-__all__ = ["MAX_DECODED_BYTES", "MAX_DIMENSION", "MAX_FRAMES", "MAX_PIXELS", "MediaError", "MediaInfo", "MediaWorker"]
+__all__ = [
+    "MAX_DECODED_BYTES",
+    "MAX_DIMENSION",
+    "MAX_FRAMES",
+    "MAX_PIXELS",
+    "MediaError",
+    "MediaInfo",
+    "MediaWorker",
+]

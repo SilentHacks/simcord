@@ -46,6 +46,21 @@ The simulated human that drives your bot. Created by `guild.add_member(...)`. Se
 
 ::: simcord.MemberActor
 
+## Local preview
+
+The optional [`Env.preview`](guides/preview.md#start-and-stop-a-session) context manager serves
+viewer-authorized messages and real component callbacks from a loopback browser. It is not a
+Discord connection. Install `simcord[preview]` for the bridge, or
+`simcord[screenshot]` and `playwright install chromium` for managed PNG capture.
+
+::: simcord.preview.Preview
+
+::: simcord.preview.PreviewCapture
+
+`PreviewCapture` is an immutable report. Its `ready`, `complete`, and `calibrated` fields are
+independent; inspect `diagnostics`, `action`, `profile`, and `geometry` rather than inferring
+success from a PNG path. Internal `/api/*` payloads and DOM/CSS names are not extension APIs.
+
 ## Results
 
 Returned by the interaction verbs (`slash`, `context_menu`, `click`, `select`,

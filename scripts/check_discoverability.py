@@ -116,7 +116,7 @@ def main() -> int:
         "guides/testing-slash-commands/index.html",
         "guides/mocks-vs-simulation/index.html",
         "guides/ai-coding-agents/index.html",
-        "llms.txt",
+        "guides/preview/index.html",
         "robots.txt",
         "sitemap.xml",
     )
@@ -137,6 +137,7 @@ def main() -> int:
             "guides/testing-slash-commands/",
             "guides/mocks-vs-simulation/",
             "guides/ai-coding-agents/",
+            "guides/preview/",
         ):
             require(
                 f"https://simcord.readthedocs.io/{slug}" in locations,

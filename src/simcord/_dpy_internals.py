@@ -206,6 +206,7 @@ def task_label(coro: Any) -> str:
         return f"{getattr(callback, '__qualname__', '?')} via {wrapper}"
     return wrapper
 
+
 def view_time() -> Any:
     """Return discord.py's View clock."""
     return _view.time  # type: ignore[reportPrivateUsage]

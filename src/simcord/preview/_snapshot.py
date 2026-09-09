@@ -1,4 +1,5 @@
 """Viewer-authorized, token-free preview projections."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -65,7 +66,9 @@ def can_access_channel(env: Env, channel_id: int, viewer: Any, *, history: bool 
     return True
 
 
-def can_access_message(env: Env, channel_id: int, message: Message, viewer: Any, *, history: bool = False) -> bool:
+def can_access_message(
+    env: Env, channel_id: int, message: Message, viewer: Any, *, history: bool = False
+) -> bool:
     if message.channel_id != channel_id:
         return False
     if not can_access_channel(env, channel_id, viewer, history=history):
@@ -109,7 +112,11 @@ def _author(env: Env, user_id: int, *, override: str | None = None) -> dict[str,
 def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _Page) -> dict[str, Any]:
     attachment_id = str(attachment.get("id", ""))
     url = attachment.get("url")
-    key = f"url:{url}" if isinstance(url, str) else f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
+    key = (
+        f"url:{url}"
+        if isinstance(url, str)
+        else f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
+    )
     asset_id = page.asset_id(key, attachment)
     content_type = str(attachment.get("content_type") or "application/octet-stream")
     return {
@@ -183,7 +190,9 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
     return _clean(rows, drop_urls=True)
 
 
-def _embed_projection(page: _Page, embed: dict[str, Any], attachments: list[dict[str, Any]]) -> dict[str, Any]:
+def _embed_projection(
+    page: _Page, embed: dict[str, Any], attachments: list[dict[str, Any]]
+) -> dict[str, Any]:
     value = _clean(deepcopy(embed), drop_urls=True)
     link = _safe_link(embed.get("url"))
     if link:
@@ -205,7 +214,9 @@ def _embed_projection(page: _Page, embed: dict[str, Any], attachments: list[dict
                 value[key]["attachment_id"] = str(item.get("id", ""))
     for key in ("title", "description"):
         if isinstance(embed.get(key), str):
-            value[f"{key}_tokens"] = markdown_tokens(embed[key], "embed_title" if key == "title" else "embed_description")
+            value[f"{key}_tokens"] = markdown_tokens(
+                embed[key], "embed_title" if key == "title" else "embed_description"
+            )
     if isinstance(embed.get("footer"), dict) and isinstance(embed["footer"].get("text"), str):
         value["footer_tokens"] = markdown_tokens(embed["footer"]["text"], "embed_footer")
     for index, field in enumerate(embed.get("fields", []) if isinstance(embed.get("fields"), list) else []):
@@ -236,8 +247,12 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
         "components_v2": bool(int(message.flags) & COMPONENTS_V2_FLAG),
         "attachments": [_attachment(env, message, item, page) for item in attachments],
-        "mention_user_ids": [str(uid) for uid in message.mention_user_ids if _mention_allowed(preview, page, uid)],
-        "mention_role_ids": [str(rid) for rid in message.mention_role_ids if _role_allowed(preview, page, rid)],
+        "mention_user_ids": [
+            str(uid) for uid in message.mention_user_ids if _mention_allowed(preview, page, uid)
+        ],
+        "mention_role_ids": [
+            str(rid) for rid in message.mention_role_ids if _role_allowed(preview, page, rid)
+        ],
     }
     data["mention_names"] = {}
     for uid in data["mention_user_ids"]:
@@ -305,7 +320,9 @@ def _walk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _candidates(
+    preview: Preview, page: _Page, components: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
     result: dict[str, list[dict[str, Any]]] = {}
@@ -323,7 +340,9 @@ def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]])
                 for uid in channel.recipient_ids:
                     if _user_allowed(preview, page, uid):
                         user = env.backend.get_user(uid)
-                        entries.append({"id": str(uid), "label": user.global_name or user.name, "kind": "user"})
+                        entries.append(
+                            {"id": str(uid), "label": user.global_name or user.name, "kind": "user"}
+                        )
         else:
             guild = env.backend.guilds.get(channel.guild_id)
             if guild is None:
@@ -332,19 +351,40 @@ def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]])
                 for uid, member in guild.members.items():
                     if _user_allowed(preview, page, uid):
                         user = env.backend.get_user(uid)
-                        entries.append({"id": str(uid), "label": member.nick or user.global_name or user.name, "kind": "user"})
+                        entries.append(
+                            {
+                                "id": str(uid),
+                                "label": member.nick or user.global_name or user.name,
+                                "kind": "user",
+                            }
+                        )
             if kind in {"roles", "mentionables"}:
                 for rid, role in guild.roles.items():
                     if rid != guild.id:
                         entries.append({"id": str(rid), "label": role.name, "kind": "role"})
             if kind == "channels":
                 allowed_types = component.get("channel_types")
-                for candidate in sorted(env.backend.channels.values(), key=lambda item: (item.position, item.id)):
-                    if candidate.guild_id != channel.guild_id or not can_access_channel(env, candidate.id, page.viewer):
+                for candidate in sorted(
+                    env.backend.channels.values(), key=lambda item: (item.position, item.id)
+                ):
+                    if candidate.guild_id != channel.guild_id or not can_access_channel(
+                        env, candidate.id, page.viewer
+                    ):
                         continue
-                    if isinstance(allowed_types, list) and allowed_types and candidate.type not in allowed_types:
+                    if (
+                        isinstance(allowed_types, list)
+                        and allowed_types
+                        and candidate.type not in allowed_types
+                    ):
                         continue
-                    entries.append({"id": str(candidate.id), "label": candidate.name or str(candidate.id), "kind": "channel", "type": candidate.type})
+                    entries.append(
+                        {
+                            "id": str(candidate.id),
+                            "label": candidate.name or str(candidate.id),
+                            "kind": "channel",
+                            "type": candidate.type,
+                        }
+                    )
         result[custom_id] = entries
     return result
 
@@ -384,14 +424,24 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "viewers": [_author(env, _viewer_id(viewer)) for viewer in preview.viewers],
         "viewerId": str(_viewer_id(page.viewer)),
         "channelId": str(channel.id),
-        "channel": {"id": str(channel.id), "name": channel.name, "guildId": str(channel.guild_id) if channel.guild_id else None},
+        "channel": {
+            "id": str(channel.id),
+            "name": channel.name,
+            "guildId": str(channel.guild_id) if channel.guild_id else None,
+        },
         "targetId": str(page.target_id) if page.target_id is not None else None,
         "messages": [_message_projection(preview, page, item) for item in messages],
         "selected": selected,
         "modal": modal,
         "candidates": _candidates(preview, page, candidate_components),
         "assets": dict(page.assets),
-        "profile": {"theme": preview.theme, "width": preview.width, "height": preview.height, "locale": preview.locale, "timezone": preview.timezone},
+        "profile": {
+            "theme": preview.theme,
+            "width": preview.width,
+            "height": preview.height,
+            "locale": preview.locale,
+            "timezone": preview.timezone,
+        },
         "status": page.status,
         "diagnostics": list(page.diagnostics),
         "lastAction": page.last_action,

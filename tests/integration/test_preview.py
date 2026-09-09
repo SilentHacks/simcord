@@ -41,10 +41,14 @@ async def test_preview_pages_keep_viewers_and_reject_stale_generation(env, chann
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         headers = {"X-Simcord-Capability": preview.capability}
         async with ClientSession() as client:
-            response = await client.post(preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)})
+            response = await client.post(
+                preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
+            )
             assert response.status == 200
             alice_page = await response.json()
-            response = await client.post(preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(bob.id)})
+            response = await client.post(
+                preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(bob.id)}
+            )
             assert response.status == 200
             bob_page = await response.json()
 
@@ -76,5 +80,3 @@ async def test_preview_pages_keep_viewers_and_reject_stale_generation(env, chann
             assert response.status == 200
             other = await response.json()
             assert other["viewerId"] == str(bob.id)
-
-

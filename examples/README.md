@@ -5,11 +5,14 @@ each interaction surface with SimCord.
 
 - **`bot.py`**: the bot under test. `create_bot()` builds a `commands.Bot` with
   a prefix command (`!ping`), a manual daily-reward cooldown (`!daily`), a
-  permission-gated slash command (`/ban`), a modal (`/feedback`), a button
-  confirm flow (`/purge`), and a persistent self-assign role menu (`!panel`).
+  permission-gated slash command (`/ban`), a modal (`/feedback`), a
+  button-to-modal panel edit flow (`!panel`), a button confirm flow (`/purge`),
+  and a persistent self-assign role menu.
+- **`preview_example.py`**: an executable panel → modal → source-message edit scenario that
+  captures a PNG and consumes `PreviewCapture` diagnostics.
 - **`conftest.py`**: defines the `simcord_bot` fixture the pytest plugin picks up.
-- **`test_bot.py`**: one test per feature, each in the builders, actors, and
-  queries style: arrange a world, act as a user, assert on what the bot did.
+- **`test_bot.py`**: one test per feature, each in the builders, actors, and queries style:
+  arrange a world, act as a user, assert on what the bot did.
 
 ## Run it
 
@@ -22,6 +25,14 @@ Or, from a checkout of this repo using [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv run pytest examples
+```
+
+To run the browser preview example:
+
+```bash
+python -m pip install "simcord[screenshot]"
+playwright install chromium
+python examples/preview_example.py
 ```
 
 For more patterns, including selects, autocomplete, view timeouts, fault injection, and DMs,

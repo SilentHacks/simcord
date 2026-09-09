@@ -1,4 +1,5 @@
 """Optional Playwright-backed deterministic screenshot capture."""
+
 from __future__ import annotations
 
 import asyncio
@@ -190,7 +191,9 @@ class ManagedCapture:
                 )
                 page = await context.new_page()
                 await page.route("**/*", lambda route: self._route(route, pin, origin))
-                await page.goto(f"{origin}/#{self.preview.capability}", wait_until="domcontentloaded", timeout=30000)
+                await page.goto(
+                    f"{origin}/#{self.preview.capability}", wait_until="domcontentloaded", timeout=30000
+                )
                 remaining = max(1, int((deadline - time.monotonic()) * 1000))
                 try:
                     await page.wait_for_function(

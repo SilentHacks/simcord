@@ -1,9 +1,12 @@
 """Small loopback bridge for Preview; aiohttp is imported only when entered."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
+
+from ..backend.errors import SetupError
 
 if TYPE_CHECKING:
     from . import Preview
@@ -32,14 +35,12 @@ class PreviewServer:
     def __init__(self, preview: Preview) -> None:
         self.preview = preview
         self.runner: Any = None
-        self.site: Any = None
-        self.port: int | None = None
 
     async def start(self) -> None:
         try:
             from aiohttp import web
         except ImportError as exc:  # pragma: no cover - dependency is an optional runtime extra
-            raise RuntimeError("Preview requires aiohttp; install simcord's preview extra") from exc
+            raise SetupError("Preview requires aiohttp; install simcord[preview]") from exc
         app = web.Application(handler_args={"handler_cancellation": False})
         app.router.add_get("/", self._index)
         for route in ("/app.js", "/components.js", "/preview.css"):

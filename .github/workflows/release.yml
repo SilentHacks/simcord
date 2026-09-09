@@ -78,8 +78,46 @@ jobs:
       - run: uv sync --extra bench
       - run: uv run pytest benchmarks
 
+  preview-package:
+    name: Preview package + pinned Linux Chromium
+    needs: [version, test, docs]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra screenshot
+      - run: uv run pytest tests/integration/test_preview.py -q
+      - run: uv build
+      - run: uv run python scripts/check_package.py dist
+      - name: Install the wheel outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p package-smoke-artifacts
+          uv venv --python 3.12 "$tmp/venv"
+          wheel="$(printf '%s\n' "$GITHUB_WORKSPACE"/dist/*.whl)"
+          uv pip install --python "$tmp/venv/bin/python" \
+            "simcord[screenshot] @ file://$wheel"
+          "$tmp/venv/bin/python" -m playwright install --with-deps chromium
+          cp examples/bot.py examples/preview_example.py "$tmp/"
+          (
+            cd "$tmp"
+            "$tmp/venv/bin/python" preview_example.py > "$GITHUB_WORKSPACE/package-smoke-artifacts/preview-report.json"
+          )
+          cp "$tmp/preview-example.png" package-smoke-artifacts/
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: preview-package-failure
+          path: package-smoke-artifacts/
+          if-no-files-found: ignore
+
   build:
-    needs: [version, lint, test, docs, benchmark]
+    needs: [version, lint, test, docs, benchmark, preview-package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

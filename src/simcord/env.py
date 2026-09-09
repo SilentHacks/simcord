@@ -159,6 +159,7 @@ class Env:
                 pass
 
         return unregister
+
     def _register_dispatch_observer(self, observer: Callable[[Any], Any]) -> Callable[[], None]:
         """Observe backend interactions immediately before gateway emission."""
         if not callable(observer):
@@ -726,6 +727,7 @@ class Env:
                             active_callbacks,
                         )
                     )
+
     def _run_due_virtual_callbacks(self) -> None:
         while True:
             due = next(
@@ -754,12 +756,7 @@ class Env:
             return False
         for record in self._callbacks:
             handle = record.handle
-            if (
-                record.when is None
-                or record.when <= deadline
-                or handle is None
-                or handle.cancelled()
-            ):
+            if record.when is None or record.when <= deadline or handle is None or handle.cancelled():
                 continue
             callback = getattr(handle, "_callback", None)
             callback = getattr(callback, "__simcord_original_callback__", callback)
@@ -768,7 +765,6 @@ class Env:
             ):
                 return True
         return False
-
 
     def _owned_tasks(self) -> list[asyncio.Task[Any]]:
         return [task for task in self._task_records if not task.done()]
@@ -787,6 +783,7 @@ class Env:
 
     def _is_parked(self, task: asyncio.Task[Any], deadline: float) -> bool:
         return self._park_reason(task, deadline) is not None
+
     def _park_reason(
         self, task: asyncio.Task[Any], deadline: float, seen: set[int] | None = None
     ) -> str | None:
@@ -907,6 +904,7 @@ class Env:
             await self._settle_internal()
         finally:
             self._end_operation(token)
+
     @property
     def error_cursor(self) -> int:
         """Non-consuming position used by internal operation diagnostics."""

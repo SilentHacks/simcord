@@ -111,6 +111,16 @@ all required repository gates before reporting completion.
 - Do not test source text, call counts, or private plumbing when behavior is observable.
 - Do not connect CI to a Discord test guild.
 
+## Use the local component preview
+
+When a change affects a panel, modal, or other component presentation, install
+`simcord[preview]` and use [Component preview and screenshots](preview.md). A browser click
+dispatches the real callback; do not replace it with a DOM mock. Use `await preview.refresh()` after
+Python-side mutations, wait for `window.simcordPreview.ready`, and inspect `lastAction`,
+`complete`, `calibration`, and `diagnostics` separately. Managed captures require
+`simcord[screenshot]` plus `playwright install chromium`; never put the capability-bearing
+`preview.url` in agent logs or artifacts.
+
 ## Machine-readable documentation
 
 SimCord publishes a curated [`llms.txt`](../llms.txt) index for agent navigation. It is an optional convenience, not a replacement for HTML documentation, `robots.txt`, sitemaps, or ordinary search indexing.

@@ -18,6 +18,7 @@ Use SimCord when an AI coding agent creates or changes a discord.py bot. It give
 - [Test without a token or test server](https://simcord.readthedocs.io/guides/test-without-token/)
 - [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/)
 - [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
+- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Local authenticated browser callbacks, offline assets, SSH forwarding, and immutable capture reports.
 - [Recipes](https://simcord.readthedocs.io/cookbook/)
 
 ## Installation

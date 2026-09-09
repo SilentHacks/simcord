@@ -1,4 +1,5 @@
 """Authorized local presentation of a real SimCord world."""
+
 from __future__ import annotations
 
 import asyncio
@@ -39,6 +40,7 @@ def _freeze_capture(value: Any) -> Any:
         return tuple(_freeze_capture(item) for item in value)
     return value
 
+
 def _capture_destination(path: Any) -> Path:
     try:
         destination = Path(path)
@@ -49,6 +51,7 @@ def _capture_destination(path: Any) -> Path:
     if not os.path.isdir(destination.parent):
         raise SetupError("capture destination directory does not exist")
     return destination
+
 
 def _content_type(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -76,6 +79,7 @@ class PreviewCapture:
     calibrated: bool = False
     calibration: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     action: Mapping[str, Any] | None = None
+
 
 @dataclass(slots=True)
 class _Action:
@@ -152,9 +156,7 @@ class Preview:
 
     _MAX_PAGES = 16
     _MAX_MEDIA_BYTES = 128 * 1024 * 1024
-    _LOCALES: ClassVar[set[str]] = {
-        "en-US", "en-GB", "de", "de-DE", "es-ES", "fr", "fr-FR", "ja", "ja-JP"
-    }
+    _LOCALES: ClassVar[set[str]] = {"en-US", "en-GB", "de", "de-DE", "es-ES", "fr", "fr-FR", "ja", "ja-JP"}
 
     def __init__(
         self,
@@ -244,7 +246,9 @@ class Preview:
         ]
         bot_id = self.env.backend.bot_user.id
         bot_messages = [item for item in visible if item.author_id == bot_id]
-        return (max(bot_messages or visible, key=lambda item: item.id).id if (bot_messages or visible) else None)
+        return (
+            max(bot_messages or visible, key=lambda item: item.id).id if (bot_messages or visible) else None
+        )
 
     def _publish(self, page: _Page) -> None:
         page.revision += 1
@@ -288,7 +292,6 @@ class Preview:
             page.status = "current"
         page.snapshot = build_snapshot(self, page)
         return json.loads(json.dumps(page.snapshot))
-
 
     def get_page(self, context_id: str | None) -> _Page:
         if not isinstance(context_id, str) or context_id not in self._pages:
@@ -741,7 +744,9 @@ class Preview:
                 result = await actor.click(ResponseMessage(self.env, message), custom_id=custom_id)
             else:
                 values = self._select_values(page, body.get("values"), body.get("custom_id"))
-                result = await actor.select(ResponseMessage(self.env, message), values, custom_id=body.get("custom_id"))
+                result = await actor.select(
+                    ResponseMessage(self.env, message), values, custom_id=body.get("custom_id")
+                )
             if result.modal is not None:
                 if result._interaction.user_id != actor.id:
                     raise SetupError("modal opener mismatch")
@@ -770,7 +775,9 @@ class Preview:
         except TypeError as exc:
             raise SetupError("select values must be scalar") from exc
         message = self._target_message(page)
-        component = next((item for item in walk_components(message.components) if item.get("custom_id") == custom_id), None)
+        component = next(
+            (item for item in walk_components(message.components) if item.get("custom_id") == custom_id), None
+        )
         if component is None:
             raise SetupError("select is unavailable")
         try:
@@ -779,7 +786,11 @@ class Preview:
             raise SetupError("select is unavailable") from exc
         minimum = component.get("min_values", 1)
         maximum = component.get("max_values", 1)
-        if not isinstance(minimum, int) or not isinstance(maximum, int) or not minimum <= len(values) <= maximum:
+        if (
+            not isinstance(minimum, int)
+            or not isinstance(maximum, int)
+            or not minimum <= len(values) <= maximum
+        ):
             raise SetupError(f"Select expects between {minimum} and {maximum} value(s), got {len(values)}")
         if any(not isinstance(value, str) for value in values):
             raise SetupError("select values must be strings")
@@ -810,21 +821,36 @@ class Preview:
         channel = self.env.backend.get_channel(page.channel_id)
         if channel.guild_id is None:
             if kind in {ComponentType.USER_SELECT, ComponentType.MENTIONABLE_SELECT}:
-                if entity_id in channel.recipient_ids and can_access_channel(self.env, channel.id, page.viewer):
+                if entity_id in channel.recipient_ids and can_access_channel(
+                    self.env, channel.id, page.viewer
+                ):
                     return UserHandle(self.env, self.env.backend.get_user(entity_id))
             return None
         guild = self.env.backend.guilds.get(channel.guild_id)
         if guild is None:
             return None
-        if kind in {ComponentType.USER_SELECT, ComponentType.MENTIONABLE_SELECT} and entity_id in guild.members:
+        if (
+            kind in {ComponentType.USER_SELECT, ComponentType.MENTIONABLE_SELECT}
+            and entity_id in guild.members
+        ):
             return self._member_handle(page, entity_id)
-        if kind in {ComponentType.ROLE_SELECT, ComponentType.MENTIONABLE_SELECT} and entity_id in guild.roles and entity_id != guild.id:
+        if (
+            kind in {ComponentType.ROLE_SELECT, ComponentType.MENTIONABLE_SELECT}
+            and entity_id in guild.roles
+            and entity_id != guild.id
+        ):
             from ..builders import GuildHandle, RoleHandle
+
             return RoleHandle(self.env, GuildHandle(self.env, guild), guild.roles[entity_id])
         if kind == ComponentType.CHANNEL_SELECT:
             candidate = self.env.backend.channels.get(entity_id)
-            if candidate is not None and candidate.guild_id == channel.guild_id and can_access_channel(self.env, candidate.id, page.viewer):
+            if (
+                candidate is not None
+                and candidate.guild_id == channel.guild_id
+                and can_access_channel(self.env, candidate.id, page.viewer)
+            ):
                 from ..builders import GuildHandle
+
                 return ChannelHandle(self.env, GuildHandle(self.env, guild), candidate)
         return None
 
@@ -835,7 +861,9 @@ class Preview:
         if channel.guild_id is None:
             raise SetupError("member is unavailable in a DM")
         guild = self.env.backend.get_guild(channel.guild_id)
-        return MemberActor(self.env, GuildHandle(self.env, guild), UserHandle(self.env, self.env.backend.get_user(user_id)))
+        return MemberActor(
+            self.env, GuildHandle(self.env, guild), UserHandle(self.env, self.env.backend.get_user(user_id))
+        )
 
     def _modal_values(self, page: _Page, values: Any) -> dict[str, Any]:
         if not isinstance(values, dict):
@@ -897,7 +925,9 @@ class Preview:
         interaction: Interaction | None = None,
     ) -> dict[str, Any]:
         interaction = interaction or action.interaction
-        diagnostics = [{"type": type(item).__name__, "message": str(item)} for item in self.env.errors_since(cursor)]
+        diagnostics = [
+            {"type": type(item).__name__, "message": str(item)} for item in self.env.errors_since(cursor)
+        ]
         if error is not None and not isinstance(error, SetupError):
             diagnostics.append({"type": type(error).__name__, "message": str(error)})
         dispatch = "dispatched" if interaction is not None else "not_dispatched"
@@ -959,7 +989,9 @@ class Preview:
                 raise SetupError(metadata["diagnostic"])
             self._retained_media_bytes += len(info.normalized)
             metadata["normalizedBytes"] = len(info.normalized)
-        metadata.update({"width": info.width, "height": info.height, "frames": info.frames, "validated": True})
+        metadata.update(
+            {"width": info.width, "height": info.height, "frames": info.frames, "validated": True}
+        )
         self._assert_capture_live(page)
         return info.content_type, info.normalized, filename
 
@@ -1023,7 +1055,13 @@ def _validate_preview(
 
 def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
     channel, viewers, assets = _validate_preview(env, channel, **kwargs)
-    return Preview(env, channel, viewers, assets=assets, **{key: kwargs[key] for key in ("theme", "width", "height", "locale", "timezone")})
+    return Preview(
+        env,
+        channel,
+        viewers,
+        assets=assets,
+        **{key: kwargs[key] for key in ("theme", "width", "height", "locale", "timezone")},
+    )
 
 
 __all__ = ("Preview", "PreviewCapture", "make_preview")
