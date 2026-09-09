@@ -2,13 +2,33 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from . import Preview
 
 
 class PreviewServer:
+    _STATIC_FILES: ClassVar[dict[str, str]] = {
+        "/": "index.html",
+        "/app.js": "app.js",
+        "/components.js": "components.js",
+        "/preview.css": "preview.css",
+    }
+    _SECURITY_HEADERS: ClassVar[dict[str, str]] = {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "connect-src 'self'; img-src 'self' blob:; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'"
+        ),
+    }
+
     def __init__(self, preview: Preview) -> None:
         self.preview = preview
         self.runner: Any = None
@@ -22,6 +42,8 @@ class PreviewServer:
             raise RuntimeError("Preview requires aiohttp; install simcord's preview extra") from exc
         app = web.Application(handler_args={"handler_cancellation": False})
         app.router.add_get("/", self._index)
+        for route in ("/app.js", "/components.js", "/preview.css"):
+            app.router.add_get(route, self._static)
         app.router.add_post("/api/pages", self._pages)
         app.router.add_delete("/api/pages/{context_id}", self._delete_page)
         app.router.add_get("/api/state", self._state)
@@ -61,13 +83,31 @@ class PreviewServer:
     async def _index(self, request: Any) -> Any:
         from aiohttp import web
 
-        if request.headers.get("Host", "").split(":", 1)[0] not in {"127.0.0.1", "localhost"}:
+        if self.port is None or request.headers.get("Host", "") not in {
+            f"127.0.0.1:{self.port}",
+            f"localhost:{self.port}",
+        }:
             raise web.HTTPForbidden()
-        return web.Response(
-            text="<!doctype html><meta charset=utf-8><title>SimCord Preview</title>",
-            content_type="text/html",
-            headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'"},
-        )
+        return await self._static(request)
+
+    async def _static(self, request: Any) -> Any:
+        from aiohttp import web
+
+        filename = self._STATIC_FILES.get(request.path)
+        if filename is None:
+            raise web.HTTPNotFound()
+        path = Path(__file__).with_name("static") / filename
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            raise web.HTTPNotFound() from None
+        content_type = {
+            "index.html": "text/html",
+            "app.js": "application/javascript",
+            "components.js": "application/javascript",
+            "preview.css": "text/css",
+        }[filename]
+        return web.Response(text=text, content_type=content_type, headers=self._SECURITY_HEADERS)
 
     async def _pages(self, request: Any) -> Any:
         from aiohttp import web
@@ -84,7 +124,7 @@ class PreviewServer:
             page = self.preview.open_page(body.get("viewer_id"), body.get("target_id"))
         except Exception as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
-        return web.json_response(self.preview.page_payload(page), headers={"Cache-Control": "no-store"})
+        return web.json_response(self.preview.page_payload(page), headers=self._SECURITY_HEADERS)
 
     async def _delete_page(self, request: Any) -> Any:
         from aiohttp import web
@@ -93,7 +133,7 @@ class PreviewServer:
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
         self.preview.close_page(context_id)
-        return web.json_response({"closed": True}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"closed": True}, headers=self._SECURITY_HEADERS)
 
     async def _state(self, request: Any) -> Any:
         from aiohttp import web
@@ -106,7 +146,7 @@ class PreviewServer:
             payload = self.preview.page_payload(page)
         except Exception as exc:
             raise web.HTTPGone(text=str(exc)) from exc
-        return web.json_response(payload, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+        return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
     async def _action(self, request: Any) -> Any:
         from aiohttp import web
@@ -122,7 +162,7 @@ class PreviewServer:
             result = await self.preview.action(context_id, body)
         except Exception as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
-        return web.json_response(result, headers={"Cache-Control": "no-store"})
+        return web.json_response(result, headers=self._SECURITY_HEADERS)
 
     async def _asset(self, request: Any) -> Any:
         from aiohttp import web
@@ -139,8 +179,7 @@ class PreviewServer:
             body=body,
             content_type=content_type or "application/octet-stream",
             headers={
-                "Cache-Control": "no-store",
+                **self._SECURITY_HEADERS,
                 "Content-Disposition": f'inline; filename="{safe_filename}"',
-                "X-Content-Type-Options": "nosniff",
             },
         )

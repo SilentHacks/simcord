@@ -237,6 +237,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "publishedRevision": page.revision,
         "context": {"id": page.id, "generation": page.generation},
         "botGeneration": env._generation,
+        "viewers": [_author(env, _viewer_id(viewer)) for viewer in preview.viewers],
         "viewerId": str(_viewer_id(page.viewer)),
         "channelId": str(channel.id),
         "channel": {"id": str(channel.id), "name": channel.name, "guildId": str(channel.guild_id) if channel.guild_id else None},
