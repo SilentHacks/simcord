@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 2.0.1 (2026-09-10)
+
+### Bug fixes
+
+- Fixed a 2.0.0 crash where ``Env.start()`` raised ``ValueError: ... was created in a different Context`` whenever ``setup_hook`` suspended on a timer or socket — for example opening a database pool with ``asyncpg.create_pool``, the documented discord.py startup pattern. Task resumption callbacks are now scheduled in the task's own ``Context`` instead of a copy, so ``ContextVar`` tokens created before a suspension remain valid after it. ([#24](https://github.com/SilentHacks/simcord/issues/24))
+
+
 ## 2.0.0 (2026-09-08)
 
 ### Features
