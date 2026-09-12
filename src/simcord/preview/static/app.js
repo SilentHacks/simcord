@@ -34,6 +34,7 @@ const state = {
   pendingAction: null,
   sequence: 0,
   profile: { theme: "dark", width: 960, height: 720, locale: "en-US", timezone: "UTC", deviceScale: 1, reducedMotion: true },
+  profileCustomized: { theme: false, width: false, height: false },
   calibration: { status: "uncalibrated", reason: "No legitimate Discord reference fixture is bundled for this slice" },
   drafts: new Map(),
   modalDrafts: new Map(),
@@ -152,13 +153,14 @@ async function waitReady(generation, pendingMedia) {
 }
 
 function profileFromSnapshot(snapshot) {
+  const configured = snapshot?.profile || {};
   return {
     ...state.profile,
-    theme: state.profile.theme || "dark",
-    width: Number(state.profile.width || 960),
-    height: Number(state.profile.height || 720),
-    locale: snapshot?.profile?.locale || state.profile.locale || "en-US",
-    timezone: snapshot?.profile?.timezone || state.profile.timezone || "UTC",
+    theme: state.profileCustomized.theme ? state.profile.theme : (configured.theme || "dark"),
+    width: state.profileCustomized.width ? state.profile.width : Number(configured.width || 960),
+    height: state.profileCustomized.height ? state.profile.height : Number(configured.height || 720),
+    locale: configured.locale || state.profile.locale || "en-US",
+    timezone: configured.timezone || state.profile.timezone || "UTC",
   };
 }
 
@@ -376,6 +378,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       dropdown: state.dropdown,
       onInit: initDraft,
       onOpen: openDropdown,
+      onDraft: updateDraft,
       onClick: (customId) => dispatch("click", { custom_id: customId }),
       onCommit: commitDropdown,
       onCancel: cancelDropdown,
@@ -391,10 +394,15 @@ function renderSnapshot(snapshot, generation, force = false) {
   if (force || modalKey !== state.lastModalFingerprint) {
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
+      dropdown: state.dropdown,
       candidates: snapshot.candidates || {},
       locale: state.profile.locale,
       timezone: state.profile.timezone,
       onInit: initDraft,
+      onSelectOpen: openDropdown,
+      onSelectDraft: updateDraft,
+      onSelectCommit: commitDropdown,
+      onSelectCancel: cancelDropdown,
       onDraft: (key, value) => { state.modalDrafts.set(key, value); localRender(false); },
       onFiles: (key, files) => { state.modalDrafts.set(key, files); localRender(true); },
       onCancel: () => {
@@ -526,6 +534,7 @@ ui.viewer.addEventListener("change", () => dispatch("viewer", { viewer_id: ui.vi
 ui.message.addEventListener("change", () => dispatch("focus", { target_id: ui.message.value }));
 ui.theme.addEventListener("click", () => {
   state.profile.theme = state.profile.theme === "dark" ? "light" : "dark";
+  state.profileCustomized.theme = true;
   localRender(true);
 });
 function updateViewport(field, minimum, maximum) {
@@ -536,6 +545,7 @@ function updateViewport(field, minimum, maximum) {
     return;
   }
   state.profile[field === ui.width ? "width" : "height"] = value;
+  state.profileCustomized[field === ui.width ? "width" : "height"] = true;
   localRender(true);
 }
 ui.width.addEventListener("change", () => updateViewport(ui.width, 240, 32768));

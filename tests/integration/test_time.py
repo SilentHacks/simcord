@@ -67,3 +67,17 @@ async def test_external_timers_stay_on_real_clock(env):
             assert time.monotonic() - virtual_start == 10
     finally:
         external.cancel()
+
+
+async def test_bot_timer_real_fallback_uses_remaining_delay(env):
+    await env.advance_time(60)
+    fired = asyncio.Event()
+
+    async def bot_timer() -> None:
+        await asyncio.sleep(0.01)
+        fired.set()
+
+    with env._bot_scope():
+        task = asyncio.create_task(bot_timer())
+    await asyncio.wait_for(fired.wait(), 1)
+    await task

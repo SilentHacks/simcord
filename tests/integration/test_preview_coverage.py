@@ -1,3 +1,4 @@
+import asyncio
 import io
 
 import discord
@@ -240,3 +241,89 @@ async def test_preview_public_select_validation_boundaries(env, channel, alice):
             )
             assert result["dispatched"] is False
             assert result["settlement"] == "settled"
+
+
+@pytest.mark.asyncio
+async def test_preview_publication_inheritance_and_asset_reauthorization(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    url = "https://cdn.example.test/private.txt"
+    first = await env.bot.get_channel(channel.id).send("first", embed=discord.Embed().set_image(url=url))
+    await env.bot.get_channel(channel.id).send("latest")
+    async with env.preview(
+        channel, viewers=[alice, bob], assets={url: ("private.txt", b"private")}
+    ) as preview:
+        await preview.show(first)
+        browser_page = preview.open_page()
+        assert browser_page.target_id == first.id
+
+        await first.edit(content="edited")
+        assert preview.page_payload(preview._python)["selected"]["content"] == "first"
+        await preview.refresh()
+        snapshot = preview.page_payload(preview._python)
+        assert snapshot["selected"]["content"] == "edited"
+        old_asset = snapshot["selected"]["embeds"][0]["image"]["asset_id"]
+
+        switched = await preview.action(
+            "python",
+            {
+                "sequence": 1,
+                "request_id": "switch-viewer",
+                "generation": preview._python.generation,
+                "kind": "viewer",
+                "viewer_id": str(bob.id),
+            },
+        )
+        assert switched["settlement"] == "settled"
+        with pytest.raises(simcord.SetupError, match="asset is unavailable"):
+            preview.asset("python", old_asset)
+
+    feedback = await alice.slash(channel, "feedback")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(feedback)
+        assert preview.open_page().modal is feedback
+
+
+@pytest.mark.asyncio
+async def test_preview_rejected_overlap_does_not_consume_action(env, channel, alice):
+    await alice.slash(channel, "panel")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_operation():
+            token = env._begin_operation("held")
+            started.set()
+            try:
+                await release.wait()
+            finally:
+                env._end_operation(token)
+
+        holder = asyncio.create_task(hold_operation())
+        await started.wait()
+        body = {
+            "sequence": 1,
+            "request_id": "refresh",
+            "generation": preview._python.generation,
+            "kind": "refresh",
+        }
+        with pytest.raises(simcord.SetupError, match="overlaps"):
+            await preview.action("python", body)
+        release.set()
+        await holder
+        assert (await preview.action("python", body))["settlement"] == "settled"
+
+        page = preview._python
+        closed = await asyncio.wait_for(
+            preview.action(
+                "python",
+                {
+                    "sequence": 2,
+                    "request_id": "close",
+                    "generation": page.generation,
+                    "kind": "close",
+                },
+            ),
+            1,
+        )
+        assert closed["settlement"] == "settled"
+        await asyncio.wait_for(preview.wait_closed(), 1)

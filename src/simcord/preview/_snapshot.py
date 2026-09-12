@@ -146,6 +146,12 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
 
     def visit(node: Any) -> None:
         typ = int(node["type"])
+        if typ == int(ComponentType.BUTTON) and int(node.get("style", 0)) == 5:
+            link = _safe_link(node.get("url"))
+            if link is None:
+                node.pop("url", None)
+            else:
+                node["url"] = link
         media_nodes: list[dict[str, Any]] = []
         if typ == int(ComponentType.THUMBNAIL):
             media_nodes.append(node["media"])
@@ -163,6 +169,7 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
             media["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
             if attachment is not None:
                 media["attachment_id"] = str(attachment.get("id", ""))
+            media.pop("url", None)
         if typ == int(ComponentType.TEXT_DISPLAY):
             node["markdown_tokens"] = markdown_tokens(node["content"], "text_display")
         for key in ("components", "component", "accessory"):
@@ -175,7 +182,7 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
 
     for row in rows:
         visit(row)
-    return _clean(rows, drop_urls=True)
+    return _clean(rows)
 
 
 def _embed_projection(

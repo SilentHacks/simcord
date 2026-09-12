@@ -400,12 +400,10 @@ class Env:
                 if record.handle is not None and not record.handle.cancelled():
                     record.handle._run()
 
-            real_when = (
-                self._loop.time() + schedule_args[0]
-                if original is self._orig_call_later
-                else schedule_args[0]
+            remaining = max(when - self._virtual_time, 0.0)
+            record.real_handle = self._orig_call_at(
+                self._orig_monotonic() + remaining, run_real, context=schedule_context
             )
-            record.real_handle = self._orig_call_at(real_when, run_real, context=schedule_context)
         record.handle = handle
         if not called:
             self._callbacks.append(record)

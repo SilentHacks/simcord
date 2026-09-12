@@ -184,6 +184,7 @@ class Preview:
         self._closed = False
         self._closed_event = asyncio.Event()
         self._close_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
         self._unregister_shutdown: Any = None
         self._unregister_dispatch: Any = None
         self._active_action: _Action | None = None
@@ -252,6 +253,13 @@ class Preview:
             page.status = "current"
         page.snapshot = build_snapshot(self, page)
 
+    def _clear_page_assets(self, page: _Page) -> None:
+        released = sum(len(body) for _, body, _ in page.asset_blobs.values())
+        released += sum(int(item.get("normalizedBytes", 0)) for item in page.assets.values())
+        self._retained_media_bytes = max(0, self._retained_media_bytes - released)
+        page.assets.clear()
+        page.asset_blobs.clear()
+
     def _assert_capture_live(self, page: _Page) -> None:
         if self._closed:
             raise SetupError("managed capture was closed")
@@ -280,11 +288,12 @@ class Preview:
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
             return json.loads(json.dumps(page.pinned_snapshot))
-        if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
-            page.status = "access_denied"
-        elif page.status == "access_denied":
-            page.status = "current"
-        page.snapshot = build_snapshot(self, page)
+        allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
+        status = "current" if allowed else "access_denied"
+        if page.status != status:
+            page.status = status
+            self._clear_page_assets(page)
+            self._publish(page)
         return json.loads(json.dumps(page.snapshot))
 
     def get_page(self, context_id: str | None) -> _Page:
@@ -300,9 +309,20 @@ class Preview:
             raise SetupError("Preview is not active")
         if len(self._pages) >= self._MAX_PAGES + 1:  # Python presentation is not interactive.
             raise SetupError("Preview page limit reached")
+        source = cast(_Page, self._python)
         viewer = self.viewers[0] if viewer_id is None else self._viewer(viewer_id)
-        target = self._target_id(target_id)
+        if target_id is None:
+            target = source.target_id
+            if target is not None:
+                message = self.env.backend.get_message(self.channel.id, target)
+                if not can_access_message(self.env, self.channel.id, message, viewer, history=True):
+                    target = self._initial_target(_Page(self, "tmp", viewer, self.channel.id))
+        else:
+            target = self._target_id(target_id)
         page = _Page(self, "p_" + secrets.token_urlsafe(12), viewer, self.channel.id, target)
+        if source.modal is not None and source.modal._interaction.user_id == viewer.id:
+            page.modal = source.modal
+            page.modal_handle = "m_" + secrets.token_urlsafe(12)
         self._pages[page.id] = page
         self._publish(page)
         return page
@@ -322,9 +342,10 @@ class Preview:
                 return viewer
         raise SetupError("viewer is not authorized for this Preview")
 
-    def _target_id(self, target_id: Any) -> int | None:
+    def _target_id(self, target_id: Any, viewer: Any = None) -> int | None:
+        selected_viewer = cast(_Page, self._python).viewer if viewer is None else viewer
         if target_id is None:
-            return self._initial_target(self._python or _Page(self, "tmp", self.viewers[0], self.channel.id))
+            return self._initial_target(_Page(self, "tmp", selected_viewer, self.channel.id))
         try:
             target = int(target_id)
         except (TypeError, ValueError) as exc:
@@ -333,7 +354,7 @@ class Preview:
             message = self.env.backend.get_message(self.channel.id, target)
         except BackendError as exc:
             raise SetupError("target message is unavailable") from exc
-        if not can_access_message(self.env, self.channel.id, message, self.viewers[0], history=True):
+        if not can_access_message(self.env, self.channel.id, message, selected_viewer, history=True):
             raise SetupError("target message is not accessible")
         return target
 
@@ -655,24 +676,25 @@ class Preview:
         kind = body.get("kind")
         if kind not in {"click", "select", "modal_submit", "viewer", "focus", "refresh", "close"}:
             raise SetupError("unknown preview action")
+        token = self.env._begin_operation("preview.action")
         action = _Action(sequence, request_id, fingerprint)
         page.last_sequence = sequence  # consumed before callback dispatch
         page.latest_action = action
         self._active_action = action
         self._active_task = asyncio.current_task()
         cursor = self.env.error_cursor
-        token = self.env._begin_operation("preview.action")
         try:
-            result = await self._dispatch_action(page, kind, body, action, cursor)
-        except asyncio.CancelledError:
-            page.status = "stale"
-            result = self._finish_action(page, action, "cancelled", cursor)
-            raise
-        except TimeoutError:
-            page.status = "stale"
-            result = self._finish_action(page, action, "timeout", cursor)
-        except BaseException as exc:
-            result = self._finish_action(page, action, "settled", cursor, exc)
+            try:
+                result = await self._dispatch_action(page, kind, body, action, cursor)
+            except asyncio.CancelledError:
+                page.status = "stale"
+                result = self._finish_action(page, action, "cancelled", cursor)
+                raise
+            except TimeoutError:
+                page.status = "stale"
+                result = self._finish_action(page, action, "timeout", cursor)
+            except BaseException as exc:
+                result = self._finish_action(page, action, "settled", cursor, exc)
         finally:
             self.env._end_operation(token)
             self._active_action = None
@@ -684,10 +706,12 @@ class Preview:
         self, page: _Page, kind: str, body: Mapping[str, Any], action: _Action, cursor: int
     ) -> dict[str, Any]:
         if kind == "close":
-            await self.close()
-            return self._finish_action(page, action, "settled", cursor)
+            result = self._finish_action(page, action, "settled", cursor)
+            self._close_task = asyncio.create_task(self.close())
+            return result
         if kind == "viewer":
             viewer = self._viewer(body.get("viewer_id"))
+            self._clear_page_assets(page)
             page.viewer = viewer
             page.generation += 1
             page.target_id = self._initial_target(page)
@@ -697,12 +721,10 @@ class Preview:
             self._publish(page)
             return self._finish_action(page, action, "settled", cursor)
         if kind == "focus":
-            target = self._target_id(body.get("target_id"))
+            target = self._target_id(body.get("target_id"), page.viewer)
             if target is None:
                 raise SetupError("target message is unavailable")
-            stored = self.env.backend.get_message(page.channel_id, target)
-            if not can_access_message(self.env, page.channel_id, stored, page.viewer, history=True):
-                raise SetupError("target message is not accessible")
+            self._clear_page_assets(page)
             page.target_id = target
             page.generation += 1
             page.modal = None
