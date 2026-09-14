@@ -97,18 +97,40 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 0;
   margin: 0 auto;
   padding: 0;
-  font-size: 14px;
+  font-size: 16px;
   background: transparent;
   box-shadow: none;
 }
 .message-header {
+  position: relative;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  max-width: 600px;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
   margin: 0 0 8px 72px;
 }
+ .message-avatar {
+  position: absolute;
+  top: 0;
+  left: -56px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  color: #fff;
+  background: var(--discord-red);
+  border-radius: 50%;
+  font-weight: 700;
+}
 .message-author { color: var(--discord-text); font-weight: 600; }
+.message-app-badge {
+  padding: 0 4px;
+  color: #fff;
+  background: var(--discord-brand);
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+}
 .message-time, .message-badge, .file-size, .field-note {
   color: var(--discord-muted);
   font-size: 12px;
@@ -120,7 +142,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 3px;
 }
 .message-content, .message-components, .message-attachments {
-  width: min(calc(100% - 72px), 600px);
+  width: calc(100% - 72px);
   margin-left: 72px;
 }
 .message-content, .embed-description, .embed-field-value, .text-display {
@@ -162,6 +184,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .markdown-spoiler.is-revealed { color: inherit; background: #4e5058; }
 
 .embed-card {
+  position: relative;
   width: min(100%, 432px);
   margin: 8px 0;
   padding: 8px 12px 10px;
@@ -172,7 +195,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .embed-author, .embed-footer { color: var(--discord-subtle); font-size: 13px; }
 .embed-author { margin-bottom: 4px; font-weight: 600; }
 .embed-title { display: block; margin: 2px 0 6px; font-weight: 600; text-decoration: none; }
-.embed-description { font-size: 14px; }
+.embed-description { max-width: 300px; font-size: 14px; }
 .embed-fields {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -184,7 +207,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .embed-field-name { overflow-wrap: anywhere; color: var(--discord-text); font-size: 13px; }
 .embed-field-value { font-size: 13px; }
 .embed-media { margin: 8px 0 0; }
-.embed-thumbnail { width: 80px; height: 45px; margin-left: auto; object-fit: cover; }
+.embed-thumbnail { position: absolute; top: 10px; right: 12px; width: 80px; height: 45px; object-fit: cover; }
 .embed-image { width: 100%; max-height: 280px; }
 .embed-footer { margin-top: 8px; }
 
@@ -200,6 +223,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   font-weight: 500;
   line-height: 20px;
   white-space: nowrap;
+  padding: 2px 16px;
+  border-radius: 4px;
+  text-decoration: none;
 }
 .button-style-1, .button-primary { background: #5865f2; }
 .button-style-2, .button-secondary { background: #3e3f45; }
@@ -219,13 +245,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .button-style-4:active:not(:disabled) { background: #971d28; }
 .button-emoji { margin-right: 8px; }
 .button-unavailable { color: #faa61a; }
-.link-button { text-decoration: none; }
+.link-button { gap: 6px; }
+.external-link-icon { font-size: 17px; line-height: 1; }
 
 .component-section {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px;
-  align-items: center;
+  align-items: start;
   width: 100%;
   margin: 8px 0;
   padding: 0;
@@ -242,7 +269,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: #393a41;
 }
 .component-separator { width: 100%; margin: 8px 0; border: 0; border-top: 1px solid #45474e; }
-.component-separator.spacing-2 { margin-top: 16px; margin-bottom: 16px; }
+.component-separator.spacing-2 { margin-top: 8px; margin-bottom: 8px; }
 .component-separator.no-divider { border-top-color: transparent; }
 
 .component-media, .gallery-item { min-width: 0; margin: 8px 0; }
@@ -371,8 +398,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: #2e2f35;
   border: 1px solid #45474e;
   border-radius: 8px;
-  font-weight: 600;
+  color: var(--discord-subtle);
+  font-weight: 400;
 }
+.select-value { display: inline-flex; align-items: center; min-width: 0; }
+.selected-emoji { margin-right: 8px; }
+.select-trigger:has(.selected-emoji) { min-height: 48px; }
+.select-trigger:has(.selected-emoji) { color: var(--discord-text); font-weight: 600; }
+.select-type-5 .select-trigger,
+.select-type-6 .select-trigger,
+.select-type-7 .select-trigger,
+.select-type-8 .select-trigger { min-height: 39px; height: 39px; }
 .select-trigger::after { content: "⌄"; margin-left: 12px; color: var(--discord-subtle); font-size: 18px; }
 .preview-select.is-open .select-trigger::after { content: "⌃"; }
 .select-list {

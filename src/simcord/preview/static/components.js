@@ -132,9 +132,14 @@ function renderSelect(component, path, options) {
   if (!drafts.has(key)) onInit?.(key, optionDefaults(component, entries).slice(0, maximum));
   const selected = Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : [];
   const isOpen = dropdown?.key === key;
-  const wrap = node("div", `preview-select${isOpen ? " is-open" : ""}`); wrap.dataset.controlKey = key;
+  const wrap = node("div", `preview-select select-type-${Number(component.type)}${isOpen ? " is-open" : ""}`); wrap.dataset.controlKey = key;
   const label = component.placeholder || (multi ? "Select one or more options" : "Select an option");
-  const trigger = node("button", "select-trigger", displaySelection(selected, entries, label));
+  const trigger = node("button", "select-trigger");
+  const valueDisplay = node("span", "select-value");
+  const single = selected.length === 1 ? entries.find((entry) => String(entry.value ?? entry.id ?? "") === selected[0]) : null;
+  if (single?.emoji?.name) valueDisplay.append(node("span", "selected-emoji", single.emoji.name));
+  valueDisplay.append(node("span", "select-value-label", displaySelection(selected, entries, label)));
+  trigger.append(valueDisplay);
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
   trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`);
@@ -175,7 +180,12 @@ function renderButton(component, path, options) {
   if (component.label) button.append(node("span", "button-label", component.label));
   if (style === 5) {
     const href = safeLink(component.url);
-    if (href) { const link = node("a", `component-button button-style-${style} link-button`, button.textContent || "Open link"); link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; return link; }
+    if (href) {
+      const link = node("a", `component-button button-style-${style} link-button`);
+      link.append(...button.childNodes, node("span", "external-link-icon", "↗"));
+      link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer";
+      return link;
+    }
     button.disabled = true; button.append(node("span", "button-unavailable", "Unavailable link")); options.onDiagnostic?.({ code: "invalid-link", severity: "warning", message: "Link button has no safe URL", complete: false });
   } else if (style === 6) {
     button.disabled = true; button.append(node("span", "button-unavailable", "Premium purchase unavailable")); options.onDiagnostic?.({ code: "premium-unavailable", severity: "info", message: `Premium SKU ${component.sku_id ?? "unknown"} cannot be purchased offline`, complete: false });
@@ -263,7 +273,11 @@ function renderEmbed(embed, index, options) {
   if (Array.isArray(embed.fields) && embed.fields.length) { const fields = node("div", "embed-fields"); embed.fields.forEach((field) => { const item = node("div", field.inline ? "embed-field inline" : "embed-field"); const name = node("strong", "embed-field-name"); appendMarkdownOrText(name, field.name || "", field.name_tokens, options); const value = node("span", "embed-field-value"); appendMarkdownOrText(value, field.value || "", field.value_tokens, options); item.append(name, value); fields.append(item); }); card.append(fields); }
   for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
   if (embed.video) { card.append(node("div", "component-unavailable", "Embed video unavailable")); options.onDiagnostic?.({ code: "unsupported-embed-video", severity: "warning", message: `Embed ${index + 1} video playback is unavailable`, complete: false }); }
-  if (embed.footer?.text || embed.timestamp) { const footer = node("footer", "embed-footer"); appendMarkdownOrText(footer, embed.footer?.text || embed.timestamp, embed.footer_tokens, options); card.append(footer); }
+  if (embed.footer?.text || embed.timestamp) {
+    const timestamp = embed.timestamp ? new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" }).format(new Date(embed.timestamp)) : "";
+    const footer = node("footer", "embed-footer", [embed.footer?.text, timestamp].filter(Boolean).join(" • "));
+    card.append(footer);
+  }
   return card;
 }
 function referencedAssets(components, embeds) {
@@ -271,7 +285,22 @@ function referencedAssets(components, embeds) {
 }
 export function renderMessage(root, message, options = {}) {
   const pendingMedia = options.pendingMedia || []; options.pendingMedia = pendingMedia; root.replaceChildren(); if (!message) return { pendingMedia };
-  const header = node("header", "message-header"); header.tabIndex = -1; header.dataset.controlKey = `message:${message.id}`; header.append(node("strong", "message-author", message.author?.name || "Unknown author")); if (message.timestamp) { const time = node("time", "message-time", message.timestamp); time.dateTime = message.timestamp; header.append(time); } if (message.edited_timestamp) header.append(node("span", "message-badge", "Edited")); if (message.ephemeral) header.append(node("span", "message-badge", "Ephemeral")); if (message.components_v2) header.append(node("span", "message-badge", "Components V2")); if ((Number(message.flags) & 4) !== 0) header.append(node("span", "message-badge", "Embeds suppressed")); root.append(header);
+  if (!message.compact) {
+    const header = node("header", "message-header");
+    header.tabIndex = -1;
+    header.dataset.controlKey = `message:${message.id}`;
+    header.append(node("span", "message-avatar", (message.author?.name || "?").slice(0, 1).toUpperCase()));
+    header.append(node("strong", "message-author", message.author?.name || "Unknown author"));
+    if (message.author?.bot) header.append(node("span", "message-app-badge", "APP"));
+    if (message.timestamp) {
+      const time = node("time", "message-time", new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(message.timestamp)));
+      time.dateTime = message.timestamp;
+      header.append(time);
+    }
+    if (message.edited_timestamp) header.append(node("span", "message-badge", "Edited"));
+    if (message.ephemeral) header.append(node("span", "message-badge", "Ephemeral"));
+    root.append(header);
+  }
   const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
   if (!v2 && message.content) { const content = node("div", "message-content"); appendMarkdownOrText(content, message.content, message.content_tokens, options); root.append(content); }
   if (!v2 && (Number(message.flags) & 4) === 0) (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));

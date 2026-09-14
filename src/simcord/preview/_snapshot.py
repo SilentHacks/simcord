@@ -147,7 +147,7 @@ def _asset_meta(page: _Page, url: Any, fallback: dict[str, Any] | None = None) -
         return None
     metadata = dict(fallback or {})
     metadata.setdefault("url", url)
-    return page.asset_id(f"url:{url}", metadata)
+    return page.asset_id(f"url:{metadata['url']}", metadata)
 
 
 def _decorate_components(page: _Page, components: Any, attachments: list[dict[str, Any]]) -> Any:
@@ -240,6 +240,19 @@ def _embed_projection(
     return value
 
 
+def _is_compact_message(preview: Preview, message: Message) -> bool:
+    previous = max(
+        (item for item in preview.env.backend.messages.get(message.channel_id, {}).values() if item.id < message.id),
+        key=lambda item: item.id,
+        default=None,
+    )
+    return (
+        previous is not None
+        and previous.author_id == message.author_id
+        and message.id - previous.id < 7 * 60 * 1000 * (1 << 22)
+    )
+
+
 def _message_projection(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
     env = preview.env
     attachments = list(message.attachments)
@@ -256,6 +269,7 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
         "components_v2": bool(int(message.flags) & COMPONENTS_V2_FLAG),
+        "compact": _is_compact_message(preview, message),
         "attachments": [_attachment(env, message, item, page) for item in attachments],
         "mention_user_ids": [
             str(uid) for uid in message.mention_user_ids if _mention_allowed(preview, page, uid)
