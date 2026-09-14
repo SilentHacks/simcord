@@ -200,7 +200,9 @@ function mediaElement(media, className, options, label) {
 function revealSpoiler(element, spoiler, options, label) {
   if (!spoiler) return element;
   const wrapper = node("div", "spoiler-content");
-  const reveal = node("button", "spoiler-cover", `Spoiler — activate to reveal ${label}`); reveal.type = "button";
+  const reveal = node("button", "spoiler-cover", "SPOILER");
+  reveal.type = "button";
+  reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
   reveal.addEventListener("click", () => { wrapper.replaceChildren(element); options.onLocalRender?.(); });
   wrapper.append(reveal);
   return wrapper;
@@ -225,33 +227,18 @@ function downloadButton(file, options, label) {
 }
 function renderSpoilerMedia(media, className, options, label) {
   if (!media?.spoiler) return mediaElement(media, className, options, label);
-  const wrapper = node("button", "spoiler-media", "SPOILER");
+  const wrapper = node("button", "spoiler-media");
   wrapper.type = "button";
   wrapper.setAttribute("aria-label", `Reveal ${label} spoiler`);
-  let revealed = false;
-  const render = () => {
-    wrapper.replaceChildren();
-    if (!revealed) {
-      wrapper.append(node("span", "spoiler-cover", "SPOILER"));
-    } else {
-      const result = mediaElement(media, className, options, label);
-      wrapper.append(result.element);
-      options.pendingMedia?.push(...result.pending);
-    }
-  };
-  wrapper.addEventListener("click", () => { revealed = true; render(); options.onLocalRender?.(); });
-  render();
-  return { element: wrapper, pending: [] };
-}
-function revealSpoiler(element, spoiler, options, label) {
-  if (!spoiler) return element;
-  const wrapper = node("div", "spoiler-content");
-  const reveal = node("button", "spoiler-cover", "SPOILER");
-  reveal.type = "button";
-  reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
-  reveal.addEventListener("click", () => { wrapper.replaceChildren(element); options.onLocalRender?.(); });
-  wrapper.append(reveal);
-  return wrapper;
+  const result = mediaElement(media, className, options, label);
+  const cover = node("span", "spoiler-cover", "SPOILER");
+  wrapper.append(result.element, cover);
+  wrapper.addEventListener("click", () => {
+    wrapper.classList.add("is-revealed");
+    cover.remove();
+    options.onLocalRender?.();
+  });
+  return { element: wrapper, pending: result.pending };
 }
 function renderNode(component, path, options) {
   const type = Number(component?.type);
