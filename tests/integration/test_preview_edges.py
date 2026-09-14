@@ -300,6 +300,7 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         title="[title](https://example.test)", description="||secret||", url="javascript:bad"
     )
     embed.set_image(url=url)
+    embed.set_thumbnail(url=url)
     message = await env.bot.get_channel(channel.id).send(
         content=f"hello <@{bob.id}> <@&{role.id}>",
         embed=embed,
@@ -311,10 +312,17 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
     view.add_item(
         discord.ui.Section(
             discord.ui.TextDisplay("thumbnail"),
-            accessory=discord.ui.Thumbnail(url),
+            accessory=discord.ui.Thumbnail(url, description="edge thumbnail", spoiler=True),
         )
     )
-    view.add_item(discord.ui.File("attachment://v2.png"))
+    view.add_item(discord.ui.File("attachment://v2.png", spoiler=True))
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay("spoiler container"),
+            discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.large),
+            spoiler=True,
+        )
+    )
     v2_message = await env.bot.get_channel(channel.id).send(
         view=view, file=discord.File(io.BytesIO(image.getvalue()), filename="v2.png")
     )
@@ -329,6 +337,7 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert str(role.id) in selected["mention_role_ids"]
         assert "reference" not in selected
         assert selected["embeds"][0]["image"]["available"] is True
+        assert selected["embeds"][0]["thumbnail"]["available"] is True
         asset = selected["attachments"][0]["asset_id"]
         assert preview.asset("python", asset)[1] == image.getvalue()
         await preview.show(v2_message)
@@ -336,7 +345,14 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert selected["components"][1]["items"][0]["media"]["asset_id"]
         assert selected["components"][0]["markdown_tokens"]
         assert selected["components"][2]["accessory"]["media"]["asset_id"]
+        assert selected["components"][2]["accessory"]["description"] == "edge thumbnail"
+        assert selected["components"][2]["accessory"]["spoiler"] is True
+        assert selected["components"][3]["spoiler"] is True
         assert selected["components"][3]["file"]["available"] is True
+        assert selected["components"][3]["file"]["filename"] == "v2.png"
+        assert selected["components"][3]["file"]["content_type"] == "image/png"
+        assert selected["components"][4]["spoiler"] is True
+        assert selected["components"][4]["components"][1]["divider"] is False
         assert await preview.prepare_asset("python", asset)
         assert await preview.prepare_asset("python", asset)
         capture = await preview.screenshot(tmp_path / "v2.png", target=v2_message, allow_incomplete=True)

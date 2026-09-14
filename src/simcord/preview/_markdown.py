@@ -21,7 +21,6 @@ _ALLOWED_PROFILES = {
     "label",
 }
 _TIMESTAMP = re.compile(r"<t:(-?\d{1,12})(?::([tTdDfFR]))?>")
-_SPOILER = re.compile(r"\|\|([^|]*(?:\|[^|]+)*)\|\|")
 
 
 def _safe_href(value: str) -> str | None:
@@ -34,25 +33,50 @@ def _safe_href(value: str) -> str | None:
 
 
 def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
+    tokens = list(children)
     result: list[dict[str, Any]] = []
-    for token in children:  # pragma: no branch - parser token stream
+    remaining_spoilers = sum(
+        str(getattr(token, "content", "")).count("||")
+        for token in tokens
+        if getattr(token, "type", "") == "text"
+    )
+    spoiler_open = False
+    link_open = False
+
+    def append_text(content: str) -> None:
+        pos = 0
+        for match in _TIMESTAMP.finditer(content):
+            if match.start() > pos:
+                result.append({"type": "text", "content": content[pos : match.start()]})
+            result.append(
+                {"type": "timestamp", "unix": int(match.group(1)), "style": match.group(2) or "f"}
+            )
+            pos = match.end()
+        if pos < len(content):
+            result.append({"type": "text", "content": content[pos:]})
+
+    for token in tokens:  # pragma: no branch - parser token stream
         kind = getattr(token, "type", "")
         if kind in {"text", "code_inline"}:
             content = str(getattr(token, "content", ""))
             if kind == "code_inline":
                 result.append({"type": "code", "content": content})
                 continue
-            pos = 0
-            for match in _TIMESTAMP.finditer(content):
-                if match.start() > pos:
-                    result.append({"type": "text", "content": content[pos : match.start()]})
-                result.append(
-                    {"type": "timestamp", "unix": int(match.group(1)), "style": match.group(2) or "f"}
-                )
-                pos = match.end()
-            if pos < len(content):
-                result.append({"type": "text", "content": content[pos:]})
-            if not content and kind == "text":
+            parts = content.split("||")
+            for index, part in enumerate(parts):
+                append_text(part)
+                if index == len(parts) - 1:
+                    continue
+                remaining_spoilers -= 1
+                if spoiler_open:
+                    result.append({"type": "spoiler_close"})
+                    spoiler_open = False
+                elif remaining_spoilers:
+                    result.append({"type": "spoiler_open"})
+                    spoiler_open = True
+                else:
+                    result.append({"type": "text", "content": "||"})
+            if not content:
                 result.append({"type": "text", "content": ""})
             continue
         if kind in {"softbreak", "hardbreak"}:
@@ -61,14 +85,19 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
         if kind == "link_open":
             attrs = dict(getattr(token, "attrs", None) or ())
             href = _safe_href(str(attrs.get("href", "")))
+            link_open = href is not None
             if href:
                 result.append({"type": "link_open", "href": href})
             continue
         if kind == "link_close":
-            result.append({"type": "link_close"})
+            if link_open:
+                result.append({"type": "link_close"})
+                link_open = False
             continue
         if kind.endswith("_open") or kind.endswith("_close"):  # pragma: no branch
             name = kind.removesuffix("_open").removesuffix("_close")
+            if name == "strong" and getattr(token, "markup", "") == "__":
+                name = "u"
             result.append({"type": f"{name}_{'open' if kind.endswith('_open') else 'close'}"})
             continue
     return result

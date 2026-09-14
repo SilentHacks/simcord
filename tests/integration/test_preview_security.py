@@ -112,7 +112,16 @@ def test_preview_markdown_links_breaks_styles_and_spoilers():
     assert [item["href"] for item in links] == ["https://example.test", "mailto:test@example.test"]
     assert any(item.get("type") == "break" for item in children)
     kinds = {item.get("type") for item in children}
-    assert {"s_open", "s_close", "strong_open", "strong_close"} <= kinds
+    assert {
+        "s_open",
+        "s_close",
+        "strong_open",
+        "strong_close",
+        "u_open",
+        "u_close",
+        "spoiler_open",
+        "spoiler_close",
+    } <= kinds
     assert "secret" in str(tokens)
 
 

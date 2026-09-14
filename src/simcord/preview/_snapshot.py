@@ -119,13 +119,18 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
     )
     asset_id = page.asset_id(key, attachment)
     content_type = str(attachment.get("content_type") or "application/octet-stream")
+    filename = str(attachment.get("filename", "attachment"))
     return {
         "id": attachment_id,
-        "filename": str(attachment.get("filename", "attachment")),
+        "filename": filename,
         "description": attachment.get("description"),
         "size": int(attachment.get("size", 0) or 0),
         "content_type": content_type,
         "inline": content_type.startswith("image/"),
+        "spoiler": bool(attachment.get("spoiler", False)) or filename.startswith("SPOILER_"),
+        "width": attachment.get("width"),
+        "height": attachment.get("height"),
+        "duration_secs": attachment.get("duration_secs"),
         "asset_id": asset_id,
         "available": bool(page.assets.get(asset_id, {}).get("available", False)),
     }
@@ -168,6 +173,13 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
             media["asset_id"] = asset_id
             media["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
             if attachment is not None:
+                media.update(
+                    {
+                        key: attachment[key]
+                        for key in ("content_type", "description", "filename", "height", "size", "width")
+                        if attachment.get(key) is not None
+                    }
+                )
                 media["attachment_id"] = str(attachment.get("id", ""))
             media.pop("url", None)
         if typ == int(ComponentType.TEXT_DISPLAY):

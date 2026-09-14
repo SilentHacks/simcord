@@ -82,12 +82,24 @@ function renderInlineTokens(parent, tokens, options) {
       stack[stack.length - 1].append(link); stack.push(link); return;
     }
     if (type === "link_close") { if (stack.length > 1) stack.pop(); return; }
-    const marks = { strong: "strong", em: "em", s: "del", u: "u" };
+    const marks = { strong: "strong", em: "em", s: "del", u: "u", spoiler: "span" };
     const open = type.endsWith("_open");
-    const mark = marks[type.replace(/_(?:open|close)$/, "")];
+    const name = type.replace(/_(?:open|close)$/, "");
+    const mark = marks[name];
     if (mark) {
-      if (open) { const element = document.createElement(mark); stack[stack.length - 1].append(element); stack.push(element); }
-      else if (stack.length > 1) stack.pop();
+      if (open) {
+        const element = document.createElement(mark);
+        if (name === "spoiler") {
+          element.className = "markdown-spoiler";
+          element.tabIndex = 0;
+          element.setAttribute("role", "button");
+          element.setAttribute("aria-label", "Reveal spoiler");
+          const reveal = () => { element.classList.add("is-revealed"); element.removeAttribute("role"); element.removeAttribute("tabindex"); element.removeAttribute("aria-label"); options.onLocalRender?.(); };
+          element.addEventListener("click", reveal);
+          element.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); reveal(); } });
+        }
+        stack[stack.length - 1].append(element); stack.push(element);
+      } else if (stack.length > 1) stack.pop();
     }
   });
 }
@@ -171,13 +183,45 @@ function renderButton(component, path, options) {
 function mediaElement(media, className, options, label) {
   const assetId = media && typeof media.asset_id === "string" ? media.asset_id : null;
   const manifest = assetId ? options.assets?.[assetId] : null;
+  if (typeof media?.content_type === "string" && !media.content_type.startsWith("image/")) {
+    options.onDiagnostic?.({ code: "unsupported-media-type", severity: "warning", message: `${label || "Media"} type ${media.content_type} cannot be rendered inline`, complete: false });
+    return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
+  }
   if (!assetId || media.available === false || manifest?.available === false || !options.loadAsset) {
     options.onDiagnostic?.({ code: media?.diagnostic ? "media-rejected" : "media-unavailable", severity: "warning", message: media?.diagnostic || `${label || "Media"} is unavailable offline`, complete: false });
     return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
   }
   const image = node("img", className); image.alt = String(media.description || label || "Preview media"); image.loading = "eager";
+  if (Number(media.width) > 0) image.width = Number(media.width);
+  if (Number(media.height) > 0) image.height = Number(media.height);
   const pending = [Promise.resolve(options.loadAsset(assetId)).then((url) => { if (!options.isCurrent?.()) return; image.src = url; return image.decode ? image.decode().catch(() => undefined) : undefined; }).catch((error) => { if (options.isCurrent?.()) { options.onDiagnostic?.({ code: "media-unavailable", severity: "warning", message: `${label || "Media"} is unavailable offline`, detail: String(error), complete: false }); image.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`)); } })];
   return { element: image, pending };
+}
+function revealSpoiler(element, spoiler, options, label) {
+  if (!spoiler) return element;
+  const wrapper = node("div", "spoiler-content");
+  const reveal = node("button", "spoiler-cover", `Spoiler — activate to reveal ${label}`); reveal.type = "button";
+  reveal.addEventListener("click", () => { wrapper.replaceChildren(element); options.onLocalRender?.(); });
+  wrapper.append(reveal);
+  return wrapper;
+}
+function downloadButton(file, options, label) {
+  const download = node("button", "attachment-download", "Download"); download.type = "button";
+  if (!file?.asset_id || file.available === false || !options.loadAsset) {
+    download.disabled = true;
+    options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${label} is unavailable offline`, complete: false });
+    return download;
+  }
+  download.addEventListener("click", async () => {
+    try {
+      const url = await options.loadAsset(file.asset_id);
+      if (!url) return;
+      const link = node("a"); link.href = url; link.download = file.filename || label; link.click();
+    } catch (error) {
+      options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${label} is unavailable offline`, detail: String(error), complete: false });
+    }
+  });
+  return download;
 }
 function renderSpoilerMedia(media, className, options, label) {
   if (!media?.spoiler) return mediaElement(media, className, options, label);
@@ -190,12 +234,13 @@ function renderNode(component, path, options) {
   if (type === TYPE.ROW) { const row = node("div", "component-row"); (component.components || []).forEach((child, index) => row.append(renderNode(child, `${path}.components.${index}`, options))); return row; }
   if (type === TYPE.BUTTON) return renderButton(component, path, options);
   if (SELECT_TYPES.has(type)) return renderSelect(component, path, options).element;
+  if (type === TYPE.TEXT_DISPLAY) { const text = node("div", "text-display"); appendMarkdownOrText(text, component.content, component.markdown_tokens, options); return text; }
   if (type === TYPE.SECTION) { const section = node("section", "component-section"); const text = node("div", "section-text"); (component.components || []).forEach((child, index) => text.append(renderNode(child, `${path}.components.${index}`, options))); section.append(text); if (component.accessory) { const accessory = node("div", "section-accessory"); accessory.append(renderNode(component.accessory, `${path}.accessory`, options)); section.append(accessory); } return section; }
-  if (type === TYPE.CONTAINER) { const container = node("section", "component-container"); if (component.accent_color !== undefined) { const color = Number(component.accent_color); if (Number.isFinite(color)) container.style.setProperty("--accent", `#${color.toString(16).padStart(6, "0").slice(-6)}`); } (component.components || []).forEach((child, index) => container.append(renderNode(child, `${path}.components.${index}`, options))); return container; }
-  if (type === TYPE.SEPARATOR) { const separator = node("hr", `component-separator spacing-${Number(component.spacing || 1)}`); separator.setAttribute("aria-hidden", "true"); return separator; }
-  if (type === TYPE.THUMBNAIL) { const result = renderSpoilerMedia(component.media, "component-thumbnail", options, "Thumbnail"); const figure = node("figure", "component-media"); figure.append(result.element); if (component.description) figure.append(node("figcaption", "media-description", component.description)); options.pendingMedia?.push(...result.pending); return figure; }
-  if (type === TYPE.MEDIA_GALLERY) { const gallery = node("div", "component-gallery"); (component.items || []).forEach((item, index) => { const result = renderSpoilerMedia(item.media, "gallery-image", options, `Gallery item ${index + 1}`); const figure = node("figure", "gallery-item"); figure.append(result.element); if (item.description) figure.append(node("figcaption", "media-description", item.description)); gallery.append(figure); options.pendingMedia?.push(...result.pending); }); return gallery; }
-  if (type === TYPE.FILE) { const file = node("div", "component-file", component.name || component.file?.filename || "Attached file"); if (component.size !== undefined || component.file?.size !== undefined) file.append(node("small", "file-size", `${component.size ?? component.file.size} bytes`)); if (component.file?.asset_id) { const result = mediaElement(component.file, "component-file-preview", options, component.name || "Attached file"); file.append(result.element); options.pendingMedia?.push(...result.pending); } return file; }
+  if (type === TYPE.CONTAINER) { const container = node("section", "component-container"); if (component.accent_color !== undefined) { const color = Number(component.accent_color); if (Number.isFinite(color)) container.style.setProperty("--accent", `#${color.toString(16).padStart(6, "0").slice(-6)}`); } (component.components || []).forEach((child, index) => container.append(renderNode(child, `${path}.components.${index}`, options))); return revealSpoiler(container, component.spoiler, options, "container"); }
+  if (type === TYPE.SEPARATOR) { const separator = node(component.divider === false ? "div" : "hr", `component-separator spacing-${Number(component.spacing || 1)}${component.divider === false ? " no-divider" : ""}`); separator.setAttribute("aria-hidden", "true"); return separator; }
+  if (type === TYPE.THUMBNAIL) { const result = renderSpoilerMedia({ ...component.media, spoiler: component.spoiler, description: component.description }, "component-thumbnail", options, "Thumbnail"); const figure = node("figure", "component-media"); figure.append(result.element); if (component.description) figure.append(node("figcaption", "media-description", component.description)); options.pendingMedia?.push(...result.pending); return figure; }
+  if (type === TYPE.MEDIA_GALLERY) { const gallery = node("div", "component-gallery"); (component.items || []).forEach((item, index) => { const result = renderSpoilerMedia({ ...item.media, spoiler: item.spoiler, description: item.description }, "gallery-image", options, `Gallery item ${index + 1}`); const figure = node("figure", "gallery-item"); figure.append(result.element); if (item.description) figure.append(node("figcaption", "media-description", item.description)); gallery.append(figure); options.pendingMedia?.push(...result.pending); }); return gallery; }
+  if (type === TYPE.FILE) { const data = component.file || {}; const label = component.name || data.filename || "Attached file"; const file = node("div", "component-file"); file.append(node("span", "file-name", label)); const size = data.size ?? component.size; if (size !== undefined) file.append(node("small", "file-size", `${size} bytes`)); if (data.description) file.append(node("small", "file-description", data.description)); file.append(downloadButton(data, options, label)); return revealSpoiler(file, component.spoiler, options, "file"); }
   options.onDiagnostic?.({ code: "unsupported-component", severity: "warning", message: `Unsupported component type ${type} at ${path}`, complete: false }); return node("div", "component-unavailable", `Component type ${type} unavailable`);
 }
 function renderEmbed(embed, index, options) {
@@ -204,7 +249,8 @@ function renderEmbed(embed, index, options) {
   if (embed.title) { const href = safeLink(embed.url); const title = href ? node("a", "embed-title", "") : node("div", "embed-title"); if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener noreferrer"; } appendMarkdownOrText(title, embed.title, embed.title_tokens, options); card.append(title); }
   if (embed.description) { const description = node("div", "embed-description"); appendMarkdownOrText(description, embed.description, embed.description_tokens, options); card.append(description); }
   if (Array.isArray(embed.fields) && embed.fields.length) { const fields = node("div", "embed-fields"); embed.fields.forEach((field) => { const item = node("div", field.inline ? "embed-field inline" : "embed-field"); const name = node("strong", "embed-field-name"); appendMarkdownOrText(name, field.name || "", field.name_tokens, options); const value = node("span", "embed-field-value"); appendMarkdownOrText(value, field.value || "", field.value_tokens, options); item.append(name, value); fields.append(item); }); card.append(fields); }
-  const media = embed.thumbnail || embed.image; if (media) { const result = renderSpoilerMedia(media, "embed-image", options, `Embed ${index + 1} image`); card.append(result.element); options.pendingMedia?.push(...result.pending); }
+  for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
+  if (embed.video) { card.append(node("div", "component-unavailable", "Embed video unavailable")); options.onDiagnostic?.({ code: "unsupported-embed-video", severity: "warning", message: `Embed ${index + 1} video playback is unavailable`, complete: false }); }
   if (embed.footer?.text || embed.timestamp) { const footer = node("footer", "embed-footer"); appendMarkdownOrText(footer, embed.footer?.text || embed.timestamp, embed.footer_tokens, options); card.append(footer); }
   return card;
 }
@@ -218,7 +264,7 @@ export function renderMessage(root, message, options = {}) {
   if (!v2 && message.content) { const content = node("div", "message-content"); appendMarkdownOrText(content, message.content, message.content_tokens, options); root.append(content); }
   if (!v2 && (Number(message.flags) & 4) === 0) (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
   if (message.components?.length) { const components = node("div", "message-components"); message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options))); root.append(components); }
-  const refs = referencedAssets(message.components, v2 ? [] : message.embeds); const attachments = (message.attachments || []).filter((attachment) => !v2 ? !refs.has(attachment.asset_id) : refs.has(attachment.asset_id));
+  const refs = referencedAssets(message.components, v2 ? [] : message.embeds); const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
   if (attachments.length) { const list = node("ul", "message-attachments"); attachments.forEach((attachment) => { const item = node("li", "attachment"); item.append(node("span", "attachment-name", attachment.filename || "attachment")); if (attachment.size !== undefined) item.append(node("small", "attachment-size", `${attachment.size} bytes`)); if (attachment.inline && attachment.asset_id) { const result = renderSpoilerMedia(attachment, "attachment-image", options, attachment.filename || "Attachment"); item.append(result.element); pendingMedia.push(...result.pending); } else if (attachment.asset_id) { const download = node("button", "attachment-download", "Download"); download.type = "button"; download.addEventListener("click", async () => { const url = await options.loadAsset?.(attachment.asset_id); if (!url) return; const link = node("a"); link.href = url; link.download = attachment.filename || "attachment"; link.click(); }); item.append(download); } list.append(item); }); root.append(list); }
   return { pendingMedia };
 }
