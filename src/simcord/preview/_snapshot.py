@@ -205,12 +205,15 @@ def _embed_projection(
     if link:
         value["url"] = link
     by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
+    by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
     for key in ("image", "thumbnail", "video"):
         media = embed.get(key)
         if not isinstance(media, dict):
             continue
         url = media["url"]
         item = by_url.get(url)
+        if item is None and url.startswith("attachment://"):
+            item = by_name.get(url.removeprefix("attachment://"))
         asset_id = _asset_meta(page, url, item)
         if asset_id:
             value.setdefault(key, {})["asset_id"] = asset_id
