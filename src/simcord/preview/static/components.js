@@ -225,9 +225,33 @@ function downloadButton(file, options, label) {
 }
 function renderSpoilerMedia(media, className, options, label) {
   if (!media?.spoiler) return mediaElement(media, className, options, label);
-  const wrapper = node("button", "spoiler-media", "Reveal spoiler media"); wrapper.type = "button"; let revealed = false;
-  const render = () => { wrapper.replaceChildren(); if (!revealed) wrapper.append(node("span", "spoiler-cover", "Spoiler — activate to reveal")); else { const result = mediaElement(media, className, options, label); wrapper.append(result.element); options.pendingMedia?.push(...result.pending); } };
-  wrapper.addEventListener("click", () => { revealed = true; render(); options.onLocalRender?.(); }); render(); return { element: wrapper, pending: [] };
+  const wrapper = node("button", "spoiler-media", "SPOILER");
+  wrapper.type = "button";
+  wrapper.setAttribute("aria-label", `Reveal ${label} spoiler`);
+  let revealed = false;
+  const render = () => {
+    wrapper.replaceChildren();
+    if (!revealed) {
+      wrapper.append(node("span", "spoiler-cover", "SPOILER"));
+    } else {
+      const result = mediaElement(media, className, options, label);
+      wrapper.append(result.element);
+      options.pendingMedia?.push(...result.pending);
+    }
+  };
+  wrapper.addEventListener("click", () => { revealed = true; render(); options.onLocalRender?.(); });
+  render();
+  return { element: wrapper, pending: [] };
+}
+function revealSpoiler(element, spoiler, options, label) {
+  if (!spoiler) return element;
+  const wrapper = node("div", "spoiler-content");
+  const reveal = node("button", "spoiler-cover", "SPOILER");
+  reveal.type = "button";
+  reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
+  reveal.addEventListener("click", () => { wrapper.replaceChildren(element); options.onLocalRender?.(); });
+  wrapper.append(reveal);
+  return wrapper;
 }
 function renderNode(component, path, options) {
   const type = Number(component?.type);
@@ -284,11 +308,79 @@ function modalControl(component, path, labelText, options) {
   options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false }); return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "" };
 }
 export function renderModal(root, modal, options = {}) {
-  root.replaceChildren(); if (!modal) return { controls: {}, focus: null };
-  const backdrop = node("div", "modal-backdrop"), dialog = node("form", "modal-dialog"); dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true"); dialog.setAttribute("aria-labelledby", "modal-title");
-  const title = node("h2", "modal-title", modal.title || "Dialog"); title.id = "modal-title"; dialog.append(title); const fields = node("div", "modal-fields"), controls = {};
-  const render = (component, path, labelText = "") => { const type = Number(component?.type); if (type === TYPE.TEXT_DISPLAY) { const text = node("div", "text-display"); appendMarkdownOrText(text, component.content, component.markdown_tokens, options); fields.append(text); return; } if (type === TYPE.LABEL) { const rendered = modalControl(component.component, `${path}.component`, component.label || "", options); if (component.description) rendered.field.append(node("small", "field-description", component.description)); fields.append(rendered.field); controls[String(component.component?.custom_id || path)] = rendered.get; return; } if (type === TYPE.ROW) { (component.components || []).forEach((child, index) => render(child, `${path}.components.${index}`, labelText)); return; } const rendered = modalControl(component, path, labelText, options); fields.append(rendered.field); controls[String(component.custom_id || path)] = rendered.get; };
-  (modal.components || []).forEach((component, index) => render(component, `modal.${index}`)); dialog.append(fields); const actions = node("footer", "modal-actions"), cancel = node("button", "button-secondary", "Cancel"), submit = node("button", "button-primary", "Submit"); cancel.type = "button"; cancel.addEventListener("click", () => options.onCancel?.()); submit.type = "submit"; actions.append(cancel, submit); dialog.append(actions);
-  dialog.addEventListener("submit", (event) => { event.preventDefault(); const values = {}; Object.entries(controls).forEach(([id, get]) => { values[id] = get(); }); options.onSubmit?.(values); }); backdrop.append(dialog); root.append(backdrop); return { controls, focus: dialog.querySelector("input, textarea, button") };
+  root.replaceChildren();
+  if (!modal) return { controls: {}, focus: null };
+  const backdrop = node("div", "modal-backdrop");
+  const dialog = node("form", "modal-dialog");
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "modal-title");
+  const heading = node("header", "modal-header");
+  const identity = node("span", "modal-identity", "●");
+  identity.setAttribute("aria-hidden", "true");
+  const title = node("h2", "modal-title", modal.title || "Dialog");
+  title.id = "modal-title";
+  const close = node("button", "modal-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close modal");
+  close.addEventListener("click", () => options.onCancel?.());
+  heading.append(identity, title, close);
+  dialog.append(heading);
+  dialog.append(
+    node(
+      "p",
+      "modal-disclaimer",
+      "This form will be submitted to this application. Do not share passwords or other sensitive information.",
+    ),
+  );
+  const fields = node("div", "modal-fields"), controls = {};
+  const render = (component, path, labelText = "") => {
+    const type = Number(component?.type);
+    if (type === TYPE.TEXT_DISPLAY) {
+      const text = node("div", "text-display");
+      appendMarkdownOrText(text, component.content, component.markdown_tokens, options);
+      fields.append(text);
+      return;
+    }
+    if (type === TYPE.LABEL) {
+      const rendered = modalControl(component.component, `${path}.component`, component.label || "", options);
+      if (component.description) {
+        const description = node("small", "field-description", component.description);
+        rendered.field.insertBefore(description, rendered.field.children[1] || null);
+      }
+      fields.append(rendered.field);
+      controls[String(component.component?.custom_id || path)] = rendered.get;
+      return;
+    }
+    if (type === TYPE.ROW) {
+      (component.components || []).forEach((child, index) => render(child, `${path}.components.${index}`, labelText));
+      return;
+    }
+    options.onDiagnostic?.({
+      code: "unsupported-modal-component",
+      severity: "warning",
+      message: `Unsupported modal component ${type}`,
+      complete: false,
+    });
+  };
+  (modal.components || []).forEach((component, index) => render(component, `modal.${index}`));
+  dialog.append(fields);
+  const actions = node("footer", "modal-actions");
+  const cancel = node("button", "button-secondary", "Cancel");
+  const submit = node("button", "button-primary", "Submit");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => options.onCancel?.());
+  submit.type = "submit";
+  actions.append(cancel, submit);
+  dialog.append(actions);
+  dialog.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = {};
+    Object.entries(controls).forEach(([id, get]) => { values[id] = get(); });
+    options.onSubmit?.(values);
+  });
+  backdrop.append(dialog);
+  root.append(backdrop);
+  return { controls, focus: dialog.querySelector("input, textarea, button") };
 }
 export function getSelectTypes() { return SELECT_TYPES; }
