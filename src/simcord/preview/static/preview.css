@@ -423,16 +423,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 50%;
   font-size: 0;
 }
-.modal-title { flex: 1; margin: 0; color: var(--discord-text); font-size: 24px; line-height: 30px; }
-.modal-close {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 0;
-  color: #b5bac1;
-  background: transparent;
-  font-size: 32px;
-  font-weight: 300;
-  line-height: 32px;
+.modal-disclaimer::before {
+  content: "▲";
+  display: grid;
+  flex: 0 0 18px;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: #f0b232;
+  font-size: 14px;
+  font-weight: 700;
 }
 .modal-close:hover { color: var(--discord-text); background: transparent; }
 .modal-disclaimer {
@@ -480,8 +480,9 @@ textarea.modal-input { min-height: 90px; resize: vertical; }
 .choice-label { line-height: 20px; }
 .upload-list { list-style: none; margin: 8px 0 0; padding: 0; }
 .upload-item { display: flex; justify-content: space-between; gap: 8px; padding: 8px; background: #2e2f35; border-radius: 4px; }
-.modal-actions { display: flex; justify-content: end; gap: 8px; margin-top: 24px; }
-.modal-actions button { min-height: 40px; }
+.modal-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 24px; }
+.modal-actions button { width: 100%; min-height: 40px; }
+.modal-actions .button-secondary { background: #4e5058; }
 
 @media (max-width: 600px) {
   .preview-toolbar { align-items: stretch; }
