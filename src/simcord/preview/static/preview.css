@@ -423,6 +423,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 50%;
   font-size: 0;
 }
+.modal-title { flex: 1; margin: 0; color: var(--discord-text); font-size: 24px; line-height: 30px; }
+.modal-close {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  color: #b5bac1;
+  background: transparent;
+  font-size: 32px;
+  font-weight: 300;
+  line-height: 32px;
+}
 .modal-disclaimer::before {
   content: "▲";
   display: grid;
@@ -446,18 +457,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: #3f3933;
   font-size: 13px;
   line-height: 18px;
-}
-.modal-disclaimer::before {
-  content: "!";
-  display: grid;
-  flex: 0 0 18px;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  color: #3f3933;
-  background: #f0b232;
-  border-radius: 50%;
-  font-weight: 700;
 }
 .modal-fields { display: grid; gap: 16px; }
 .modal-field { display: grid; gap: 6px; }
