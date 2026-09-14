@@ -422,15 +422,17 @@ function renderSnapshot(snapshot, generation, force = false) {
         state.modalDrafts.set(key, value);
         if (state.modalError) {
           state.modalError = null;
-          state.lastModalFingerprint = "";
-          localRender(true);
-        } else localRender(false);
+          state.lastModalFingerprint = modalFingerprint(state.snapshot?.modal);
+          document.querySelectorAll(".field-error").forEach((error) => error.remove());
+        }
+        localRender(false);
       },
       onFiles: (key, files) => {
         state.modalDrafts.set(key, files);
         state.modalError = null;
-        state.lastModalFingerprint = "";
-        localRender(true);
+        state.lastModalFingerprint = modalFingerprint(state.snapshot?.modal);
+        document.querySelectorAll(".field-error").forEach((error) => error.remove());
+        localRender(false);
       },
       onCancel: () => {
         if (state.dropdown) { cancelDropdown(state.dropdown.key); return; }
