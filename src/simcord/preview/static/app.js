@@ -291,7 +291,8 @@ function localRender(renderDom = true) {
 function openDropdown(key, selected, multi, minimum, maximum, highlight) {
   rememberFocus();
   if (state.dropdown?.key === key) {
-    state.dropdown = null;
+    commitDropdown(key);
+    return;
   } else {
     state.dropdown = { key, selected: [...selected], multi, minimum, maximum, highlight: highlight ?? selected[0] };
   }

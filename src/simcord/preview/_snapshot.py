@@ -416,6 +416,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         for component in _walk(payload.get("components", [])):
             if isinstance(component.get("content"), str):
                 component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
+        payload["application_name"] = _author(preview.env, preview.env.backend.bot_user.id)["name"]
         modal = {"handle": page.modal_handle, "payload": payload}
     candidate_components = list((selected or {}).get("components", []))
     if modal is not None:

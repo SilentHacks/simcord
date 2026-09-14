@@ -149,8 +149,6 @@ function renderSelect(component, path, options) {
   const list = node("div", "select-list"); list.id = `listbox-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; list.hidden = !isOpen;
   list.setAttribute("role", "listbox"); list.setAttribute("aria-multiselectable", String(multi)); list.tabIndex = isOpen ? 0 : -1;
   if (isOpen) {
-    const search = node("input", "select-search"); search.type = "search"; search.placeholder = "Search options"; search.setAttribute("aria-label", "Search options");
-    list.append(search);
     list.addEventListener("keydown", (event) => {
       const optionNodes = [...list.querySelectorAll('[role="option"]')];
       let index = Math.max(0, optionNodes.findIndex((item) => item.dataset.value === String(dropdown.highlight)));
@@ -159,7 +157,6 @@ function renderSelect(component, path, options) {
       else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const value = optionNodes[index]?.dataset.value; if (value !== undefined) onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi && value !== undefined) onCommit?.(key, [value]); }
       else if (event.key === "Escape") { event.preventDefault(); onCancel?.(key); }
     });
-    search.addEventListener("input", () => { const query = search.value.toLocaleLowerCase(); [...list.querySelectorAll('[role="option"]')].forEach((item) => { item.hidden = !item.textContent.toLocaleLowerCase().includes(query); }); });
   }
   entries.forEach((entry) => {
     const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
@@ -169,7 +166,6 @@ function renderSelect(component, path, options) {
     option.addEventListener("click", () => { onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi) onCommit?.(key, [value]); }); list.append(option);
   });
   if (!entries.length) list.append(node("div", "select-empty", "No available options"));
-  if (isOpen && multi) { const controls = node("div", "select-controls"); const apply = node("button", "button-primary", "Apply selection"); apply.type = "button"; apply.addEventListener("click", () => onCommit?.(key)); controls.append(node("span", "select-hint", `Escape to cancel · ${selected.length}/${maximum} selected`), apply); list.append(controls); }
   wrap.append(list);
   return { element: wrap, value: () => (Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : []), key };
 }
@@ -262,7 +258,20 @@ function renderNode(component, path, options) {
   if (type === TYPE.SEPARATOR) { const separator = node(component.divider === false ? "div" : "hr", `component-separator spacing-${Number(component.spacing || 1)}${component.divider === false ? " no-divider" : ""}`); separator.setAttribute("aria-hidden", "true"); return separator; }
   if (type === TYPE.THUMBNAIL) { const result = renderSpoilerMedia({ ...component.media, spoiler: component.spoiler, description: component.description }, "component-thumbnail", options, "Thumbnail"); const figure = node("figure", "component-media"); figure.append(result.element); if (component.description) figure.append(node("figcaption", "media-description", component.description)); options.pendingMedia?.push(...result.pending); return figure; }
   if (type === TYPE.MEDIA_GALLERY) { const gallery = node("div", "component-gallery"); (component.items || []).forEach((item, index) => { const result = renderSpoilerMedia({ ...item.media, spoiler: item.spoiler, description: item.description }, "gallery-image", options, `Gallery item ${index + 1}`); const figure = node("figure", "gallery-item"); figure.append(result.element); if (item.description) figure.append(node("figcaption", "media-description", item.description)); gallery.append(figure); options.pendingMedia?.push(...result.pending); }); return gallery; }
-  if (type === TYPE.FILE) { const data = component.file || {}; const label = component.name || data.filename || "Attached file"; const file = node("div", "component-file"); file.append(node("span", "file-name", label)); const size = data.size ?? component.size; if (size !== undefined) file.append(node("small", "file-size", `${size} bytes`)); if (data.description) file.append(node("small", "file-description", data.description)); file.append(downloadButton(data, options, label)); return revealSpoiler(file, component.spoiler, options, "file"); }
+  if (type === TYPE.FILE) {
+    const data = component.file || {};
+    const label = component.name || data.filename || "Attached file";
+    const file = node("div", "component-file");
+    const info = node("span", "file-info");
+    info.append(node("span", "file-name", label));
+    const size = data.size ?? component.size;
+    if (size !== undefined) info.append(node("small", "file-size", `${size} bytes`));
+    if (data.description) info.append(node("small", "file-description", data.description));
+    const download = downloadButton(data, options, label);
+    download.classList.add("file-download");
+    file.append(node("span", "file-icon"), info, download);
+    return revealSpoiler(file, component.spoiler, options, "file");
+  }
   options.onDiagnostic?.({ code: "unsupported-component", severity: "warning", message: `Unsupported component type ${type} at ${path}`, complete: false }); return node("div", "component-unavailable", `Component type ${type} unavailable`);
 }
 function renderEmbed(embed, index, options) {
@@ -318,10 +327,12 @@ export function renderMessage(root, message, options = {}) {
       } else {
         if (attachment.preview) item.append(node("pre", "attachment-preview", attachment.preview));
         const footer = node("div", "attachment-footer");
-        footer.append(node("span", "attachment-name", attachment.filename || "attachment"));
-        if (attachment.size !== undefined) footer.append(node("small", "attachment-size", `${attachment.size} bytes`));
+        const info = node("span", "attachment-info");
+        info.append(node("span", "attachment-name", attachment.filename || "attachment"));
+        if (attachment.size !== undefined) info.append(node("small", "attachment-size", `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`));
+        footer.append(info);
         if (attachment.asset_id) {
-          const download = node("button", "attachment-download", "Download");
+          const download = node("button", "attachment-download", "↓");
           download.type = "button";
           download.addEventListener("click", async () => {
             const url = await options.loadAsset?.(attachment.asset_id);
@@ -425,11 +436,12 @@ export function renderModal(root, modal, options = {}) {
   close.addEventListener("click", () => options.onCancel?.());
   heading.append(identity, title, close);
   dialog.append(heading);
-  dialog.append(
+  const body = node("div", "modal-body");
+  body.append(
     node(
       "p",
       "modal-disclaimer",
-      "This form will be submitted to this application. Do not share passwords or other sensitive information.",
+      `This form will be submitted to ${modal.application_name || "this application"}. Do not share passwords or other sensitive information.`,
     ),
   );
   const fields = node("div", "modal-fields"), controls = {};
@@ -469,7 +481,8 @@ export function renderModal(root, modal, options = {}) {
     });
   };
   (modal.components || []).forEach((component, index) => render(component, `modal.${index}`));
-  dialog.append(fields);
+  body.append(fields);
+  dialog.append(body);
   const actions = node("footer", "modal-actions");
   const cancel = node("button", "button-secondary", "Cancel");
   const submit = node("button", "button-primary", "Submit");

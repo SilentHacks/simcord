@@ -39,7 +39,8 @@ button, input, select, textarea { font: inherit; }
 button, input, select, textarea { color: inherit; }
 button { cursor: pointer; border: 0; border-radius: 4px; padding: 2px 16px; background: var(--discord-control); }
 button:disabled { cursor: not-allowed; opacity: .45; }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+button:focus-visible { outline: none; }
+input:focus-visible, select:focus-visible, textarea:focus-visible,
 [role="option"]:focus-visible {
   outline: 2px solid var(--discord-focus);
   outline-offset: 2px;
@@ -109,7 +110,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 22px;
   margin: 0 0 8px 72px;
 }
- .message-avatar {
+.message-avatar {
   position: absolute;
   top: 0;
   left: -56px;
@@ -223,8 +224,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   font-weight: 500;
   line-height: 20px;
   white-space: nowrap;
-  padding: 2px 16px;
-  border-radius: 4px;
+  padding: 2px 9px;
+  border-radius: 8px;
   text-decoration: none;
 }
 .button-style-1, .button-primary { background: #5865f2; }
@@ -268,6 +269,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 8px;
   background: #393a41;
 }
+.component-container + .component-section { margin-top: 0; }
 .component-separator { width: 100%; margin: 8px 0; border: 0; border-top: 1px solid #45474e; }
 .component-separator.spacing-2 { margin-top: 8px; margin-bottom: 8px; }
 .component-separator.no-divider { border-top-color: transparent; }
@@ -285,7 +287,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   width: 100%;
-  margin: 8px 0;
+  margin: 0 0 8px;
 }
 .component-gallery figure { min-width: 0; margin: 0; }
 .gallery-image { width: 100%; height: 280px; }
@@ -377,13 +379,32 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   padding: 0;
   overflow: hidden;
 }
-.file-name, .attachment-name { flex: 1 1 220px; overflow-wrap: anywhere; }
+.component-file { flex-wrap: nowrap; }
+.file-icon {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 40px;
+  background: #8ea1e1;
+  border-radius: 2px;
+}
+.file-info, .attachment-info {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+.file-name { color: #70b8ff; }
+.file-name, .attachment-name { overflow-wrap: anywhere; }
 .attachment-image, .component-file-preview { width: 100%; max-height: 280px; }
 .attachment-inline .attachment-image { width: 100%; height: auto; max-height: none; aspect-ratio: 16 / 9; }
-.attachment-footer { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
-.attachment-preview { min-height: 124px; margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.message-attachments { list-style: none; padding: 0; }
+.attachment-footer { display: flex; align-items: center; gap: 8px; padding: 12px; font-size: 14px; }
+.attachment-preview { min-height: 112px; margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.message-attachments { list-style: none; margin: 8px 0 0 72px; padding: 0; }
 .attachment-download, .upload-remove { min-height: 28px; padding: 2px 12px; color: #fff; background: #4e5058; font-size: 13px; }
+.attachment-download, .file-download { flex: 0 0 28px; width: 28px; padding: 0; font-size: 16px; }
+.file-download { opacity: 0; }
+.component-file:hover .file-download, .component-file:focus-within .file-download { opacity: 1; }
+.attachment + .attachment { margin-top: 12px; }
 
 .preview-select { position: relative; width: 400px; max-width: 100%; }
 .select-trigger {
@@ -409,8 +430,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .select-type-6 .select-trigger,
 .select-type-7 .select-trigger,
 .select-type-8 .select-trigger { min-height: 39px; height: 39px; }
-.select-trigger::after { content: "⌄"; margin-left: 12px; color: var(--discord-subtle); font-size: 18px; }
-.preview-select.is-open .select-trigger::after { content: "⌃"; }
+.select-trigger::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin: -4px 2px 0 12px;
+  border-right: 2px solid var(--discord-subtle);
+  border-bottom: 2px solid var(--discord-subtle);
+  transform: rotate(45deg);
+}
+.preview-select.is-open .select-trigger::after { margin-top: 4px; transform: rotate(225deg); }
 .select-list {
   position: absolute;
   z-index: 5;
@@ -419,35 +448,47 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   right: 0;
   max-height: 320px;
   overflow: auto;
-  padding: 8px;
+  padding: 0;
   background: #3c3d45;
   border: 1px solid #45474e;
   border-radius: 8px;
   box-shadow: 0 8px 16px #0008;
 }
-.select-search {
-  width: 100%;
-  min-height: 36px;
-  margin-bottom: 4px;
-  padding: 6px 8px;
-  background: #2e2f35;
-  border: 1px solid #45474e;
-  border-radius: 4px;
-}
 .select-option {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px;
-  border-radius: 4px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-content: center;
+  min-height: 56px;
+  padding: 7px 10px;
   cursor: pointer;
 }
 .select-option:hover, .select-option.is-highlighted { background: #474852; }
 .select-option.is-selected { color: #fff; background: #4e5058; }
-.option-emoji { margin-right: 8px; }
-.option-description, .select-hint, .select-empty { color: var(--discord-subtle); font-size: 12px; }
-.select-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; padding: 8px 0 0; border-top: 1px solid #4e5058; }
-.select-controls .button-primary { min-height: 32px; }
+.select-option.is-selected::after {
+  content: "✓";
+  display: grid;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  place-items: center;
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  color: #fff;
+  background: var(--discord-brand);
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 700;
+}
+.option-emoji { grid-column: 1; grid-row: 1 / span 2; align-self: center; font-size: 20px; }
+.option-label { grid-column: 2; grid-row: 1; font-weight: 600; }
+.option-description { grid-column: 2; grid-row: 2; color: var(--discord-subtle); font-size: 14px; }
+.select-empty { padding: 12px; color: var(--discord-subtle); font-size: 14px; }
+.select-type-5 .select-option,
+.select-type-6 .select-option,
+.select-type-7 .select-option,
+.select-type-8 .select-option { min-height: 44px; }
 
 .empty-state { padding: 32px; color: var(--discord-subtle); text-align: center; }
 .diagnostics { margin: 16px 8px 0; padding: 10px; border: 1px solid #45474e; border-radius: 4px; font-size: 13px; }
@@ -462,16 +503,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   display: flex;
   flex-direction: column;
   width: min(100%, 480px);
-  max-height: min(90vh, 640px);
-  overflow: auto;
-  padding: 24px;
+  max-height: min(calc(100vh - 112px), 640px);
+  overflow: hidden;
+  padding: 0;
   color: var(--discord-text);
   background: #393a41;
   border-radius: 8px;
   box-shadow: 0 8px 24px #0008;
   font-size: 14px;
 }
-.modal-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.modal-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 24px 25px 0; }
 .modal-identity {
   display: grid;
   flex: 0 0 24px;
@@ -497,7 +538,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   line-height: 32px;
 }
 .modal-disclaimer::before {
-  content: "▲";
+  content: "⚠";
   display: grid;
   flex: 0 0 18px;
   place-items: center;
@@ -508,11 +549,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   font-weight: 700;
 }
 .modal-close:hover { color: var(--discord-text); background: transparent; }
+.modal-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 25px;
+}
 .modal-disclaimer {
   display: flex;
   gap: 10px;
-  margin-bottom: 16px;
-  padding: 12px;
+  margin: 0 0 16px;
+  padding: 10px;
   color: #dbdee1;
   border: 1px solid #f0b232;
   border-radius: 8px;
@@ -520,8 +566,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   font-size: 13px;
   line-height: 18px;
 }
-.modal-fields { display: grid; gap: 16px; }
+.modal-fields { display: grid; gap: 24px; }
 .modal-field { display: grid; gap: 6px; }
+.modal-field .preview-select { width: 100%; }
 .control-label { color: var(--discord-text); font-weight: 600; }
 .required-marker { color: #f23f42; }
 .field-error { color: #f38688; font-style: italic; font-weight: 600; }
@@ -536,15 +583,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 8px;
 }
 textarea.modal-input { min-height: 90px; resize: vertical; }
-.modal-choice-group { display: grid; gap: 8px; }
-.modal-choice { display: flex; align-items: flex-start; gap: 8px; color: var(--discord-text); }
-.modal-choice input { accent-color: var(--discord-brand); margin-top: 3px; }
+.modal-choice-group { display: grid; gap: 12px; }
+.modal-choice {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 8px;
+  color: var(--discord-text);
+}
+.modal-choice input { grid-row: 1 / span 2; accent-color: var(--discord-brand); margin-top: 3px; }
 .choice-label { line-height: 20px; }
+.choice-description { grid-column: 2; color: var(--discord-subtle); line-height: 20px; }
 .upload-dropzone {
   display: grid;
   gap: 8px;
-  min-height: 184px;
-  padding: 24px 12px 12px;
+  min-height: 120px;
+  padding: 16px 12px 12px;
   place-items: center;
   border: 1px solid #45474e;
   border-radius: 8px;
@@ -571,7 +624,15 @@ textarea.modal-input { min-height: 90px; resize: vertical; }
 .upload-file-name { flex: 1; overflow-wrap: anywhere; font-size: 13px; }
 .upload-remove { flex: 0 0 auto; min-height: 24px; padding: 0 4px; color: var(--discord-subtle); background: transparent; font-size: 18px; opacity: 0; }
 .upload-item:hover .upload-remove, .upload-item:focus-within .upload-remove { opacity: 1; }
-.modal-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 24px; }
+.modal-actions {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 24px 25px;
+  background: #36373d;
+}
 .modal-actions button { width: 100%; min-height: 40px; }
 .modal-actions .button-secondary { background: #4e5058; }
 
