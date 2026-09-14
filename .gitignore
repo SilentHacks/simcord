@@ -26,3 +26,6 @@ PLAN.md
 site/
 
 docs/plans/
+
+# Local Discord visual references (never committed or packaged)
+.discord-reference-captures/
