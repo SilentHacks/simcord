@@ -488,6 +488,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .modal-field { display: grid; gap: 6px; }
 .control-label { color: var(--discord-text); font-weight: 600; }
 .required-marker { color: #f23f42; }
+.field-error { color: #f38688; font-style: italic; font-weight: 600; }
 .field-description { color: var(--discord-subtle); font-size: 14px; line-height: 20px; }
 .modal-input {
   width: 100%;
@@ -532,7 +533,8 @@ textarea.modal-input { min-height: 90px; resize: vertical; }
 .upload-item { display: flex; align-items: center; gap: 8px; width: min(100%, 198px); min-height: 50px; padding: 8px 12px; background: #3f4148; border-radius: 8px; text-align: left; }
 .upload-file-icon { color: #8ea1e1; font-size: 22px; }
 .upload-file-name { flex: 1; overflow-wrap: anywhere; font-size: 13px; }
-.upload-remove { flex: 0 0 auto; min-height: 24px; padding: 0 4px; background: transparent; font-size: 18px; }
+.upload-remove { flex: 0 0 auto; min-height: 24px; padding: 0 4px; color: var(--discord-subtle); background: transparent; font-size: 18px; opacity: 0; }
+.upload-item:hover .upload-remove, .upload-item:focus-within .upload-remove { opacity: 1; }
 .modal-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 24px; }
 .modal-actions button { width: 100%; min-height: 40px; }
 .modal-actions .button-secondary { background: #4e5058; }

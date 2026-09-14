@@ -319,7 +319,11 @@ function modalDefault(component, entries) {
 function modalControl(component, path, labelText, options) {
   const customId = String(component.custom_id || path), key = `modal:${customId}`, field = node("div", "modal-field"); field.dataset.controlKey = key;
   const type = Number(component.type);
-  const required = component.required === true || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type))); if (labelText) appendLabel(field, labelText, required);
+  const required = component.required === true || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type)));
+  if (labelText) {
+    const label = appendLabel(field, labelText, required);
+    if (options.validationError?.includes(customId)) label.append(node("em", "field-error", " - This field is required."));
+  }
   if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? input.value) }; }
   if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[customId]); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, entries)); const select = renderSelect(component, path, { ...options, scope: "modal", onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value }; }
   if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, entries)); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(input, node("span", "choice-label", entry.label || value)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); return { field, get: () => options.drafts.get(key) }; }
@@ -377,6 +381,7 @@ export function renderModal(root, modal, options = {}) {
   if (!modal) return { controls: {}, focus: null };
   const backdrop = node("div", "modal-backdrop");
   const dialog = node("form", "modal-dialog");
+  dialog.noValidate = true;
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
   dialog.setAttribute("aria-labelledby", "modal-title");

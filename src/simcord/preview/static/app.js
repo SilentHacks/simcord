@@ -41,6 +41,8 @@ const state = {
   modalControls: {},
   modalHandle: null,
   dismissedModal: null,
+  modalError: null,
+  modalErrorHandle: null,
   dropdown: null,
   lastMessageKey: null,
   lastMessageFingerprint: "",
@@ -343,10 +345,15 @@ function submitModal(values) {
   if (!modal || modal.handle !== state.modalHandle) return;
   const error = validateModalValues(modal.payload || {}, values);
   if (error) {
+    state.modalError = error;
+    state.modalErrorHandle = modal.handle;
     addDiagnostic({ code: "modal-validation", severity: "error", message: error, complete: false });
-    localRender(false);
+    state.lastModalFingerprint = "";
+    localRender(true);
     return;
   }
+  state.modalError = null;
+  state.modalErrorHandle = null;
   dispatch("modal_submit", { modal_handle: modal.handle, values });
 }
 
@@ -391,11 +398,19 @@ function renderSnapshot(snapshot, generation, force = false) {
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
   const modalKey = modal ? modalFingerprint(modal) : "";
+  if (modal && state.modalErrorHandle !== modal.handle) {
+    state.modalError = null;
+    state.modalErrorHandle = modal.handle;
+  } else if (!modal) {
+    state.modalError = null;
+    state.modalErrorHandle = null;
+  }
   if (force || modalKey !== state.lastModalFingerprint) {
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
       dropdown: state.dropdown,
       candidates: snapshot.candidates || {},
+      validationError: state.modalError,
       locale: state.profile.locale,
       timezone: state.profile.timezone,
       onInit: initDraft,
@@ -403,13 +418,27 @@ function renderSnapshot(snapshot, generation, force = false) {
       onSelectDraft: updateDraft,
       onSelectCommit: commitDropdown,
       onSelectCancel: cancelDropdown,
-      onDraft: (key, value) => { state.modalDrafts.set(key, value); localRender(false); },
-      onFiles: (key, files) => { state.modalDrafts.set(key, files); localRender(true); },
+      onDraft: (key, value) => {
+        state.modalDrafts.set(key, value);
+        if (state.modalError) {
+          state.modalError = null;
+          state.lastModalFingerprint = "";
+          localRender(true);
+        } else localRender(false);
+      },
+      onFiles: (key, files) => {
+        state.modalDrafts.set(key, files);
+        state.modalError = null;
+        state.lastModalFingerprint = "";
+        localRender(true);
+      },
       onCancel: () => {
         if (state.dropdown) { cancelDropdown(state.dropdown.key); return; }
         state.dismissedModal = state.modalHandle;
         state.modalControls = {};
         state.modalDrafts.clear();
+        state.modalError = null;
+        state.modalErrorHandle = null;
         localRender(true);
       },
       onSubmit: submitModal,
