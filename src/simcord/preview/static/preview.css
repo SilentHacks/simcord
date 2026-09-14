@@ -335,6 +335,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border: 0;
   background: transparent;
 }
+.attachment:not(.attachment-inline) {
+  width: min(100%, 420px);
+  padding: 0;
+  overflow: hidden;
+}
 .file-name, .attachment-name { flex: 1 1 220px; overflow-wrap: anywhere; }
 .attachment-image, .component-file-preview { width: 100%; max-height: 280px; }
 .attachment-inline .attachment-image { width: 100%; height: auto; max-height: none; aspect-ratio: 16 / 9; }
