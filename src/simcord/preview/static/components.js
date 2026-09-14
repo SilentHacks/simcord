@@ -201,7 +201,7 @@ function mediaElement(media, className, options, label) {
 function revealSpoiler(element, spoiler, options, label) {
   if (!spoiler) return element;
   const wrapper = node("div", "spoiler-content");
-  const reveal = node("button", "spoiler-cover", "SPOILER");
+  const reveal = node("button", "spoiler-cover");
   reveal.type = "button";
   reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
   reveal.addEventListener("click", () => { wrapper.replaceChildren(element); });
@@ -232,7 +232,7 @@ function renderSpoilerMedia(media, className, options, label) {
   wrapper.type = "button";
   wrapper.setAttribute("aria-label", `Reveal ${label} spoiler`);
   const result = mediaElement(media, className, options, label);
-  const cover = node("span", "spoiler-cover", "SPOILER");
+  const cover = node("span", "spoiler-cover");
   wrapper.append(result.element, cover);
   wrapper.addEventListener("click", () => {
     wrapper.classList.add("is-revealed");

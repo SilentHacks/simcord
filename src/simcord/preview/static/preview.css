@@ -294,14 +294,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 84px;
   padding: 16px;
   color: #fff;
-  background: rgba(30, 31, 34, .64);
+  background: #4e5058;
   border-radius: 8px;
   font-weight: 700;
+}
+.spoiler-cover::before {
+  content: "SPOILER";
+  padding: 8px 12px;
+  color: #fff;
+  background: #1e1f22;
+  border-radius: 14px;
+  font-size: 12px;
 }
 .spoiler-media > .spoiler-cover {
   position: absolute;
   inset: 0;
   min-height: 0;
+  background: rgba(30, 31, 34, .22);
   pointer-events: none;
 }
 .component-media .spoiler-media, .section-accessory .spoiler-media { width: 84px; height: 84px; }
