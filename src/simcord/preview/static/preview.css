@@ -327,8 +327,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 8px;
   background: #393a41;
 }
+.attachment-inline {
+  display: block;
+  width: min(100%, 550px);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
 .file-name, .attachment-name { flex: 1 1 220px; overflow-wrap: anywhere; }
 .attachment-image, .component-file-preview { width: 100%; max-height: 280px; }
+.attachment-inline .attachment-image { width: 100%; height: auto; max-height: none; aspect-ratio: 16 / 9; }
+.attachment-footer { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+.attachment-preview { min-height: 124px; margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .message-attachments { list-style: none; padding: 0; }
 .attachment-download, .upload-remove { min-height: 28px; padding: 2px 12px; color: #fff; background: #4e5058; font-size: 13px; }
 

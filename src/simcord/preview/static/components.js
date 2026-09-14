@@ -276,7 +276,39 @@ export function renderMessage(root, message, options = {}) {
   if (!v2 && (Number(message.flags) & 4) === 0) (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
   if (message.components?.length) { const components = node("div", "message-components"); message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options))); root.append(components); }
   const refs = referencedAssets(message.components, v2 ? [] : message.embeds); const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
-  if (attachments.length) { const list = node("ul", "message-attachments"); attachments.forEach((attachment) => { const item = node("li", "attachment"); item.append(node("span", "attachment-name", attachment.filename || "attachment")); if (attachment.size !== undefined) item.append(node("small", "attachment-size", `${attachment.size} bytes`)); if (attachment.inline && attachment.asset_id) { const result = renderSpoilerMedia(attachment, "attachment-image", options, attachment.filename || "Attachment"); item.append(result.element); pendingMedia.push(...result.pending); } else if (attachment.asset_id) { const download = node("button", "attachment-download", "Download"); download.type = "button"; download.addEventListener("click", async () => { const url = await options.loadAsset?.(attachment.asset_id); if (!url) return; const link = node("a"); link.href = url; link.download = attachment.filename || "attachment"; link.click(); }); item.append(download); } list.append(item); }); root.append(list); }
+  if (attachments.length) {
+    const list = node("ul", "message-attachments");
+    attachments.forEach((attachment) => {
+      const inline = attachment.inline && attachment.asset_id;
+      const item = node("li", inline ? "attachment attachment-inline" : "attachment");
+      if (inline) {
+        const result = renderSpoilerMedia(attachment, "attachment-image", options, attachment.filename || "Attachment");
+        item.append(result.element);
+        pendingMedia.push(...result.pending);
+      } else {
+        if (attachment.preview) item.append(node("pre", "attachment-preview", attachment.preview));
+        const footer = node("div", "attachment-footer");
+        footer.append(node("span", "attachment-name", attachment.filename || "attachment"));
+        if (attachment.size !== undefined) footer.append(node("small", "attachment-size", `${attachment.size} bytes`));
+        if (attachment.asset_id) {
+          const download = node("button", "attachment-download", "Download");
+          download.type = "button";
+          download.addEventListener("click", async () => {
+            const url = await options.loadAsset?.(attachment.asset_id);
+            if (!url) return;
+            const link = node("a");
+            link.href = url;
+            link.download = attachment.filename || "attachment";
+            link.click();
+          });
+          footer.append(download);
+        }
+        item.append(footer);
+      }
+      list.append(item);
+    });
+    root.append(list);
+  }
   return { pendingMedia };
 }
 

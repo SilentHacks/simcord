@@ -112,18 +112,24 @@ def _author(env: Env, user_id: int, *, override: str | None = None) -> dict[str,
 def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _Page) -> dict[str, Any]:
     attachment_id = str(attachment.get("id", ""))
     url = attachment.get("url")
+    content_type = str(attachment.get("content_type") or "application/octet-stream")
+    filename = str(attachment.get("filename", "attachment"))
     key = (
         f"url:{url}"
         if isinstance(url, str)
         else f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
     )
     asset_id = page.asset_id(key, attachment)
-    content_type = str(attachment.get("content_type") or "application/octet-stream")
-    filename = str(attachment.get("filename", "attachment"))
+    preview = None
+    if content_type.startswith("text/") and isinstance(url, str):
+        raw = env.backend.cdn.get(url)
+        if raw is not None:
+            preview = raw[:4096].decode("utf-8", "replace").strip()
     return {
         "id": attachment_id,
         "filename": filename,
         "description": attachment.get("description"),
+        "preview": preview,
         "size": int(attachment.get("size", 0) or 0),
         "content_type": content_type,
         "inline": content_type.startswith("image/"),
