@@ -94,7 +94,7 @@ function renderInlineTokens(parent, tokens, options) {
           element.tabIndex = 0;
           element.setAttribute("role", "button");
           element.setAttribute("aria-label", "Reveal spoiler");
-          const reveal = () => { element.classList.add("is-revealed"); element.removeAttribute("role"); element.removeAttribute("tabindex"); element.removeAttribute("aria-label"); options.onLocalRender?.(); };
+          const reveal = () => { element.classList.add("is-revealed"); element.removeAttribute("role"); element.removeAttribute("tabindex"); element.removeAttribute("aria-label"); };
           element.addEventListener("click", reveal);
           element.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); reveal(); } });
         }
@@ -203,7 +203,7 @@ function revealSpoiler(element, spoiler, options, label) {
   const reveal = node("button", "spoiler-cover", "SPOILER");
   reveal.type = "button";
   reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
-  reveal.addEventListener("click", () => { wrapper.replaceChildren(element); options.onLocalRender?.(); });
+  reveal.addEventListener("click", () => { wrapper.replaceChildren(element); });
   wrapper.append(reveal);
   return wrapper;
 }
@@ -236,7 +236,6 @@ function renderSpoilerMedia(media, className, options, label) {
   wrapper.addEventListener("click", () => {
     wrapper.classList.add("is-revealed");
     cover.remove();
-    options.onLocalRender?.();
   });
   return { element: wrapper, pending: result.pending };
 }
