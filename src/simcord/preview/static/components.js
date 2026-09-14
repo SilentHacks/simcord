@@ -55,7 +55,8 @@ function appendTextWithMentions(parent, value, options) {
     if (match.index > offset) parent.append(document.createTextNode(text.slice(offset, match.index)));
     const id = match[1] || match[2];
     const name = names[id];
-    parent.append(document.createTextNode(name ? `@${name}` : match[0]));
+    if (name) parent.append(node("span", "mention", `@${name}`));
+    else parent.append(document.createTextNode(match[0]));
     offset = match.index + match[0].length;
   }
   if (offset < text.length) parent.append(document.createTextNode(text.slice(offset)));
@@ -323,7 +324,52 @@ function modalControl(component, path, labelText, options) {
   if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[customId]); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, entries)); const select = renderSelect(component, path, { ...options, scope: "modal", onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value }; }
   if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, entries)); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(input, node("span", "choice-label", entry.label || value)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); return { field, get: () => options.drafts.get(key) }; }
   if (type === TYPE.CHECKBOX) { if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); const choice = node("label", "modal-choice"), input = node("input"); input.type = "checkbox"; input.name = customId; input.checked = options.drafts.get(key) === true; input.addEventListener("change", () => options.onDraft?.(key, input.checked)); choice.append(input, node("span", "choice-label", labelText || customId)); field.append(choice); return { field, get: () => options.drafts.get(key) === true }; }
-  if (type === TYPE.FILE_UPLOAD) { if (!options.drafts.has(key)) options.drafts.set(key, []); const input = node("input", "modal-input"); input.type = "file"; input.multiple = Number(component.max_values ?? 1) > 1; input.required = component.required === true; input.setAttribute("aria-label", labelText || customId); const list = node("ul", "upload-list"); const redraw = () => { list.replaceChildren(); (options.drafts.get(key) || []).forEach((file, index) => { const row = node("li", "upload-item", `${file.name} (${file.size} bytes)`); const remove = node("button", "upload-remove", "Remove"); remove.type = "button"; remove.addEventListener("click", () => { const next = [...(options.drafts.get(key) || [])]; next.splice(index, 1); options.onFiles?.(key, next); redraw(); }); row.append(remove); list.append(row); }); }; input.addEventListener("change", () => { const next = [...(options.drafts.get(key) || []), ...[...input.files || []]]; options.onFiles?.(key, next); input.value = ""; redraw(); }); field.append(input, list); redraw(); return { field, get: () => options.drafts.get(key) || [] }; }
+  if (type === TYPE.FILE_UPLOAD) {
+    if (!options.drafts.has(key)) options.drafts.set(key, []);
+    const input = node("input", "upload-input");
+    input.type = "file";
+    input.multiple = Number(component.max_values ?? 1) > 1;
+    input.required = component.required === true;
+    input.setAttribute("aria-label", labelText || customId);
+    const list = node("ul", "upload-list");
+    const redraw = () => {
+      list.replaceChildren();
+      (options.drafts.get(key) || []).forEach((file, index) => {
+        const row = node("li", "upload-item");
+        row.append(node("span", "upload-file-icon", "▤"), node("span", "upload-file-name", file.name));
+        const remove = node("button", "upload-remove", "×");
+        remove.type = "button";
+        remove.setAttribute("aria-label", `Remove ${file.name}`);
+        remove.addEventListener("click", () => {
+          const next = [...(options.drafts.get(key) || [])];
+          next.splice(index, 1);
+          options.onFiles?.(key, next);
+          redraw();
+        });
+        row.append(remove);
+        list.append(row);
+      });
+    };
+    const dropzone = node("label", "upload-dropzone");
+    const prompt = node("span", "upload-prompt", "Drop files here or ");
+    prompt.append(node("span", "upload-browse", "browse"));
+    dropzone.append(
+      node("span", "upload-icon", "▣"),
+      prompt,
+      node("small", "upload-limit", `Upload up to ${component.max_values ?? 1} files under 500 MB.`),
+      input,
+      list,
+    );
+    input.addEventListener("change", () => {
+      const next = [...(options.drafts.get(key) || []), ...[...(input.files || [])]];
+      options.onFiles?.(key, next);
+      input.value = "";
+      redraw();
+    });
+    field.append(dropzone);
+    redraw();
+    return { field, get: () => options.drafts.get(key) || [] };
+  }
   options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false }); return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "" };
 }
 export function renderModal(root, modal, options = {}) {
