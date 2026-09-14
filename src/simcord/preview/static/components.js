@@ -5,6 +5,7 @@ const TYPE = Object.freeze({
   RADIO_GROUP: 21, CHECKBOX_GROUP: 22, CHECKBOX: 23,
 });
 const SELECT_TYPES = new Set([TYPE.STRING_SELECT, TYPE.USER_SELECT, TYPE.ROLE_SELECT, TYPE.MENTIONABLE_SELECT, TYPE.CHANNEL_SELECT]);
+const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADIO_GROUP, TYPE.CHECKBOX_GROUP, TYPE.CHECKBOX, TYPE.FILE_UPLOAD]);
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -339,7 +340,13 @@ export function renderModal(root, modal, options = {}) {
       return;
     }
     if (type === TYPE.ROW) {
-      (component.components || []).forEach((child, index) => render(child, `${path}.components.${index}`, labelText));
+      (component.components || []).forEach((child, index) => {
+        const childPath = `${path}.components.${index}`;
+        if (!MODAL_CONTROL_TYPES.has(Number(child?.type))) return render(child, childPath, labelText);
+        const rendered = modalControl(child, childPath, child.label || labelText || "", options);
+        fields.append(rendered.field);
+        controls[String(child.custom_id || childPath)] = rendered.get;
+      });
       return;
     }
     options.onDiagnostic?.({
