@@ -529,7 +529,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .select-entity .entity-avatar img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .select-entity .entity-avatar.avatar-bot { background-color: #ed4245; }
 .select-entity .entity-avatar.avatar-user { background-color: #45a366; }
-.select-entity .entity-presence { position: absolute; right: -1px; bottom: -1px; width: 7px; height: 7px; background: #23a55a; border: 2px solid #2e2f35; border-radius: 50%; box-sizing: content-box; }
+.select-entity .entity-presence { position: absolute; right: -1px; bottom: -1px; width: 7px; height: 7px; background: #45a366; border: 2px solid #2e2f35; border-radius: 50%; box-sizing: content-box; }
 .select-entity .entity-role-mark { width: 20px; height: 20px; display: grid; place-items: center; }
 .select-entity .entity-role-mark svg { display: block; width: 20px; height: 20px; }
 .select-entity .entity-role-swatch { position: relative; align-self: center; width: 18px; height: 18px; border-radius: 3px; flex: 0 0 auto; }
@@ -605,7 +605,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   bottom: -1px;
   width: 8px;
   height: 8px;
-  background: #23a55a;
+  background: #45a366;
   border: 2px solid #3c3d45;
   border-radius: 50%;
   box-sizing: content-box;
@@ -637,7 +637,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   color: #c5c6ca;
 }
 .select-option .entity-channel svg { display: block; width: 20px; height: 20px; }
-.select-option .entity-label { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; grid-column: 2; grid-row: 1; }
+.select-option .entity-label { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; grid-column: 2; grid-row: 1; }
 .select-option .entity-name { color: #c5c6ca; font-weight: 500; }
 .select-option .entity-name.entity-dim { color: #c5c6ca; font-weight: 400; }
 .select-option .entity-username { color: #abacb2; }

@@ -463,6 +463,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "botGeneration": env._generation,
         "viewers": [_author(env, _viewer_id(viewer)) for viewer in preview.viewers],
         "viewerId": str(_viewer_id(page.viewer)),
+        "viewerAvatar": _user_avatar(page, env.backend.get_user(_viewer_id(page.viewer))),
         "channelId": str(channel.id),
         "channel": {
             "id": str(channel.id),
