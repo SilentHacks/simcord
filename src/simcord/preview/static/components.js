@@ -152,6 +152,39 @@ function renderSelect(component, path, options) {
   const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel } = options;
   const key = `${scope}:${keyFor(component, path)}`;
   const entries = optionEntries(component, candidates?.[component.custom_id]);
+  const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.15 0-8 2.02-8 4.5V21h16v-2.5c0-2.48-3.85-4.5-8-4.5z"/></svg>';
+  const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
+  const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
+  const entityIcon = (entry, kind) => {
+    const icon = node("span", "entity-icon");
+    if (kind === "user") {
+      const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
+      if (entry.bot) avatar.innerHTML = DISCORD_LOGO_SVG;
+      else if (entry.avatar) {
+        const img = node("img", "entity-avatar-img");
+        img.alt = "";
+        options.loadAsset?.(entry.avatar).then((url) => { img.src = url; }).catch(() => {});
+        avatar.append(img);
+      }
+      icon.append(avatar, node("span", "entity-presence"));
+      return icon;
+    }
+    if (kind === "role") {
+      const mark = node("span", "entity-role-mark");
+      const iconColor = Number(entry.icon_color ?? entry.color ?? 0) >>> 0;
+      mark.style.color = iconColor ? `#${iconColor.toString(16).padStart(6, "0")}` : "#b5bac1";
+      mark.insertAdjacentHTML("beforeend", ROLE_MARK_SVG);
+      icon.append(mark);
+      return icon;
+    }
+    if (kind === "channel") {
+      const hash = node("span", "entity-channel");
+      hash.innerHTML = HASH_SVG;
+      icon.append(hash);
+      return icon;
+    }
+    return icon;
+  };
   const multi = Number(component.max_values ?? 1) > 1 || Number(component.min_values ?? 1) > 1;
   const minimum = Number(component.min_values ?? 1), maximum = Number(component.max_values ?? 1);
   if (!drafts.has(key)) onInit?.(key, optionDefaults(component, entries).slice(0, maximum));
@@ -174,6 +207,17 @@ function renderSelect(component, path, options) {
       chips.append(chip);
     }
     valueDisplay.append(chips);
+  } else if (single && single.kind && single.kind !== "string") {
+    const chip = node("span", "select-entity");
+    chip.append(entityIcon(single, single.kind));
+    if (single.kind === "role") {
+      const swatch = node("span", "entity-role-swatch");
+      const color = Number(single.color ?? 0) >>> 0;
+      swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
+      chip.append(swatch);
+    }
+    chip.append(node("span", "select-entity-name", single.label ?? single.name ?? selected[0]));
+    valueDisplay.append(chip);
   } else {
     if (single?.emoji?.name) { const emoji = node("span", "selected-emoji"); appendEmojiText(emoji, single.emoji.name); valueDisplay.append(emoji); }
     const valueLabel = node("span", "select-value-label");
@@ -182,6 +226,14 @@ function renderSelect(component, path, options) {
     valueDisplay.append(valueLabel);
   }
   trigger.append(valueDisplay);
+  if (!multi && single && single.kind && single.kind !== "string") {
+    const clear = node("span", "select-clear");
+    clear.setAttribute("role", "button");
+    clear.setAttribute("aria-label", "Clear selection");
+    clear.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.4 4 12 10.4 5.6 4 4 5.6 10.4 12 4 18.4 5.6 20 12 13.6 18.4 20 20 18.4 13.6 12 20 5.6 18.4 4Z"/></svg>';
+    clear.addEventListener("click", (event) => { event.stopPropagation(); onDraft?.(key, [], multi, minimum, maximum, selected); onCommit?.(key, []); });
+    trigger.append(clear);
+  }
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
   trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`);
@@ -200,18 +252,11 @@ function renderSelect(component, path, options) {
       else if (event.key === "Escape") { event.preventDefault(); onCancel?.(key); }
     });
   }
-  const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.15 0-8 2.02-8 4.5V21h16v-2.5c0-2.48-3.85-4.5-8-4.5z"/></svg>';
-  const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
-  const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4h-4.4l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
   const decorateEntity = (option, entry, kind) => {
     option.classList.add("option-entity");
-    const icon = node("span", "entity-icon");
+    option.append(entityIcon(entry, kind));
+    const label = node("span", "entity-label");
     if (kind === "user") {
-      const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
-      if (entry.bot) avatar.innerHTML = DISCORD_LOGO_SVG;
-      icon.append(avatar, node("span", "entity-presence"));
-      option.append(icon);
-      const label = node("span", "entity-label");
       label.append(node("span", "entity-name", entry.label ?? entry.name ?? ""));
       if (entry.username) label.append(node("span", "entity-username", entry.username));
       if (entry.bot) label.append(node("span", "entity-app-badge", "APP"));
@@ -219,17 +264,10 @@ function renderSelect(component, path, options) {
       return;
     }
     if (kind === "role") {
-      const mark = node("span", "entity-role-mark");
-      const iconColor = Number(entry.icon_color ?? entry.color ?? 0) >>> 0;
       const color = Number(entry.color ?? 0) >>> 0;
-      mark.style.color = iconColor ? `#${iconColor.toString(16).padStart(6, "0")}` : "#b5bac1";
-      mark.insertAdjacentHTML("beforeend", ROLE_MARK_SVG);
-      icon.append(mark);
-      option.append(icon);
-      const label = node("span", "entity-label");
       const swatch = node("span", "entity-role-swatch");
       swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
-      label.append(swatch, node("span", "entity-name entity-dim", entry.label ?? value));
+      label.append(swatch, node("span", "entity-name entity-dim", entry.label ?? entry.name ?? ""));
       const count = node("span", "entity-count");
       count.insertAdjacentHTML("beforeend", PERSON_SVG);
       count.append(document.createTextNode(String(entry.members ?? 0)));
@@ -237,23 +275,12 @@ function renderSelect(component, path, options) {
       option.append(label);
       return;
     }
-    if (kind === "channel") {
-      const hash = node("span", "entity-channel");
-      hash.innerHTML = HASH_SVG;
-      icon.append(hash);
-      option.append(icon);
-      const label = node("span", "entity-label");
-      label.append(node("span", "entity-name entity-dim", entry.label ?? value));
-      option.append(label);
-      return;
-    }
-    const label = node("span", "entity-label");
-    label.append(node("span", "entity-name", entry.label ?? entry.name ?? value));
+    label.append(node("span", `entity-name${kind === "channel" ? " entity-dim" : ""}`, entry.label ?? entry.name ?? ""));
     option.append(label);
   };
   entries.forEach((entry) => {
     const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
-    if (selected.includes(value)) option.classList.add("is-selected"); if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
+    if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
     if (entry.kind && entry.kind !== "string") {
       decorateEntity(option, entry, entry.kind);
     } else {
@@ -505,7 +532,9 @@ function modalControl(component, path, labelText, options) {
       list.replaceChildren();
       (options.drafts.get(key) || []).forEach((file, index) => {
         const row = node("li", "upload-item");
-        row.append(node("span", "upload-file-icon", "▤"), node("span", "upload-file-name", file.name));
+        const ficon = node("span", "upload-file-icon");
+        ficon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
+        row.append(ficon, node("span", "upload-file-name", file.name));
         const remove = node("button", "upload-remove", "×");
         remove.type = "button";
         remove.setAttribute("aria-label", `Remove ${file.name}`);
@@ -523,7 +552,7 @@ function modalControl(component, path, labelText, options) {
     const prompt = node("span", "upload-prompt", "Drop files here or ");
     prompt.append(node("span", "upload-browse", "browse"));
     dropzone.append(
-      node("span", "upload-icon", "▣"),
+      (() => { const icon = node("span", "upload-icon"); icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M3 2h9l5 5v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 0-1z"/><path fill="#35353c" d="M12 2l5 5h-5z"/><path fill="#fff" stroke="#35353c" stroke-width="1.6" d="M17.5 10.8l4.2 4.2h-2.2v6h-4v-6h-2.2z"/></svg>'; return icon; })(),
       prompt,
       node("small", "upload-limit", `Upload up to ${component.max_values ?? 1} files under 500 MB.`),
       input,
@@ -563,13 +592,19 @@ export function renderModal(root, modal, options = {}) {
   heading.append(identity, title, close);
   dialog.append(heading);
   const body = node("div", "modal-body");
-  body.append(
-    node(
-      "p",
-      "modal-disclaimer",
-      `This form will be submitted to ${modal.application_name || "this application"}. Do not share passwords or other sensitive information.`,
-    ),
+  const disclaimer = node(
+    "p",
+    "modal-disclaimer",
+    `This form will be submitted to ${modal.application_name || "this application"}. Do not share passwords or other sensitive information.`,
   );
+  const warnIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  warnIcon.setAttribute("class", "modal-disclaimer-icon");
+  warnIcon.setAttribute("viewBox", "0 0 20 18");
+  warnIcon.innerHTML =
+    '<path d="M10 1.5 19 17H1Z" fill="#fcb529"/>' +
+    '<path fill="#48423c" d="M9.1 6.6h1.8v4.4H9.1zM9.1 12.6h1.8v1.8H9.1z"/>';
+  disclaimer.prepend(warnIcon);
+  body.append(disclaimer);
   const fields = node("div", "modal-fields"), controls = {};
   const render = (component, path, labelText = "") => {
     const type = Number(component?.type);
@@ -617,6 +652,28 @@ export function renderModal(root, modal, options = {}) {
   submit.type = "submit";
   actions.append(cancel, submit);
   dialog.append(actions);
+  const scrollbar = node("div", "modal-scrollbar");
+  scrollbar.setAttribute("aria-hidden", "true");
+  const scrollThumb = node("div", "modal-scrollbar-thumb");
+  scrollbar.append(scrollThumb);
+  dialog.append(scrollbar);
+  const updateScrollbar = () => {
+    const overflow = body.scrollHeight - body.clientHeight;
+    scrollbar.style.display = overflow > 1 ? "" : "none";
+    if (overflow <= 1) return;
+    scrollbar.style.top = `${body.offsetTop + 3}px`;
+    scrollbar.style.height = `${body.clientHeight - 6}px`;
+    const track = body.clientHeight - 6;
+    const thumbH = Math.max(24, (body.clientHeight * body.clientHeight) / body.scrollHeight);
+    scrollThumb.style.height = `${thumbH}px`;
+    scrollThumb.style.transform = `translateY(${(body.scrollTop / overflow) * (track - thumbH)}px)`;
+  };
+  body.addEventListener("scroll", updateScrollbar);
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(updateScrollbar).observe(body);
+    new ResizeObserver(updateScrollbar).observe(fields);
+  }
+  requestAnimationFrame(updateScrollbar);
   dialog.addEventListener("submit", (event) => {
     event.preventDefault();
     const values = {};

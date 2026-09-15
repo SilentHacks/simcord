@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import discord
 
+from ..backend.cdn import CDN_BASE
 from ..backend.errors import BackendError, SetupError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG
@@ -316,6 +317,15 @@ def _role_allowed(preview: Preview, page: _Page, role_id: int) -> bool:
     return guild is not None and role_id in guild.roles and role_id != guild.id
 
 
+def _user_avatar(page: _Page, user: Any) -> str | None:
+    if not getattr(user, "avatar", None):
+        return None
+    url = f"{CDN_BASE}/avatars/{user.id}/{user.avatar}.png"
+    return page.asset_id(
+        f"avatar:{user.id}", {"url": url, "filename": f"{user.avatar}.png", "content_type": "image/png"}
+    )
+
+
 def _walk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -355,6 +365,7 @@ def _candidates(
                                 if user.discriminator not in ("0", "")
                                 else user.name,
                                 "bot": user.bot,
+                                "avatar": _user_avatar(page, user),
                             }
                         )
         else:
@@ -372,6 +383,7 @@ def _candidates(
                                 if user.discriminator not in ("0", "")
                                 else user.name,
                                 "bot": user.bot,
+                                "avatar": _user_avatar(page, user),
                             }
                         )
             if kind in {"roles", "mentionables"}:
