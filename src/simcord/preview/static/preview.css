@@ -750,6 +750,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   padding: 12px 25px 0;
 }
 .modal-disclaimer {
+  font-weight: 500;
   display: flex;
   gap: 10px;
   margin: 0 0 16px;
@@ -762,7 +763,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   line-height: 18px;
 }
 .modal-fields { display: grid; gap: 25px; }
-.modal-fields:has(.preview-select) { padding-bottom: 10px; }
+.modal-fields:has(.preview-select) { padding-bottom: 16px; }
 .modal-field { display: grid; gap: 6px; }
 .modal-field:has(.modal-choice-group) { gap: 14px; }
 .modal-field .preview-select { width: 100%; }
@@ -874,7 +875,7 @@ textarea.modal-input { min-height: 90px; resize: none; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
-  padding: 28px 25px 26px;
+  padding: 24px 25px 24px;
   background: transparent;
 }
 .modal-actions button { width: 100%; min-height: 40px; }
