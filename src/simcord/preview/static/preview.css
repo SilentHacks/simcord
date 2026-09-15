@@ -488,8 +488,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   color: var(--discord-subtle);
   font-weight: 400;
 }
-.select-trigger:focus-visible,
-.preview-select.is-open .select-trigger { outline: 2px solid var(--discord-brand); outline-offset: 1px; }
+.select-trigger:focus-visible { outline: 2px solid var(--discord-brand); outline-offset: 1px; }
 .select-value { display: inline-flex; align-items: center; min-width: 0; }
 .select-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .select-chip {
