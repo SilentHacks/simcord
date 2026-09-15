@@ -68,6 +68,7 @@ function statusObject() {
     publishedRevision: state.publishedRevision,
     renderGeneration: state.renderGeneration,
     lastAction: state.lastAction,
+    pendingAction: state.pendingAction,
     ready: state.ready,
     complete: state.complete,
     calibration: state.calibration,

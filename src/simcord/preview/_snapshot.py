@@ -347,7 +347,15 @@ def _candidates(
                     if _user_allowed(preview, page, uid):
                         user = env.backend.get_user(uid)
                         entries.append(
-                            {"id": str(uid), "label": user.global_name or user.name, "kind": "user"}
+                            {
+                                "id": str(uid),
+                                "label": user.global_name or user.name,
+                                "kind": "user",
+                                "username": f"{user.name}#{user.discriminator}"
+                                if user.discriminator not in ("0", "")
+                                else user.name,
+                                "bot": user.bot,
+                            }
                         )
         else:
             guild = env.backend.guilds[channel.guild_id]
@@ -360,12 +368,26 @@ def _candidates(
                                 "id": str(uid),
                                 "label": member.nick or user.global_name or user.name,
                                 "kind": "user",
+                                "username": f"{user.name}#{user.discriminator}"
+                                if user.discriminator not in ("0", "")
+                                else user.name,
+                                "bot": user.bot,
                             }
                         )
             if kind in {"roles", "mentionables"}:
                 for rid, role in guild.roles.items():
                     if rid != guild.id:
-                        entries.append({"id": str(rid), "label": role.name, "kind": "role"})
+                        entries.append(
+                            {
+                                "id": str(rid),
+                                "label": role.name,
+                                "kind": "role",
+                                "color": int(getattr(role, "color", 0) or 0),
+                                "members": sum(
+                                    1 for m in guild.members.values() if rid in m.role_ids
+                                ),
+                            }
+                        )
             if kind == "channels":
                 allowed_types = component.get("channel_types")
                 for candidate in sorted(

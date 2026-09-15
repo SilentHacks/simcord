@@ -13,6 +13,31 @@ function node(tag, className, text) {
   if (text !== undefined && text !== null) element.textContent = String(text);
   return element;
 }
+const EMOJI_ART = {
+  "✨": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#FFAC33" d="M34.347 16.893l-8.899-3.294-3.323-10.891c-.128-.42-.517-.708-.956-.708-.439 0-.828.288-.956.708l-3.322 10.891-8.9 3.294c-.393.146-.653.519-.653.938 0 .418.26.793.653.938l8.895 3.293 3.324 11.223c.126.424.516.715.959.715.442 0 .833-.291.959-.716l3.324-11.223 8.896-3.293c.391-.144.652-.518.652-.937 0-.418-.261-.792-.653-.938z"/><path fill="#FFCC4D" d="M14.347 27.894l-2.314-.856-.9-3.3c-.118-.436-.513-.738-.964-.738-.451 0-.846.302-.965.737l-.9 3.3-2.313.856c-.393.145-.653.52-.653.938 0 .418.26.793.653.938l2.301.853.907 3.622c.112.444.511.756.97.756.459 0 .858-.312.97-.757l.907-3.622 2.301-.853c.393-.144.653-.519.653-.937 0-.418-.26-.793-.653-.937zM10.009 6.231l-2.364-.875-.876-2.365c-.145-.393-.519-.653-.938-.653-.418 0-.792.26-.938.653l-.875 2.365-2.365.875c-.393.146-.653.52-.653.938 0 .418.26.793.653.938l2.365.875.875 2.365c.146.393.52.653.938.653.418 0 .792-.26.938-.653l.875-2.365 2.365-.875c.393-.146.653-.52.653-.938 0-.418-.26-.792-.653-.938z"/></svg>',
+  "🌙": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#FFD983" d="M30.312.776C32 19 20 32 .776 30.312c8.199 7.717 21.091 7.588 29.107-.429C37.9 21.867 38.03 8.975 30.312.776z"/><path d="M30.705 15.915c-.453.454-.453 1.189 0 1.644.454.453 1.189.453 1.643 0 .454-.455.455-1.19 0-1.644-.453-.454-1.189-.454-1.643 0zm-16.022 14.38c-.682.681-.682 1.783 0 2.465.68.682 1.784.682 2.464 0 .681-.682.681-1.784 0-2.465-.68-.682-1.784-.682-2.464 0zm13.968-2.147c-1.135 1.135-2.974 1.135-4.108 0-1.135-1.135-1.135-2.975 0-4.107 1.135-1.136 2.974-1.136 4.108 0 1.135 1.133 1.135 2.973 0 4.107z" fill="#FFCC4D"/></svg>',
+  "🌲": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#662113" d="M22 33c0 2.209-1.791 3-4 3s-4-.791-4-3l1-9c0-2.209.791-2 3-2s3-.209 3 2l1 9z"/><path fill="#5C913B" d="M31.406 27.297C24.443 21.332 21.623 12.791 18 12.791c-3.623 0-6.443 8.541-13.405 14.506-2.926 2.507-1.532 3.957 2.479 3.667 3.576-.258 6.919-1.069 10.926-1.069s7.352.812 10.926 1.069c4.012.29 5.405-1.16 2.48-3.667z"/><path fill="#3E721D" d="M29.145 24.934C23.794 20.027 20.787 13 18 13c-2.785 0-5.793 7.027-11.144 11.934-4.252 3.898 5.572 4.773 11.144 0 5.569 4.773 15.396 3.898 11.145 0z"/><path fill="#5C913B" d="M29.145 20.959C23.794 16.375 20.787 9.811 18 9.811c-2.785 0-5.793 6.564-11.144 11.148-4.252 3.642 5.572 4.459 11.144 0 5.569 4.459 15.396 3.642 11.145 0z"/><path fill="#3E721D" d="M26.7 17.703C22.523 14.125 20.176 9 18 9c-2.174 0-4.523 5.125-8.7 8.703-3.319 2.844 4.35 3.482 8.7 0 4.349 3.482 12.02 2.844 8.7 0z"/><path fill="#5C913B" d="M26.7 14.726c-4.177-3.579-6.524-8.703-8.7-8.703-2.174 0-4.523 5.125-8.7 8.703-3.319 2.844 4.35 3.481 8.7 0 4.349 3.481 12.02 2.843 8.7 0z"/><path fill="#3E721D" d="M25.021 12.081C21.65 9.193 19.756 5.057 18 5.057c-1.755 0-3.65 4.136-7.021 7.024-2.679 2.295 3.511 2.809 7.021 0 3.51 2.81 9.701 2.295 7.021 0z"/><path fill="#5C913B" d="M25.021 9.839C21.65 6.951 19.756 2.815 18 2.815c-1.755 0-3.65 4.136-7.021 7.024-2.679 2.295 3.511 2.809 7.021 0 3.51 2.81 9.701 2.295 7.021 0z"/><path fill="#3E721D" d="M23.343 6.54C20.778 4.342 19.336 1.195 18 1.195c-1.335 0-2.778 3.148-5.343 5.345-2.038 1.747 2.671 2.138 5.343 0 2.671 2.138 7.382 1.746 5.343 0z"/><path fill="#5C913B" d="M23.343 5.345C20.778 3.148 19.336 0 18 0c-1.335 0-2.778 3.148-5.343 5.345-2.038 1.747 2.671 2.138 5.343 0 2.671 2.138 7.382 1.746 5.343 0z"/></svg>',
+  "🌊": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#269" d="M33.398 23.678c-7.562 4.875-20.062-.438-18.375-8.062 1.479-6.684 9.419-4.763 11.225-3.861 1.806.902.713-3.889-3.475-5.327C17.1 4.48 10.156 4.893 7.961 14.678c-1.5 6.687 1.438 16.062 12.719 16.187 11.281.125 12.718-7.187 12.718-7.187z"/><path fill="#55ACEE" d="M35.988 25.193c0-2.146-2.754-2.334-4-1.119-2.994 2.919-7.402 4.012-13.298 2.861-10.25-2-10.341-14.014-3.333-17.441 3.791-1.854 8.289.341 9.999 1.655 1.488 1.143 4.334 2.66 4.185.752C29.223 7.839 21.262-.86 10.595 4.64-.071 10.14 0 22.553 0 24.803v7.25C0 34.262 1.814 36 4.023 36h28C34.232 36 36 34.262 36 32.053c0 0-.004-6.854-.012-6.86z"/></svg>',
+};
+const EMOJI_PATTERN = new RegExp(`(${Object.keys(EMOJI_ART).join("|")})`, "g");
+const DISCORD_LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fff" d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.21.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561 19.9 19.9 0 005.9935 3.03.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286 19.8385 19.8385 0 006.0024-3.03.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/></svg>';
+function emojiImage(glyph, className = "emoji") {
+  const img = node("span", className);
+  img.innerHTML = EMOJI_ART[glyph] || "";
+  img.setAttribute("role", "img");
+  img.setAttribute("aria-label", glyph);
+  return img;
+}
+function appendEmojiText(parent, text) {
+  const value = String(text ?? "");
+  let offset = 0;
+  for (const match of value.matchAll(EMOJI_PATTERN)) {
+    if (match.index > offset) parent.append(document.createTextNode(value.slice(offset, match.index)));
+    parent.append(emojiImage(match[0]));
+    offset = match.index + match[0].length;
+  }
+  if (offset < value.length) parent.append(document.createTextNode(value.slice(offset)));
+}
 function keyFor(component, path) {
   if (typeof component.custom_id === "string") return component.custom_id;
   if (typeof component.id === "number" && component.id > 0) return `id-${component.id}`;
@@ -52,14 +77,14 @@ function appendTextWithMentions(parent, value, options) {
   const pattern = /<@!?([0-9]+)>|<@&([0-9]+)>/g;
   let offset = 0;
   for (const match of text.matchAll(pattern)) {
-    if (match.index > offset) parent.append(document.createTextNode(text.slice(offset, match.index)));
+    if (match.index > offset) appendEmojiText(parent, text.slice(offset, match.index));
     const id = match[1] || match[2];
     const name = names[id];
     if (name) parent.append(node("span", "mention", `@${name}`));
-    else parent.append(document.createTextNode(match[0]));
+    else appendEmojiText(parent, match[0]);
     offset = match.index + match[0].length;
   }
-  if (offset < text.length) parent.append(document.createTextNode(text.slice(offset)));
+  if (offset < text.length) appendEmojiText(parent, text.slice(offset));
 }
 
 function renderInlineTokens(parent, tokens, options) {
@@ -137,8 +162,11 @@ function renderSelect(component, path, options) {
   const trigger = node("button", "select-trigger");
   const valueDisplay = node("span", "select-value");
   const single = selected.length === 1 ? entries.find((entry) => String(entry.value ?? entry.id ?? "") === selected[0]) : null;
-  if (single?.emoji?.name) valueDisplay.append(node("span", "selected-emoji", single.emoji.name));
-  valueDisplay.append(node("span", "select-value-label", displaySelection(selected, entries, label)));
+  if (single?.emoji?.name) { const emoji = node("span", "selected-emoji"); appendEmojiText(emoji, single.emoji.name); valueDisplay.append(emoji); }
+  const valueLabel = node("span", "select-value-label");
+  if (selected.length === 1 && single) appendEmojiText(valueLabel, single.label ?? single.name ?? selected[0]);
+  else valueLabel.textContent = displaySelection(selected, entries, label);
+  valueDisplay.append(valueLabel);
   trigger.append(valueDisplay);
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
@@ -158,11 +186,63 @@ function renderSelect(component, path, options) {
       else if (event.key === "Escape") { event.preventDefault(); onCancel?.(key); }
     });
   }
+  const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.15 0-8 2.02-8 4.5V21h16v-2.5c0-2.48-3.85-4.5-8-4.5z"/></svg>';
+  const decorateEntity = (option, entry, kind) => {
+    option.classList.add("option-entity");
+    const icon = node("span", "entity-icon");
+    if (kind === "user") {
+      const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
+      avatar.innerHTML = DISCORD_LOGO_SVG;
+      icon.append(avatar, node("span", "entity-presence"));
+      option.append(icon);
+      const label = node("span", "entity-label");
+      label.append(node("span", "entity-name", entry.label ?? entry.name ?? ""));
+      if (entry.username) label.append(node("span", "entity-username", entry.username));
+      if (entry.bot) label.append(node("span", "entity-app-badge", "APP"));
+      option.append(label);
+      return;
+    }
+    if (kind === "role") {
+      const mark = node("span", "entity-role-mark");
+      const color = Number(entry.color ?? 0) >>> 0;
+      mark.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#b5bac1";
+      mark.insertAdjacentHTML("beforeend", PERSON_SVG);
+      icon.append(mark);
+      option.append(icon);
+      const label = node("span", "entity-label");
+      const swatch = node("span", "entity-role-swatch");
+      swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
+      label.append(swatch, node("span", "entity-name entity-dim", entry.label ?? value));
+      const count = node("span", "entity-count");
+      count.insertAdjacentHTML("beforeend", PERSON_SVG);
+      count.append(document.createTextNode(String(entry.members ?? 0)));
+      label.append(count);
+      option.append(label);
+      return;
+    }
+    if (kind === "channel") {
+      const hash = node("span", "entity-channel", "#");
+      icon.append(hash);
+      option.append(icon);
+      const label = node("span", "entity-label");
+      label.append(node("span", "entity-name entity-dim", entry.label ?? value));
+      option.append(label);
+      return;
+    }
+    const label = node("span", "entity-label");
+    label.append(node("span", "entity-name", entry.label ?? entry.name ?? value));
+    option.append(label);
+  };
   entries.forEach((entry) => {
     const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
     if (selected.includes(value)) option.classList.add("is-selected"); if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
-    if (entry.emoji?.name) option.append(node("span", "option-emoji", entry.emoji.name)); option.append(node("span", "option-label", entry.label ?? entry.name ?? value));
-    if (entry.description) option.append(node("small", "option-description", entry.description));
+    if (entry.kind && entry.kind !== "string") {
+      decorateEntity(option, entry, entry.kind);
+    } else {
+      if (entry.emoji?.name) { const emoji = node("span", "option-emoji"); appendEmojiText(emoji, entry.emoji.name); option.append(emoji); }
+      const optionLabel = node("span", "option-label"); appendEmojiText(optionLabel, entry.label ?? entry.name ?? value); option.append(optionLabel);
+      if (entry.description) option.append(node("small", "option-description", entry.description));
+    }
     option.addEventListener("click", () => { onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi) onCommit?.(key, [value]); }); list.append(option);
   });
   if (!entries.length) list.append(node("div", "select-empty", "No available options"));
@@ -172,13 +252,15 @@ function renderSelect(component, path, options) {
 
 function renderButton(component, path, options) {
   const style = Number(component.style || 1); const button = node("button", `component-button button-style-${style}`); button.type = "button"; button.disabled = component.disabled === true; button.dataset.controlKey = keyFor(component, path);
-  if (component.emoji && typeof component.emoji === "object") button.append(node("span", "button-emoji", component.emoji.name || ""));
-  if (component.label) button.append(node("span", "button-label", component.label));
+  if (component.emoji && typeof component.emoji === "object") { const emoji = node("span", "button-emoji"); appendEmojiText(emoji, component.emoji.name || ""); button.append(emoji); }
+  if (component.label) { const buttonLabel = node("span", "button-label"); appendEmojiText(buttonLabel, component.label); button.append(buttonLabel); }
   if (style === 5) {
     const href = safeLink(component.url);
     if (href) {
       const link = node("a", `component-button button-style-${style} link-button`);
-      link.append(...button.childNodes, node("span", "external-link-icon", "↗"));
+      const external = node("span", "external-link-icon");
+      external.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10 5V3H5.5A2.5 2.5 0 0 0 3 5.5v13A2.5 2.5 0 0 0 5.5 21h13a2.5 2.5 0 0 0 2.5-2.5V14h-2v4.5a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13a.5.5 0 0 1 .5-.5H10zm4-2v2h3.59l-6.3 6.29 1.42 1.42 6.29-6.3V10h2V3h-5z"/></svg>';
+      link.append(...button.childNodes, external);
       link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer";
       return link;
     }
@@ -212,7 +294,7 @@ function revealSpoiler(element, spoiler, options, label) {
   reveal.type = "button";
   reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
   reveal.addEventListener("click", () => { wrapper.replaceChildren(element); });
-  wrapper.append(reveal);
+  wrapper.append(element, reveal);
   return wrapper;
 }
 function downloadButton(file, options, label) {
@@ -269,7 +351,9 @@ function renderNode(component, path, options) {
     if (data.description) info.append(node("small", "file-description", data.description));
     const download = downloadButton(data, options, label);
     download.classList.add("file-download");
-    file.append(node("span", "file-icon"), info, download);
+    const icon = node("span", "file-icon");
+    icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 38" aria-hidden="true"><path fill="#d3d6fd" d="M6 0h13l11 11v24a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#393a41" d="M9 15h12v2H9zm0 5h12v2H9zm0 5h8v2H9z"/><path fill="#aab2f2" d="M19 0l11 11H22a3 3 0 0 1-3-3V0z"/></svg>';
+    file.append(icon, info, download);
     return revealSpoiler(file, component.spoiler, options, "file");
   }
   options.onDiagnostic?.({ code: "unsupported-component", severity: "warning", message: `Unsupported component type ${type} at ${path}`, complete: false }); return node("div", "component-unavailable", `Component type ${type} unavailable`);
@@ -283,7 +367,7 @@ function renderEmbed(embed, index, options) {
   for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
   if (embed.video) { card.append(node("div", "component-unavailable", "Embed video unavailable")); options.onDiagnostic?.({ code: "unsupported-embed-video", severity: "warning", message: `Embed ${index + 1} video playback is unavailable`, complete: false }); }
   if (embed.footer?.text || embed.timestamp) {
-    const timestamp = embed.timestamp ? new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" }).format(new Date(embed.timestamp)) : "";
+    const timestamp = embed.timestamp ? new Intl.DateTimeFormat(options.locale || "en-US", { timeZone: options.timezone || "UTC", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(embed.timestamp)) : "";
     const footer = node("footer", "embed-footer", [embed.footer?.text, timestamp].filter(Boolean).join(" • "));
     card.append(footer);
   }
@@ -294,26 +378,33 @@ function referencedAssets(components, embeds) {
 }
 export function renderMessage(root, message, options = {}) {
   const pendingMedia = options.pendingMedia || []; options.pendingMedia = pendingMedia; root.replaceChildren(); if (!message) return { pendingMedia };
+  const shortTime = (value) => new Intl.DateTimeFormat(options.locale || "en-US", { timeZone: options.timezone || "UTC", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
   if (!message.compact) {
     const header = node("header", "message-header");
     header.tabIndex = -1;
     header.dataset.controlKey = `message:${message.id}`;
-    header.append(node("span", "message-avatar", (message.author?.name || "?").slice(0, 1).toUpperCase()));
+    const avatar = node("span", "message-avatar");
+    avatar.innerHTML = DISCORD_LOGO_SVG;
+    header.append(avatar);
     header.append(node("strong", "message-author", message.author?.name || "Unknown author"));
     if (message.author?.bot) header.append(node("span", "message-app-badge", "APP"));
     if (message.timestamp) {
-      const time = node("time", "message-time", new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(message.timestamp)));
+      const time = node("time", "message-time", shortTime(message.timestamp));
       time.dateTime = message.timestamp;
       header.append(time);
     }
     if (message.edited_timestamp) header.append(node("span", "message-badge", "Edited"));
     if (message.ephemeral) header.append(node("span", "message-badge", "Ephemeral"));
     root.append(header);
+  } else if (message.timestamp) {
+    const gutter = node("time", "message-gutter-time", shortTime(message.timestamp));
+    gutter.dateTime = message.timestamp;
+    root.append(gutter);
   }
   const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
   if (!v2 && message.content) { const content = node("div", "message-content"); appendMarkdownOrText(content, message.content, message.content_tokens, options); root.append(content); }
   if (!v2 && (Number(message.flags) & 4) === 0) (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
-  if (message.components?.length) { const components = node("div", "message-components"); message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options))); root.append(components); }
+  if (message.components?.length) { const components = node("div", v2 ? "message-components components-v2" : "message-components"); message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options))); root.append(components); }
   const refs = referencedAssets(message.components, v2 ? [] : message.embeds); const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
   if (attachments.length) {
     const list = node("ul", "message-attachments");
@@ -332,17 +423,33 @@ export function renderMessage(root, message, options = {}) {
         if (attachment.size !== undefined) info.append(node("small", "attachment-size", `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`));
         footer.append(info);
         if (attachment.asset_id) {
-          const download = node("button", "attachment-download", "↓");
-          download.type = "button";
-          download.addEventListener("click", async () => {
+          const openAsset = async (download = false) => {
             const url = await options.loadAsset?.(attachment.asset_id);
             if (!url) return;
             const link = node("a");
             link.href = url;
-            link.download = attachment.filename || "attachment";
+            if (download) link.download = attachment.filename || "attachment";
+            else link.target = "_blank";
+            link.rel = "noopener noreferrer";
             link.click();
-          });
-          footer.append(download);
+          };
+          const ICONS = {
+            expand: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>',
+            open: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10 5V3H5.5A2.5 2.5 0 0 0 3 5.5v13A2.5 2.5 0 0 0 5.5 21h13a2.5 2.5 0 0 0 2.5-2.5V14h-2v4.5a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13a.5.5 0 0 1 .5-.5H10zm4-2v2h3.59l-6.3 6.29 1.42 1.42 6.29-6.3V10h2V3h-5z"/></svg>',
+            more: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>',
+          };
+          const actions = node("span", "attachment-actions");
+          const expand = node("button", "attachment-action");
+          expand.type = "button"; expand.setAttribute("aria-label", "Expand preview"); expand.innerHTML = ICONS.expand;
+          expand.addEventListener("click", () => item.classList.toggle("is-expanded"));
+          const open = node("button", "attachment-action");
+          open.type = "button"; open.setAttribute("aria-label", "Open attachment"); open.innerHTML = ICONS.open;
+          open.addEventListener("click", () => openAsset(false));
+          const more = node("button", "attachment-action");
+          more.type = "button"; more.setAttribute("aria-label", "Download attachment"); more.innerHTML = ICONS.more;
+          more.addEventListener("click", () => openAsset(true));
+          actions.append(expand, open, more);
+          footer.append(actions);
         }
         item.append(footer);
       }
@@ -430,7 +537,8 @@ export function renderModal(root, modal, options = {}) {
   identity.setAttribute("aria-hidden", "true");
   const title = node("h2", "modal-title", modal.title || "Dialog");
   title.id = "modal-title";
-  const close = node("button", "modal-close", "×");
+  const close = node("button", "modal-close");
+  close.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.4 4 12 10.4 5.6 4 4 5.6 10.4 12 4 18.4 5.6 20 12 13.6 18.4 20 20 18.4 13.6 12 20 5.6z"/></svg>';
   close.type = "button";
   close.setAttribute("aria-label", "Close modal");
   close.addEventListener("click", () => options.onCancel?.());
