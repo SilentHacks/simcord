@@ -896,3 +896,5 @@ textarea.modal-input { min-height: 90px; resize: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
 }
+
+.preview-app * { text-shadow: 0 0 0.5px currentColor; }
