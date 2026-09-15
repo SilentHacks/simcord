@@ -709,7 +709,8 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   background: #7d7e87;
   border-radius: 4px;
 }
-.modal-header { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; padding: 24px 25px 0; }
+.modal-header { display: flex; align-items: center; gap: 10px; padding: 24px 25px 12px; }
+.modal-dialog.is-overflowing .modal-header { padding-bottom: 23px; border-bottom: 1px solid #44454c; }
 .modal-identity {
   display: grid;
   flex: 0 0 24px;
@@ -746,7 +747,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .modal-body {
   min-height: 0;
   overflow: auto;
-  padding: 0 25px;
+  padding: 12px 25px 0;
 }
 .modal-disclaimer {
   display: flex;
@@ -763,13 +764,21 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .modal-fields { display: grid; gap: 25px; }
 .modal-fields:has(.preview-select) { padding-bottom: 10px; }
 .modal-field { display: grid; gap: 6px; }
+.modal-field:has(.modal-choice-group) { gap: 14px; }
 .modal-field .preview-select { width: 100%; }
 .modal-dialog .select-trigger {
-  min-height: 42px;
-  height: 42px;
+  height: auto;
+  min-height: 38px;
   background: #35353c;
   border-color: #484950;
 }
+.modal-dialog .select-trigger:has(.select-entity) { min-height: 42px; }
+.modal-dialog .select-entity .entity-icon,
+.modal-dialog .select-entity .entity-avatar { width: 24px; height: 24px; }
+.modal-dialog .select-entity .entity-avatar svg { width: 15px; height: 15px; }
+.modal-dialog .select-entity .entity-role-mark,
+.modal-dialog .select-entity .entity-role-mark svg { width: 24px; height: 24px; }
+.modal-dialog .select-trigger:has(.select-chip) { min-height: 48px; }
 .modal-fields .text-display { font-size: 16px; }
 .control-label { color: var(--discord-text); font-weight: 600; font-size: 16px; }
 .required-marker { color: #f23f42; }
@@ -788,16 +797,43 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .modal-input::placeholder { color: #a4a5ab; }
 .modal-input:focus-visible { outline: none; }
 textarea.modal-input { min-height: 90px; resize: none; }
-.modal-choice-group { display: grid; gap: 12px; }
+.modal-choice-group { display: grid; gap: 16px; }
 .modal-choice {
+  position: relative;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   column-gap: 8px;
   color: var(--discord-text);
 }
-.modal-choice input { grid-row: 1 / span 2; accent-color: var(--discord-brand); margin-top: 3px; }
-.choice-label { line-height: 20px; }
-.choice-description { grid-column: 2; color: var(--discord-subtle); line-height: 20px; }
+.modal-choice input {
+  grid-row: 1 / span 2;
+  appearance: none;
+  margin: 0;
+  width: 20px;
+  height: 20px;
+  background: #35353c;
+  border: 1px solid #6e6f76;
+}
+.modal-choice input[type="radio"] { border-radius: 50%; }
+.modal-choice input[type="checkbox"] { border-radius: 5px; }
+.modal-choice input[type="radio"]:checked {
+  border-color: transparent;
+  background: #5865f2 radial-gradient(circle at 50% 50%, #fff 0 3.5px, transparent 4.5px);
+}
+.modal-choice input[type="checkbox"]:checked { border-color: transparent; background: #5865f2; }
+.modal-choice-glyph {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  width: 20px;
+  height: 20px;
+  color: #fff;
+  pointer-events: none;
+}
+.modal-choice:has(input[type="checkbox"]:checked) .modal-choice-glyph { display: block; }
+.choice-label { line-height: 22px; font-weight: 500; }
+.choice-description { grid-column: 2; color: var(--discord-subtle); line-height: 22px; }
 .upload-dropzone {
   display: grid;
   gap: 8px;
