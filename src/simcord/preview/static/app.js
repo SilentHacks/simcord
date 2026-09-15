@@ -455,8 +455,20 @@ function renderSnapshot(snapshot, generation, force = false) {
   state.lastModalFingerprint = modalKey;
   renderDiagnostics();
   updateActionStatus();
+  fitOpenDropdowns();
   waitReady(generation, pendingMedia);
   requestAnimationFrame(restoreFocus);
+}
+
+function fitOpenDropdowns() {
+  for (const wrap of document.querySelectorAll(".preview-select.is-open")) {
+    const trigger = wrap.querySelector(".select-trigger");
+    const list = wrap.querySelector(".select-list");
+    if (!trigger || !list) continue;
+    wrap.classList.remove("opens-up");
+    const needed = Math.min(list.scrollHeight, 220) + 8;
+    if (window.innerHeight - trigger.getBoundingClientRect().bottom < needed) wrap.classList.add("opens-up");
+  }
 }
 
 async function installSnapshot(snapshot, force = false) {

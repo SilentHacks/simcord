@@ -13,3 +13,4 @@ class Role:
     hoist: bool = False
     managed: bool = False
     mentionable: bool = False
+    icon_color: int = 0

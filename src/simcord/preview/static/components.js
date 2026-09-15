@@ -162,11 +162,25 @@ function renderSelect(component, path, options) {
   const trigger = node("button", "select-trigger");
   const valueDisplay = node("span", "select-value");
   const single = selected.length === 1 ? entries.find((entry) => String(entry.value ?? entry.id ?? "") === selected[0]) : null;
-  if (single?.emoji?.name) { const emoji = node("span", "selected-emoji"); appendEmojiText(emoji, single.emoji.name); valueDisplay.append(emoji); }
-  const valueLabel = node("span", "select-value-label");
-  if (selected.length === 1 && single) appendEmojiText(valueLabel, single.label ?? single.name ?? selected[0]);
-  else valueLabel.textContent = displaySelection(selected, entries, label);
-  valueDisplay.append(valueLabel);
+  if (multi && selected.length > 0) {
+    const chips = node("span", "select-chips");
+    for (const value of selected) {
+      const entry = entries.find((item) => String(item.value ?? item.id ?? "") === value);
+      const chip = node("span", "select-chip");
+      if (entry?.emoji?.name) appendEmojiText(chip, entry.emoji.name);
+      const chipLabel = node("span", "select-chip-label");
+      appendEmojiText(chipLabel, entry ? (entry.label ?? entry.name ?? value) : value);
+      chip.append(chipLabel);
+      chips.append(chip);
+    }
+    valueDisplay.append(chips);
+  } else {
+    if (single?.emoji?.name) { const emoji = node("span", "selected-emoji"); appendEmojiText(emoji, single.emoji.name); valueDisplay.append(emoji); }
+    const valueLabel = node("span", "select-value-label");
+    if (selected.length === 1 && single) appendEmojiText(valueLabel, single.label ?? single.name ?? selected[0]);
+    else valueLabel.textContent = displaySelection(selected, entries, label);
+    valueDisplay.append(valueLabel);
+  }
   trigger.append(valueDisplay);
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
@@ -187,12 +201,14 @@ function renderSelect(component, path, options) {
     });
   }
   const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.15 0-8 2.02-8 4.5V21h16v-2.5c0-2.48-3.85-4.5-8-4.5z"/></svg>';
+  const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
+  const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4h-4.4l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
   const decorateEntity = (option, entry, kind) => {
     option.classList.add("option-entity");
     const icon = node("span", "entity-icon");
     if (kind === "user") {
       const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
-      avatar.innerHTML = DISCORD_LOGO_SVG;
+      if (entry.bot) avatar.innerHTML = DISCORD_LOGO_SVG;
       icon.append(avatar, node("span", "entity-presence"));
       option.append(icon);
       const label = node("span", "entity-label");
@@ -204,9 +220,10 @@ function renderSelect(component, path, options) {
     }
     if (kind === "role") {
       const mark = node("span", "entity-role-mark");
+      const iconColor = Number(entry.icon_color ?? entry.color ?? 0) >>> 0;
       const color = Number(entry.color ?? 0) >>> 0;
-      mark.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#b5bac1";
-      mark.insertAdjacentHTML("beforeend", PERSON_SVG);
+      mark.style.color = iconColor ? `#${iconColor.toString(16).padStart(6, "0")}` : "#b5bac1";
+      mark.insertAdjacentHTML("beforeend", ROLE_MARK_SVG);
       icon.append(mark);
       option.append(icon);
       const label = node("span", "entity-label");
@@ -221,7 +238,8 @@ function renderSelect(component, path, options) {
       return;
     }
     if (kind === "channel") {
-      const hash = node("span", "entity-channel", "#");
+      const hash = node("span", "entity-channel");
+      hash.innerHTML = HASH_SVG;
       icon.append(hash);
       option.append(icon);
       const label = node("span", "entity-label");
@@ -434,8 +452,8 @@ export function renderMessage(root, message, options = {}) {
             link.click();
           };
           const ICONS = {
-            expand: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>',
-            open: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10 5V3H5.5A2.5 2.5 0 0 0 3 5.5v13A2.5 2.5 0 0 0 5.5 21h13a2.5 2.5 0 0 0 2.5-2.5V14h-2v4.5a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13a.5.5 0 0 1 .5-.5H10zm4-2v2h3.59l-6.3 6.29 1.42 1.42 6.29-6.3V10h2V3h-5z"/></svg>',
+            expand: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M9.6 5.6 4.5 12l5.1 6.4M14.4 5.6 19.5 12l-5.1 6.4"/></svg>',
+            open: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M7 17 17 7M8.5 6.5h9v9"/></svg>',
             more: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>',
           };
           const actions = node("span", "attachment-actions");

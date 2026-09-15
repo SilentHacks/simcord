@@ -383,6 +383,7 @@ def _candidates(
                                 "label": role.name,
                                 "kind": "role",
                                 "color": int(getattr(role, "color", 0) or 0),
+                                "icon_color": int(getattr(role, "icon_color", 0) or 0),
                                 "members": sum(
                                     1 for m in guild.members.values() if rid in m.role_ids
                                 ),
