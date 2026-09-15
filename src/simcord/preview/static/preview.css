@@ -85,6 +85,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 
 .preview-app {
+  position: relative;
   --preview-width: 960px;
   --preview-height: 720px;
   width: min(100%, var(--preview-width));
@@ -238,7 +239,7 @@ img.embed-thumbnail { display: block; width: 80px; max-height: 80px; border-radi
 img.embed-image { display: block; width: 100%; max-height: 280px; border-radius: 8px; object-fit: contain; }
 .embed-footer { margin-top: 8px; }
 
-.component-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.component-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 6px; }
 .component-button, .button-primary, .button-secondary {
   display: inline-flex;
   align-items: center;
@@ -250,7 +251,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   font-weight: 500;
   line-height: 20px;
   white-space: nowrap;
-  padding: 2px 9px;
+  padding: 2px 12px;
   border-radius: 8px;
   text-decoration: none;
 }
@@ -299,13 +300,14 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   border-left: 4px solid var(--accent, #5865f2);
   border-radius: 8px;
   background: #393a41;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 .component-container .button-style-2 { background: #44454c; }
 .component-container .button-style-2:hover:not(:disabled) { background: #4c4d54; }
 .component-container .button-style-2:active:not(:disabled) { background: #4f5057; }
 .component-container + .component-section { margin-top: 0; }
 .component-separator { width: 100%; margin: 8px 0; border: 0; border-top: 1px solid #45474e; }
-.component-separator.spacing-2 { margin-top: 8px; margin-bottom: 8px; }
+.component-separator.spacing-2 { margin-top: 11px; margin-bottom: 11px; }
 .component-separator.no-divider { border-top-color: transparent; }
 
 .components-v2 { max-width: 600px; }
@@ -339,18 +341,17 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   overflow: hidden;
   min-height: 84px;
   border-radius: 8px;
+  background: #7d7e87;
 }
 .spoiler-media > img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: blur(44px) saturate(1.1);
-  transform: scale(1.25);
+  filter: blur(44px);
 }
 .spoiler-media.is-revealed > img {
   filter: none;
-  transform: none;
 }
 .spoiler-content { position: relative; }
 .spoiler-content > .component-container, .spoiler-content > .component-file { visibility: hidden; }
@@ -361,8 +362,11 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   place-items: center;
   min-height: 0;
   padding: 0;
-  background: #44454c;
+  background:
+    radial-gradient(ellipse at center, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0) 75%),
+    #5f6067;
   border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 .spoiler-cover {
   display: grid;
@@ -378,10 +382,13 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .spoiler-cover::before {
   content: "SPOILER";
   padding: 8px 12px;
-  color: #fff;
-  background: #111214;
-  border-radius: 14px;
-  font-size: 12px;
+  color: #e3e5e8;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 20px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.5px;
 }
 .spoiler-media > .spoiler-cover {
   position: absolute;
@@ -427,13 +434,13 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   padding: 0;
   overflow: hidden;
 }
-.component-file { flex-wrap: nowrap; }
+.component-file { flex-wrap: nowrap; padding: 16px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); }
 .file-icon {
   flex: 0 0 30px;
   width: 30px;
-  height: 38px;
+  height: 40px;
 }
-.file-icon svg { display: block; width: 30px; height: 38px; }
+.file-icon svg { display: block; width: 30px; height: 40px; }
 .file-info, .attachment-info {
   display: grid;
   flex: 1 1 auto;

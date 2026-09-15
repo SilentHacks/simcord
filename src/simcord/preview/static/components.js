@@ -370,7 +370,7 @@ function renderNode(component, path, options) {
     const download = downloadButton(data, options, label);
     download.classList.add("file-download");
     const icon = node("span", "file-icon");
-    icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 38" aria-hidden="true"><path fill="#d3d6fd" d="M6 0h13l11 11v24a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#393a41" d="M9 15h12v2H9zm0 5h12v2H9zm0 5h8v2H9z"/><path fill="#aab2f2" d="M19 0l11 11H22a3 3 0 0 1-3-3V0z"/></svg>';
+    icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
     file.append(icon, info, download);
     return revealSpoiler(file, component.spoiler, options, "file");
   }
