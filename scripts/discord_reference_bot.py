@@ -459,6 +459,11 @@ def create_bot(guild_id: int, sku_id: int | None = None) -> commands.Bot:
     @bot.tree.command(name="visual_references", description="Post the labelled component reference gallery")
     @app_commands.guild_only()
     async def visual_references(interaction: discord.Interaction) -> None:
+        if interaction.guild_id != guild_id:
+            await interaction.response.send_message(
+                "This command is restricted to the configured reference guild.", ephemeral=True
+            )
+            return
         if interaction.channel is None:
             await interaction.response.send_message(
                 "Run this command in a server text channel.", ephemeral=True

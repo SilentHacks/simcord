@@ -88,8 +88,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
-      - run: uv sync --extra screenshot
-      - run: uv run pytest tests/integration/test_preview.py -q
+      - run: uv sync --extra screenshot --extra pytest
+      - run: uv run python -m playwright install --with-deps chromium
+      - run: uv run pytest tests/integration/test_preview*.py -q
       - run: uv build
       - run: uv run python scripts/check_package.py dist
       - name: Install the wheel outside the checkout
