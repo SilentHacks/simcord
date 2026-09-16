@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import discord
 
@@ -31,6 +31,8 @@ _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.Context
 # Cap on virtual callbacks drained per settle turn so self-rescheduling
 # zero-delay chains cannot starve the settlement deadline check.
 _DUE_CALLBACK_BATCH = 64
+
+_C = TypeVar("_C", bound=Callable[..., Any])
 
 
 @dataclass(slots=True)
@@ -150,33 +152,26 @@ class Env:
         finally:
             _BOT_SCOPE.reset(token)
 
-    def _register_pre_shutdown(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
-        """Register Preview-owned cleanup that runs before shutdown takes the guard."""
-        if not callable(cleanup):
-            raise SetupError("pre-shutdown cleanup must be callable")
-        self._pre_shutdown_hooks.append(cleanup)
+    def _register(self, registry: list[_C], item: _C, *, kind: str) -> Callable[[], None]:
+        if not callable(item):
+            raise SetupError(f"{kind} must be callable")
+        registry.append(item)
 
         def unregister() -> None:
             try:
-                self._pre_shutdown_hooks.remove(cleanup)
+                registry.remove(item)
             except ValueError:
                 pass
 
         return unregister
+
+    def _register_pre_shutdown(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
+        """Register Preview-owned cleanup that runs before shutdown takes the guard."""
+        return self._register(self._pre_shutdown_hooks, cleanup, kind="pre-shutdown cleanup")
 
     def _register_dispatch_observer(self, observer: Callable[[Any], Any]) -> Callable[[], None]:
         """Observe backend interactions immediately before gateway emission."""
-        if not callable(observer):
-            raise SetupError("dispatch observer must be callable")
-        self._dispatch_observers.append(observer)
-
-        def unregister() -> None:
-            try:
-                self._dispatch_observers.remove(observer)
-            except ValueError:
-                pass
-
-        return unregister
+        return self._register(self._dispatch_observers, observer, kind="dispatch observer")
 
     def _notify_dispatch_observers(self, interaction: Any) -> None:
         for observer in tuple(self._dispatch_observers):
