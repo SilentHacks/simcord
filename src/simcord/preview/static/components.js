@@ -248,7 +248,7 @@ function renderSelect(component, path, options) {
       let index = Math.max(0, optionNodes.findIndex((item) => item.dataset.value === String(dropdown.highlight)));
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); index = Math.max(0, Math.min(optionNodes.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); onOpen?.(key, selected, multi, minimum, maximum, optionNodes[index]?.dataset.value); }
       else if (event.key === "Home" || event.key === "End") { event.preventDefault(); index = event.key === "Home" ? 0 : optionNodes.length - 1; onOpen?.(key, selected, multi, minimum, maximum, optionNodes[index]?.dataset.value); }
-      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const value = optionNodes[index]?.dataset.value; if (value !== undefined) onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi && value !== undefined) onCommit?.(key, [value]); }
+      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const node = optionNodes[index]; const value = node?.dataset.value; if (value !== undefined && !node?.classList.contains("is-disabled")) onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi && value !== undefined) onCommit?.(key, [value]); }
       else if (event.key === "Escape") { event.preventDefault(); onCancel?.(key); }
     });
   }
@@ -278,8 +278,11 @@ function renderSelect(component, path, options) {
     label.append(node("span", `entity-name${kind === "channel" ? " entity-dim" : ""}`, entry.label ?? entry.name ?? ""));
     option.append(label);
   };
+  const atMax = multi && selected.length >= maximum;
   entries.forEach((entry) => {
     const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
+    const disabled = atMax && !selected.includes(value);
+    if (disabled) { option.classList.add("is-disabled"); option.setAttribute("aria-disabled", "true"); }
     if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
     if (entry.kind && entry.kind !== "string") {
       decorateEntity(option, entry, entry.kind);
@@ -288,7 +291,7 @@ function renderSelect(component, path, options) {
       const optionLabel = node("span", "option-label"); appendEmojiText(optionLabel, entry.label ?? entry.name ?? value); option.append(optionLabel);
       if (entry.description) option.append(node("small", "option-description", entry.description));
     }
-    option.addEventListener("click", () => { onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi) onCommit?.(key, [value]); }); list.append(option);
+    option.addEventListener("click", () => { if (disabled) return; onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi) onCommit?.(key, [value]); }); list.append(option);
   });
   if (!entries.length) list.append(node("div", "select-empty", "No available options"));
   wrap.append(list);

@@ -570,6 +570,8 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   cursor: pointer;
 }
 .select-option:hover, .select-option.is-highlighted { background: #474852; }
+.select-option.is-disabled { opacity: 0.32; cursor: default; }
+.select-option.is-disabled:hover, .select-option.is-disabled.is-highlighted { background: transparent; }
 .select-option.is-selected { color: #fff; background: #4e5058; }
 /* decorated entity options */
 .select-option.option-entity {
