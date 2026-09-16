@@ -6,6 +6,7 @@ const TYPE = Object.freeze({
 });
 const SELECT_TYPES = new Set([TYPE.STRING_SELECT, TYPE.USER_SELECT, TYPE.ROLE_SELECT, TYPE.MENTIONABLE_SELECT, TYPE.CHANNEL_SELECT]);
 const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADIO_GROUP, TYPE.CHECKBOX_GROUP, TYPE.CHECKBOX, TYPE.FILE_UPLOAD]);
+const FILE_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -13,30 +14,8 @@ function node(tag, className, text) {
   if (text !== undefined && text !== null) element.textContent = String(text);
   return element;
 }
-const EMOJI_ART = {
-  "✨": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#FFAC33" d="M34.347 16.893l-8.899-3.294-3.323-10.891c-.128-.42-.517-.708-.956-.708-.439 0-.828.288-.956.708l-3.322 10.891-8.9 3.294c-.393.146-.653.519-.653.938 0 .418.26.793.653.938l8.895 3.293 3.324 11.223c.126.424.516.715.959.715.442 0 .833-.291.959-.716l3.324-11.223 8.896-3.293c.391-.144.652-.518.652-.937 0-.418-.261-.792-.653-.938z"/><path fill="#FFCC4D" d="M14.347 27.894l-2.314-.856-.9-3.3c-.118-.436-.513-.738-.964-.738-.451 0-.846.302-.965.737l-.9 3.3-2.313.856c-.393.145-.653.52-.653.938 0 .418.26.793.653.938l2.301.853.907 3.622c.112.444.511.756.97.756.459 0 .858-.312.97-.757l.907-3.622 2.301-.853c.393-.144.653-.519.653-.937 0-.418-.26-.793-.653-.937zM10.009 6.231l-2.364-.875-.876-2.365c-.145-.393-.519-.653-.938-.653-.418 0-.792.26-.938.653l-.875 2.365-2.365.875c-.393.146-.653.52-.653.938 0 .418.26.793.653.938l2.365.875.875 2.365c.146.393.52.653.938.653.418 0 .792-.26.938-.653l.875-2.365 2.365-.875c.393-.146.653-.52.653-.938 0-.418-.26-.792-.653-.938z"/></svg>',
-  "🌙": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#FFD983" d="M30.312.776C32 19 20 32 .776 30.312c8.199 7.717 21.091 7.588 29.107-.429C37.9 21.867 38.03 8.975 30.312.776z"/><path d="M30.705 15.915c-.453.454-.453 1.189 0 1.644.454.453 1.189.453 1.643 0 .454-.455.455-1.19 0-1.644-.453-.454-1.189-.454-1.643 0zm-16.022 14.38c-.682.681-.682 1.783 0 2.465.68.682 1.784.682 2.464 0 .681-.682.681-1.784 0-2.465-.68-.682-1.784-.682-2.464 0zm13.968-2.147c-1.135 1.135-2.974 1.135-4.108 0-1.135-1.135-1.135-2.975 0-4.107 1.135-1.136 2.974-1.136 4.108 0 1.135 1.133 1.135 2.973 0 4.107z" fill="#FFCC4D"/></svg>',
-  "🌲": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#662113" d="M22 33c0 2.209-1.791 3-4 3s-4-.791-4-3l1-9c0-2.209.791-2 3-2s3-.209 3 2l1 9z"/><path fill="#5C913B" d="M31.406 27.297C24.443 21.332 21.623 12.791 18 12.791c-3.623 0-6.443 8.541-13.405 14.506-2.926 2.507-1.532 3.957 2.479 3.667 3.576-.258 6.919-1.069 10.926-1.069s7.352.812 10.926 1.069c4.012.29 5.405-1.16 2.48-3.667z"/><path fill="#3E721D" d="M29.145 24.934C23.794 20.027 20.787 13 18 13c-2.785 0-5.793 7.027-11.144 11.934-4.252 3.898 5.572 4.773 11.144 0 5.569 4.773 15.396 3.898 11.145 0z"/><path fill="#5C913B" d="M29.145 20.959C23.794 16.375 20.787 9.811 18 9.811c-2.785 0-5.793 6.564-11.144 11.148-4.252 3.642 5.572 4.459 11.144 0 5.569 4.459 15.396 3.642 11.145 0z"/><path fill="#3E721D" d="M26.7 17.703C22.523 14.125 20.176 9 18 9c-2.174 0-4.523 5.125-8.7 8.703-3.319 2.844 4.35 3.482 8.7 0 4.349 3.482 12.02 2.844 8.7 0z"/><path fill="#5C913B" d="M26.7 14.726c-4.177-3.579-6.524-8.703-8.7-8.703-2.174 0-4.523 5.125-8.7 8.703-3.319 2.844 4.35 3.481 8.7 0 4.349 3.481 12.02 2.843 8.7 0z"/><path fill="#3E721D" d="M25.021 12.081C21.65 9.193 19.756 5.057 18 5.057c-1.755 0-3.65 4.136-7.021 7.024-2.679 2.295 3.511 2.809 7.021 0 3.51 2.81 9.701 2.295 7.021 0z"/><path fill="#5C913B" d="M25.021 9.839C21.65 6.951 19.756 2.815 18 2.815c-1.755 0-3.65 4.136-7.021 7.024-2.679 2.295 3.511 2.809 7.021 0 3.51 2.81 9.701 2.295 7.021 0z"/><path fill="#3E721D" d="M23.343 6.54C20.778 4.342 19.336 1.195 18 1.195c-1.335 0-2.778 3.148-5.343 5.345-2.038 1.747 2.671 2.138 5.343 0 2.671 2.138 7.382 1.746 5.343 0z"/><path fill="#5C913B" d="M23.343 5.345C20.778 3.148 19.336 0 18 0c-1.335 0-2.778 3.148-5.343 5.345-2.038 1.747 2.671 2.138 5.343 0 2.671 2.138 7.382 1.746 5.343 0z"/></svg>',
-  "🌊": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#269" d="M33.398 23.678c-7.562 4.875-20.062-.438-18.375-8.062 1.479-6.684 9.419-4.763 11.225-3.861 1.806.902.713-3.889-3.475-5.327C17.1 4.48 10.156 4.893 7.961 14.678c-1.5 6.687 1.438 16.062 12.719 16.187 11.281.125 12.718-7.187 12.718-7.187z"/><path fill="#55ACEE" d="M35.988 25.193c0-2.146-2.754-2.334-4-1.119-2.994 2.919-7.402 4.012-13.298 2.861-10.25-2-10.341-14.014-3.333-17.441 3.791-1.854 8.289.341 9.999 1.655 1.488 1.143 4.334 2.66 4.185.752C29.223 7.839 21.262-.86 10.595 4.64-.071 10.14 0 22.553 0 24.803v7.25C0 34.262 1.814 36 4.023 36h28C34.232 36 36 34.262 36 32.053c0 0-.004-6.854-.012-6.86z"/></svg>',
-};
-const EMOJI_PATTERN = new RegExp(`(${Object.keys(EMOJI_ART).join("|")})`, "g");
-const DISCORD_LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fff" d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.21.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561 19.9 19.9 0 005.9935 3.03.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286 19.8385 19.8385 0 006.0024-3.03.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/></svg>';
-function emojiImage(glyph, className = "emoji") {
-  const img = node("span", className);
-  img.innerHTML = EMOJI_ART[glyph] || "";
-  img.setAttribute("role", "img");
-  img.setAttribute("aria-label", glyph);
-  return img;
-}
 function appendEmojiText(parent, text) {
-  const value = String(text ?? "");
-  let offset = 0;
-  for (const match of value.matchAll(EMOJI_PATTERN)) {
-    if (match.index > offset) parent.append(document.createTextNode(value.slice(offset, match.index)));
-    parent.append(emojiImage(match[0]));
-    offset = match.index + match[0].length;
-  }
-  if (offset < value.length) parent.append(document.createTextNode(value.slice(offset)));
+  parent.append(document.createTextNode(String(text ?? "")));
 }
 function keyFor(component, path) {
   if (typeof component.custom_id === "string") return component.custom_id;
@@ -57,7 +36,9 @@ function appendLabel(parent, text, required = false) {
   return label;
 }
 function optionDefaults(component, options) {
-  if (Array.isArray(component.default_values)) return component.default_values.map(String);
+  if (Array.isArray(component.default_values)) {
+    return component.default_values.map((entry) => String(entry && typeof entry === "object" ? entry.id : entry));
+  }
   return options.filter((item) => item && item.default === true).map((item) => String(item.value ?? item.id));
 }
 function optionEntries(component, candidates) {
@@ -149,7 +130,7 @@ function appendMarkdownOrText(parent, value, tokens, options) {
 }
 
 function renderSelect(component, path, options) {
-  const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel } = options;
+  const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel, onNavigate, onClear } = options;
   const key = `${scope}:${keyFor(component, path)}`;
   const entries = optionEntries(component, candidates?.[component.custom_id]);
   const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.15 0-8 2.02-8 4.5V21h16v-2.5c0-2.48-3.85-4.5-8-4.5z"/></svg>';
@@ -159,8 +140,7 @@ function renderSelect(component, path, options) {
     const icon = node("span", "entity-icon");
     if (kind === "user") {
       const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
-      if (entry.bot) avatar.innerHTML = DISCORD_LOGO_SVG;
-      else if (entry.avatar) {
+      if (entry.avatar) {
         const img = node("img", "entity-avatar-img");
         img.alt = "";
         options.loadAsset?.(entry.avatar).then((url) => { img.src = url; }).catch(() => {});
@@ -231,7 +211,7 @@ function renderSelect(component, path, options) {
     clear.setAttribute("role", "button");
     clear.setAttribute("aria-label", "Clear selection");
     clear.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.4 4 12 10.4 5.6 4 4 5.6 10.4 12 4 18.4 5.6 20 12 13.6 18.4 20 20 18.4 13.6 12 20 5.6 18.4 4Z"/></svg>';
-    clear.addEventListener("click", (event) => { event.stopPropagation(); onDraft?.(key, [], multi, minimum, maximum, selected); onCommit?.(key, []); });
+    clear.addEventListener("click", (event) => { event.stopPropagation(); onClear?.(key); });
     trigger.append(clear);
   }
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
@@ -242,12 +222,13 @@ function renderSelect(component, path, options) {
   wrap.append(trigger);
   const list = node("div", "select-list"); list.id = `listbox-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; list.hidden = !isOpen;
   list.setAttribute("role", "listbox"); list.setAttribute("aria-multiselectable", String(multi)); list.tabIndex = isOpen ? 0 : -1;
+  list.dataset.controlKey = `${key}:list`;
   if (isOpen) {
     list.addEventListener("keydown", (event) => {
       const optionNodes = [...list.querySelectorAll('[role="option"]')];
       let index = Math.max(0, optionNodes.findIndex((item) => item.dataset.value === String(dropdown.highlight)));
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); index = Math.max(0, Math.min(optionNodes.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); onOpen?.(key, selected, multi, minimum, maximum, optionNodes[index]?.dataset.value); }
-      else if (event.key === "Home" || event.key === "End") { event.preventDefault(); index = event.key === "Home" ? 0 : optionNodes.length - 1; onOpen?.(key, selected, multi, minimum, maximum, optionNodes[index]?.dataset.value); }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); index = Math.max(0, Math.min(optionNodes.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); onNavigate?.(key, optionNodes[index]?.dataset.value); }
+      else if (event.key === "Home" || event.key === "End") { event.preventDefault(); index = event.key === "Home" ? 0 : optionNodes.length - 1; onNavigate?.(key, optionNodes[index]?.dataset.value); }
       else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const node = optionNodes[index]; const value = node?.dataset.value; if (value !== undefined && !node?.classList.contains("is-disabled")) onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi && value !== undefined) onCommit?.(key, [value]); }
       else if (event.key === "Escape") { event.preventDefault(); onCancel?.(key); }
     });
@@ -309,7 +290,13 @@ function renderButton(component, path, options) {
       const external = node("span", "external-link-icon");
       external.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10 5V3H5.5A2.5 2.5 0 0 0 3 5.5v13A2.5 2.5 0 0 0 5.5 21h13a2.5 2.5 0 0 0 2.5-2.5V14h-2v4.5a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13a.5.5 0 0 1 .5-.5H10zm4-2v2h3.59l-6.3 6.29 1.42 1.42 6.29-6.3V10h2V3h-5z"/></svg>';
       link.append(...button.childNodes, external);
-      link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer";
+      if (component.disabled === true) {
+        link.classList.add("is-disabled");
+        link.setAttribute("aria-disabled", "true");
+        link.tabIndex = -1;
+      } else {
+        link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer";
+      }
       return link;
     }
     button.disabled = true; button.append(node("span", "button-unavailable", "Unavailable link")); options.onDiagnostic?.({ code: "invalid-link", severity: "warning", message: "Link button has no safe URL", complete: false });
@@ -341,7 +328,7 @@ function revealSpoiler(element, spoiler, options, label) {
   const reveal = node("button", "spoiler-cover");
   reveal.type = "button";
   reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
-  reveal.addEventListener("click", () => { wrapper.replaceChildren(element); });
+  reveal.addEventListener("click", () => { wrapper.classList.add("is-revealed"); reveal.remove(); });
   wrapper.append(element, reveal);
   return wrapper;
 }
@@ -400,7 +387,7 @@ function renderNode(component, path, options) {
     const download = downloadButton(data, options, label);
     download.classList.add("file-download");
     const icon = node("span", "file-icon");
-    icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
+    icon.innerHTML = FILE_ICON_SVG;
     file.append(icon, info, download);
     return revealSpoiler(file, component.spoiler, options, "file");
   }
@@ -432,7 +419,6 @@ export function renderMessage(root, message, options = {}) {
     header.tabIndex = -1;
     header.dataset.controlKey = `message:${message.id}`;
     const avatar = node("span", "message-avatar");
-    avatar.innerHTML = DISCORD_LOGO_SVG;
     header.append(avatar);
     header.append(node("strong", "message-author", message.author?.name || "Unknown author"));
     if (message.author?.bot) header.append(node("span", "message-app-badge", "APP"));
@@ -465,21 +451,31 @@ export function renderMessage(root, message, options = {}) {
         pendingMedia.push(...result.pending);
       } else {
         if (attachment.preview) item.append(node("pre", "attachment-preview", attachment.preview));
+        const available = Boolean(attachment.asset_id) && attachment.available !== false
+          && options.assets?.[attachment.asset_id]?.available !== false && options.loadAsset;
+        if (!available) {
+          item.append(node("div", "media-unavailable", `${attachment.filename || "Attachment"} unavailable`));
+          options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${attachment.filename || "Attachment"} is unavailable offline`, complete: false });
+        }
         const footer = node("div", "attachment-footer");
         const info = node("span", "attachment-info");
         info.append(node("span", "attachment-name", attachment.filename || "attachment"));
         if (attachment.size !== undefined) info.append(node("small", "attachment-size", `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`));
         footer.append(info);
-        if (attachment.asset_id) {
+        if (available) {
           const openAsset = async (download = false) => {
-            const url = await options.loadAsset?.(attachment.asset_id);
-            if (!url) return;
-            const link = node("a");
-            link.href = url;
-            if (download) link.download = attachment.filename || "attachment";
-            else link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            link.click();
+            try {
+              const url = await options.loadAsset?.(attachment.asset_id);
+              if (!url) return;
+              const link = node("a");
+              link.href = url;
+              if (download) link.download = attachment.filename || "attachment";
+              else link.target = "_blank";
+              link.rel = "noopener noreferrer";
+              link.click();
+            } catch (error) {
+              options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${attachment.filename || "Attachment"} is unavailable offline`, detail: String(error), complete: false });
+            }
           };
           const ICONS = {
             expand: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M9.6 5.6 4.5 12l5.1 6.4M14.4 5.6 19.5 12l-5.1 6.4"/></svg>',
@@ -519,17 +515,20 @@ function checkboxGlyph(isCheckbox) {
 }
 
 function modalControl(component, path, labelText, options) {
-  const customId = String(component.custom_id || path), key = `modal:${customId}`, field = node("div", "modal-field"); field.dataset.controlKey = key;
+  const customId = String(component.custom_id || path), key = `modal:${options.modalHandle ?? ""}:${customId}`, field = node("div", "modal-field"); field.dataset.controlKey = key;
   const type = Number(component.type);
   const required = component.required === true || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type)));
+  // Optional controls the user never touched submit nothing unless a real
+  // default/effective value exists; touched controls always submit their value.
+  const include = (hasDefault) => () => component.required !== false || options.isTouched?.(key) === true || hasDefault;
   if (labelText && type !== TYPE.CHECKBOX) {
     const label = appendLabel(field, labelText, required);
     if (options.validationError?.includes(customId)) label.append(node("em", "field-error", " - This field is required."));
   }
-  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? input.value) }; }
-  if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[customId]); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, entries)); const select = renderSelect(component, path, { ...options, scope: "modal", onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value }; }
-  if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, entries)); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); return { field, get: () => options.drafts.get(key) }; }
-  if (type === TYPE.CHECKBOX) { if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); const choice = node("label", "modal-choice"), input = node("input"); input.type = "checkbox"; input.name = customId; input.checked = options.drafts.get(key) === true; input.addEventListener("change", () => options.onDraft?.(key, input.checked)); choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId)); field.append(choice); return { field, get: () => options.drafts.get(key) === true }; }
+  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? input.value), include: include(String(component.value ?? component.default ?? "") !== "") }; }
+  if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[customId]); const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const select = renderSelect(component, path, { ...options, scope: `modal:${options.modalHandle ?? ""}`, onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value, include: include(defaults.length > 0) }; }
+  if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : defaults.length > 0; return { field, get: () => options.drafts.get(key), include: include(hasDefault) }; }
+  if (type === TYPE.CHECKBOX) { if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); const choice = node("label", "modal-choice"), input = node("input"); input.type = "checkbox"; input.name = customId; input.checked = options.drafts.get(key) === true; input.addEventListener("change", () => options.onDraft?.(key, input.checked)); choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId)); field.append(choice); return { field, get: () => options.drafts.get(key) === true, include: include(component.default === true) }; }
   if (type === TYPE.FILE_UPLOAD) {
     if (!options.drafts.has(key)) options.drafts.set(key, []);
     const input = node("input", "upload-input");
@@ -543,7 +542,7 @@ function modalControl(component, path, labelText, options) {
       (options.drafts.get(key) || []).forEach((file, index) => {
         const row = node("li", "upload-item");
         const ficon = node("span", "upload-file-icon");
-        ficon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
+        ficon.innerHTML = FILE_ICON_SVG;
         row.append(ficon, node("span", "upload-file-name", file.name));
         const remove = node("button", "upload-remove", "×");
         remove.type = "button";
@@ -564,7 +563,7 @@ function modalControl(component, path, labelText, options) {
     dropzone.append(
       (() => { const icon = node("span", "upload-icon"); icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M3 2h9l5 5v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 0-1z"/><path fill="#35353c" d="M12 2l5 5h-5z"/><path fill="#fff" stroke="#35353c" stroke-width="1.6" d="M17.5 10.8l4.2 4.2h-2.2v6h-4v-6h-2.2z"/></svg>'; return icon; })(),
       prompt,
-      node("small", "upload-limit", `Upload up to ${component.max_values ?? 1} files under 500 MB.`),
+      node("small", "upload-limit", `Upload up to ${component.max_values ?? 1} files under 10 MiB each.`),
       input,
       list,
     );
@@ -576,9 +575,9 @@ function modalControl(component, path, labelText, options) {
     });
     field.append(dropzone);
     redraw();
-    return { field, get: () => options.drafts.get(key) || [] };
+    return { field, get: () => options.drafts.get(key) || [], include: include(false) };
   }
-  options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false }); return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "" };
+  options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false }); return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "", include: include(false) };
 }
 export function renderModal(root, modal, options = {}) {
   root.replaceChildren();
@@ -631,7 +630,7 @@ export function renderModal(root, modal, options = {}) {
         rendered.field.insertBefore(description, rendered.field.children[1] || null);
       }
       fields.append(rendered.field);
-      controls[String(component.component?.custom_id || path)] = rendered.get;
+      controls[String(component.component?.custom_id || path)] = rendered;
       return;
     }
     if (type === TYPE.ROW) {
@@ -640,7 +639,7 @@ export function renderModal(root, modal, options = {}) {
         if (!MODAL_CONTROL_TYPES.has(Number(child?.type))) return render(child, childPath, labelText);
         const rendered = modalControl(child, childPath, child.label || labelText || "", options);
         fields.append(rendered.field);
-        controls[String(child.custom_id || childPath)] = rendered.get;
+        controls[String(child.custom_id || childPath)] = rendered;
       });
       return;
     }
@@ -688,11 +687,13 @@ export function renderModal(root, modal, options = {}) {
   dialog.addEventListener("submit", (event) => {
     event.preventDefault();
     const values = {};
-    Object.entries(controls).forEach(([id, get]) => { values[id] = get(); });
+    Object.entries(controls).forEach(([id, control]) => {
+      if (control.include && !control.include()) return;
+      values[id] = control.get();
+    });
     options.onSubmit?.(values);
   });
   backdrop.append(dialog);
   root.append(backdrop);
   return { controls, focus: dialog.querySelector("input, textarea, button") };
 }
-export function getSelectTypes() { return SELECT_TYPES; }

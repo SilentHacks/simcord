@@ -38,7 +38,7 @@ const state = {
   calibration: { status: "uncalibrated", reason: "No legitimate Discord reference fixture is bundled for this slice" },
   drafts: new Map(),
   modalDrafts: new Map(),
-  modalControls: {},
+  modalTouched: new Set(),
   modalHandle: null,
   dismissedModal: null,
   modalError: null,
@@ -47,8 +47,8 @@ const state = {
   lastMessageKey: null,
   lastMessageFingerprint: "",
   lastModalFingerprint: "",
-  objectUrls: new Set(),
-  pollTimer: null,
+  viewerId: null,
+  objectUrls: new Map(),
   closed: false,
   focusKey: null,
 };
@@ -106,7 +106,6 @@ function revokeAssets() {
 }
 
 function beginRender() {
-  revokeAssets();
   state.renderGeneration += 1;
   state.ready = false;
   ui.app.setAttribute("aria-busy", "true");
@@ -186,15 +185,18 @@ function applyProfile() {
   ui.height.value = String(state.profile.height);
 }
 
-function loadAsset(assetId, generation) {
+function loadAsset(assetId) {
+  const cached = state.objectUrls.get(assetId);
+  if (cached) return Promise.resolve(cached);
+  const generation = state.contextGeneration;
   return fetch(`/api/assets/${encodeURIComponent(assetId)}`, { headers: authHeaders() }).then(async (response) => {
     if (!response.ok) throw new Error(`asset request failed (${response.status})`);
     const url = URL.createObjectURL(await response.blob());
-    if (generation !== state.renderGeneration || state.closed) {
+    if (generation !== state.contextGeneration || state.closed) {
       URL.revokeObjectURL(url);
       throw new Error("stale asset generation");
     }
-    state.objectUrls.add(url);
+    state.objectUrls.set(assetId, url);
     return url;
   });
 }
@@ -261,7 +263,7 @@ function updatePickers(snapshot) {
   (snapshot.messages || []).forEach((message) => {
     const option = document.createElement("option");
     option.value = String(message.id);
-    option.textContent = `${message.author?.name || "Unknown"}: ${(message.content || "").slice(0, 70) || "(component message)"}`;
+    option.textContent = `${message.author_name || "Unknown"}: ${String(message.excerpt ?? "").slice(0, 70) || "(component message)"}`;
     ui.message.append(option);
   });
   ui.message.value = snapshot.targetId || "";
@@ -324,6 +326,24 @@ function updateDraft(key, value, multi, minimum, maximum, selected) {
   localRender(true);
 }
 
+function navigateDropdown(key, highlight) {
+  if (state.dropdown?.key !== key) return;
+  state.dropdown.highlight = highlight;
+  localRender(true);
+}
+
+function clearSelection(key) {
+  if (key.startsWith("modal:")) state.modalTouched.add(key);
+  currentDrafts(key).set(key, []);
+  if (state.dropdown?.key === key) {
+    state.dropdown.selected = [];
+    state.dropdown.highlight = null;
+    state.dropdown = null;
+  }
+  localRender(true);
+  if (!key.startsWith("modal:")) dispatch("select", { custom_id: key.slice("message:".length), values: [] });
+}
+
 function commitDropdown(key) {
   const dropdown = state.dropdown;
   const values = [...(currentDrafts(key).get(key) || [])];
@@ -366,6 +386,8 @@ function submitModal(values) {
   }
   state.modalError = null;
   state.modalErrorHandle = null;
+  state.modalDrafts.clear();
+  state.modalTouched.clear();
   dispatch("modal_submit", { modal_handle: modal.handle, values });
 }
 
@@ -373,9 +395,15 @@ function renderSnapshot(snapshot, generation, force = false) {
   if (generation !== state.renderGeneration || state.closed) return;
   state.snapshot = snapshot;
   state.contextId = snapshot.context?.id || state.contextId;
-  state.contextGeneration = Number(snapshot.context?.generation || 0);
+  const nextGeneration = Number(snapshot.context?.generation || 0);
+  const nextRevision = Number(snapshot.publishedRevision || 0);
+  const nextViewer = snapshot.viewerId || null;
+  if (nextGeneration !== state.contextGeneration || nextRevision !== state.publishedRevision) state.localDiagnostics = [];
+  if (nextGeneration !== state.contextGeneration || nextViewer !== state.viewerId) revokeAssets();
+  state.contextGeneration = nextGeneration;
   state.botGeneration = Number(snapshot.botGeneration || 0);
-  state.publishedRevision = Number(snapshot.publishedRevision || 0);
+  state.publishedRevision = nextRevision;
+  state.viewerId = nextViewer;
   state.profile = profileFromSnapshot(snapshot);
   applyProfile();
   updatePickers(snapshot);
@@ -401,7 +429,9 @@ function renderSnapshot(snapshot, generation, force = false) {
       onClick: (customId) => dispatch("click", { custom_id: customId }),
       onCommit: commitDropdown,
       onCancel: cancelDropdown,
-      loadAsset: (id) => loadAsset(id, generation),
+      onNavigate: navigateDropdown,
+      onClear: clearSelection,
+      loadAsset,
       isCurrent: () => generation === state.renderGeneration,
       onDiagnostic: addDiagnostic,
       onLocalRender: () => localRender(true),
@@ -417,21 +447,36 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.modalError = null;
     state.modalErrorHandle = null;
   }
+  const nextHandle = modal?.handle || null;
+  if (nextHandle !== state.modalHandle) {
+    state.modalDrafts.clear();
+    state.modalTouched.clear();
+  }
   if (force || modalKey !== state.lastModalFingerprint) {
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
       dropdown: state.dropdown,
       candidates: snapshot.candidates || {},
+      modalHandle: modal?.handle || "",
+      isTouched: (key) => state.modalTouched.has(key),
+      loadAsset,
+      assets: snapshot.assets || {},
       validationError: state.modalError,
       locale: state.profile.locale,
       timezone: state.profile.timezone,
       onInit: initDraft,
       onSelectOpen: openDropdown,
-      onSelectDraft: updateDraft,
+      onSelectDraft: (key, value, multi, minimum, maximum, selected) => {
+        state.modalTouched.add(key);
+        updateDraft(key, value, multi, minimum, maximum, selected);
+      },
       onSelectCommit: commitDropdown,
       onSelectCancel: cancelDropdown,
+      onNavigate: navigateDropdown,
+      onClear: clearSelection,
       onDraft: (key, value) => {
         state.modalDrafts.set(key, value);
+        state.modalTouched.add(key);
         if (state.modalError) {
           state.modalError = null;
           state.lastModalFingerprint = modalFingerprint(state.snapshot?.modal);
@@ -441,6 +486,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       },
       onFiles: (key, files) => {
         state.modalDrafts.set(key, files);
+        state.modalTouched.add(key);
         state.modalError = null;
         state.lastModalFingerprint = modalFingerprint(state.snapshot?.modal);
         document.querySelectorAll(".field-error").forEach((error) => error.remove());
@@ -449,8 +495,8 @@ function renderSnapshot(snapshot, generation, force = false) {
       onCancel: () => {
         if (state.dropdown) { cancelDropdown(state.dropdown.key); return; }
         state.dismissedModal = state.modalHandle;
-        state.modalControls = {};
         state.modalDrafts.clear();
+        state.modalTouched.clear();
         state.modalError = null;
         state.modalErrorHandle = null;
         localRender(true);
@@ -458,10 +504,9 @@ function renderSnapshot(snapshot, generation, force = false) {
       onSubmit: submitModal,
       onDiagnostic: addDiagnostic,
     });
-    state.modalControls = rendered.controls;
-    state.modalHandle = modal?.handle || null;
     if (rendered.focus instanceof HTMLElement) requestAnimationFrame(() => rendered.focus.focus());
   }
+  state.modalHandle = nextHandle;
   state.lastModalFingerprint = modalKey;
   renderDiagnostics();
   updateActionStatus();
@@ -483,6 +528,7 @@ function fitOpenDropdowns() {
 
 async function installSnapshot(snapshot, force = false) {
   if (!snapshot || state.closed) return;
+  if (!state.pendingAction && "lastAction" in snapshot) state.lastAction = snapshot.lastAction;
   const generation = beginRender();
   renderSnapshot(snapshot, generation, force);
 }
@@ -532,15 +578,17 @@ async function dispatch(kind, extra = {}) {
   localRender(false);
   try {
     const result = await requestAction(body);
+    if (result && typeof result.expectedSequence === "number") state.sequence = result.expectedSequence;
     state.lastAction = result;
     state.pendingAction = null;
     if (Array.isArray(result.diagnostics)) result.diagnostics.forEach((item) => addDiagnostic(item));
-    if (kind === "close") { state.closed = true; state.ready = false; updateActionStatus(); return; }
+    if (kind === "close") { state.closed = true; state.ready = false; revokeAssets(); updateActionStatus(); return; }
     const snapshot = await request("/api/state");
     if (snapshot.context?.generation !== state.contextGeneration) {
       state.dropdown = null;
       state.drafts.clear();
       state.modalDrafts.clear();
+      state.modalTouched.clear();
       state.dismissedModal = null;
     }
     state.dismissedModal = null;
@@ -563,7 +611,7 @@ async function poll() {
   } catch (error) {
     if (!state.closed) addDiagnostic({ code: "state-poll", severity: "error", message: String(error), complete: false });
   } finally {
-    if (!state.closed) state.pollTimer = window.setTimeout(poll, 500);
+    if (!state.closed) window.setTimeout(poll, 500);
   }
 }
 
@@ -614,6 +662,7 @@ ui.modal.addEventListener("keydown", (event) => {
       event.preventDefault();
       state.dismissedModal = state.modalHandle;
       state.modalDrafts.clear();
+      state.modalTouched.clear();
       localRender(true);
     }
     return;
