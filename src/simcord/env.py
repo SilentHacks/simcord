@@ -353,6 +353,11 @@ class Env:
     ) -> asyncio.Handle:
         bound_task = getattr(callback, "__self__", None)
         if isinstance(bound_task, asyncio.Task):
+            # A task resumption callback (__step/__wakeup) must run in the exact
+            # Context the task was scheduled with — scheduling a copy resumes the
+            # coroutine in a different Context object, where ContextVar.reset of
+            # a pre-suspension token raises "created in a different Context".
+            # Ownership is already carried by the task's own context.
             owner_record = self._task_records.get(bound_task)
             scope = (
                 (self, owner_record.generation)
@@ -361,9 +366,10 @@ class Env:
                 if context is not None
                 else None
             )
+            schedule_context = context
         else:
             scope = _BOT_SCOPE.get()
-        schedule_context = self._context_for_scope(context, scope) if context is not None else context
+            schedule_context = self._context_for_scope(context, scope) if context is not None else context
         if scope is None or scope[0] is not self:
             return original(*schedule_args, callback, *args, context=schedule_context)
         label = getattr(callback, "__qualname__", None) or getattr(

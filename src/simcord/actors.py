@@ -351,12 +351,6 @@ class MemberActor:
 
     # -------------------------------------------------------------- plumbing
 
-    def _visible_message(self, message: MessageLike) -> Any:
-        return _visible_message(self, message)
-
-    async def _component_interaction(self, stored: Any, data: dict[str, Any]) -> InteractionResult:
-        return await _component_interaction(self, stored, data)
-
     async def _dispatch_interaction(
         self,
         type: int,
