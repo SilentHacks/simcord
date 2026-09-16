@@ -119,12 +119,19 @@ def _asset_meta(
     return page.asset_id(f"url:{metadata['url']}", metadata, source=source)
 
 
+def _attachment_index(
+    attachments: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
+    by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
+    return by_url, by_name
+
+
 def _decorate_components(
     page: _Page, message: Message, components: Any, attachments: list[dict[str, Any]]
 ) -> Any:
     rows = deepcopy(components)
-    by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
-    by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
+    by_url, by_name = _attachment_index(attachments)
 
     def visit(node: Any) -> None:
         typ = int(node["type"])
@@ -181,8 +188,7 @@ def _embed_projection(
     link = _safe_link(embed.get("url"))
     if link:
         value["url"] = link
-    by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
-    by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
+    by_url, by_name = _attachment_index(attachments)
     for key in ("image", "thumbnail", "video"):
         media = embed.get(key)
         if not isinstance(media, dict):
@@ -247,7 +253,7 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "compact": _is_compact_message(preview, message),
         "attachments": [_attachment(env, message, item, page) for item in attachments],
         "mention_user_ids": [
-            str(uid) for uid in message.mention_user_ids if _mention_allowed(preview, page, uid)
+            str(uid) for uid in message.mention_user_ids if _user_allowed(preview, page, uid)
         ],
         "mention_role_ids": [
             str(rid) for rid in message.mention_role_ids if _role_allowed(preview, page, rid)
@@ -271,10 +277,6 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
     return data
 
 
-def _mention_allowed(preview: Preview, page: _Page, user_id: int) -> bool:
-    return _user_allowed(preview, page, user_id)
-
-
 def _user_allowed(preview: Preview, page: _Page, user_id: int) -> bool:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
@@ -292,7 +294,7 @@ def _role_allowed(preview: Preview, page: _Page, role_id: int) -> bool:
 
 
 def _user_avatar(page: _Page, user: Any) -> str | None:
-    if not getattr(user, "avatar", None):
+    if not user.avatar:
         return None
     url = f"{CDN_BASE}/avatars/{user.id}/{user.avatar}.png"
     return page.asset_id(
@@ -393,8 +395,8 @@ def _candidates(
                                 "id": str(rid),
                                 "label": role.name,
                                 "kind": "role",
-                                "color": int(getattr(role, "color", 0) or 0),
-                                "icon_color": int(getattr(role, "icon_color", 0) or 0),
+                                "color": int(role.color or 0),
+                                "icon_color": int(role.icon_color or 0),
                                 "members": sum(1 for m in guild.members.values() if rid in m.role_ids),
                             }
                         )
@@ -433,8 +435,6 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     page.referenced_assets.clear()
     messages: list[Message] = []
     if allowed:
-        # ponytail: explicit refresh rebuilds the small in-memory world; add an
-        # index only when previews routinely exceed fixture-sized histories.
         for message in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id):
             if can_access_message(env, channel.id, message, page.viewer, history=True):
                 messages.append(message)
