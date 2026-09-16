@@ -173,8 +173,8 @@ class PreviewServer:
             raise
         except (json.JSONDecodeError, ValueError) as exc:
             raise web.HTTPBadRequest(text="invalid JSON") from exc
-        if not isinstance(body, dict):
-            raise web.HTTPBadRequest(text="JSON object required")
+        # Malformed envelopes are not transport errors: action() answers every
+        # parseable body with a structured result (rejections carry HTTP 200).
         try:
             result = await self.preview.action(context_id, body)
         except Exception as exc:
@@ -236,18 +236,22 @@ class PreviewServer:
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
+        # ?download=1 requests the original bytes as an attachment; the default
+        # display path serves validated, normalized media inline.
+        download = request.query.get("download") in {"1", "true"}
         try:
             content_type, body, filename = await self.preview.prepare_asset(
-                context_id, request.match_info["asset_id"]
+                context_id, request.match_info["asset_id"], download=download
             )
         except Exception as exc:
             raise web.HTTPNotFound(text=str(exc)) from exc
         safe_filename = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
+        disposition = "attachment" if download else "inline"
         return web.Response(
             body=body,
             content_type=content_type or "application/octet-stream",
             headers={
                 **self._SECURITY_HEADERS,
-                "Content-Disposition": f'inline; filename="{safe_filename}"',
+                "Content-Disposition": f'{disposition}; filename="{safe_filename}"',
             },
         )

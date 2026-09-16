@@ -1,7 +1,11 @@
 import io
 
-import discord
 import pytest
+
+pytest.importorskip("aiohttp")
+pytest.importorskip("PIL")
+
+import discord
 from aiohttp import ClientSession
 from PIL import Image
 
@@ -61,14 +65,6 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         assert selected["attachments"][0]["asset_id"]
         assert "token" not in selected
 
-        await preview.show(v2)
-        v2_selected = preview.page_payload(preview._python)["selected"]
-        assert v2_selected["components_v2"] is True
-        media = v2_selected["components"][1]["items"][0]["media"]
-        assert media["available"] is True
-        assert media["asset_id"]
-        assert v2_selected["components"][0]["markdown_tokens"]
-
         async with ClientSession() as client:
             headers = {
                 "X-Simcord-Capability": preview.capability,
@@ -81,6 +77,14 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
             assert await response.read() == _png()
             response = await client.get(preview.origin + "/api/assets/not-an-asset", headers=headers)
             assert response.status == 404
+
+        await preview.show(v2)
+        v2_selected = preview.page_payload(preview._python)["selected"]
+        assert v2_selected["components_v2"] is True
+        media = v2_selected["components"][1]["items"][0]["media"]
+        assert media["available"] is True
+        assert media["asset_id"]
+        assert v2_selected["components"][0]["markdown_tokens"]
 
 
 @pytest.mark.parametrize(

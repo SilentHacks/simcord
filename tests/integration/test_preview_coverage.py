@@ -1,8 +1,12 @@
 import asyncio
 import io
 
-import discord
 import pytest
+
+pytest.importorskip("aiohttp")
+pytest.importorskip("PIL")
+
+import discord
 from aiohttp import ClientSession, FormData
 from PIL import Image
 
@@ -136,6 +140,7 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
                 "kind": "select",
                 "custom_id": "member",
                 "values": ["not-a-snowflake"],
+                "published_revision": state["publishedRevision"],
             },
         )
         assert invalid_user["dispatched"] is False
@@ -143,11 +148,12 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
             "python",
             {
                 **base,
-                "sequence": 2,
+                "sequence": 1,
                 "request_id": "bad-channel-id",
                 "kind": "select",
                 "custom_id": "channel",
                 "values": ["not-a-channel"],
+                "published_revision": state["publishedRevision"],
             },
         )
         assert invalid_channel["dispatched"] is False
@@ -233,14 +239,15 @@ async def test_preview_public_select_validation_boundaries(env, channel, alice):
                 "python",
                 {
                     **base,
-                    "sequence": sequence,
+                    "sequence": 1,
                     "request_id": f"select-{sequence}",
                     "kind": "select",
+                    "published_revision": page.revision,
                     **values,
                 },
             )
             assert result["dispatched"] is False
-            assert result["settlement"] == "settled"
+            assert result["settlement"] == "rejected"
 
 
 @pytest.mark.asyncio

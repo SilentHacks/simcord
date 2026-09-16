@@ -48,9 +48,7 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
         for match in _TIMESTAMP.finditer(content):
             if match.start() > pos:
                 result.append({"type": "text", "content": content[pos : match.start()]})
-            result.append(
-                {"type": "timestamp", "unix": int(match.group(1)), "style": match.group(2) or "f"}
-            )
+            result.append({"type": "timestamp", "unix": int(match.group(1)), "style": match.group(2) or "f"})
             pos = match.end()
         if pos < len(content):
             result.append({"type": "text", "content": content[pos:]})

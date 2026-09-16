@@ -2,8 +2,13 @@ import io
 import json
 from pathlib import Path
 
-import discord
 import pytest
+
+pytest.importorskip("aiohttp")
+pytest.importorskip("PIL")
+pytest.importorskip("playwright")
+
+import discord
 from aiohttp import ClientSession, FormData
 from PIL import Image
 
@@ -102,13 +107,17 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
+        base = {
+            "generation": page.generation,
+            "bot_generation": env._generation,
+            "published_revision": page.revision,
+        }
         bads = (
             ({**base, "sequence": 1, "request_id": "click", "kind": "click", "custom_id": 1}, "custom_id"),
             (
                 {
                     **base,
-                    "sequence": 2,
+                    "sequence": 1,
                     "request_id": "values",
                     "kind": "select",
                     "custom_id": "edge-select",
@@ -119,7 +128,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             (
                 {
                     **base,
-                    "sequence": 3,
+                    "sequence": 1,
                     "request_id": "scalar",
                     "kind": "select",
                     "custom_id": "edge-select",
@@ -130,7 +139,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             (
                 {
                     **base,
-                    "sequence": 4,
+                    "sequence": 1,
                     "request_id": "bounds",
                     "kind": "select",
                     "custom_id": "edge-select",
@@ -141,7 +150,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             (
                 {
                     **base,
-                    "sequence": 5,
+                    "sequence": 1,
                     "request_id": "string",
                     "kind": "select",
                     "custom_id": "edge-select",
@@ -152,7 +161,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             (
                 {
                     **base,
-                    "sequence": 6,
+                    "sequence": 1,
                     "request_id": "option",
                     "kind": "select",
                     "custom_id": "edge-select",
@@ -163,7 +172,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             (
                 {
                     **base,
-                    "sequence": 7,
+                    "sequence": 1,
                     "request_id": "modal",
                     "kind": "modal_submit",
                     "modal_handle": "missing",
@@ -196,7 +205,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             "python",
             {
                 **base,
-                "sequence": 8,
+                "sequence": 1,
                 "request_id": "broken",
                 "kind": "select",
                 "custom_id": "edge-select",
@@ -215,10 +224,12 @@ async def test_preview_edges_action_revision_replay_and_viewer_switch(env, chann
         body = {"sequence": 1, "request_id": "refresh", "generation": page.generation, "kind": "refresh"}
         first = await preview.action("python", body)
         assert first["settlement"] == "settled"
-        with pytest.raises(simcord.SetupError, match="conflicts"):
-            await preview.action("python", {**body, "kind": "focus"})
-        with pytest.raises(simcord.SetupError, match="stale"):
-            await preview.action("python", {**body, "request_id": "old"})
+        conflict = await preview.action("python", {**body, "kind": "focus"})
+        assert conflict["rejected"] is True
+        assert conflict["diagnostics"][0]["code"] == "conflicting-request"
+        stale = await preview.action("python", {**body, "request_id": "old"})
+        assert stale["rejected"] is True
+        assert stale["diagnostics"][0]["code"] == "stale-sequence"
         switch = await preview.action(
             "python",
             {
@@ -243,7 +254,8 @@ async def test_preview_edges_action_revision_replay_and_viewer_switch(env, chann
             },
         )
         assert focus["dispatched"] is False
-        assert focus["settlement"] == "settled"
+        assert focus["settlement"] == "rejected"
+        assert focus["expectedSequence"] == 2
 
 
 @pytest.mark.asyncio
@@ -269,7 +281,8 @@ async def test_preview_edges_server_authorization_json_and_multipart(env, channe
         response = await client.get(preview.origin + "/api/state", headers=headers)
         assert response.status == 200
         response = await client.post(preview.origin + "/api/action", headers=headers, data=b"null")
-        assert response.status == 400
+        assert response.status == 200
+        assert (await response.json())["rejected"] is True
         form = FormData()
         form.add_field("payload", "not-json")
         response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
@@ -278,7 +291,8 @@ async def test_preview_edges_server_authorization_json_and_multipart(env, channe
         form.add_field("payload", json.dumps({"values": {}}))
         form.add_field("file:x", b"x", filename="x.txt")
         response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
-        assert response.status == 400
+        assert response.status == 200
+        assert (await response.json())["rejected"] is True
         response = await client.get(preview.origin + "/api/assets/missing", headers=headers)
         assert response.status == 404
         response = await client.get(
@@ -340,6 +354,8 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert selected["embeds"][0]["thumbnail"]["available"] is True
         asset = selected["attachments"][0]["asset_id"]
         assert preview.asset("python", asset)[1] == image.getvalue()
+        assert await preview.prepare_asset("python", asset)
+        assert await preview.prepare_asset("python", asset)
         await preview.show(v2_message)
         selected = preview.page_payload(preview._python)["selected"]
         assert selected["components"][1]["items"][0]["media"]["asset_id"]
@@ -353,8 +369,6 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert selected["components"][3]["file"]["content_type"] == "image/png"
         assert selected["components"][4]["spoiler"] is True
         assert selected["components"][4]["components"][1]["divider"] is False
-        assert await preview.prepare_asset("python", asset)
-        assert await preview.prepare_asset("python", asset)
         capture = await preview.screenshot(tmp_path / "v2.png", target=v2_message, allow_incomplete=True)
         assert capture.ready is True
 

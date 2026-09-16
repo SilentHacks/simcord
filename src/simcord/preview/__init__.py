@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import secrets
+import time
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
 
 from ..actors import MemberActor
+from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..backend.models import Interaction, Message
 from ..builders import ChannelHandle, UserHandle
@@ -28,7 +30,7 @@ from ..results import InteractionResult, ResponseMessage
 from ._capture import CapturePin, ManagedCapture
 from ._media import MediaError, MediaWorker
 from ._server import PreviewServer
-from ._snapshot import build_snapshot, can_access_channel, can_access_message
+from ._snapshot import build_snapshot
 
 
 def _freeze_capture(value: Any) -> Any:
@@ -89,6 +91,16 @@ class _Action:
 
 
 @dataclass(slots=True)
+class _Blob:
+    """One deduplicated media payload; ``refs`` count pages retaining it."""
+
+    data: bytes
+    refs: int = 0
+    normalized_refs: int = 0
+    normalized_size: int = 0
+
+
+@dataclass(slots=True)
 class _Page:
     preview: Preview
     id: str
@@ -105,46 +117,72 @@ class _Page:
     last_sequence: int = 0
     latest_action: _Action | None = None
     assets: dict[str, dict[str, Any]] = field(default_factory=dict)
-    asset_blobs: dict[str, tuple[str, bytes, str]] = field(default_factory=dict)
+    referenced_assets: set[str] = field(default_factory=set)
     snapshot: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
     pinned_attachment_ids: dict[str, str] = field(default_factory=dict)
+    # Resolved at call time: env patches time.monotonic while running, and this
+    # module may be imported under an earlier (now dead) env's patch.
+    last_activity: float = field(default_factory=lambda: time.monotonic())
 
-    def asset_id(self, key: str, metadata: Mapping[str, Any]) -> str:
+    def asset_id(
+        self, key: str, metadata: Mapping[str, Any], *, source: tuple[Any, ...] | None = None
+    ) -> str:
         existing = next((asset for asset, item in self.assets.items() if item.get("key") == key), None)
         if existing is not None:
+            record = self.assets[existing]
+            self.referenced_assets.add(existing)
+            # A placeholder created by a foreign reference gains real ownership
+            # when the attachment that owns the bytes is projected later.
+            if "digest" not in record and source is not None and source[0] == "attachment":
+                self._resolve_blob(record, metadata, source)
             return existing
         asset = "a_" + secrets.token_urlsafe(12)
         filename = str(metadata.get("filename", "asset"))
         content_type = str(metadata.get("content_type") or "application/octet-stream")
         if content_type == "application/octet-stream":
             content_type = _content_type(filename if filename != "asset" else str(metadata.get("url", "")))
-        self.assets[asset] = {
+        record: dict[str, Any] = {
             "id": asset,
             "filename": filename,
             "contentType": content_type,
             "key": key,
+            "source": source,
             "available": False,
         }
+        self.assets[asset] = record
+        self.referenced_assets.add(asset)
+        self._resolve_blob(record, metadata, source)
+        return asset
+
+    def _resolve_blob(
+        self, record: dict[str, Any], metadata: Mapping[str, Any], source: tuple[Any, ...] | None
+    ) -> None:
         blob: bytes | None = None
         url = metadata.get("url")
         if isinstance(url, str):
-            blob = self.preview.env.backend.cdn.get(url)
+            if source is not None and source[0] == "attachment":
+                # Only the owning message's own attachments may resolve CDN
+                # bytes; foreign attachment URLs never reach this branch.
+                blob = self.preview.env.backend.cdn.get(url)
+                if blob is not None:
+                    record["source"] = source
             if blob is None and (supplied := self.preview.explicit_assets.get(url)) is not None:
                 filename, blob = supplied
-        if blob is not None:
-            if self.preview._retained_media_bytes + len(blob) > Preview._MAX_MEDIA_BYTES:
-                self.assets[asset]["diagnostic"] = "session media budget exceeded"
-            else:
-                self.preview._retained_media_bytes += len(blob)
-                if content_type == "application/octet-stream":
-                    content_type = _content_type(filename)
-                self.asset_blobs[asset] = (filename, blob, content_type)
-                self.assets[asset].update(
-                    {"filename": filename, "contentType": content_type, "available": True, "bytes": len(blob)}
-                )
-        return asset
+                record["filename"] = filename
+                if source is None:
+                    record["source"] = ("explicit", url)
+        if blob is None:
+            return
+        digest = self.preview._retain_blob(blob)
+        if digest is None:
+            record["diagnostic"] = "session media budget exceeded"
+            return
+        if record["contentType"] == "application/octet-stream":
+            record["contentType"] = _content_type(record["filename"])
+        record.pop("diagnostic", None)
+        record.update({"digest": digest, "available": True, "bytes": len(blob)})
 
 
 class Preview:
@@ -152,6 +190,7 @@ class Preview:
 
     _MAX_PAGES = 16
     _MAX_MEDIA_BYTES = 128 * 1024 * 1024
+    _PAGE_LEASE_SECONDS = 600.0
     _LOCALES: ClassVar[set[str]] = {"en-US", "en-GB", "de", "de-DE", "es-ES", "fr", "fr-FR", "ja", "ja-JP"}
 
     def __init__(
@@ -185,10 +224,13 @@ class Preview:
         self._closed_event = asyncio.Event()
         self._close_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._unregister_shutdown: Any = None
         self._unregister_dispatch: Any = None
         self._active_action: _Action | None = None
+        self._action_page: _Page | None = None
         self._media_worker: MediaWorker | None = None
+        self._blobs: dict[str, _Blob] = {}
         self._retained_media_bytes = 0
         self._active_task: asyncio.Task[Any] | None = None
         self._capture_manager = ManagedCapture(self)
@@ -246,19 +288,72 @@ class Preview:
         )
 
     def _publish(self, page: _Page) -> None:
+        self._prune_expired(keep=page)
         page.revision += 1
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             page.status = "access_denied"
-        elif page.status == "access_denied":
+        elif page.status != "current":
+            # Every publish is a fresh settled projection: it is the only thing
+            # that clears "stale" and restores revoked access.
             page.status = "current"
         page.snapshot = build_snapshot(self, page)
 
+    def _retain_blob(self, blob: bytes) -> str | None:
+        """Retain one content-addressed blob; identical payloads share one copy."""
+        digest = hashlib.sha256(blob).hexdigest()
+        entry = self._blobs.get(digest)
+        if entry is None:
+            if self._retained_media_bytes + len(blob) > self._MAX_MEDIA_BYTES:
+                return None
+            entry = _Blob(blob)
+            self._blobs[digest] = entry
+            self._retained_media_bytes += len(blob)
+        entry.refs += 1
+        return digest
+
+    def _release_blob(self, digest: str, *, normalized: bool = False) -> None:
+        entry = self._blobs.get(digest)
+        if entry is None:
+            return
+        if normalized and entry.normalized_refs > 0:
+            entry.normalized_refs -= 1
+            if entry.normalized_refs == 0 and entry.normalized_size:
+                self._retained_media_bytes -= entry.normalized_size
+                entry.normalized_size = 0
+        entry.refs -= 1
+        if entry.refs <= 0:
+            self._retained_media_bytes -= len(entry.data)
+            if entry.normalized_size:
+                self._retained_media_bytes -= entry.normalized_size
+            del self._blobs[digest]
+        self._retained_media_bytes = max(0, self._retained_media_bytes)
+
+    def _release_asset_record(self, record: Mapping[str, Any]) -> None:
+        digest = record.get("digest")
+        if isinstance(digest, str):
+            self._release_blob(digest, normalized=bool(record.get("normalizedRetained")))
+
+    def _reconcile_assets(self, page: _Page) -> None:
+        """Drop records the latest projection no longer references."""
+        for asset_id in [asset for asset in page.assets if asset not in page.referenced_assets]:
+            self._release_asset_record(page.assets.pop(asset_id))
+        page.referenced_assets.clear()
+
     def _clear_page_assets(self, page: _Page) -> None:
-        released = sum(len(body) for _, body, _ in page.asset_blobs.values())
-        released += sum(int(item.get("normalizedBytes", 0)) for item in page.assets.values())
-        self._retained_media_bytes = max(0, self._retained_media_bytes - released)
+        for record in page.assets.values():
+            self._release_asset_record(record)
         page.assets.clear()
-        page.asset_blobs.clear()
+        page.referenced_assets.clear()
+
+    def _prune_expired(self, *, keep: _Page | None = None) -> None:
+        """Enforce the inactivity lease: expired browser pages are released."""
+        now = time.monotonic()
+        for page in tuple(self._pages.values()):
+            if page is keep or page is self._action_page or page is self._python:
+                continue
+            if now - page.last_activity > self._PAGE_LEASE_SECONDS:
+                self._pages.pop(page.id, None)
+                self._clear_page_assets(page)
 
     def _assert_capture_live(self, page: _Page) -> None:
         if self._closed:
@@ -288,25 +383,32 @@ class Preview:
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
             return json.loads(json.dumps(page.pinned_snapshot))
+        page.last_activity = time.monotonic()
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
-        status = "current" if allowed else "access_denied"
-        if page.status != status:
-            page.status = status
-            self._clear_page_assets(page)
-            self._publish(page)
-        return json.loads(json.dumps(page.snapshot))
+        if not allowed:
+            page.status = "access_denied"
+        # Reads never republish and never clear "stale": they serve the last
+        # published projection with the live status overlaid, redacted on denial.
+        payload = json.loads(json.dumps(page.snapshot))
+        payload["status"] = page.status
+        if not allowed:
+            payload.update({"messages": [], "selected": None, "modal": None, "candidates": {}, "assets": {}})
+        return payload
 
     def get_page(self, context_id: str | None) -> _Page:
+        self._prune_expired()
         if not isinstance(context_id, str) or context_id not in self._pages:
             raise SetupError("preview context is expired or unknown")
         page = self._pages[context_id]
         if self._closed:  # pragma: no cover - close clears the page registry
             raise SetupError("Preview is closed")
+        page.last_activity = time.monotonic()
         return page
 
     def open_page(self, viewer_id: Any = None, target_id: Any = None) -> _Page:
         if not self._active or self._closed:
             raise SetupError("Preview is not active")
+        self._prune_expired()
         if len(self._pages) >= self._MAX_PAGES + 1:  # Python presentation is not interactive.
             raise SetupError("Preview page limit reached")
         source = cast(_Page, self._python)
@@ -330,7 +432,10 @@ class Preview:
     def close_page(self, context_id: str) -> None:
         if context_id == "python":
             raise SetupError("The Python presentation cannot be closed as a page")
-        self._pages.pop(context_id, None)
+        self._prune_expired()
+        page = self._pages.pop(context_id, None)
+        if page is not None:
+            self._clear_page_assets(page)
 
     def _viewer(self, viewer_id: Any) -> Any:
         try:
@@ -387,6 +492,8 @@ class Preview:
                 if not can_access_message(self.env, page.channel_id, stored, page.viewer, history=True):
                     raise SetupError("target message is not accessible")
                 page.target_id = stored.id
+                page.modal = None
+                page.modal_handle = None
             elif isinstance(target, discord.Message):
                 if target.channel is None or target.channel.id != page.channel_id:
                     raise SetupError("target belongs to another channel")
@@ -394,6 +501,8 @@ class Preview:
                 if not can_access_message(self.env, page.channel_id, stored, page.viewer, history=True):
                     raise SetupError("target message is not accessible")
                 page.target_id = stored.id
+                page.modal = None
+                page.modal_handle = None
             elif result is None:
                 raise SetupError("show expects a Message, ResponseMessage, or InteractionResult")
             self._publish(page)
@@ -407,7 +516,8 @@ class Preview:
         try:
             await self.env._settle_internal()
             for page in tuple(self._pages.values()):
-                self._publish(page)
+                if page.id in self._pages:  # earlier publishes prune expired pages
+                    self._publish(page)
         finally:
             self.env._end_operation(token)
 
@@ -501,6 +611,7 @@ class Preview:
         if modal is not None:
             capture_page.modal = modal
             capture_page.modal_handle = "m_" + secrets.token_urlsafe(12)
+        capture_page.last_action = deepcopy(source.last_action)
         snapshot = build_snapshot(self, capture_page)
         if target_id is None and modal is None:
             snapshot["diagnostics"] = [
@@ -593,7 +704,9 @@ class Preview:
             )
         finally:
             if pin is not None:
-                self._pages.pop(pin.page.id, None)
+                removed = self._pages.pop(pin.page.id, None)
+                if removed is not None:
+                    self._clear_page_assets(removed)
             self._capture_page = None
             self._capture_task = None
 
@@ -602,10 +715,22 @@ class Preview:
 
     async def close(self) -> None:
         async with self._close_lock:
-            if self._closed:
+            if self._closed_event.is_set():
                 return
-            self._closed = True
-            self._active = False
+            if self._cleanup_task is None:
+                # "closed" marks the start of teardown; the event marks its end.
+                # The shielded task finishes even if this caller is cancelled,
+                # so a cancelled close() cannot strand the running server.
+                self._closed = True
+                self._active = False
+                self._cleanup_task = asyncio.ensure_future(self._cleanup())
+        try:
+            await asyncio.shield(self._cleanup_task)
+        except asyncio.CancelledError:
+            raise
+
+    async def _cleanup(self) -> None:
+        try:
             if self._unregister_dispatch is not None:
                 self._unregister_dispatch()
                 self._unregister_dispatch = None
@@ -622,10 +747,15 @@ class Preview:
             if self._unregister_shutdown is not None:
                 self._unregister_shutdown()
                 self._unregister_shutdown = None
+            for page in tuple(self._pages.values()):
+                self._clear_page_assets(page)
             self._pages.clear()
+            self._blobs.clear()
+            self._retained_media_bytes = 0
             self._capture_page = None
             if self.env._preview is self:
                 self.env._preview = None
+        finally:
             self._closed_event.set()
 
     def _on_dispatch(self, interaction: Interaction) -> None:
@@ -633,16 +763,48 @@ class Preview:
         if self._active_action is not None and task is self._active_task:
             self._active_action.interaction = interaction
 
+    _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset({"click", "select", "modal_submit"})
+    _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(
+        {"click", "select", "modal_submit", "viewer", "focus", "refresh", "close"}
+    )
+
+    @staticmethod
+    def _reject(
+        page: _Page,
+        code: str,
+        message: str,
+        *,
+        request_id: Any = None,
+        sequence: Any = None,
+    ) -> dict[str, Any]:
+        """A pre-admission rejection: never consumes the per-page sequence."""
+        return {
+            "requestId": request_id,
+            "sequence": sequence,
+            "expectedSequence": page.last_sequence,
+            "rejected": True,
+            "dispatched": False,
+            "dispatch": "not_dispatched",
+            "settlement": "rejected",
+            "presentation": page.status,
+            "revision": page.revision,
+            "diagnostics": [{"code": code, "severity": "error", "message": message}],
+        }
+
     async def action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
         page = self.get_page(context_id)
         if not isinstance(body, Mapping):
-            raise SetupError("action must be an object")
+            return self._reject(page, "bad-envelope", "action must be an object")
         sequence = body.get("sequence")
         request_id = body.get("request_id")
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
-            raise SetupError("sequence must be a positive integer")
+            return self._reject(
+                page, "bad-envelope", "sequence must be a positive integer", request_id=request_id
+            )
         if not isinstance(request_id, str) or not request_id:
-            raise SetupError("request_id must be a non-empty string")
+            return self._reject(
+                page, "bad-envelope", "request_id must be a non-empty string", sequence=sequence
+            )
         fingerprint = hashlib.sha256(
             json.dumps(dict(body), sort_keys=True, separators=(",", ":"), default=str).encode()
         ).hexdigest()
@@ -650,11 +812,19 @@ class Preview:
         if sequence <= page.last_sequence:
             if sequence == page.last_sequence and latest is not None and latest.request_id == request_id:
                 if latest.fingerprint != fingerprint:
-                    raise SetupError("request conflicts with the admitted sequence")
+                    return self._reject(
+                        page,
+                        "conflicting-request",
+                        "request conflicts with the admitted sequence",
+                        request_id=request_id,
+                        sequence=sequence,
+                    )
                 if latest.response is None:
                     return {
                         "requestId": latest.request_id,
                         "sequence": latest.sequence,
+                        "expectedSequence": page.last_sequence,
+                        "rejected": False,
                         "dispatched": False,
                         "dispatch": "pending",
                         "acknowledgement": "pending",
@@ -664,106 +834,226 @@ class Preview:
                         "diagnostics": [],
                     }
                 return dict(latest.response)
-            raise SetupError("action sequence is stale")
+            return self._reject(
+                page,
+                "stale-sequence",
+                "action sequence is stale",
+                request_id=request_id,
+                sequence=sequence,
+            )
         if sequence != page.last_sequence + 1:
-            raise SetupError("action sequence has a gap")
+            return self._reject(
+                page,
+                "sequence-gap",
+                "action sequence has a gap",
+                request_id=request_id,
+                sequence=sequence,
+            )
         if self._active_action is not None:
-            raise SetupError("Preview is busy with another action")
+            return self._reject(
+                page,
+                "busy",
+                "Preview is busy with another action",
+                request_id=request_id,
+                sequence=sequence,
+            )
         if body.get("generation") != page.generation:
-            raise SetupError("preview context generation is stale")
+            return self._reject(
+                page,
+                "stale-context",
+                "preview context generation is stale",
+                request_id=request_id,
+                sequence=sequence,
+            )
         if body.get("bot_generation", self.env._generation) != self.env._generation:
-            raise SetupError("bot generation is stale")
+            return self._reject(
+                page,
+                "stale-generation",
+                "bot generation is stale",
+                request_id=request_id,
+                sequence=sequence,
+            )
         kind = body.get("kind")
-        if kind not in {"click", "select", "modal_submit", "viewer", "focus", "refresh", "close"}:
-            raise SetupError("unknown preview action")
+        if kind not in self._ACTION_KINDS:
+            return self._reject(
+                page,
+                "unknown-kind",
+                "unknown preview action",
+                request_id=request_id,
+                sequence=sequence,
+            )
+        if kind in self._MUTATING_KINDS and body.get("published_revision") != page.revision:
+            return self._reject(
+                page,
+                "stale-revision",
+                "published revision is stale",
+                request_id=request_id,
+                sequence=sequence,
+            )
         token = self.env._begin_operation("preview.action")
-        action = _Action(sequence, request_id, fingerprint)
-        page.last_sequence = sequence  # consumed before callback dispatch
-        page.latest_action = action
-        self._active_action = action
-        self._active_task = asyncio.current_task()
-        cursor = self.env.error_cursor
         try:
+            # Kind, control resolution, and values are validated before the
+            # sequence is consumed; only a validated plan may be admitted.
             try:
-                result = await self._dispatch_action(page, kind, body, action, cursor)
+                plan = self._prepare_action(page, kind, body)
+            except (SetupError, BackendError, ValueError) as exc:
+                return self._reject(
+                    page,
+                    "validation-failed",
+                    str(exc),
+                    request_id=request_id,
+                    sequence=sequence,
+                )
+            action = _Action(sequence, request_id, fingerprint)
+            page.last_sequence = sequence  # consumed only after full admission
+            page.latest_action = action
+            self._active_action = action
+            self._active_task = asyncio.current_task()
+            self._action_page = page
+            cursor = self.env.error_cursor
+            try:
+                result = await plan(action, cursor)
             except asyncio.CancelledError:
                 page.status = "stale"
                 result = self._finish_action(page, action, "cancelled", cursor)
+                action.response = result
                 raise
             except TimeoutError:
                 page.status = "stale"
                 result = self._finish_action(page, action, "timeout", cursor)
-            except BaseException as exc:
-                result = self._finish_action(page, action, "settled", cursor, exc)
+            except (SetupError, BackendError, ValueError) as exc:
+                # Expected mid-dispatch failures are reported honestly; they
+                # may already have mutated the backend, so the page is stale.
+                page.status = "stale"
+                result = self._finish_action(page, action, "failed", cursor, exc)
+            action.response = result
+            return dict(result)
         finally:
             self.env._end_operation(token)
             self._active_action = None
             self._active_task = None
-        action.response = result
-        return dict(result)
+            self._action_page = None
 
-    async def _dispatch_action(
-        self, page: _Page, kind: str, body: Mapping[str, Any], action: _Action, cursor: int
-    ) -> dict[str, Any]:
+    def _prepare_action(self, page: _Page, kind: str, body: Mapping[str, Any]) -> Any:
+        """Validate everything that can fail pre-admission.
+
+        Returns a coroutine function performing the admitted dispatch. No page
+        state is mutated here; validation failures become rejections.
+        """
         if kind == "close":
-            result = self._finish_action(page, action, "settled", cursor)
-            self._close_task = asyncio.create_task(self.close())
-            return result
+
+            async def run_close(action: _Action, cursor: int) -> dict[str, Any]:
+                result = self._finish_action(page, action, "settled", cursor)
+                self._close_task = asyncio.create_task(self.close())
+                return result
+
+            return run_close
         if kind == "viewer":
             viewer = self._viewer(body.get("viewer_id"))
-            self._clear_page_assets(page)
-            page.viewer = viewer
-            page.generation += 1
-            page.target_id = self._initial_target(page)
-            page.modal = None
-            page.modal_handle = None
-            page.status = "current"
-            self._publish(page)
-            return self._finish_action(page, action, "settled", cursor)
+
+            async def run_viewer(action: _Action, cursor: int) -> dict[str, Any]:
+                self._clear_page_assets(page)
+                page.viewer = viewer
+                page.generation += 1
+                page.target_id = self._initial_target(page)
+                page.modal = None
+                page.modal_handle = None
+                page.status = "current"
+                result = self._finish_action(page, action, "settled", cursor)
+                self._publish(page)
+                return result
+
+            return run_viewer
         if kind == "focus":
             target = self._target_id(body.get("target_id"), page.viewer)
             if target is None:
                 raise SetupError("target message is unavailable")
-            self._clear_page_assets(page)
-            page.target_id = target
-            page.generation += 1
-            page.modal = None
-            page.modal_handle = None
-            self._publish(page)
-            return self._finish_action(page, action, "settled", cursor)
+
+            async def run_focus(action: _Action, cursor: int) -> dict[str, Any]:
+                self._clear_page_assets(page)
+                page.target_id = target
+                page.generation += 1
+                page.modal = None
+                page.modal_handle = None
+                result = self._finish_action(page, action, "settled", cursor)
+                self._publish(page)
+                return result
+
+            return run_focus
         if kind == "refresh":
-            await self.env._settle_internal()
-            self._publish(page)
-            return self._finish_action(page, action, "settled", cursor)
+
+            async def run_refresh(action: _Action, cursor: int) -> dict[str, Any]:
+                await self.env._settle_internal()
+                result = self._finish_action(page, action, "settled", cursor)
+                self._publish(page)
+                return result
+
+            return run_refresh
         actor = page.viewer
         if not can_access_channel(self.env, page.channel_id, actor, history=True):
             raise SetupError("viewer cannot access this channel")
         if kind == "modal_submit":
-            if page.modal is None or body.get("modal_handle") != page.modal_handle:
+            modal = page.modal
+            if modal is None or body.get("modal_handle") != page.modal_handle:
                 raise SetupError("modal is stale or unavailable")
-            values = self._modal_values(page, body.get("values"))
-            result = await actor.submit_modal(page.modal, values)
-            page.modal = None
-            page.modal_handle = None
-        else:
-            message = self._target_message(page)
-            if kind == "click":
-                custom_id = body.get("custom_id")
-                if not isinstance(custom_id, str):
-                    raise SetupError("click requires custom_id")
-                result = await actor.click(ResponseMessage(self.env, message), custom_id=custom_id)
-            else:
-                values = self._select_values(page, body.get("values"), body.get("custom_id"))
-                result = await actor.select(
-                    ResponseMessage(self.env, message), values, custom_id=body.get("custom_id")
+            modal_values = self._modal_values(page, body.get("values"))
+
+            async def run_modal(action: _Action, cursor: int) -> dict[str, Any]:
+                result = await actor.submit_modal(modal, modal_values)
+                page.modal = None
+                page.modal_handle = None
+                finished = self._finish_action(
+                    page, action, "settled", cursor, interaction=result._interaction
                 )
-            if result.modal is not None:
-                if result._interaction.user_id != actor.id:  # pragma: no cover - actor dispatch invariant
-                    raise SetupError("modal opener mismatch")
-                page.modal = result
-                page.modal_handle = "m_" + secrets.token_urlsafe(12)
+                self._publish(page)
+                return finished
+
+            return run_modal
+        message = self._target_message(page)
+        if kind == "click":
+            custom_id = body.get("custom_id")
+            if not isinstance(custom_id, str):
+                raise SetupError("click requires custom_id")
+            component = next(
+                (item for item in walk_components(message.components) if item.get("custom_id") == custom_id),
+                None,
+            )
+            if component is None:
+                raise SetupError("click control is unavailable")
+            if component.get("disabled"):
+                raise SetupError("click control is disabled")
+
+            async def run_click(action: _Action, cursor: int) -> dict[str, Any]:
+                return await self._run_component_action(
+                    page, action, cursor, actor.click(ResponseMessage(self.env, message), custom_id=custom_id)
+                )
+
+            return run_click
+        custom_id = body.get("custom_id")
+        select_values = self._select_values(page, body.get("values"), custom_id)
+
+        async def run_select(action: _Action, cursor: int) -> dict[str, Any]:
+            return await self._run_component_action(
+                page,
+                action,
+                cursor,
+                actor.select(ResponseMessage(self.env, message), select_values, custom_id=custom_id),
+            )
+
+        return run_select
+
+    async def _run_component_action(
+        self, page: _Page, action: _Action, cursor: int, awaited: Any
+    ) -> dict[str, Any]:
+        result = await awaited
+        if result.modal is not None:
+            if result._interaction.user_id != page.viewer.id:  # pragma: no cover - dispatch invariant
+                raise SetupError("modal opener mismatch")
+            page.modal = result
+            page.modal_handle = "m_" + secrets.token_urlsafe(12)
+        finished = self._finish_action(page, action, "settled", cursor, interaction=result._interaction)
         self._publish(page)
-        return self._finish_action(page, action, "settled", cursor, interaction=result._interaction)
+        return finished
 
     def _target_message(self, page: _Page) -> Message:
         if page.target_id is None:
@@ -927,7 +1217,7 @@ class Preview:
         diagnostics = [
             {"type": type(item).__name__, "message": str(item)} for item in self.env.errors_since(cursor)
         ]
-        if error is not None and not isinstance(error, SetupError):
+        if error is not None:
             diagnostics.append({"type": type(error).__name__, "message": str(error)})
         dispatch = "dispatched" if interaction is not None else "not_dispatched"
         ack = "pending"
@@ -942,11 +1232,11 @@ class Preview:
             "acknowledgement": ack,
             "settlement": settlement,
         }
-        if error is not None and not isinstance(error, SetupError):
-            page.status = "stale"
         return {
             "requestId": action.request_id,
             "sequence": action.sequence,
+            "expectedSequence": page.last_sequence,
+            "rejected": False,
             "dispatched": interaction is not None,
             "dispatch": dispatch,
             "acknowledgement": ack,
@@ -956,42 +1246,76 @@ class Preview:
             "diagnostics": diagnostics,
         }
 
+    def _authorize_asset(self, page: _Page, asset_id: str) -> dict[str, Any]:
+        """Reauthorize one asset at serve time against live backend state."""
+        record = page.assets.get(asset_id)
+        if record is None:
+            raise SetupError("asset is unavailable")
+        if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
+            raise SetupError("asset access denied")
+        source = record.get("source")
+        if isinstance(source, tuple) and source[0] == "attachment":
+            _, channel_id, message_id, attachment_id = source
+            try:
+                message = self.env.backend.get_message(channel_id, message_id)
+            except BackendError as exc:
+                raise SetupError("asset is unavailable") from exc
+            if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
+                raise SetupError("asset access denied")
+            if not any(str(item.get("id", "")) == attachment_id for item in message.attachments):
+                raise SetupError("asset is unavailable")
+        return record
+
+    def _asset_blob(self, record: Mapping[str, Any]) -> bytes:
+        digest = record.get("digest")
+        entry = self._blobs.get(digest) if isinstance(digest, str) else None
+        if entry is None:
+            raise SetupError("asset is unavailable")
+        return entry.data
+
     def asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
         page = self.get_page(context_id)
         self._assert_capture_live(page)
-        if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
-            raise SetupError("asset access denied")
-        try:
-            filename, body, content_type = page.asset_blobs[asset_id]
-        except KeyError as exc:
-            raise SetupError("asset is unavailable") from exc
-        return content_type, body, filename
+        record = self._authorize_asset(page, asset_id)
+        return record["contentType"], self._asset_blob(record), record["filename"]
 
-    async def prepare_asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
+    async def prepare_asset(
+        self, context_id: str | None, asset_id: str, *, download: bool = False
+    ) -> tuple[str, bytes, str]:
         content_type, body, filename = self.asset(context_id, asset_id)
-        page = self.get_page(context_id)
-        if not content_type.startswith("image/"):
+        if download or not content_type.startswith("image/"):
+            # Downloads and non-image media are served the original bytes;
+            # only the display path returns the normalized PNG first frame.
             return content_type, body, filename
         if self._media_worker is None:
             self._media_worker = MediaWorker()
-        metadata = page.assets.get(asset_id, {})
+        page = self.get_page(context_id)
+        record = self._authorize_asset(page, asset_id)
+        digest = record.get("digest")
         try:
-            info = await self._media_worker.validate(metadata.get("key", asset_id), body)
+            info = await self._media_worker.validate(digest if isinstance(digest, str) else asset_id, body)
         except MediaError as exc:
-            metadata["available"] = False
-            metadata["diagnostic"] = str(exc)
+            record["available"] = False
+            record["diagnostic"] = str(exc)
             raise SetupError(str(exc)) from exc
-        if "normalizedBytes" not in metadata:
-            if self._retained_media_bytes + len(info.normalized) > self._MAX_MEDIA_BYTES:
-                metadata["available"] = False
-                metadata["diagnostic"] = "session media budget exceeded after normalization"
-                raise SetupError(metadata["diagnostic"])
-            self._retained_media_bytes += len(info.normalized)
-            metadata["normalizedBytes"] = len(info.normalized)
-        metadata.update(
-            {"width": info.width, "height": info.height, "frames": info.frames, "validated": True}
-        )
+        # Reauthorize after the awaited decode: access or membership may have
+        # changed while validation was in flight.
+        page = self.get_page(context_id)
         self._assert_capture_live(page)
+        record = self._authorize_asset(page, asset_id)
+        entry = self._blobs.get(digest) if isinstance(digest, str) else None
+        if entry is None:
+            raise SetupError("asset is unavailable")
+        if not record.get("normalizedRetained"):
+            if self._retained_media_bytes + len(info.normalized) > self._MAX_MEDIA_BYTES:
+                record["available"] = False
+                record["diagnostic"] = "session media budget exceeded after normalization"
+                raise SetupError(record["diagnostic"])
+            entry.normalized_refs += 1
+            entry.normalized_size = len(info.normalized)
+            self._retained_media_bytes += len(info.normalized)
+            record["normalizedRetained"] = True
+        record.update({"width": info.width, "height": info.height, "frames": info.frames, "validated": True})
         return info.content_type, info.normalized, filename
 
 

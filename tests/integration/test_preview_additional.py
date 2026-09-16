@@ -1,8 +1,12 @@
 import asyncio
 import sys
 
-import discord
 import pytest
+
+pytest.importorskip("aiohttp")
+pytest.importorskip("playwright")
+
+import discord
 from aiohttp import ClientSession, FormData
 
 import simcord
@@ -155,6 +159,7 @@ async def test_preview_deferred_action_and_multipart_limits(env, channel, alice)
                 "request_id": "defer",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "click",
                 "custom_id": "slow_edit",
             },
@@ -208,26 +213,30 @@ async def test_preview_action_busy_cancellation_and_pending_replay(env, channel,
             "request_id": "blocked",
             "generation": page.generation,
             "bot_generation": env._generation,
+            "published_revision": page.revision,
             "kind": "click",
             "custom_id": "block",
         }
         task = asyncio.create_task(preview.action("python", body))
         await asyncio.sleep(0)
-        with pytest.raises(simcord.SetupError, match="busy"):
-            await preview.action(
-                "python",
-                {
-                    **body,
-                    "sequence": 2,
-                    "request_id": "busy",
-                },
-            )
+        busy = await preview.action(
+            "python",
+            {
+                **body,
+                "sequence": 2,
+                "request_id": "busy",
+            },
+        )
+        assert busy["rejected"] is True
+        assert busy["diagnostics"][0]["code"] == "busy"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert page.status == "stale"
-        pending = await preview.action("python", body)
-        assert pending["settlement"] == "pending"
+        # Cancelled results are retained: replaying the consumed sequence
+        # returns the recorded outcome rather than re-dispatching.
+        replayed = await preview.action("python", body)
+        assert replayed["settlement"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -243,6 +252,7 @@ async def test_preview_modal_file_upload_validation_and_dispatch(env, channel, a
                 "request_id": "open-upload",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "click",
                 "custom_id": "open-upload",
             },
@@ -257,6 +267,7 @@ async def test_preview_modal_file_upload_validation_and_dispatch(env, channel, a
                 "request_id": "bad-upload",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "modal_submit",
                 "modal_handle": page.modal_handle,
                 "values": {"upload": "not-a-file-list"},
@@ -267,10 +278,11 @@ async def test_preview_modal_file_upload_validation_and_dispatch(env, channel, a
         submitted = await preview.action(
             "python",
             {
-                "sequence": 3,
+                "sequence": 2,
                 "request_id": "good-upload",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "modal_submit",
                 "modal_handle": page.modal_handle,
                 "values": {"upload": [["report.txt", b"contents"]]},
@@ -294,6 +306,7 @@ async def test_preview_modal_entity_resolution_and_validation(env, channel, alic
                 "request_id": "open-member",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "click",
                 "custom_id": "open-member",
             },
@@ -306,6 +319,7 @@ async def test_preview_modal_entity_resolution_and_validation(env, channel, alic
                 "request_id": "bad-member",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "modal_submit",
                 "modal_handle": page.modal_handle,
                 "values": {"member": ["999999999999"]},
@@ -315,10 +329,11 @@ async def test_preview_modal_entity_resolution_and_validation(env, channel, alic
         submitted = await preview.action(
             "python",
             {
-                "sequence": 3,
+                "sequence": 2,
                 "request_id": "good-member",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "modal_submit",
                 "modal_handle": page.modal_handle,
                 "values": {"member": [str(bob.id)]},
@@ -477,6 +492,7 @@ async def test_preview_snapshot_deleted_reference_embeds_and_channel_filter(env,
                 "request_id": "wrong-channel-type",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "select",
                 "custom_id": "typed-channel",
                 "values": [str(voice.id)],
@@ -560,7 +576,14 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
         base = {"generation": page.generation, "bot_generation": env._generation}
         result = await preview.action(
             "python",
-            {**base, "sequence": 1, "request_id": "no-target", "kind": "click", "custom_id": "x"},
+            {
+                **base,
+                "sequence": 1,
+                "request_id": "no-target",
+                "kind": "click",
+                "custom_id": "x",
+                "published_revision": page.revision,
+            },
         )
         assert result["dispatched"] is False
 
@@ -578,6 +601,7 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
                 "kind": "select",
                 "custom_id": "who",
                 "values": [1],
+                "published_revision": page.revision,
             },
         )
         assert non_string["dispatched"] is False
@@ -585,11 +609,12 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
             "python",
             {
                 **base,
-                "sequence": 2,
+                "sequence": 1,
                 "request_id": "unhashable",
                 "kind": "select",
                 "custom_id": "who",
                 "values": [[]],
+                "published_revision": page.revision,
             },
         )
         assert unhashable["dispatched"] is False
@@ -597,11 +622,12 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
             "python",
             {
                 **base,
-                "sequence": 3,
+                "sequence": 1,
                 "request_id": "missing-select",
                 "kind": "select",
                 "custom_id": "missing",
                 "values": ["x"],
+                "published_revision": page.revision,
             },
         )
         assert unavailable["dispatched"] is False
@@ -617,6 +643,7 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
                 "request_id": "bad-values",
                 "generation": page.generation,
                 "bot_generation": env._generation,
+                "published_revision": page.revision,
                 "kind": "modal_submit",
                 "modal_handle": page.modal_handle,
                 "values": [],

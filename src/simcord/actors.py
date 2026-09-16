@@ -410,7 +410,7 @@ def _visible_message(actor: Any, message: MessageLike) -> Any:
     backend = actor._env.backend
     fallback = actor.dm_channel.id if isinstance(actor, UserHandle) else None
     channel_id = _channel_id_of(message, fallback)
-    from .preview._snapshot import can_access_message
+    from .backend.access import can_access_message
 
     _check_user_dm_channel(actor, channel_id)
     stored = backend.get_message(channel_id, message.id)
@@ -794,7 +794,7 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
         raise SetupError(str(exc)) from exc
     channel_id = interaction.channel_id
     _check_user_dm_channel(actor, channel_id)
-    from .preview._snapshot import can_access_channel
+    from .backend.access import can_access_channel
 
     if not can_access_channel(actor._env, channel_id, actor):
         raise SetupError("That modal is no longer available to this user")

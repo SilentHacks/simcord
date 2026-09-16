@@ -1,4 +1,13 @@
-"""Viewer-authorized, token-free preview projections."""
+"""Viewer-authorized, token-free preview projections.
+
+Projection contract (implemented jointly with the bundled client): every
+snapshot is a detached JSON-safe copy — no backend dicts, tokens, signed URLs,
+or internal asset bookkeeping escape. ``messages`` carries lightweight
+summaries (``id``/``author_name``/``excerpt``); the full projection lives in
+``selected``. ``assets`` records expose only
+``{id, filename, contentType, available, bytes?, diagnostic?}`` — internal
+keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +15,12 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-import discord
-
+from ..backend.access import _viewer_id, can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE
-from ..backend.errors import BackendError, SetupError
+from ..backend.errors import BackendError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG
-from ..enums import ChannelType, ComponentType
+from ..enums import ComponentType
 from ._markdown import markdown_tokens
 
 if TYPE_CHECKING:
@@ -28,61 +36,12 @@ _ENTITY_TYPES = {
 }
 
 
-def _viewer_id(viewer: Any) -> int:
-    try:
-        value = viewer.id
-    except AttributeError as exc:  # pragma: no cover - validated by Preview construction
-        raise SetupError("preview viewers must be UserHandle or MemberActor handles") from exc
-    if not isinstance(value, int) or isinstance(value, bool):  # pragma: no cover - handle invariant
-        raise SetupError("preview viewer id must be an integer")
-    return value
-
-
-def can_access_channel(env: Env, channel_id: int, viewer: Any, *, history: bool = False) -> bool:
-    """The one current access predicate shared by preview and actor message access."""
-    if getattr(viewer, "_env", None) is not env:  # pragma: no cover - validated by Preview construction
-        return False
-    try:
-        channel = env.backend.get_channel(channel_id)
-    except BackendError:  # pragma: no cover - callers resolve the channel first
-        return False
-    viewer_id = _viewer_id(viewer)
-    if channel.guild_id is None:
-        return viewer_id in channel.recipient_ids and env.backend.dm_channels.get(viewer_id) == channel.id
-    guild = env.backend.guilds.get(channel.guild_id)
-    if guild is None or viewer_id not in guild.members:  # pragma: no cover - handle invariant
-        return False
-    try:
-        permissions = env.backend.compute_permissions(channel.guild_id, viewer_id, channel.id)
-    except BackendError:  # pragma: no cover - validated guild/channel pair
-        return False
-    if not permissions & discord.Permissions.view_channel.flag:
-        return False
-    if history and not permissions & discord.Permissions.read_message_history.flag:
-        return False
-    if channel.type == ChannelType.PRIVATE_THREAD:
-        privileged = bool(permissions & discord.Permissions.administrator.flag) or viewer_id == guild.owner_id
-        if viewer_id not in channel.thread_members and not privileged:
-            return False
-    return True
-
-
-def can_access_message(
-    env: Env, channel_id: int, message: Message, viewer: Any, *, history: bool = False
-) -> bool:
-    if message.channel_id != channel_id:  # pragma: no cover - messages are loaded from this channel
-        return False
-    if not can_access_channel(env, channel_id, viewer, history=history):
-        return False
-    return message.visible_to(_viewer_id(viewer))
-
-
 def _clean(value: Any, *, drop_urls: bool = False) -> Any:
     """Copy allowlisted-ish backend data without recursive private payloads."""
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for key, item in value.items():
-            if key in {"token", "webhook_token", "proxy_url", "referenced_message", "resolved"}:
+            if key in {"token", "webhook_token", "proxy_url", "referenced_message", "resolved", "key"}:
                 continue
             if drop_urls and key in {"url", "proxy_url"}:
                 continue
@@ -120,7 +79,8 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
         if isinstance(url, str)
         else f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
     )
-    asset_id = page.asset_id(key, attachment)
+    source = ("attachment", message.channel_id, message.id, attachment_id)
+    asset_id = page.asset_id(key, attachment, source=source)
     preview = None
     if content_type.startswith("text/") and isinstance(url, str):
         raw = env.backend.cdn.get(url)
@@ -143,15 +103,25 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
     }
 
 
-def _asset_meta(page: _Page, url: Any, fallback: dict[str, Any] | None = None) -> str | None:
+def _asset_meta(
+    page: _Page,
+    url: Any,
+    fallback: dict[str, Any] | None = None,
+    message: Message | None = None,
+) -> str | None:
     if not isinstance(url, str) or not url:  # pragma: no cover - component schema requires a URL
         return None
     metadata = dict(fallback or {})
     metadata.setdefault("url", url)
-    return page.asset_id(f"url:{metadata['url']}", metadata)
+    source = None
+    if fallback is not None and message is not None:
+        source = ("attachment", message.channel_id, message.id, str(fallback.get("id", "")))
+    return page.asset_id(f"url:{metadata['url']}", metadata, source=source)
 
 
-def _decorate_components(page: _Page, components: Any, attachments: list[dict[str, Any]]) -> Any:
+def _decorate_components(
+    page: _Page, message: Message, components: Any, attachments: list[dict[str, Any]]
+) -> Any:
     rows = deepcopy(components)
     by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
     by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
@@ -176,7 +146,7 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
             attachment = by_url.get(url)
             if attachment is None and url.startswith("attachment://"):
                 attachment = by_name.get(url.removeprefix("attachment://"))
-            asset_id = cast(str, _asset_meta(page, url, attachment))
+            asset_id = cast(str, _asset_meta(page, url, attachment, message))
             media["asset_id"] = asset_id
             media["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
             if attachment is not None:
@@ -205,7 +175,7 @@ def _decorate_components(page: _Page, components: Any, attachments: list[dict[st
 
 
 def _embed_projection(
-    page: _Page, embed: dict[str, Any], attachments: list[dict[str, Any]]
+    page: _Page, message: Message, embed: dict[str, Any], attachments: list[dict[str, Any]]
 ) -> dict[str, Any]:
     value = _clean(deepcopy(embed), drop_urls=True)
     link = _safe_link(embed.get("url"))
@@ -221,7 +191,7 @@ def _embed_projection(
         item = by_url.get(url)
         if item is None and url.startswith("attachment://"):
             item = by_name.get(url.removeprefix("attachment://"))
-        asset_id = _asset_meta(page, url, item)
+        asset_id = _asset_meta(page, url, item, message)
         if asset_id:
             value.setdefault(key, {})["asset_id"] = asset_id
             value[key]["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
@@ -243,7 +213,11 @@ def _embed_projection(
 
 def _is_compact_message(preview: Preview, message: Message) -> bool:
     previous = max(
-        (item for item in preview.env.backend.messages.get(message.channel_id, {}).values() if item.id < message.id),
+        (
+            item
+            for item in preview.env.backend.messages.get(message.channel_id, {}).values()
+            if item.id < message.id
+        ),
         key=lambda item: item.id,
         default=None,
     )
@@ -265,8 +239,8 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "edited_timestamp": message.edited_timestamp,
         "content": message.content,
         "content_tokens": markdown_tokens(message.content, "message"),
-        "embeds": [_embed_projection(page, item, attachments) for item in message.embeds],
-        "components": _decorate_components(page, message.components, attachments),
+        "embeds": [_embed_projection(page, message, item, attachments) for item in message.embeds],
+        "components": _decorate_components(page, message, message.components, attachments),
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
         "components_v2": bool(int(message.flags) & COMPONENTS_V2_FLAG),
@@ -322,8 +296,33 @@ def _user_avatar(page: _Page, user: Any) -> str | None:
         return None
     url = f"{CDN_BASE}/avatars/{user.id}/{user.avatar}.png"
     return page.asset_id(
-        f"avatar:{user.id}", {"url": url, "filename": f"{user.avatar}.png", "content_type": "image/png"}
+        f"avatar:{user.id}",
+        {"url": url, "filename": f"{user.avatar}.png", "content_type": "image/png"},
+        source=None,
     )
+
+
+def _message_summary(env: Env, message: Message) -> dict[str, Any]:
+    return {
+        "id": str(message.id),
+        "author_name": _author(env, message.author_id, override=message.author_name)["name"],
+        "excerpt": message.content[:100],
+    }
+
+
+def _wire_asset(record: dict[str, Any]) -> dict[str, Any]:
+    """Public asset record — internal bookkeeping keys never reach the wire."""
+    out: dict[str, Any] = {
+        "id": record["id"],
+        "filename": record["filename"],
+        "contentType": record["contentType"],
+        "available": bool(record.get("available", False)),
+    }
+    if record.get("bytes") is not None:
+        out["bytes"] = record["bytes"]
+    if record.get("diagnostic") is not None:
+        out["diagnostic"] = record["diagnostic"]
+    return out
 
 
 def _walk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -396,9 +395,7 @@ def _candidates(
                                 "kind": "role",
                                 "color": int(getattr(role, "color", 0) or 0),
                                 "icon_color": int(getattr(role, "icon_color", 0) or 0),
-                                "members": sum(
-                                    1 for m in guild.members.values() if rid in m.role_ids
-                                ),
+                                "members": sum(1 for m in guild.members.values() if rid in m.role_ids),
                             }
                         )
             if kind == "channels":
@@ -433,6 +430,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
     allowed = can_access_channel(env, channel.id, page.viewer, history=True)
+    page.referenced_assets.clear()
     messages: list[Message] = []
     if allowed:
         # ponytail: explicit refresh rebuilds the small in-memory world; add an
@@ -446,7 +444,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         if selected_message is not None:
             selected = _message_projection(preview, page, selected_message)
     modal = None
-    if page.modal is not None:
+    if allowed and page.modal is not None:
         payload = _clean(deepcopy(page.modal.modal), drop_urls=True)
         for component in _walk(payload.get("components", [])):
             if isinstance(component.get("content"), str):
@@ -456,14 +454,13 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     candidate_components = list((selected or {}).get("components", []))
     if modal is not None:
         candidate_components.extend(modal["payload"].get("components", []))
-    return {
+    snapshot = {
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,
         "context": {"id": page.id, "generation": page.generation},
         "botGeneration": env._generation,
         "viewers": [_author(env, _viewer_id(viewer)) for viewer in preview.viewers],
         "viewerId": str(_viewer_id(page.viewer)),
-        "viewerAvatar": _user_avatar(page, env.backend.get_user(_viewer_id(page.viewer))),
         "channelId": str(channel.id),
         "channel": {
             "id": str(channel.id),
@@ -471,11 +468,10 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "guildId": str(channel.guild_id) if channel.guild_id else None,
         },
         "targetId": str(page.target_id) if page.target_id is not None else None,
-        "messages": [_message_projection(preview, page, item) for item in messages],
+        "messages": [_message_summary(env, item) for item in messages],
         "selected": selected,
         "modal": modal,
-        "candidates": _candidates(preview, page, candidate_components),
-        "assets": dict(page.assets),
+        "candidates": _candidates(preview, page, candidate_components) if allowed else {},
         "profile": {
             "theme": preview.theme,
             "width": preview.width,
@@ -487,6 +483,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "diagnostics": list(page.diagnostics),
         "lastAction": page.last_action,
     }
+    preview._reconcile_assets(page)
+    snapshot["assets"] = {asset_id: _wire_asset(record) for asset_id, record in page.assets.items()}
+    return snapshot
 
 
-__all__ = ["build_snapshot", "can_access_channel", "can_access_message"]
+__all__ = ["build_snapshot"]

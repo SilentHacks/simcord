@@ -2,6 +2,10 @@ import asyncio
 import io
 
 import pytest
+
+pytest.importorskip("PIL")
+pytest.importorskip("playwright")
+
 from PIL import Image
 
 import simcord

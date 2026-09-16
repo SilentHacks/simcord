@@ -110,7 +110,9 @@ await preview.refresh()
 `refresh()` settles bot work and republishes every page while preserving each page's viewer, target,
 modal, and drafts. Browser actions that settle also publish their resulting edits/followups. A
 publication is labeled by `publishedRevision` and simulated time; it is not a live synchronization
-promise. A failed or timed-out action may already have mutated the backend: its last settled
+promise. Each publication's `messages` list carries detached summaries (`id`, `author_name`, and an
+`excerpt` of roughly the first hundred content characters); the full message projection lives in
+`selected`. A failed or timed-out action may already have mutated the backend: its last settled
 projection is retained and marked stale, then a later successful refresh reconciles it without
 replaying the action.
 
@@ -132,18 +134,24 @@ as diagnostics rather than silently disappearing.
 
 ## Offline assets and media
 
-Uploaded bytes are served from SimCord's in-memory CDN. Other URLs are rendered only when supplied
-in the explicit `assets={url: (filename, bytes)}` mapping. The bridge has no arbitrary filesystem
-root, URL proxy, remote-media fetch, Discord font download, or runtime documentation-image fetch.
-Assets are exposed as opaque, page-authorized IDs and browser blob URLs; they are revoked on page
-replacement, viewer switch, and close. Missing bytes show a labeled unavailable tile and make a
-capture incomplete unless `allow_incomplete=True`.
+Uploaded bytes are served from SimCord's in-memory CDN, and only through the message attachment
+that owns them: an attachment URL copied into another message's embed or component never resolves
+CDN bytes. Other URLs are rendered only when supplied in the explicit `assets={url: (filename,
+bytes)}` mapping. The bridge has no arbitrary filesystem root, URL proxy, remote-media fetch,
+Discord font download, or runtime documentation-image fetch. Assets are exposed as opaque,
+page-authorized IDs and browser blob URLs; they are revoked on page replacement, viewer switch, and
+close. Authorization is rechecked when bytes are served: the viewer must still have channel and
+history access, the owning message must still be visible, and the attachment must still be present,
+so deleting a message or removing an attachment immediately invalidates its assets. Asset IDs stay
+stable across publications while the underlying asset remains referenced. Missing bytes show a
+labeled unavailable tile and make a capture incomplete unless `allow_incomplete=True`.
 
 Inline validation uses Pillow for PNG, JPEG, WebP, and GIF. Audio/video playback, SVG/HTML, and
 unvalidated codecs are unsupported inline; authorized original bytes may remain downloadable and a
-validated poster can represent unsupported media without hiding its diagnostic. Animated interactive
-media may retain its validated animation, while managed capture uses the deterministic first fully
-composited frame.
+validated poster can represent unsupported media without hiding its diagnostic. Display always
+serves a deterministic first frame re-encoded as PNG without source metadata, so animated media
+never stays animated in place; the explicit `?download=1` asset request is the only path that
+serves the authorized original bytes.
 
 All limits below are **Preview resource limits**, not Discord protocol limits. Requests are rejected
 before unbounded buffering; bytes are never silently truncated:
@@ -159,7 +167,7 @@ before unbounded buffering; bytes are never silently truncated:
 | Animated frames / decoded RGBA bytes per asset | 100 / 64 MiB |
 | Media processing | One bounded decode job; no unbounded queue |
 | Interactive pages / managed captures | 16 pages / one capture |
-| Inactive page context lifetime | 10 minutes after the last request, unless an action is active |
+| Inactive page context lifetime | 10 minutes after the last request, unless an action is active; expired pages are reaped and their assets released |
 | Screenshot raster axis / total pixels | 32,768 / 32 megapixels |
 | Managed capture deadline | 30 seconds |
 
@@ -188,15 +196,26 @@ as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old m
 continuations cannot update a newer generation.
 
 Every callback action carries a context generation, bot generation, request ID, published revision,
-and positive per-page sequence. Admission is at-most-once: a duplicate latest request with the same
-payload returns its recorded status, a changed payload conflicts, old sequences expire, and gaps are
-rejected. Busy, stale, unauthorized, disabled, deleted, or invalid controls are rejected before
-admission and are never automatically retried. A disconnected client does not cancel an admitted
-callback; delivery failure is separate from callback settlement.
+and positive per-page sequence. Kind, control resolution, and values are validated before the
+sequence is admitted. Admission is at-most-once: a duplicate latest request with the same payload
+returns its
+recorded status, a changed payload conflicts, old sequences expire, and gaps are rejected. Busy,
+stale, unauthorized, disabled, deleted, or invalid controls are rejected before admission and are
+never automatically retried. A disconnected client does not cancel an admitted callback; delivery
+failure is separate from callback settlement.
+
+A pre-admission rejection is an ordinary result, not a transport error: the response reports
+`rejected: true`, `settlement: "rejected"`, `dispatch: "not_dispatched"`, the offending `sequence`,
+the page's current `expectedSequence`, the live `revision` and `presentation`, and one structured
+diagnostic (`bad-envelope`, `stale-sequence`, `sequence-gap`, `conflicting-request`, `busy`,
+`stale-context`, `stale-generation`, `stale-revision`, `unknown-kind`, or `validation-failed`).
+Rejections never consume the sequence: the next admissible action may reuse it. Mutating actions
+(`click`, `select`, `modal_submit`) must echo the page's current `publishedRevision`; a mismatch is
+rejected as `stale-revision` so a stale render cannot dispatch into newer state.
 
 `lastAction` reports dispatch (`dispatched`/`not_dispatched`), acknowledgement
-(`pending`/`acknowledged`/`deferred`/`unacknowledged`), settlement (`pending`/`settled`/`timeout`/
-`cancelled`), and presentation (`current`/`stale`/`access_denied`) independently. Bot callback
+(`pending`/`acknowledged`/`deferred`/`unacknowledged`), settlement (`pending`/`settled`/`failed`/
+`timeout`/`cancelled`), and presentation (`current`/`stale`/`access_denied`) independently. Bot callback
 errors and mutations are both retained; errors are diagnostics, not rollback. An unacknowledged
 interaction is failure, not simulated success. Inspect this result and then refresh; never retry a
 consumed sequence to make a screenshot look successful.
