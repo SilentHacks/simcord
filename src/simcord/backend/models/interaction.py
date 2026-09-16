@@ -41,6 +41,7 @@ class Interaction:
     modal_consumed: bool = False
     followup_ids: list[int] = field(default_factory=list)
     modal: dict[str, Any] | None = None
+    autocomplete_choices: list[dict[str, Any]] | None = None
 
     # ----------------------------------------------------- response lifecycle
 
