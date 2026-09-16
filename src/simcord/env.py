@@ -28,6 +28,10 @@ _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.Context
     "simcord_bot_scope", default=None
 )
 
+# Cap on virtual callbacks drained per settle turn so self-rescheduling
+# zero-delay chains cannot starve the settlement deadline check.
+_DUE_CALLBACK_BATCH = 64
+
 
 @dataclass(slots=True)
 class _TaskRecord:
@@ -398,6 +402,11 @@ class Env:
 
             def run_real() -> None:
                 if record.handle is not None and not record.handle.cancelled():
+                    # The real clock reached this timer: sync the virtual clock
+                    # so code observing monotonic() (e.g. View timeouts) sees
+                    # the elapsed delay too.
+                    if record.when is not None and record.when > self._virtual_time:
+                        self._virtual_time = record.when
                     record.handle._run()
 
             remaining = max(when - self._virtual_time, 0.0)
@@ -670,7 +679,7 @@ class Env:
         deadline = self._loop.time() + effective
         stable_empty = 0
         while True:
-            self._run_due_virtual_callbacks()
+            self._run_due_virtual_callbacks(deadline)
             await asyncio.sleep(0)
             pending = [task for task in self._owned_tasks() if not task.done()]
             callbacks = self._active_callbacks(deadline)
@@ -726,7 +735,11 @@ class Env:
                         )
                     )
 
-    def _run_due_virtual_callbacks(self) -> None:
+    def _run_due_virtual_callbacks(self, deadline: float) -> None:
+        # Bounded per settle turn: a callback rescheduling itself with
+        # call_later(0) must yield to the loop and the settlement deadline.
+        assert self._loop is not None
+        ran = 0
         while True:
             due = next(
                 (
@@ -744,17 +757,35 @@ class Env:
             assert due.handle is not None
             try:
                 due.handle._run()
-            except BaseException:
+            except Exception:
                 # The real loop routes callback failures to its exception
                 # handler; advancing virtual timers must keep that behavior.
                 pass
+            ran += 1
+            if ran >= _DUE_CALLBACK_BATCH or self._loop.time() >= deadline:
+                return
+
+    def _callback_fire_time(self, record: _CallbackRecord) -> float:
+        """Real-clock time at which the callback fires without advance_time().
+
+        ``-inf`` for already-due/immediate callbacks, ``+inf`` when only
+        ``advance_time()`` can still reach it (no live real fallback left).
+        """
+        if record.when is None or record.when <= self._virtual_time:
+            return -math.inf
+        real = record.real_handle
+        if real is None or real.cancelled():
+            return math.inf
+        return real.when()
 
     def _is_virtual_sleep_waiter(self, waiter: Any, deadline: float) -> bool:
         if waiter is None or waiter.done():
             return False
         for record in self._callbacks:
             handle = record.handle
-            if record.when is None or record.when <= deadline or handle is None or handle.cancelled():
+            if record.when is None or handle is None or handle.cancelled():
+                continue
+            if self._callback_fire_time(record) <= deadline:
                 continue
             callback = getattr(handle, "_callback", None)
             callback = getattr(callback, "__simcord_original_callback__", callback)
@@ -777,7 +808,7 @@ class Env:
         return live
 
     def _callback_is_parked(self, record: _CallbackRecord, deadline: float) -> bool:
-        return record.when is not None and record.when > deadline
+        return record.when is not None and self._callback_fire_time(record) > deadline
 
     def _is_parked(self, task: asyncio.Task[Any], deadline: float) -> bool:
         return self._park_reason(task, deadline) is not None
@@ -896,9 +927,11 @@ class Env:
             self.backend.expire_due_polls()
             self.backend.activate_due_scheduled_events()
             while (next_timer := self._next_virtual_timer()) is not None and next_timer <= target:
-                self._virtual_time = next_timer
+                # max(): a real fallback firing during settle may already have
+                # pushed the clock past this timer — virtual time never regresses.
+                self._virtual_time = max(self._virtual_time, next_timer)
                 await self._settle_internal()
-            self._virtual_time = target
+            self._virtual_time = max(self._virtual_time, target)
             await self._settle_internal()
         finally:
             self._end_operation(token)
