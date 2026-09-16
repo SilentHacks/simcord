@@ -19,13 +19,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 
-from ..actors import MemberActor
+from ..actors import MemberActor, _find_component, _modal_submit_nodes
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..backend.models import Interaction, Message
 from ..builders import ChannelHandle, UserHandle
-from ..components import walk_components
-from ..enums import ComponentType
+from ..components import validate_modal
+from ..enums import SELECT_TYPES, ComponentType
 from ..results import InteractionResult, ResponseMessage
 from ._capture import CapturePin, ManagedCapture
 from ._media import MediaError, MediaWorker
@@ -296,6 +296,9 @@ class Preview:
             # Every publish is a fresh settled projection: it is the only thing
             # that clears "stale" and restores revoked access.
             page.status = "current"
+        if page.modal is not None and getattr(page.modal._interaction, "modal_consumed", False):
+            page.modal = None
+            page.modal_handle = None
         page.snapshot = build_snapshot(self, page)
 
     def _retain_blob(self, blob: bytes) -> str | None:
@@ -996,6 +999,8 @@ class Preview:
             modal = page.modal
             if modal is None or body.get("modal_handle") != page.modal_handle:
                 raise SetupError("modal is stale or unavailable")
+            if getattr(modal._interaction, "modal_consumed", False):
+                raise SetupError("modal has already been submitted")
             modal_values = self._modal_values(page, body.get("values"))
 
             async def run_modal(action: _Action, cursor: int) -> dict[str, Any]:
@@ -1014,14 +1019,11 @@ class Preview:
             custom_id = body.get("custom_id")
             if not isinstance(custom_id, str):
                 raise SetupError("click requires custom_id")
-            component = next(
-                (item for item in walk_components(message.components) if item.get("custom_id") == custom_id),
-                None,
+            component = _find_component(
+                message.components, types=(ComponentType.BUTTON,), custom_id=custom_id, label=None
             )
-            if component is None:
-                raise SetupError("click control is unavailable")
-            if component.get("disabled"):
-                raise SetupError("click control is disabled")
+            if component.get("style") in (5, 6) or not component.get("custom_id"):
+                raise SetupError("click control is a link or premium button")
 
             async def run_click(action: _Action, cursor: int) -> dict[str, Any]:
                 return await self._run_component_action(
@@ -1075,11 +1077,7 @@ class Preview:
         except TypeError as exc:
             raise SetupError("select values must be scalar") from exc
         message = self._target_message(page)
-        component = next(
-            (item for item in walk_components(message.components) if item.get("custom_id") == custom_id), None
-        )
-        if component is None:
-            raise SetupError("select is unavailable")
+        component = _find_component(message.components, types=SELECT_TYPES, custom_id=custom_id, label=None)
         kind = ComponentType(component["type"])
         minimum = component.get("min_values", 1)
         maximum = component.get("max_values", 1)
@@ -1201,6 +1199,17 @@ class Preview:
                 converted[key] = [(item[0], item[1]) for item in value]
             else:
                 converted[key] = value
+        # Run the same per-control validation submit_modal applies at dispatch
+        # (required presence, bounds, option membership) so violations reject at
+        # admission instead of failing mid-dispatch with a consumed sequence.
+        interaction = page.modal._interaction
+        try:
+            spec = validate_modal(interaction.modal)
+        except ValueError as exc:
+            raise SetupError(str(exc)) from exc
+        _modal_submit_nodes(
+            spec.get("components") or [], page.viewer, converted, {}, interaction.channel_id, []
+        )
         return converted
 
     def _finish_action(
@@ -1307,13 +1316,16 @@ class Preview:
         if entry is None:
             raise SetupError("asset is unavailable")
         if not record.get("normalizedRetained"):
-            if self._retained_media_bytes + len(info.normalized) > self._MAX_MEDIA_BYTES:
-                record["available"] = False
-                record["diagnostic"] = "session media budget exceeded after normalization"
-                raise SetupError(record["diagnostic"])
+            # The normalized copy is shared per blob: charge it only when the
+            # first record retains it; later records just take a ref.
+            if entry.normalized_refs == 0:
+                if self._retained_media_bytes + len(info.normalized) > self._MAX_MEDIA_BYTES:
+                    record["available"] = False
+                    record["diagnostic"] = "session media budget exceeded after normalization"
+                    raise SetupError(record["diagnostic"])
+                entry.normalized_size = len(info.normalized)
+                self._retained_media_bytes += len(info.normalized)
             entry.normalized_refs += 1
-            entry.normalized_size = len(info.normalized)
-            self._retained_media_bytes += len(info.normalized)
             record["normalizedRetained"] = True
         record.update({"width": info.width, "height": info.height, "frames": info.frames, "validated": True})
         return info.content_type, info.normalized, filename

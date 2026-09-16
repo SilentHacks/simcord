@@ -13,6 +13,7 @@ from aiohttp import ClientSession
 from PIL import Image
 
 import simcord
+from simcord.components import walk_components
 
 
 def _png() -> bytes:
@@ -296,3 +297,169 @@ async def test_display_normalizes_animation_and_download_serves_original(env, ch
         assert response.status == 200
         assert "attachment" in response.headers["Content-Disposition"]
         assert await response.read() == original
+
+
+@pytest.mark.asyncio
+async def test_normalized_blob_charged_once_per_blob(env, channel, alice):
+    """The shared normalized copy is charged once, not once per asset record."""
+    message = await env.bot.get_channel(channel.id).send(
+        file=discord.File(io.BytesIO(_png()), filename="pic.png")
+    )
+    async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
+        await preview.show(message)
+        second = preview.open_page(alice.id, target_id=message.id)
+        for page in (preview._python, second):
+            asset_id = preview.page_payload(page)["selected"]["attachments"][0]["asset_id"]
+            response = await client.get(
+                preview.origin + f"/api/assets/{asset_id}", headers=_headers(preview, page.id)
+            )
+            assert response.status == 200
+            await response.read()
+        blob = next(iter(preview._blobs.values()))
+        assert blob.normalized_refs == 2
+        expected = len(_png()) + blob.normalized_size
+        assert preview._retained_media_bytes == expected
+        preview.close_page(second.id)
+        assert preview._retained_media_bytes == expected
+    assert preview._retained_media_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
+    """A select disabled after the snapshot rejects at admission, sequence intact."""
+    panel = await alice.slash(channel, "color")
+    stored = env.backend.get_message(channel.id, panel.response.id)
+    select = next(
+        component for component in walk_components(stored.components) if component.get("custom_id") == "color"
+    )
+    select["disabled"] = True
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(panel.response)
+        page = preview._python
+        base = {"generation": page.generation, "bot_generation": env._generation}
+        rejected = await preview.action(
+            "python",
+            {
+                **base,
+                "sequence": 1,
+                "request_id": "disabled-select",
+                "kind": "select",
+                "custom_id": "color",
+                "values": ["red"],
+                "published_revision": page.revision,
+            },
+        )
+        assert rejected["rejected"] is True
+        assert rejected["dispatched"] is False
+        assert rejected["expectedSequence"] == 0
+
+        select["disabled"] = False
+        settled = await preview.action(
+            "python",
+            {
+                **base,
+                "sequence": 1,
+                "request_id": "enabled-select",
+                "kind": "select",
+                "custom_id": "color",
+                "values": ["red"],
+                "published_revision": page.revision,
+            },
+        )
+        assert settled["rejected"] is False
+        assert settled["settlement"] == "settled"
+        assert channel.last_message.content == "Picked red"
+
+
+@pytest.mark.asyncio
+async def test_click_on_select_rejected_before_dispatch(env, channel, alice):
+    """kind=click against a select's custom_id is a pre-admission rejection."""
+    panel = await alice.slash(channel, "color")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(panel.response)
+        page = preview._python
+        rejected = await preview.action(
+            "python",
+            {
+                "generation": page.generation,
+                "bot_generation": env._generation,
+                "sequence": 1,
+                "request_id": "click-select",
+                "kind": "click",
+                "custom_id": "color",
+                "published_revision": page.revision,
+            },
+        )
+        assert rejected["rejected"] is True
+        assert rejected["dispatched"] is False
+        assert rejected["expectedSequence"] == 0
+
+
+@pytest.mark.asyncio
+async def test_consumed_modal_rejected_on_second_page(env, channel, alice):
+    """A modal consumed on one page rejects, not fails, when resubmitted elsewhere."""
+    feedback = await alice.slash(channel, "feedback")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(feedback)
+        page = preview._python
+        second = preview.open_page(alice.id)
+        assert second.modal_handle is not None
+        settled = await preview.action(
+            "python",
+            {
+                "generation": page.generation,
+                "bot_generation": env._generation,
+                "sequence": 1,
+                "request_id": "submit",
+                "kind": "modal_submit",
+                "modal_handle": page.modal_handle,
+                "values": {"name": "Ada"},
+                "published_revision": page.revision,
+            },
+        )
+        assert settled["rejected"] is False
+        assert settled["settlement"] == "settled"
+
+        resubmit = await preview.action(
+            second.id,
+            {
+                "generation": second.generation,
+                "bot_generation": env._generation,
+                "sequence": 1,
+                "request_id": "resubmit",
+                "kind": "modal_submit",
+                "modal_handle": second.modal_handle,
+                "values": {"name": "Bob"},
+                "published_revision": second.revision,
+            },
+        )
+        assert resubmit["rejected"] is True
+        assert resubmit["dispatched"] is False
+        assert resubmit["expectedSequence"] == 0
+        assert channel.last_message.content == "Thanks Ada"
+
+
+@pytest.mark.asyncio
+async def test_modal_missing_required_control_rejected(env, channel, alice):
+    """Omitting a required modal control rejects at admission, modal stays open."""
+    feedback = await alice.slash(channel, "feedback")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(feedback)
+        page = preview._python
+        rejected = await preview.action(
+            "python",
+            {
+                "generation": page.generation,
+                "bot_generation": env._generation,
+                "sequence": 1,
+                "request_id": "missing-required",
+                "kind": "modal_submit",
+                "modal_handle": page.modal_handle,
+                "values": {},
+                "published_revision": page.revision,
+            },
+        )
+        assert rejected["rejected"] is True
+        assert rejected["dispatched"] is False
+        assert rejected["expectedSequence"] == 0
+        assert preview.page_payload(page)["modal"] is not None
