@@ -1199,6 +1199,8 @@ class Preview:
                 converted[key] = [(item[0], item[1]) for item in value]
             else:
                 converted[key] = value
+        if page.modal is None:
+            raise SetupError("modal is stale or unavailable")
         # Run the same per-control validation submit_modal applies at dispatch
         # (required presence, bounds, option membership) so violations reject at
         # admission instead of failing mid-dispatch with a consumed sequence.

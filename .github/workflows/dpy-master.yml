@@ -17,6 +17,6 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: |
-          uv sync --extra dev
+          uv sync --extra dev --extra preview
           uv pip install -U "discord.py @ git+https://github.com/Rapptz/discord.py"
       - run: uv run pytest tests examples -q

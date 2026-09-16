@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra screenshot
       - run: uv run ruff check src tests examples benchmarks scripts
       - run: uv run ruff format --check src tests examples benchmarks scripts
       - run: uv run pyright src
@@ -55,7 +55,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra preview
       - run: uv run coverage run -m pytest tests examples -q
       - run: uv run coverage report
 
