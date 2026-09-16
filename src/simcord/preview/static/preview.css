@@ -488,7 +488,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   color: var(--discord-subtle);
   font-weight: 400;
 }
-.select-trigger:focus-visible { outline: 2px solid var(--discord-brand); outline-offset: 1px; }
+.select-trigger:focus-visible, .select-trigger.focus-visible { outline: 2px solid var(--discord-brand); outline-offset: 0; }
 .select-value { display: inline-flex; align-items: center; min-width: 0; }
 .select-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .select-chip {
@@ -878,6 +878,7 @@ textarea.modal-input { min-height: 90px; resize: none; }
   padding: 24px 25px 24px;
   background: transparent;
 }
+.modal-dialog.is-overflowing .modal-actions { padding: 24px 25px 25px; border-top: 1px solid #44454c; }
 .modal-actions button { width: 100%; min-height: 40px; }
 .modal-actions .button-secondary { background: #44454c; }
 .modal-actions .button-secondary:hover:not(:disabled) { background: #4c4d54; }

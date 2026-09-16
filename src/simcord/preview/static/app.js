@@ -81,13 +81,23 @@ Object.defineProperty(window, "simcordPreview", { configurable: false, enumerabl
 function rememberFocus() {
   const active = document.activeElement;
   state.focusKey = active instanceof HTMLElement ? active.dataset.controlKey || null : null;
+  state.focusVisible = active instanceof HTMLElement
+    && (active.matches(":focus-visible") || active.classList.contains("focus-visible"));
 }
 
 function restoreFocus() {
   if (!state.focusKey) return;
   const controls = [...document.querySelectorAll("[data-control-key]")];
-  const target = controls.find((item) => item.dataset.controlKey === state.focusKey);
-  if (target instanceof HTMLElement) target.focus();
+  const target =
+    controls.find((item) => item.dataset.controlKey === state.focusKey && item.tabIndex >= 0)
+    || controls.find((item) => item.dataset.controlKey === state.focusKey);
+  if (target instanceof HTMLElement) {
+    target.focus();
+    if (state.focusVisible && !target.matches(":focus-visible")) {
+      target.classList.add("focus-visible");
+      target.addEventListener("blur", () => target.classList.remove("focus-visible"), { once: true });
+    }
+  }
 }
 
 function revokeAssets() {
