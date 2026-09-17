@@ -1,0 +1,99 @@
+name: Verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      # screenshot extra pulls in playwright/PIL/markdown-it so pyright resolves
+      # the lazy optional imports in simcord.preview with real type info.
+      - run: uv sync --extra dev --extra screenshot
+      - run: uv run ruff check src tests examples benchmarks scripts
+      - run: uv run ruff format --check src tests examples benchmarks scripts
+      - run: uv run pyright src
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      # preview extra adds markdown-it + Pillow so non-browser preview tests run;
+      # playwright stays absent so capture tests skip via importorskip.
+      - run: uv sync --extra dev --extra preview
+      - run: uv run coverage run -m pytest tests examples -q
+      - run: uv run coverage report
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --extra docs
+      - run: uv run mkdocs build --strict
+      - run: uv run python scripts/check_discoverability.py site
+
+  preview-package:
+    name: Preview package + pinned Linux Chromium
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra screenshot --extra pytest
+      - run: uv run python -m playwright install --with-deps chromium
+      - run: uv run pytest tests/integration/test_preview*.py -q
+      - run: uv build
+      - run: uv run python scripts/check_package.py dist
+      - name: Install the wheel outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p package-smoke-artifacts
+          uv venv --python 3.12 "$tmp/venv"
+          wheel="$(printf '%s\n' "$GITHUB_WORKSPACE"/dist/*.whl)"
+          uv pip install --python "$tmp/venv/bin/python" \
+            "simcord[screenshot] @ file://$wheel"
+          "$tmp/venv/bin/python" -m playwright install --with-deps chromium
+          cp examples/bot.py examples/preview_example.py "$tmp/"
+          (
+            cd "$tmp"
+            "$tmp/venv/bin/python" preview_example.py > "$GITHUB_WORKSPACE/package-smoke-artifacts/preview-report.json"
+          )
+          cp "$tmp/preview-example.png" package-smoke-artifacts/
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: preview-package-failure
+          path: package-smoke-artifacts/
+          if-no-files-found: ignore
+
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      # The perf guards (absolute budget + same-run scaling ratio) fail the build
+      # on a catastrophic regression; the JSON is uploaded as a non-gating trend.
+      - run: uv sync --extra bench
+      - run: uv run pytest benchmarks --benchmark-json=benchmark.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: benchmark-results
+          path: benchmark.json
