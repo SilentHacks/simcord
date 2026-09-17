@@ -69,8 +69,11 @@ For screenshots, install Playwright and its browser explicitly:
 
 ```bash
 python -m pip install "simcord[screenshot]"
-playwright install chromium
+playwright install --with-deps chromium
 ```
+
+(`--with-deps` installs the system libraries Chromium needs; plain `playwright install chromium` is
+enough when those dependencies are already present.)
 
 Missing `aiohttp`, Pillow, Playwright, or browser binaries produce direct installation guidance
 when the feature is used. They are never imported or downloaded by a base `import simcord`.

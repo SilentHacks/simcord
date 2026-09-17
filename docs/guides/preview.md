@@ -31,8 +31,11 @@ For managed PNG capture, install Playwright and its pinned browser explicitly:
 
 ```bash
 python -m pip install "simcord[screenshot]"
-playwright install chromium
+playwright install --with-deps chromium
 ```
+
+`--with-deps` also installs the system libraries Chromium needs — required on bare Linux
+containers; plain `playwright install chromium` suffices where those dependencies already exist.
 
 `import simcord` and ordinary tests do not import these optional runtimes, read preview assets,
 start a server, or download a browser. `aiohttp` already ships as a discord.py dependency, so a
@@ -65,6 +68,11 @@ There is one active Preview per `Env`. `close()` is idempotent and is also calle
 environment shutdown, and cancellation. Closing a browser tab releases only that page; it does
 not stop Python or the Preview. The toolbar's **Close** action closes the whole session. No browser
 is launched automatically.
+
+`port=` pins the loopback port: `None` or `0` keeps the OS-assigned default, while an integer in
+1–65535 binds that exact port so the capability URL is stable across reruns and pre-created SSH
+forwards. The URL stays capability-gated either way. An out-of-range value raises `SetupError`, and
+a port that is already occupied raises `SetupError` when the session is entered.
 
 `env.restart_bot()` does **not** close a Preview — the session, pages, and URL survive the restart.
 The restart advances the bot generation, so action envelopes sent by a page loaded before it are
@@ -196,8 +204,8 @@ A browser exposes a read-only `window.simcordPreview` object for agents and capt
 ```javascript
 {
   protocolVersion, contextId, contextGeneration, botGeneration,
-  publishedRevision, renderGeneration, lastAction,
-  ready, complete, calibration, diagnostics, profile
+  viewerId, targetId, publishedRevision, renderGeneration,
+  lastAction, ready, complete, calibration, diagnostics, profile
 }
 ```
 
@@ -234,6 +242,27 @@ errors and mutations are both retained; errors are diagnostics, not rollback. An
 interaction is failure, not simulated success. Inspect this result and then refresh; never retry a
 consumed sequence to make a screenshot look successful.
 
+## Structured snapshots
+
+`await preview.snapshot()` is the structured, agent-facing read surface: it settles bot work,
+republishes the Python presentation, and returns the detached JSON projection dict the bundled page
+renders — the same state a browser would display, as plain data. It is intended for assertions and
+text-only tooling where no browser or PNG is needed, and raises `SetupError` when the preview is not
+active:
+
+```python
+snapshot = await preview.snapshot()
+assert snapshot["selected"] is not None
+print(snapshot["diagnostics"], snapshot["lastAction"])
+```
+
+The payload is protocol-versioned diagnostic data, not pixel output: `protocolVersion` labels the
+shape, `publishedRevision`/`botGeneration` label the settled publication it reflects, and the
+remaining keys — `context`, `viewers`, `viewerId`, `channelId`, `channel`, `targetId`, `messages`,
+`selected`, `modal`, `candidates`, `assets`, `profile`, `status`, `diagnostics`, and `lastAction` —
+describe the focused presentation. Field-level details may evolve under `protocolVersion`; assert on
+the documented keys rather than the exact payload layout.
+
 ## Screenshot profiles, modes, and reports
 
 `preview.screenshot(path, ...)` settles and pins the requested viewer/target before releasing the
@@ -247,6 +276,10 @@ capture = await preview.screenshot(
 assert capture.ready
 print(capture.complete, capture.diagnostics)
 ```
+
+`path` is `str | None`. Pass `None` to render entirely in memory: `capture.path` is then `None` and
+`capture.png` holds the PNG bytes (`bytes | None`, `None` when a filesystem path was given), which
+suits agents and diff tooling that never touch disk.
 
 The effective profile records theme, viewport width/height, locale, timezone, device scale, reduced
 motion, Playwright/browser versions, system font identity, emoji fallback, and animation policy.
@@ -283,6 +316,22 @@ Then open `http://127.0.0.1:PORT/#CAPABILITY` locally. The SSH account and local
 the capability; use a private tunnel, never `-g` or a public bind. If `PORT` is already occupied
 locally, stop the conflicting listener rather than changing only one side of the forward. Forwarding
 is a trusted-user workflow, not multi-user authentication or a sandbox.
+
+With an OS-assigned port the forward can only be created after the URL is known. Pinning `port=`
+reverses that order — create the tunnel first, then start the session on the port it already
+forwards:
+
+```python
+async with env.preview(channel, viewers=[alice], port=8765) as preview:
+    ...
+```
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 user@remote-host
+```
+
+A busy pinned port raises `SetupError` on entry rather than silently moving, so a stale forward
+never points at the wrong listener.
 
 ## Fidelity, completeness, and calibration
 

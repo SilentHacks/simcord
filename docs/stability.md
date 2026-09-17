@@ -76,9 +76,10 @@ The public surface is exactly what `simcord` exports from its top-level package
   `RouteNotImplemented` and `UnsupportedField`.
 
 Preview's public Python lifecycle, capture report fields, and readiness semantics are covered by
-semantic versioning. Its internal HTTP payloads, endpoint names, DOM structure, and CSS classes are
-implementation details, not general extension APIs. The `pytest` plugin (the `simcord_env` fixture)
-is part of the public surface too.
+semantic versioning. `preview.snapshot()` is the covered structured read surface; its payload fields
+may evolve under its `protocolVersion` key rather than the package version. Internal HTTP payloads,
+endpoint names, DOM structure, and CSS classes are implementation details, not general extension
+APIs. The `pytest` plugin (the `simcord_env` fixture) is part of the public surface too.
 
 ## What is intentionally internal
 

@@ -3,7 +3,7 @@
 Install the optional browser tools before running this example::
 
     python -m pip install "simcord[screenshot]"
-    playwright install chromium
+    playwright install --with-deps chromium
     python examples/preview_example.py
 
 The callback is dispatched by SimCord's actor, not mocked by the example. The
@@ -34,9 +34,10 @@ async def main(destination: str = "preview-example.png") -> None:
         panel = channel.last_message
 
         async with env.preview(channel, viewers=[alice]) as preview:
+            # Stays live until the context exits; await preview.wait_closed() keeps it open.
+            print(preview.url)
             opened = await alice.click(panel, custom_id="panel:edit")
             updated = await alice.submit_modal(opened, {"title": "Edited from the preview"})
-            await preview.refresh()
 
             capture = await preview.screenshot(Path(destination), allow_incomplete=True)
             print(

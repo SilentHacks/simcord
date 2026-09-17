@@ -31,9 +31,13 @@ To run the browser preview example:
 
 ```bash
 python -m pip install "simcord[screenshot]"
-playwright install chromium
+playwright install --with-deps chromium
 python examples/preview_example.py
 ```
+
+The example prints the live capability-gated preview URL and writes a PNG plus a JSON capture
+report to stdout. The session exits once the capture finishes; add
+`await preview.wait_closed()` before the context exits to keep it open for clicking around.
 
 For more patterns, including selects, autocomplete, view timeouts, fault injection, and DMs,
 see the [recipe cookbook](../docs/cookbook.md) and the
