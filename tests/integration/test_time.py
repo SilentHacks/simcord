@@ -157,3 +157,20 @@ async def test_zero_delay_timer_chain_respects_settle_deadline():
         channel = guild.create_text_channel("general")
         with pytest.raises(asyncio.TimeoutError):
             await alice.send(channel, "chain")
+
+
+async def test_out_of_order_shutdown_leaves_real_clock_intact():
+    """env2 captures env1's patched clock; detaching env1 first restores a stale
+    closure, which must keep working off its captured original rather than the
+    cleared ``_orig_*`` attribute."""
+    env1 = simcord.Env(create_bot())
+    env2 = simcord.Env(create_bot())
+    await env1.start()
+    await env2.start()
+    await env1.shutdown()
+    await env2.shutdown()
+
+    loop = asyncio.get_running_loop()
+    assert isinstance(time.monotonic(), float)
+    assert isinstance(loop.time(), float)
+    await asyncio.sleep(0)

@@ -116,7 +116,7 @@ class BackendBase:
     def make_user(self, name: str, **fields: Any) -> User:
         """Create and register a user. ``fields`` are :class:`User` attributes
         (``bot``, ``system``, ``global_name``, ``discriminator``,
-        ``public_flags``); their defaults live on the model, not here."""
+        ``public_flags``, ``avatar``); their defaults live on the model, not here."""
         user = User(id=self.snowflake(), name=name, **fields)
         self.users[user.id] = user
         return user

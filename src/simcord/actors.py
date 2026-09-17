@@ -16,6 +16,7 @@ import discord
 
 from . import interactions as _interactions
 from .backend import serializers
+from .backend.access import can_access_channel, can_access_message
 from .backend.errors import SetupError
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
 from .components import validate_modal, walk_components
@@ -410,12 +411,10 @@ def _visible_message(actor: Any, message: MessageLike) -> Any:
     backend = actor._env.backend
     fallback = actor.dm_channel.id if isinstance(actor, UserHandle) else None
     channel_id = _channel_id_of(message, fallback)
-    from .backend.access import can_access_message
-
     _check_user_dm_channel(actor, channel_id)
     stored = backend.get_message(channel_id, message.id)
     if not can_access_message(actor._env, channel_id, stored, actor):
-        raise SetupError("That message is not visible to this user")
+        raise SetupError("That message is not visible to this user — a real user could not interact with it")
     return stored
 
 
@@ -783,7 +782,7 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
         raise SetupError("Only the modal opener can submit it")
     if interaction.modal is None:
         raise SetupError("That interaction did not respond with a modal")
-    if getattr(interaction, "modal_consumed", False):
+    if interaction.modal_consumed:
         raise SetupError("That modal has already been submitted")
     spec = interaction.modal
     if not isinstance(values, dict):
@@ -794,8 +793,6 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
         raise SetupError(str(exc)) from exc
     channel_id = interaction.channel_id
     _check_user_dm_channel(actor, channel_id)
-    from .backend.access import can_access_channel
-
     if not can_access_channel(actor._env, channel_id, actor):
         raise SetupError("That modal is no longer available to this user")
     controls = _modal_control_map(spec)

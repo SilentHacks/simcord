@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import discord
 
@@ -23,6 +23,13 @@ from .backend.errors import SetupError
 from .builders import GuildHandle, UserHandle
 from .gateway import ShardRouter
 from .http import FakeHTTPClient, FakeWebhookAdapter
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from .actors import MemberActor
+    from .builders import ChannelHandle
+    from .preview import Preview
 
 _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.ContextVar(
     "simcord_bot_scope", default=None
@@ -118,7 +125,7 @@ class Env:
         self._pre_shutdown_task: asyncio.Task[Any] | None = None
         self._pre_shutdown_complete = False
         self._dispatch_observers: list[Callable[[Any], Any]] = []
-        self._preview: Any | None = None
+        self._preview: Preview | None = None
         self._adapter_token: Any = None
         self._gateway_feed: Any = None
         self._shard_count = 1
@@ -355,6 +362,8 @@ class Env:
         context: contextvars.Context | None,
         when: float | None,
         schedule_args: tuple[Any, ...] = (),
+        real_call_at: Any = None,
+        real_monotonic: Any = None,
     ) -> asyncio.Handle:
         bound_task = getattr(callback, "__self__", None)
         if isinstance(bound_task, asyncio.Task):
@@ -410,8 +419,8 @@ class Env:
                     record.handle._run()
 
             remaining = max(when - self._virtual_time, 0.0)
-            record.real_handle = self._orig_call_at(
-                self._orig_monotonic() + remaining, run_real, context=schedule_context
+            record.real_handle = real_call_at(
+                real_monotonic() + remaining, run_real, context=schedule_context
             )
         record.handle = handle
         if not called:
@@ -427,12 +436,15 @@ class Env:
         self._generation += 1
         self._shard_count, self._shard_ids = self._resolve_shards(bot)
 
-        self._orig_create_task = loop.create_task
-        self._orig_call_soon = loop.call_soon
-        self._orig_call_later = loop.call_later
-        self._orig_call_at = loop.call_at
-        self._orig_call_soon_threadsafe = loop.call_soon_threadsafe
-        self._orig_run_in_executor = loop.run_in_executor
+        # Locals as well as attributes: patched callables must keep working if
+        # an out-of-order detach restores one of them after _orig_* is cleared.
+        orig_create_task = self._orig_create_task = loop.create_task
+        orig_call_soon = self._orig_call_soon = loop.call_soon
+        orig_call_later = self._orig_call_later = loop.call_later
+        orig_call_at = self._orig_call_at = loop.call_at
+        orig_call_soon_threadsafe = self._orig_call_soon_threadsafe = loop.call_soon_threadsafe
+        orig_run_in_executor = self._orig_run_in_executor = loop.run_in_executor
+        orig_monotonic = self._orig_monotonic = time.monotonic
 
         def tracking_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
             scope = _BOT_SCOPE.get()
@@ -440,7 +452,7 @@ class Env:
             if context is not None:
                 kwargs["context"] = self._context_for_scope(context, scope)
             label = _dpy_internals.task_label(coro) if scope is not None and scope[0] is self else None
-            task = self._orig_create_task(coro, **kwargs)
+            task = orig_create_task(coro, **kwargs)
             if not isinstance(task, asyncio.Task):
                 raise SetupError("simcord requires the loop task factory to return asyncio.Task objects")
             if label is not None:
@@ -451,7 +463,7 @@ class Env:
         def call_soon(
             callback: Any, *args: Any, context: contextvars.Context | None = None
         ) -> asyncio.Handle:
-            return self._track_callback(self._orig_call_soon, callback, args, context=context, when=None)
+            return self._track_callback(orig_call_soon, callback, args, context=context, when=None)
 
         def call_later(
             delay: float, callback: Any, *args: Any, context: contextvars.Context | None = None
@@ -459,12 +471,14 @@ class Env:
             return cast(
                 asyncio.TimerHandle,
                 self._track_callback(
-                    self._orig_call_later,
+                    orig_call_later,
                     callback,
                     args,
                     context=context,
                     when=self._virtual_time + max(delay, 0.0),
                     schedule_args=(delay,),
+                    real_call_at=orig_call_at,
+                    real_monotonic=orig_monotonic,
                 ),
             )
 
@@ -474,26 +488,26 @@ class Env:
             return cast(
                 asyncio.TimerHandle,
                 self._track_callback(
-                    self._orig_call_at,
+                    orig_call_at,
                     callback,
                     args,
                     context=context,
                     when=self._virtual_time + max(when - loop.time(), 0.0),
                     schedule_args=(when,),
+                    real_call_at=orig_call_at,
+                    real_monotonic=orig_monotonic,
                 ),
             )
 
         def call_soon_threadsafe(
             callback: Any, *args: Any, context: contextvars.Context | None = None
         ) -> asyncio.Handle:
-            return self._track_callback(
-                self._orig_call_soon_threadsafe, callback, args, context=context, when=None
-            )
+            return self._track_callback(orig_call_soon_threadsafe, callback, args, context=context, when=None)
 
         def run_in_executor(executor: Any, func: Any, *args: Any) -> Any:
             scope = _BOT_SCOPE.get()
             if scope is None or scope[0] is not self:
-                return self._orig_run_in_executor(executor, func, *args)
+                return orig_run_in_executor(executor, func, *args)
 
             def owned_call(*call_args: Any) -> Any:
                 token = _BOT_SCOPE.set(scope)
@@ -502,7 +516,7 @@ class Env:
                 finally:
                     _BOT_SCOPE.reset(token)
 
-            return self._orig_run_in_executor(executor, owned_call, *args)
+            return orig_run_in_executor(executor, owned_call, *args)
 
         loop.create_task = tracking_create_task  # type: ignore[method-assign]
         loop.call_soon = call_soon  # type: ignore[method-assign]
@@ -513,13 +527,12 @@ class Env:
 
         if self._virtual_time == 0.0:
             self._virtual_time = loop.time()
-        self._orig_monotonic = time.monotonic
 
         def monotonic() -> float:
             scope = _BOT_SCOPE.get()
             if scope is not None and scope[0] is self:
                 return self._virtual_time
-            return self._orig_monotonic()
+            return orig_monotonic()
 
         time.monotonic = monotonic
         self._orig_view_time = _dpy_internals.view_time()
@@ -787,8 +800,7 @@ class Env:
                 continue
             if self._callback_fire_time(record) <= deadline:
                 continue
-            callback = getattr(handle, "_callback", None)
-            callback = getattr(callback, "__simcord_original_callback__", callback)
+            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
             if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and any(
                 arg is waiter for arg in getattr(handle, "_args", ())
             ):
@@ -993,20 +1005,20 @@ class Env:
 
     def preview(
         self,
-        channel: Any,
+        channel: ChannelHandle,
         *,
-        viewers: Any,
+        viewers: Sequence[MemberActor | UserHandle],
         theme: str = "dark",
         width: int = 960,
         height: int = 720,
         locale: str = "en-US",
         timezone: str = "UTC",
         assets: Mapping[str, tuple[str, bytes]] | None = None,
-    ) -> Any:
+    ) -> Preview:
         """Create one eagerly validated local preview context manager."""
         if not self._started:
             raise SetupError("Env is not running")
-        if self._preview is not None and not getattr(self._preview, "_closed", False):
+        if self._preview is not None and not self._preview._closed:
             raise SetupError("Only one active Preview is allowed per Env")
         token = self._begin_operation("preview")
         try:
@@ -1037,6 +1049,7 @@ class Env:
         global_name: str | None = None,
         discriminator: str = "0",
         public_flags: discord.PublicUserFlags | None = None,
+        avatar: str | None = None,
     ) -> UserHandle:
         """Create a virtual user.
 
@@ -1047,7 +1060,8 @@ class Env:
         ``global_name`` is the display name (distinct from the unique
         ``name``/username); ``discriminator`` is the legacy four-digit tag
         (``"0"`` for migrated accounts); ``public_flags`` carries badge flags
-        such as ``verified_bot``.
+        such as ``verified_bot``; ``avatar`` is the avatar image hash
+        (``None`` falls back to a default avatar).
         """
         return UserHandle(
             self,
@@ -1058,6 +1072,7 @@ class Env:
                 global_name=global_name,
                 discriminator=discriminator,
                 public_flags=public_flags.value if public_flags is not None else 0,
+                avatar=avatar,
             ),
         )
 
