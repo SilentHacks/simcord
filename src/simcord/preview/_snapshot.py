@@ -25,7 +25,8 @@ from ._markdown import markdown_tokens
 
 if TYPE_CHECKING:
     from ..env import Env
-    from . import Preview, _Page
+    from . import Preview
+    from ._pages import _Page
 
 _PROTOCOL_VERSION = 1
 _ENTITY_TYPES = {
@@ -99,7 +100,7 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
         "height": attachment.get("height"),
         "duration_secs": attachment.get("duration_secs"),
         "asset_id": asset_id,
-        "available": bool(page.assets.get(asset_id, {}).get("available", False)),
+        "available": _asset_available(page, asset_id),
     }
 
 
@@ -148,7 +149,7 @@ def _decorate_components(
                 attachment = by_name.get(url.removeprefix("attachment://"))
             asset_id = cast(str, _asset_meta(page, url, attachment, message))
             media["asset_id"] = asset_id
-            media["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
+            media["available"] = _asset_available(page, asset_id)
             if attachment is not None:
                 media.update(
                     {
@@ -184,7 +185,7 @@ def _embed_projection(
         asset_id = _asset_meta(page, url, item, message)
         if asset_id:
             value.setdefault(key, {})["asset_id"] = asset_id
-            value[key]["available"] = bool(page.assets.get(asset_id, {}).get("available", False))
+            value[key]["available"] = _asset_available(page, asset_id)
             if item is not None:
                 value[key]["attachment_id"] = str(item.get("id", ""))
     for key in ("title", "description"):
@@ -300,19 +301,9 @@ def _message_summary(env: Env, message: Message) -> dict[str, Any]:
     }
 
 
-def _wire_asset(record: dict[str, Any]) -> dict[str, Any]:
-    """Public asset record — internal bookkeeping keys never reach the wire."""
-    out: dict[str, Any] = {
-        "id": record["id"],
-        "filename": record["filename"],
-        "contentType": record["contentType"],
-        "available": bool(record.get("available", False)),
-    }
-    if record.get("bytes") is not None:
-        out["bytes"] = record["bytes"]
-    if record.get("diagnostic") is not None:
-        out["diagnostic"] = record["diagnostic"]
-    return out
+def _asset_available(page: _Page, asset_id: str | None) -> bool:
+    record = page.assets.get(asset_id) if asset_id is not None else None
+    return bool(record is not None and record.available)
 
 
 def _candidates(
@@ -465,7 +456,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "lastAction": page.last_action,
     }
     preview._reconcile_assets(page)
-    snapshot["assets"] = {asset_id: _wire_asset(record) for asset_id, record in page.assets.items()}
+    snapshot["assets"] = {asset_id: record.to_wire() for asset_id, record in page.assets.items()}
     return snapshot
 
 

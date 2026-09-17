@@ -7,18 +7,76 @@ import importlib.metadata
 import json
 import math
 import os
+import secrets
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
+from ..actors import MemberActor
+from ..backend.access import can_access_channel
 from ..backend.errors import SetupError
+from ..builders import UserHandle
+from ._pages import _Page
+from ._snapshot import build_snapshot
+
+if TYPE_CHECKING:
+    from ..builders import ChannelHandle
+    from ..env import Env
+    from ..results import InteractionResult
+    from . import Preview
 
 _CAPTURE_DEADLINE = 30.0
 _MAX_AXIS = 32768
 _MAX_PIXELS = 32 * 1024 * 1024
+
+
+def _freeze_capture(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_capture(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_capture(item) for item in value)
+    return value
+
+
+def _capture_destination(path: Any) -> Path:
+    try:
+        destination = Path(path)
+    except TypeError as exc:
+        raise SetupError("capture path must be filesystem-like") from exc
+    if destination.is_dir():
+        raise SetupError("capture path must be a file")
+    if not destination.parent.is_dir():
+        raise SetupError("capture destination directory does not exist")
+    return destination
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewCapture:
+    """Immutable metadata returned by the optional screenshot extra."""
+
+    path: str
+    published_revision: int
+    render_generation: int
+    viewer_id: str
+    channel_id: str
+    target_id: str | None
+    mode: str = "surface"
+    complete: bool = False
+    diagnostics: tuple[Mapping[str, Any], ...] = ()
+    modal_id: str | None = None
+    profile: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    geometry: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    output_width: int = 0
+    output_height: int = 0
+    ready: bool = False
+    calibrated: bool = False
+    calibration: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    action: Mapping[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -293,4 +351,179 @@ class ManagedCapture:
         )
 
 
-__all__ = ["CapturePin", "ManagedCapture"]
+class _CaptureOps:
+    """Pinned capture pages plus the managed screenshot entry point."""
+
+    env: Env
+    channel: ChannelHandle
+    _python: _Page | None
+    _pages: dict[str, _Page]
+    _active: bool
+    _closed: bool
+    _capture_manager: ManagedCapture
+    _capture_task: asyncio.Task[Any] | None
+    _capture_page: _Page | None
+    _capture_generation: int
+    _publish: Callable[[_Page], None]
+    _clear_page_assets: Callable[[_Page], None]
+    _viewer: Callable[[Any], Any]
+    _resolve_target: Callable[..., tuple[int | None, InteractionResult | None]]
+
+    def _capture_viewer(self, viewer: Any) -> Any:
+        if viewer is None:
+            return cast(_Page, self._python).viewer
+        if isinstance(viewer, (MemberActor, UserHandle)):
+            if viewer._env is not self.env:
+                raise SetupError("capture viewer belongs to another Env")
+            return self._viewer(viewer.id)
+        return self._viewer(viewer)
+
+    def _capture_target(self, viewer: Any, target: Any) -> tuple[int | None, InteractionResult | None]:
+        if target is None:
+            return cast(_Page, self._python).target_id, None
+        return self._resolve_target(viewer, target, capture=True)
+
+    @staticmethod
+    def _capture_attachment_ids(snapshot: Mapping[str, Any]) -> dict[str, str]:
+        found: dict[str, str] = {}
+
+        def visit(value: Any) -> None:
+            if isinstance(value, Mapping):
+                asset_id = value.get("asset_id")
+                attachment_id = value.get("attachment_id")
+                if isinstance(asset_id, str) and attachment_id is not None:
+                    found[asset_id] = str(attachment_id)
+                for item in value.get("attachments", ()):
+                    found[item["asset_id"]] = str(item.get("id", ""))
+                for item in value.values():
+                    visit(item)
+            elif isinstance(value, list):
+                for item in value:
+                    visit(item)
+
+        visit(snapshot.get("selected"))
+        return {key: value for key, value in found.items() if value}
+
+    def _pin_capture(self, viewer: Any, target: Any) -> CapturePin:
+        if not can_access_channel(self.env, self.channel.id, viewer, history=True):
+            raise SetupError("capture viewer cannot access this channel")
+        source = cast(_Page, self._python)
+        target_id, modal = self._capture_target(viewer, target)
+        if modal is None and target is None and source.modal is not None:
+            if source.modal._interaction.user_id != viewer.id:
+                raise SetupError("capture modal opener is not the requested viewer")
+            modal = source.modal
+        capture_page = _Page(
+            cast("Preview", self),
+            "capture_" + secrets.token_urlsafe(12),
+            viewer,
+            self.channel.id,
+            target_id,
+            generation=source.generation,
+            revision=source.revision,
+            status=source.status,
+        )
+        if modal is not None:
+            capture_page.modal = modal
+            capture_page.modal_handle = "m_" + secrets.token_urlsafe(12)
+        capture_page.last_action = deepcopy(source.last_action)
+        snapshot = build_snapshot(cast("Preview", self), capture_page)
+        if target_id is None and modal is None:
+            snapshot["diagnostics"] = [
+                *snapshot.get("diagnostics", []),
+                {
+                    "code": "target-unavailable",
+                    "severity": "warning",
+                    "message": "No focused message is available for this capture",
+                    "complete": False,
+                },
+            ]
+        capture_page.snapshot = snapshot
+        capture_page.pinned_snapshot = deepcopy(snapshot)
+        capture_page.pinned_generation = self.env._generation
+        capture_page.pinned_attachment_ids = self._capture_attachment_ids(snapshot)
+        self._pages[capture_page.id] = capture_page
+        self._capture_generation += 1
+        profile = dict(snapshot.get("profile", {}))
+        profile.update({"deviceScale": 1, "reducedMotion": True})
+        return CapturePin(
+            capture_page,
+            capture_page.pinned_snapshot,
+            self.env._generation,
+            int(snapshot.get("publishedRevision", source.revision)),
+            str(snapshot.get("viewerId", viewer.id)),
+            str(snapshot.get("channelId", self.channel.id)),
+            str(snapshot["targetId"]) if snapshot.get("targetId") is not None else None,
+            capture_page.modal_handle,
+            profile,
+        )
+
+    async def screenshot(
+        self,
+        path: Any,
+        *,
+        viewer: Any = None,
+        target: Any = None,
+        mode: str = "surface",
+        allow_incomplete: bool = False,
+    ) -> PreviewCapture:
+        if mode not in {"surface", "viewport"}:
+            raise SetupError("capture mode must be 'surface' or 'viewport'")
+        if not isinstance(allow_incomplete, bool):
+            raise SetupError("allow_incomplete must be a boolean")
+        if not self._active or self._closed:
+            raise SetupError("Preview is not active")
+        destination = _capture_destination(path)
+        if self._capture_task is not None and not self._capture_task.done():
+            raise SetupError("Preview is busy with another capture")
+        self._capture_task = asyncio.current_task()
+        pin: CapturePin | None = None
+        try:
+            token = self.env._begin_operation("preview.screenshot")
+            try:
+                await self.env._settle_internal()
+                if self._closed or not self._active:
+                    raise SetupError("Preview is closing")
+                for page in tuple(self._pages.values()):  # pragma: no branch - bounded snapshot pass
+                    if page.pinned_snapshot is None:
+                        self._publish(page)
+                pin = self._pin_capture(self._capture_viewer(viewer), target)
+            finally:
+                self.env._end_operation(token)
+            self._capture_page = pin.page
+            data = await self._capture_manager.render(
+                pin,
+                destination,
+                mode=mode,
+                allow_incomplete=allow_incomplete,
+            )
+            return PreviewCapture(
+                path=data["path"],
+                published_revision=data["published_revision"],
+                render_generation=data["render_generation"],
+                viewer_id=data["viewer_id"],
+                channel_id=data["channel_id"],
+                target_id=data["target_id"],
+                mode=data["mode"],
+                complete=data["complete"],
+                diagnostics=_freeze_capture(data["diagnostics"]),
+                modal_id=data["modal_id"],
+                profile=_freeze_capture(data["profile"]),
+                geometry=_freeze_capture(data["geometry"]),
+                output_width=data["output_width"],
+                output_height=data["output_height"],
+                ready=data["ready"],
+                calibrated=data["calibrated"],
+                calibration=_freeze_capture(data["calibration"]),
+                action=_freeze_capture(data["action"]) if data["action"] is not None else None,
+            )
+        finally:
+            if pin is not None:
+                removed = self._pages.pop(pin.page.id, None)
+                if removed is not None:
+                    self._clear_page_assets(removed)
+            self._capture_page = None
+            self._capture_task = None
+
+
+__all__ = ["CapturePin", "ManagedCapture", "PreviewCapture"]
