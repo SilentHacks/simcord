@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..backend.errors import BackendError, SetupError
 
 if TYPE_CHECKING:
+    from aiohttp import web
+
     from . import Preview
 
 
@@ -56,6 +58,7 @@ class PreviewServer:
         self.port: int | None = None
 
     async def start(self) -> None:
+        global web
         try:
             from aiohttp import web
         except ImportError as exc:  # pragma: no cover - dependency is an optional runtime extra
@@ -101,8 +104,6 @@ class PreviewServer:
         return True
 
     async def _index(self, request: Any) -> Any:
-        from aiohttp import web
-
         if self.port is None or request.headers.get("Host", "") not in {
             f"127.0.0.1:{self.port}",
             f"localhost:{self.port}",
@@ -111,8 +112,6 @@ class PreviewServer:
         return await self._static(request)
 
     async def _static(self, request: Any) -> Any:
-        from aiohttp import web
-
         filename = self._STATIC_FILES.get(request.path)
         if filename is None:  # pragma: no cover - only registered static routes call this
             raise web.HTTPNotFound()
@@ -130,8 +129,6 @@ class PreviewServer:
         return web.Response(text=text, content_type=content_type, headers=self._SECURITY_HEADERS)
 
     async def _pages(self, request: Any) -> Any:
-        from aiohttp import web
-
         if not self._authorized(request):
             raise web.HTTPUnauthorized()
         body = await _read_json_body(request)
@@ -144,8 +141,6 @@ class PreviewServer:
         return web.json_response(self.preview.page_payload(page), headers=self._SECURITY_HEADERS)
 
     async def _delete_page(self, request: Any) -> Any:
-        from aiohttp import web
-
         context_id = request.match_info["context_id"]
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
@@ -156,8 +151,6 @@ class PreviewServer:
         return web.json_response({"closed": True}, headers=self._SECURITY_HEADERS)
 
     async def _state(self, request: Any) -> Any:
-        from aiohttp import web
-
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
@@ -169,8 +162,6 @@ class PreviewServer:
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
     async def _action(self, request: Any) -> Any:
-        from aiohttp import web
-
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
@@ -187,8 +178,6 @@ class PreviewServer:
         return web.json_response(result, headers=self._SECURITY_HEADERS)
 
     async def _multipart_action(self, request: Any) -> dict[str, Any]:
-        from aiohttp import web
-
         reader = await request.multipart()
         payload: dict[str, Any] | None = None
         files: dict[str, list[tuple[str, bytes]]] = {}
@@ -236,8 +225,6 @@ class PreviewServer:
         return payload
 
     async def _asset(self, request: Any) -> Any:
-        from aiohttp import web
-
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()

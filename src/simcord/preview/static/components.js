@@ -22,6 +22,9 @@ function keyFor(component, path) {
   if (typeof component.id === "number" && component.id > 0) return `id-${component.id}`;
   return path;
 }
+function safeId(path) {
+  return path.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
 function safeLink(value) {
   if (typeof value !== "string") return null;
   try {
@@ -216,11 +219,11 @@ function renderSelect(component, path, options) {
   }
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
-  trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`);
+  trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${safeId(path)}`);
   trigger.addEventListener("click", () => onOpen?.(key, selected, multi, minimum, maximum));
   trigger.addEventListener("keydown", (event) => { if (["ArrowDown", "Enter", " "].includes(event.key)) { event.preventDefault(); onOpen?.(key, selected, multi, minimum, maximum); } });
   wrap.append(trigger);
-  const list = node("div", "select-list"); list.id = `listbox-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; list.hidden = !isOpen;
+  const list = node("div", "select-list"); list.id = `listbox-${safeId(path)}`; list.hidden = !isOpen;
   list.setAttribute("role", "listbox"); list.setAttribute("aria-multiselectable", String(multi)); list.tabIndex = isOpen ? 0 : -1;
   list.dataset.controlKey = `${key}:list`;
   if (isOpen) {
@@ -526,7 +529,7 @@ function modalControl(component, path, labelText, options) {
     const label = appendLabel(field, labelText, required);
     if (options.validationError?.includes(customId)) label.append(node("em", "field-error", " - This field is required."));
   }
-  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${path.replace(/[^a-zA-Z0-9_-]/g, "-")}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? input.value), include: include(String(component.value ?? component.default ?? "") !== "") }; }
+  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${safeId(path)}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? input.value), include: include(String(component.value ?? component.default ?? "") !== "") }; }
   if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[customId]); const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const select = renderSelect(component, path, { ...options, scope: `modal:${options.modalHandle ?? ""}`, onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value, include: include(defaults.length > 0) }; }
   if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : defaults.length > 0; return { field, get: () => options.drafts.get(key), include: include(hasDefault) }; }
   if (type === TYPE.CHECKBOX) { if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); const choice = node("label", "modal-choice"), input = node("input"); input.type = "checkbox"; input.name = customId; input.checked = options.drafts.get(key) === true; input.addEventListener("change", () => options.onDraft?.(key, input.checked)); choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId)); field.append(choice); return { field, get: () => options.drafts.get(key) === true, include: include(component.default === true) }; }

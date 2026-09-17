@@ -243,12 +243,8 @@ async function requestAction(body) {
   return response.json();
 }
 
-function messageFingerprint(message) {
-  return message ? JSON.stringify(message) : "";
-}
-
-function modalFingerprint(modal) {
-  return modal ? JSON.stringify(modal) : "";
+function fingerprint(value) {
+  return value ? JSON.stringify(value) : "";
 }
 
 function updatePickers(snapshot) {
@@ -368,12 +364,9 @@ function cancelDropdown(key) {
   localRender(true);
 }
 
-defaults: {
-  // A named block keeps the event wiring grouped without an extra helper class.
-  document.addEventListener("pointerdown", (event) => {
-    if (state.dropdown && !(event.target instanceof Element && event.target.closest(".preview-select"))) cancelDropdown(state.dropdown.key);
-  });
-}
+document.addEventListener("pointerdown", (event) => {
+  if (state.dropdown && !(event.target instanceof Element && event.target.closest(".preview-select"))) cancelDropdown(state.dropdown.key);
+});
 
 function submitModal(values) {
   const modal = state.snapshot?.modal;
@@ -412,7 +405,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   updatePickers(snapshot);
   const selected = snapshot.selected;
   const selectedKey = selected ? String(selected.id) : null;
-  const selectedFingerprint = messageFingerprint(selected);
+  const selectedFingerprint = fingerprint(selected);
   const shouldRenderMessage = force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
   const pendingMedia = [];
   if (shouldRenderMessage) {
@@ -442,7 +435,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     });
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
-  const modalKey = modal ? modalFingerprint(modal) : "";
+  const modalKey = modal ? fingerprint(modal) : "";
   if (modal && state.modalErrorHandle !== modal.handle) {
     state.modalError = null;
     state.modalErrorHandle = modal.handle;
@@ -482,7 +475,7 @@ function renderSnapshot(snapshot, generation, force = false) {
         state.modalTouched.add(key);
         if (state.modalError) {
           state.modalError = null;
-          state.lastModalFingerprint = modalFingerprint(state.snapshot?.modal);
+          state.lastModalFingerprint = fingerprint(state.snapshot?.modal);
           document.querySelectorAll(".field-error").forEach((error) => error.remove());
         }
         localRender(false);
@@ -491,7 +484,7 @@ function renderSnapshot(snapshot, generation, force = false) {
         state.modalDrafts.set(key, files);
         state.modalTouched.add(key);
         state.modalError = null;
-        state.lastModalFingerprint = modalFingerprint(state.snapshot?.modal);
+        state.lastModalFingerprint = fingerprint(state.snapshot?.modal);
         document.querySelectorAll(".field-error").forEach((error) => error.remove());
         localRender(false);
       },
@@ -608,7 +601,7 @@ async function poll() {
   if (state.closed || !state.contextId) return;
   try {
     const snapshot = await request("/api/state");
-    if (snapshot.publishedRevision !== state.publishedRevision || snapshot.context?.generation !== state.contextGeneration || modalFingerprint(snapshot.modal) !== state.lastModalFingerprint) {
+    if (snapshot.publishedRevision !== state.publishedRevision || snapshot.context?.generation !== state.contextGeneration || fingerprint(snapshot.modal) !== state.lastModalFingerprint) {
       await installSnapshot(snapshot, false);
     }
   } catch (error) {

@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import discord
 
@@ -38,6 +38,8 @@ _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.Context
 # Cap on virtual callbacks drained per settle turn so self-rescheduling
 # zero-delay chains cannot starve the settlement deadline check.
 _DUE_CALLBACK_BATCH = 64
+
+_C = TypeVar("_C", bound=Callable[..., Any])
 
 
 @dataclass(slots=True)
@@ -157,33 +159,26 @@ class Env:
         finally:
             _BOT_SCOPE.reset(token)
 
-    def _register_pre_shutdown(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
-        """Register Preview-owned cleanup that runs before shutdown takes the guard."""
-        if not callable(cleanup):
-            raise SetupError("pre-shutdown cleanup must be callable")
-        self._pre_shutdown_hooks.append(cleanup)
+    def _register(self, registry: list[_C], item: _C, *, kind: str) -> Callable[[], None]:
+        if not callable(item):
+            raise SetupError(f"{kind} must be callable")
+        registry.append(item)
 
         def unregister() -> None:
             try:
-                self._pre_shutdown_hooks.remove(cleanup)
+                registry.remove(item)
             except ValueError:
                 pass
 
         return unregister
+
+    def _register_pre_shutdown(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
+        """Register Preview-owned cleanup that runs before shutdown takes the guard."""
+        return self._register(self._pre_shutdown_hooks, cleanup, kind="pre-shutdown cleanup")
 
     def _register_dispatch_observer(self, observer: Callable[[Any], Any]) -> Callable[[], None]:
         """Observe backend interactions immediately before gateway emission."""
-        if not callable(observer):
-            raise SetupError("dispatch observer must be callable")
-        self._dispatch_observers.append(observer)
-
-        def unregister() -> None:
-            try:
-                self._dispatch_observers.remove(observer)
-            except ValueError:
-                pass
-
-        return unregister
+        return self._register(self._dispatch_observers, observer, kind="dispatch observer")
 
     def _notify_dispatch_observers(self, interaction: Any) -> None:
         for observer in tuple(self._dispatch_observers):
@@ -367,6 +362,11 @@ class Env:
     ) -> asyncio.Handle:
         bound_task = getattr(callback, "__self__", None)
         if isinstance(bound_task, asyncio.Task):
+            # A task resumption callback (__step/__wakeup) must run in the exact
+            # Context the task was scheduled with — scheduling a copy resumes the
+            # coroutine in a different Context object, where ContextVar.reset of
+            # a pre-suspension token raises "created in a different Context".
+            # Ownership is already carried by the task's own context.
             owner_record = self._task_records.get(bound_task)
             scope = (
                 (self, owner_record.generation)
@@ -375,9 +375,10 @@ class Env:
                 if context is not None
                 else None
             )
+            schedule_context = context
         else:
             scope = _BOT_SCOPE.get()
-        schedule_context = self._context_for_scope(context, scope) if context is not None else context
+            schedule_context = self._context_for_scope(context, scope) if context is not None else context
         if scope is None or scope[0] is not self:
             return original(*schedule_args, callback, *args, context=schedule_context)
         label = getattr(callback, "__qualname__", None) or getattr(
