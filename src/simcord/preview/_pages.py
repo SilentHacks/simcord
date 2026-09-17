@@ -188,8 +188,15 @@ class _PageOps:
         if target_id is None:
             target = source.target_id
             if target is not None:
-                message = self.env.backend.get_message(self.channel.id, target)
-                if not can_access_message(self.env, self.channel.id, message, viewer, history=True):
+                try:
+                    message = self.env.backend.get_message(self.channel.id, target)
+                except BackendError:
+                    # The inherited focus was deleted: degrade like a denied
+                    # target rather than surfacing a raw backend error.
+                    message = None
+                if message is None or not can_access_message(
+                    self.env, self.channel.id, message, viewer, history=True
+                ):
                     target = self._initial_target(viewer, self.channel.id)
         else:
             # A denied explicit target degrades like an inaccessible

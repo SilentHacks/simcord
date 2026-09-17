@@ -235,10 +235,17 @@ class _ActionOps:
             except TimeoutError:
                 page.status = "stale"
                 result = self._finish_action(page, action, "timeout", cursor)
+            except (SetupError, BackendError, ValueError) as exc:
+                # Expected mid-dispatch failures are reported honestly; they
+                # may already have mutated the backend, so the page is stale.
+                page.status = "stale"
+                result = self._finish_action(page, action, "failed", cursor, exc)
             except Exception as exc:
-                # Expected or not, dispatch failures settle the consumed
-                # sequence: the recorded response lets an identical replay
-                # return the same outcome instead of wedging on "pending".
+                # Unexpected failures still settle the consumed sequence: the
+                # recorded response lets an identical replay return the same
+                # outcome instead of wedging on "pending" forever. Recording
+                # keeps genuine bugs visible in env.errors for assertions.
+                self.env._record_error(exc)
                 page.status = "stale"
                 result = self._finish_action(page, action, "failed", cursor, exc)
             action.response = result

@@ -427,22 +427,28 @@ class _CaptureOps:
             capture_page.modal = modal
             capture_page.modal_handle = "m_" + secrets.token_urlsafe(12)
         capture_page.last_action = deepcopy(source.last_action)
-        snapshot = build_snapshot(cast("Preview", self), capture_page)
-        if target_id is None and modal is None:
-            snapshot["diagnostics"] = [
-                *snapshot.get("diagnostics", []),
-                {
-                    "code": "target-unavailable",
-                    "severity": "warning",
-                    "message": "No focused message is available for this capture",
-                    "complete": False,
-                },
-            ]
-        capture_page.snapshot = snapshot
-        capture_page.pinned_snapshot = deepcopy(snapshot)
-        capture_page.pinned_generation = self.env._generation
-        capture_page.pinned_attachment_ids = self._capture_attachment_ids(snapshot)
-        self._pages[capture_page.id] = capture_page
+        try:
+            snapshot = build_snapshot(cast("Preview", self), capture_page)
+            if target_id is None and modal is None:
+                snapshot["diagnostics"] = [
+                    *snapshot.get("diagnostics", []),
+                    {
+                        "code": "target-unavailable",
+                        "severity": "warning",
+                        "message": "No focused message is available for this capture",
+                        "complete": False,
+                    },
+                ]
+            capture_page.snapshot = snapshot
+            capture_page.pinned_snapshot = deepcopy(snapshot)
+            capture_page.pinned_generation = self.env._generation
+            capture_page.pinned_attachment_ids = self._capture_attachment_ids(snapshot)
+            self._pages[capture_page.id] = capture_page
+        except Exception:
+            # The page was never registered: release the blob refs the failed
+            # snapshot retained so they cannot leak until close().
+            self._clear_page_assets(capture_page)
+            raise
         self._capture_generation += 1
         profile = dict(snapshot.get("profile", {}))
         profile.update({"deviceScale": 1, "reducedMotion": True})
@@ -485,7 +491,8 @@ class _CaptureOps:
                 if self._closed or not self._active:
                     raise SetupError("Preview is closing")
                 for page in tuple(self._pages.values()):  # pragma: no branch - bounded snapshot pass
-                    if page.pinned_snapshot is None:
+                    # Earlier publishes may have pruned this page already.
+                    if page.id in self._pages and page.pinned_snapshot is None:
                         self._publish(page)
                 pin = self._pin_capture(self._capture_viewer(viewer), target)
             finally:

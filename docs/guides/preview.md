@@ -163,8 +163,9 @@ downloadable. Audio/video playback, SVG/HTML, and unvalidated codecs are unsuppo
 authorized original bytes may remain downloadable and a validated poster can represent unsupported
 media without hiding its diagnostic. Display always serves a deterministic first frame re-encoded
 as PNG without source metadata, so animated media
-never stays animated in place; the explicit `?download=1` asset request is the only path that
-serves the authorized original bytes.
+never stays animated in place. Non-image assets always serve the authorized original bytes; for
+images, the explicit `?download=1` asset request (the page's open/download actions) is the path
+that serves the original bytes rather than the normalized first frame.
 
 All limits below are **Preview resource limits**, not Discord protocol limits. Requests are rejected
 before unbounded buffering; bytes are never silently truncated:

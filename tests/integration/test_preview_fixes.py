@@ -498,3 +498,9 @@ async def test_failed_dispatch_settles_instead_of_wedging_replays(env, channel, 
         replayed = await preview.action("python", dict(body))
         assert replayed == first
         assert replayed["settlement"] == "failed"
+
+        # Unexpected dispatch failures stay observable through env.errors;
+        # consume the captured error so teardown does not re-raise it.
+        assert isinstance(env.errors[-1], KeyError)
+        with pytest.raises(ExceptionGroup):
+            env.raise_errors()

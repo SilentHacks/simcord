@@ -418,6 +418,7 @@ class Env:
                         self._virtual_time = record.when
                     record.handle._run()
 
+            assert real_call_at is not None and real_monotonic is not None
             remaining = max(when - self._virtual_time, 0.0)
             record.real_handle = real_call_at(
                 real_monotonic() + remaining, run_real, context=schedule_context
