@@ -35,9 +35,12 @@ playwright install chromium
 ```
 
 `import simcord` and ordinary tests do not import these optional runtimes, read preview assets,
-start a server, or download a browser. Calling `env.preview(...)` without the preview extra gives
-a direct `install simcord[preview]` error. Calling `preview.screenshot(...)` without Playwright or
-its browser gives a direct `install simcord[screenshot]` / `playwright install chromium` error.
+start a server, or download a browser. `aiohttp` already ships as a discord.py dependency, so a
+Preview without the rest of the `preview` extra still serves — it degrades instead of refusing:
+Markdown fields render as plain text, and inline image media reports a diagnostic advising
+`install simcord[preview]` (the explicit download path still serves the original bytes). Calling
+`preview.screenshot(...)` without Playwright or its browser gives a direct
+`install simcord[screenshot]` / `playwright install chromium` error.
 
 ## Start and stop a session
 
@@ -59,9 +62,17 @@ async with simcord.run(create_bot()) as env:
 ```
 
 There is one active Preview per `Env`. `close()` is idempotent and is also called by context exit,
-shutdown, cancellation, and restart cleanup. Closing a browser tab releases only that page; it does
+environment shutdown, and cancellation. Closing a browser tab releases only that page; it does
 not stop Python or the Preview. The toolbar's **Close** action closes the whole session. No browser
 is launched automatically.
+
+`env.restart_bot()` does **not** close a Preview — the session, pages, and URL survive the restart.
+The restart advances the bot generation, so action envelopes sent by a page loaded before it are
+rejected as `stale-generation` before admission, without consuming the sequence. Page-side recovery
+is not possible on its own: reads only serve the last published snapshot, which still carries the
+old generation. Call `await preview.refresh()` after restarting to republish every page under the
+new generation, or reload the page to open a fresh context. A restart also invalidates a pinned
+managed capture already in flight.
 
 ## Python and browser page ownership
 
@@ -146,10 +157,12 @@ so deleting a message or removing an attachment immediately invalidates its asse
 stable across publications while the underlying asset remains referenced. Missing bytes show a
 labeled unavailable tile and make a capture incomplete unless `allow_incomplete=True`.
 
-Inline validation uses Pillow for PNG, JPEG, WebP, and GIF. Audio/video playback, SVG/HTML, and
-unvalidated codecs are unsupported inline; authorized original bytes may remain downloadable and a
-validated poster can represent unsupported media without hiding its diagnostic. Display always
-serves a deterministic first frame re-encoded as PNG without source metadata, so animated media
+Inline validation uses Pillow for PNG, JPEG, WebP, and GIF; without the `preview` extra, image
+media fails validation with the `install simcord[preview]` diagnostic while original bytes remain
+downloadable. Audio/video playback, SVG/HTML, and unvalidated codecs are unsupported inline;
+authorized original bytes may remain downloadable and a validated poster can represent unsupported
+media without hiding its diagnostic. Display always serves a deterministic first frame re-encoded
+as PNG without source metadata, so animated media
 never stays animated in place; the explicit `?download=1` asset request is the only path that
 serves the authorized original bytes.
 
@@ -244,9 +257,10 @@ are positive bounded integers and are checked against the screenshot raster limi
 The report includes path, viewer/channel/target/modal IDs, published and render generations, output
 geometry, profile, readiness, calibration, action status, and structured diagnostics. Captures reject
 unsettled actions, unavailable authorization, incomplete output (unless explicitly opted in),
-concurrent capture, and invalid destinations. Output is written atomically, so cancellation or a
-failed capture does not leave a partial PNG. A pinned capture cannot follow later focus, viewer, or
-backend changes; access and attachment membership are rechecked before bytes are served.
+concurrent capture, a bot restart during capture, and invalid destinations. Output is written
+atomically, so cancellation or a failed capture does not leave a partial PNG. A pinned capture
+cannot follow later focus, viewer, or backend changes; access and attachment membership are
+rechecked before bytes are served.
 
 ## Loopback security and SSH forwarding
 

@@ -46,6 +46,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
 | Preview fidelity boundary | ⚠️ | System font/emoji fallback, first-frame animation capture, unsupported audio/video/premium/mobile behavior, and uncalibrated references are reported differences, not backend parity claims |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
+| Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
 | Guilds (create/edit/delete) | ✅ | `Client.create_guild`, `Guild.edit`, `Guild.delete` (owner-only); `GUILD_UPDATE` audit; `Guild.leave`, `Client.fetch_guilds`, `ClientUser.edit` (bot username); `Guild.vanity_invite` (settable via `guild.set_vanity_url`) |
 | Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds; reorder/move (`Channel.move`); announcement `TextChannel.follow` |

@@ -117,6 +117,7 @@ def main() -> int:
         "guides/mocks-vs-simulation/index.html",
         "guides/ai-coding-agents/index.html",
         "guides/preview/index.html",
+        "llms.txt",
         "robots.txt",
         "sitemap.xml",
     )
