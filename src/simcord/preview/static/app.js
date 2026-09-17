@@ -48,6 +48,7 @@ const state = {
   lastMessageFingerprint: "",
   lastModalFingerprint: "",
   viewerId: null,
+  targetId: null,
   objectUrls: new Map(),
   closed: false,
   focusKey: null,
@@ -65,6 +66,8 @@ function statusObject() {
     contextId: state.contextId,
     contextGeneration: state.contextGeneration,
     botGeneration: state.botGeneration,
+    viewerId: state.viewerId,
+    targetId: state.targetId,
     publishedRevision: state.publishedRevision,
     renderGeneration: state.renderGeneration,
     lastAction: state.lastAction,
@@ -400,6 +403,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   state.botGeneration = Number(snapshot.botGeneration || 0);
   state.publishedRevision = nextRevision;
   state.viewerId = nextViewer;
+  state.targetId = snapshot.targetId ?? null;
   state.profile = profileFromSnapshot(snapshot);
   applyProfile();
   updatePickers(snapshot);

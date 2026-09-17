@@ -73,7 +73,7 @@ class _AssetOps:
     _retained_media_bytes: int
     _media_worker: MediaWorker | None
     _MAX_MEDIA_BYTES: ClassVar[int]
-    get_page: Callable[[str | None], _Page]
+    _get_page: Callable[[str | None], _Page]
     _assert_capture_live: Callable[[_Page], None]
 
     def _retain_blob(self, blob: bytes) -> str | None:
@@ -150,16 +150,16 @@ class _AssetOps:
 
     def _authorized_asset(self, context_id: str | None, asset_id: str) -> tuple[_Page, _Asset, bytes]:
         """Resolve, liveness-check, and authorize one asset; return its blob."""
-        page = self.get_page(context_id)
+        page = self._get_page(context_id)
         self._assert_capture_live(page)
         record = self._authorize_asset(page, asset_id)
         return page, record, self._asset_blob(record)
 
-    def asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
+    def _asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
         _, record, body = self._authorized_asset(context_id, asset_id)
         return record.contentType, body, record.filename
 
-    async def prepare_asset(
+    async def _prepare_asset(
         self, context_id: str | None, asset_id: str, *, download: bool = False
     ) -> tuple[str, bytes, str]:
         _, record, body = self._authorized_asset(context_id, asset_id)

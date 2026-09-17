@@ -42,7 +42,7 @@ class _ActionOps:
     _active_task: asyncio.Task[Any] | None
     _action_page: _Page | None
     _close_task: asyncio.Task[None] | None
-    get_page: Callable[[str | None], _Page]
+    _get_page: Callable[[str | None], _Page]
     close: Callable[[], Coroutine[Any, Any, None]]
     _viewer: Callable[[Any], Any]
     _initial_target: Callable[[Any, int], int | None]
@@ -108,8 +108,8 @@ class _ActionOps:
             diagnostics=[{"code": code, "severity": "error", "message": message}],
         )
 
-    async def action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
-        page = self.get_page(context_id)
+    async def _action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
+        page = self._get_page(context_id)
         if not isinstance(body, Mapping):
             return self._reject(page, "bad-envelope", "action must be an object")
         sequence = body.get("sequence")

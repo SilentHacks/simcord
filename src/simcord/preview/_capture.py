@@ -8,6 +8,7 @@ import json
 import math
 import os
 import secrets
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -57,9 +58,17 @@ def _capture_destination(path: Any) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class PreviewCapture:
-    """Immutable metadata returned by the optional screenshot extra."""
+    """Immutable capture report returned by ``Preview.screenshot``.
 
-    path: str
+    ``ready``, ``complete`` and ``calibrated`` are independent signals:
+    readiness describes the rendered page, completeness whether a focus
+    target was available, and calibration whether the bundled page measured
+    its own rendering environment. ``path`` is the written file destination
+    (``None`` for in-memory captures) and ``png`` holds the image bytes when
+    the capture was taken without a path.
+    """
+
+    path: str | None
     published_revision: int
     render_generation: int
     viewer_id: str
@@ -77,6 +86,7 @@ class PreviewCapture:
     calibrated: bool = False
     calibration: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     action: Mapping[str, Any] | None = None
+    png: bytes | None = None
 
 
 @dataclass(slots=True)
@@ -114,7 +124,11 @@ class ManagedCapture:
             self._browser = await self._playwright.chromium.launch()
         except BaseException as exc:  # pragma: no cover - browser installation failure
             await self.close()
-            raise SetupError("Preview screenshots require an installed Playwright browser") from exc
+            raise SetupError(
+                "Preview screenshots require an installed Playwright browser; "
+                "run playwright install --with-deps chromium "
+                "(or playwright install chromium when system dependencies exist)"
+            ) from exc
         return self._browser
 
     @staticmethod
@@ -223,7 +237,7 @@ class ManagedCapture:
         profile = dict(pin.profile)
         width, height = self._validate_dimensions(profile.get("width"), profile.get("height"))
         profile.update(self._browser_metadata(browser))
-        origin = self.preview.origin
+        origin = self.preview._origin
 
         parent = destination.parent
         temporary: Path | None = None
@@ -368,6 +382,7 @@ class _CaptureOps:
     _clear_page_assets: Callable[[_Page], None]
     _viewer: Callable[[Any], Any]
     _resolve_target: Callable[..., tuple[int | None, InteractionResult | None]]
+    _initial_target: Callable[[Any, int], int | None]
 
     def _capture_viewer(self, viewer: Any) -> Any:
         if viewer is None:
@@ -380,7 +395,12 @@ class _CaptureOps:
 
     def _capture_target(self, viewer: Any, target: Any) -> tuple[int | None, InteractionResult | None]:
         if target is None:
-            return cast(_Page, self._python).target_id, None
+            target_id = cast(_Page, self._python).target_id
+            if target_id is None:
+                # The preview may have been opened on an empty channel: fall
+                # back to the latest visible message rather than failing.
+                target_id = self._initial_target(viewer, self.channel.id)
+            return target_id, None
         return self._resolve_target(viewer, target, capture=True)
 
     @staticmethod
@@ -466,20 +486,35 @@ class _CaptureOps:
 
     async def screenshot(
         self,
-        path: Any,
+        path: Any = None,
         *,
         viewer: Any = None,
         target: Any = None,
         mode: str = "surface",
         allow_incomplete: bool = False,
     ) -> PreviewCapture:
+        """Capture one deterministic PNG of the preview, returning a report.
+
+        ``path`` is the file destination for the PNG, or ``None`` to keep
+        the capture in memory and expose the bytes on ``PreviewCapture.png``.
+        ``viewer`` defaults to the Python presentation viewer. ``target`` may
+        be a Message, ResponseMessage, InteractionResult, or snowflake; the
+        default is the focused message, falling back to the latest visible
+        message. ``mode`` is ``"surface"`` (just the message surface) or
+        ``"viewport"`` (the full preview viewport). ``allow_incomplete``
+        permits a capture whose channel has no focusable target.
+
+        Returns an immutable ``PreviewCapture`` report; ``ready``,
+        ``complete`` and ``calibrated`` are independent signals, and ``png``
+        holds the image bytes when ``path`` is ``None``.
+        """
         if mode not in {"surface", "viewport"}:
             raise SetupError("capture mode must be 'surface' or 'viewport'")
         if not isinstance(allow_incomplete, bool):
             raise SetupError("allow_incomplete must be a boolean")
         if not self._active or self._closed:
             raise SetupError("Preview is not active")
-        destination = _capture_destination(path)
+        destination = _capture_destination(path) if path is not None else None
         if self._capture_task is not None and not self._capture_task.done():
             raise SetupError("Preview is busy with another capture")
         self._capture_task = asyncio.current_task()
@@ -498,14 +533,26 @@ class _CaptureOps:
             finally:
                 self.env._end_operation(token)
             self._capture_page = pin.page
-            data = await self._capture_manager.render(
-                pin,
-                destination,
-                mode=mode,
-                allow_incomplete=allow_incomplete,
-            )
+            png: bytes | None = None
+            if destination is None:
+                with tempfile.TemporaryDirectory(prefix="simcord-capture-") as temporary_dir:
+                    temporary_destination = Path(temporary_dir) / "capture.png"
+                    data = await self._capture_manager.render(
+                        pin,
+                        temporary_destination,
+                        mode=mode,
+                        allow_incomplete=allow_incomplete,
+                    )
+                    png = temporary_destination.read_bytes()
+            else:
+                data = await self._capture_manager.render(
+                    pin,
+                    destination,
+                    mode=mode,
+                    allow_incomplete=allow_incomplete,
+                )
             return PreviewCapture(
-                path=data["path"],
+                path=None if destination is None else data["path"],
                 published_revision=data["published_revision"],
                 render_generation=data["render_generation"],
                 viewer_id=data["viewer_id"],
@@ -523,6 +570,7 @@ class _CaptureOps:
                 calibrated=data["calibrated"],
                 calibration=_freeze_capture(data["calibration"]),
                 action=_freeze_capture(data["action"]) if data["action"] is not None else None,
+                png=png,
             )
         finally:
             if pin is not None:

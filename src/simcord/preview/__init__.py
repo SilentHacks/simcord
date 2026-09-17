@@ -25,7 +25,12 @@ from ._snapshot import build_snapshot
 
 
 class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
-    """An async context manager owning one bounded, local preview session."""
+    """An async context manager owning one bounded, local preview session for an Env.
+
+    Entered via ``env.preview(...)``; while active it serves viewer-authorized
+    pages and real component callbacks on loopback. ``url`` is a credential —
+    anyone holding it can drive the session.
+    """
 
     _MAX_PAGES = 16
     _MAX_MEDIA_BYTES = 128 * 1024 * 1024
@@ -44,6 +49,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         locale: str,
         timezone: str,
         assets: Mapping[str, tuple[str, bytes]] | None,
+        port: int,
     ) -> None:
         self.env = env
         self.channel = channel
@@ -53,9 +59,9 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.height = height
         self.locale = locale
         self.timezone = timezone
-        self.explicit_assets = dict(assets or {})
+        self._explicit_assets = dict(assets or {})
         self.capability = secrets.token_urlsafe(32)
-        self._server = PreviewServer(self)
+        self._server = PreviewServer(self, port)
         self._pages: dict[str, _Page] = {}
         self._python: _Page | None = None
         self._active = False
@@ -79,12 +85,13 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
 
     @property
     def url(self) -> str:
+        """The capability-bearing loopback address for this session — treat it as a secret."""
         if self._server.port is None:
             raise SetupError("Preview is not entered")
         return f"http://127.0.0.1:{self._server.port}/#{self.capability}"
 
     @property
-    def origin(self) -> str:
+    def _origin(self) -> str:
         if self._server.port is None:
             return ""
         return f"http://127.0.0.1:{self._server.port}"
@@ -158,6 +165,10 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 raise SetupError(f"managed capture asset {asset_id} is unavailable")
 
     async def show(self, target: Any) -> None:
+        """Focus the Python presentation on a Message, ResponseMessage, or InteractionResult.
+
+        A modal-carrying InteractionResult shows its modal to the opener.
+        """
         if not self._active or self._python is None:
             raise SetupError("Preview is not active")
         token = self.env._begin_operation("preview.show")
@@ -176,6 +187,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             self.env._end_operation(token)
 
     async def refresh(self) -> None:
+        """Settle pending bot work and republish every open page."""
         if not self._active or self._closed:
             raise SetupError("Preview is not active")
         token = self.env._begin_operation("preview.refresh")
@@ -187,10 +199,30 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         finally:
             self.env._end_operation(token)
 
+    async def snapshot(self) -> dict[str, Any]:
+        """Settle bot work, republish, and return the detached JSON projection.
+
+        This is the structured, agent-facing read surface: the same projection
+        the bundled page renders, covering ``messages``, ``selected``,
+        ``modal``, ``candidates``, ``assets``, ``diagnostics``, ``lastAction``,
+        and ``status``. Fields evolve under ``protocolVersion``.
+        """
+        if not self._active or self._python is None:
+            raise SetupError("Preview is not active")
+        token = self.env._begin_operation("preview.snapshot")
+        try:
+            await self.env._settle_internal()
+            self._publish(self._python)
+            return self._page_payload(self._python)
+        finally:
+            self.env._end_operation(token)
+
     async def wait_closed(self) -> None:
+        """Return once the session closes — via the browser Close action, ``close()``, or env shutdown."""
         await self._closed_event.wait()
 
     async def close(self) -> None:
+        """Tear the session down; idempotent, and also run on context exit and env shutdown."""
         async with self._close_lock:
             if self._closed_event.is_set():
                 return
@@ -246,7 +278,8 @@ def _validate_preview(
     locale: str,
     timezone: str,
     assets: Any,
-) -> tuple[ChannelHandle, tuple[Any, ...], Mapping[str, tuple[str, bytes]]]:
+    port: Any,
+) -> tuple[ChannelHandle, tuple[Any, ...], Mapping[str, tuple[str, bytes]], int]:
     if not isinstance(channel, ChannelHandle) or channel._env is not env:
         raise SetupError("preview channel must belong to this Env")
     try:
@@ -290,16 +323,21 @@ def _validate_preview(
         if not isinstance(filename, str) or not isinstance(blob, bytes):
             raise SetupError("assets must map URLs to (filename, bytes) tuples")
         normalized[url] = (filename, blob)
-    return channel, selected, MappingProxyType(normalized)
+    if port is None:
+        port = 0
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+        raise SetupError("port must be an integer between 0 and 65535")
+    return channel, selected, MappingProxyType(normalized), port
 
 
 def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
-    channel, viewers, assets = _validate_preview(env, channel, **kwargs)
+    channel, viewers, assets, port = _validate_preview(env, channel, **kwargs)
     return Preview(
         env,
         channel,
         viewers,
         assets=assets,
+        port=port,
         **{key: kwargs[key] for key in ("theme", "width", "height", "locale", "timezone")},
     )
 

@@ -52,8 +52,9 @@ class PreviewServer:
         ),
     }
 
-    def __init__(self, preview: Preview) -> None:
+    def __init__(self, preview: Preview, port: int = 0) -> None:
         self.preview = preview
+        self._requested_port = port
         self.runner: Any = None
         self.port: int | None = None
 
@@ -74,8 +75,11 @@ class PreviewServer:
         app.router.add_get("/api/assets/{asset_id}", self._asset)
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
-        self.site = web.TCPSite(self.runner, "127.0.0.1", 0)
-        await self.site.start()
+        self.site = web.TCPSite(self.runner, "127.0.0.1", self._requested_port)
+        try:
+            await self.site.start()
+        except OSError as exc:
+            raise SetupError(f"preview could not bind port {self._requested_port}") from exc
         sockets = getattr(self.site, "_server", None)
         if sockets is None or not sockets.sockets:  # pragma: no cover - aiohttp binding invariant
             raise RuntimeError("Preview server did not bind a socket")
@@ -99,7 +103,10 @@ class PreviewServer:
         if self.port is not None and host not in {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}:
             return False
         origin = request.headers.get("Origin")
-        if origin is not None and origin not in {self.preview.origin, "null"}:
+        allowed = {self.preview._origin, "null"}
+        if self.port is not None:
+            allowed.add(f"http://localhost:{self.port}")
+        if origin is not None and origin not in allowed:
             return False
         return True
 
@@ -135,17 +142,17 @@ class PreviewServer:
         if not isinstance(body, dict):
             raise web.HTTPBadRequest(text="JSON object required")
         try:
-            page = self.preview.open_page(body.get("viewer_id"), body.get("target_id"))
+            page = self.preview._open_page(body.get("viewer_id"), body.get("target_id"))
         except (SetupError, BackendError) as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
-        return web.json_response(self.preview.page_payload(page), headers=self._SECURITY_HEADERS)
+        return web.json_response(self.preview._page_payload(page), headers=self._SECURITY_HEADERS)
 
     async def _delete_page(self, request: Any) -> Any:
         context_id = request.match_info["context_id"]
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
         try:
-            self.preview.close_page(context_id)
+            self.preview._close_page(context_id)
         except (SetupError, BackendError) as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
         return web.json_response({"closed": True}, headers=self._SECURITY_HEADERS)
@@ -155,8 +162,8 @@ class PreviewServer:
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
         try:
-            page = self.preview.get_page(context_id)
-            payload = self.preview.page_payload(page)
+            page = self.preview._get_page(context_id)
+            payload = self.preview._page_payload(page)
         except (SetupError, BackendError) as exc:
             raise web.HTTPGone(text=str(exc)) from exc
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
@@ -169,10 +176,10 @@ class PreviewServer:
             body = await self._multipart_action(request)
         else:
             body = await _read_json_body(request)
-        # Malformed envelopes are not transport errors: action() answers every
+        # Malformed envelopes are not transport errors: _action() answers every
         # parseable body with a structured result (rejections carry HTTP 200).
         try:
-            result = await self.preview.action(context_id, body)
+            result = await self.preview._action(context_id, body)
         except (SetupError, BackendError) as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
         return web.json_response(result, headers=self._SECURITY_HEADERS)
@@ -232,7 +239,7 @@ class PreviewServer:
         # display path serves validated, normalized media inline.
         download = request.query.get("download") in {"1", "true"}
         try:
-            content_type, body, filename = await self.preview.prepare_asset(
+            content_type, body, filename = await self.preview._prepare_asset(
                 context_id, request.match_info["asset_id"], download=download
             )
         except (SetupError, BackendError) as exc:

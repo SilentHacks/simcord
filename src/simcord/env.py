@@ -1016,8 +1016,23 @@ class Env:
         locale: str = "en-US",
         timezone: str = "UTC",
         assets: Mapping[str, tuple[str, bytes]] | None = None,
+        port: int | None = None,
     ) -> Preview:
-        """Create one eagerly validated local preview context manager."""
+        """Create one eagerly validated local preview context manager.
+
+        ``channel`` is the channel the session presents. ``viewers`` is a
+        non-empty allowlist of same-Env handles — members for guild channels,
+        the owning ``UserHandle`` for DMs. ``theme`` is ``"dark"`` or
+        ``"light"``; ``width``/``height`` are positive-int viewport sizes;
+        ``locale`` and ``timezone`` seed the rendered profile. ``assets`` maps
+        otherwise-remote media URLs to ``(filename, bytes)`` tuples so they
+        render offline. ``port`` pins the loopback port: ``None``/``0`` lets
+        the OS assign one, 1-65535 requests a specific port — the session is
+        still capability-gated either way.
+
+        Returns an async context manager serving the authorized preview;
+        ``preview.url`` is the capability-bearing address.
+        """
         if not self._started:
             raise SetupError("Env is not running")
         if self._preview is not None and not self._preview._closed:
@@ -1036,6 +1051,7 @@ class Env:
                 locale=locale,
                 timezone=timezone,
                 assets=assets,
+                port=port,
             )
         finally:
             self._end_operation(token)

@@ -90,7 +90,7 @@ class _Page:
                 blob = self.preview.env.backend.cdn.get(url)
                 if blob is not None:
                     record.source = source
-            if blob is None and (supplied := self.preview.explicit_assets.get(url)) is not None:
+            if blob is None and (supplied := self.preview._explicit_assets.get(url)) is not None:
                 filename, blob = supplied
                 record.filename = filename
                 if source is None:
@@ -151,7 +151,7 @@ class _PageOps:
                 self._pages.pop(page.id, None)
                 self._clear_page_assets(page)
 
-    def page_payload(self, page: _Page) -> dict[str, Any]:
+    def _page_payload(self, page: _Page) -> dict[str, Any]:
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
             return json.loads(json.dumps(page.pinned_snapshot))
@@ -167,7 +167,7 @@ class _PageOps:
             payload.update({"messages": [], "selected": None, "modal": None, "candidates": {}, "assets": {}})
         return payload
 
-    def get_page(self, context_id: str | None) -> _Page:
+    def _get_page(self, context_id: str | None) -> _Page:
         self._prune_expired()
         if not isinstance(context_id, str) or context_id not in self._pages:
             raise SetupError("preview context is expired or unknown")
@@ -177,7 +177,7 @@ class _PageOps:
         page.last_activity = time.monotonic()
         return page
 
-    def open_page(self, viewer_id: Any = None, target_id: Any = None) -> _Page:
+    def _open_page(self, viewer_id: Any = None, target_id: Any = None) -> _Page:
         if not self._active or self._closed:
             raise SetupError("Preview is not active")
         self._prune_expired()
@@ -222,7 +222,7 @@ class _PageOps:
         self._pages[page.id] = page
         return page
 
-    def close_page(self, context_id: str) -> None:
+    def _close_page(self, context_id: str) -> None:
         if context_id == "python":
             raise SetupError("The Python presentation cannot be closed as a page")
         self._prune_expired()
