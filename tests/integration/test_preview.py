@@ -1,11 +1,9 @@
 import json
 
-import pytest
-
-pytest.importorskip("aiohttp")
-
 import discord
+import pytest
 from aiohttp import ClientSession, FormData
+from preview_helpers import action_body, preview_headers
 
 import simcord
 from fixtures.sample_bot import create_bot
@@ -23,15 +21,14 @@ async def test_preview_public_flow_and_at_most_once(env, channel, alice):
         state = preview.page_payload(page)
         assert state["selected"]["content"] == "Panel"
 
-        body = {
-            "sequence": 1,
-            "request_id": "preview-click",
-            "generation": page.generation,
-            "bot_generation": env._generation,
-            "published_revision": page.revision,
-            "kind": "click",
-            "custom_id": "persistent:ping",
-        }
+        body = action_body(
+            page,
+            "click",
+            1,
+            request_id="preview-click",
+            published_revision=page.revision,
+            custom_id="persistent:ping",
+        )
         first = await preview.action("python", body)
         replay = await preview.action("python", body)
         assert first["dispatched"] is True
@@ -107,15 +104,14 @@ async def test_preview_show_refresh_delete_and_access_revocation(env, channel, a
         assert preview.page_payload(page)["status"] == "access_denied"
         result = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "revoked",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "click",
-                "custom_id": "persistent:ping",
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="revoked",
+                published_revision=page.revision,
+                custom_id="persistent:ping",
+            ),
         )
         assert result["dispatched"] is False
         assert result["rejected"] is True
@@ -127,48 +123,38 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(selected.response)
         page = preview._python
-        base = {
-            "generation": page.generation,
-            "bot_generation": env._generation,
-        }
         result = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "pick",
-                "kind": "select",
-                "custom_id": "color",
-                "values": ["red"],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="pick",
+                custom_id="color",
+                values=["red"],
+                published_revision=page.revision,
+            ),
         )
         assert result["dispatched"] is True
         assert channel.last_message.content == "Picked red"
 
         result = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 2,
-                "request_id": "dupe",
-                "kind": "select",
-                "custom_id": "color",
-                "values": ["red", "red"],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                2,
+                request_id="dupe",
+                custom_id="color",
+                values=["red", "red"],
+                published_revision=page.revision,
+            ),
         )
         assert result["dispatched"] is False
-        gap = await preview.action(
-            "python",
-            {**base, "sequence": 4, "request_id": "gap", "kind": "refresh"},
-        )
+        gap = await preview.action("python", action_body(page, "refresh", 4, request_id="gap"))
         assert gap["rejected"] is True
         assert gap["diagnostics"][0]["code"] == "sequence-gap"
-        stale = await preview.action(
-            "python",
-            {**base, "sequence": 1, "request_id": "old", "kind": "refresh"},
-        )
+        stale = await preview.action("python", action_body(page, "refresh", 1, request_id="old"))
         assert stale["rejected"] is True
         assert stale["diagnostics"][0]["code"] == "stale-sequence"
 
@@ -176,20 +162,30 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(feedback)
         page = preview._python
-        body = {
-            "sequence": 1,
-            "request_id": "modal",
-            "generation": page.generation,
-            "bot_generation": env._generation,
-            "published_revision": page.revision,
-            "kind": "modal_submit",
-            "modal_handle": page.modal_handle,
-            "values": {"name": "Ada"},
-        }
+        body = action_body(
+            page,
+            "modal_submit",
+            1,
+            request_id="modal",
+            published_revision=page.revision,
+            modal_handle=page.modal_handle,
+            values={"name": "Ada"},
+        )
         result = await preview.action("python", body)
         assert result["settlement"] == "settled"
         assert channel.last_message.content == "Thanks Ada"
-        stale = await preview.action("python", {**body, "sequence": 2, "request_id": "stale"})
+        stale = await preview.action(
+            "python",
+            action_body(
+                page,
+                "modal_submit",
+                2,
+                request_id="stale",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values={"name": "Ada"},
+            ),
+        )
         assert stale["dispatched"] is False
 
 
@@ -197,7 +193,7 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
 async def test_preview_http_security_and_limits(env, channel, alice):
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
-        headers = {"X-Simcord-Capability": preview.capability}
+        headers = preview_headers(preview)
         response = await client.get(
             preview.origin + "/app.js", headers={"Host": f"localhost:{preview._server.port}"}
         )
@@ -228,7 +224,7 @@ async def test_preview_http_security_and_limits(env, channel, alice):
             preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
         )
         page = await page_response.json()
-        context_headers = {**headers, "X-Simcord-Context": page["context"]["id"]}
+        context_headers = preview_headers(preview, page["context"]["id"])
         response = await client.get(
             preview.origin + "/api/assets/missing",
             headers={"X-Simcord-Capability": "wrong", "X-Simcord-Context": "wrong"},
@@ -267,14 +263,7 @@ async def test_preview_http_security_and_limits(env, channel, alice):
         multipart.add_field(
             "payload",
             json.dumps(
-                {
-                    "sequence": 1,
-                    "request_id": "multipart",
-                    "generation": page["context"]["generation"],
-                    "bot_generation": env._generation,
-                    "kind": "refresh",
-                    "values": {},
-                }
+                action_body(page["context"], "refresh", 1, env=env, request_id="multipart", values={})
             ),
             content_type="application/json",
         )
@@ -301,7 +290,7 @@ async def test_preview_pages_keep_viewers_and_reject_stale_generation(env, chann
     await alice.slash(channel, "panel")
 
     async with env.preview(channel, viewers=[alice, bob]) as preview:
-        headers = {"X-Simcord-Capability": preview.capability}
+        headers = preview_headers(preview)
         async with ClientSession() as client:
             response = await client.post(
                 preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
@@ -319,26 +308,21 @@ async def test_preview_pages_keep_viewers_and_reject_stale_generation(env, chann
             assert alice_page["context"]["id"] != bob_page["context"]["id"]
 
             context = alice_page["context"]
-            action_headers = {**headers, "X-Simcord-Context": context["id"]}
-            switch = {
-                "sequence": 1,
-                "request_id": "switch-viewer",
-                "generation": context["generation"],
-                "bot_generation": env._generation,
-                "kind": "viewer",
-                "viewer_id": str(bob.id),
-            }
+            action_headers = preview_headers(preview, context["id"])
+            switch = action_body(
+                context, "viewer", 1, env=env, request_id="switch-viewer", viewer_id=str(bob.id)
+            )
             response = await client.post(preview.origin + "/api/action", headers=action_headers, json=switch)
             assert response.status == 200
             switched = await response.json()
             assert switched["dispatched"] is False
 
-            stale = {**switch, "sequence": 2, "request_id": "stale", "kind": "refresh"}
+            stale = action_body(context, "refresh", 2, env=env, request_id="stale")
             response = await client.post(preview.origin + "/api/action", headers=action_headers, json=stale)
             assert response.status == 200
             assert (await response.json())["rejected"] is True
 
-            other_headers = {**headers, "X-Simcord-Context": bob_page["context"]["id"]}
+            other_headers = preview_headers(preview, bob_page["context"]["id"])
             response = await client.get(preview.origin + "/api/state", headers=other_headers)
             assert response.status == 200
             other = await response.json()
@@ -358,7 +342,6 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
         assert {item["kind"] for item in payload["candidates"]["role"]} == {"role"}
         assert {item["kind"] for item in payload["candidates"]["chan"]} == {"channel"}
 
-        base = {"generation": page.generation, "bot_generation": env._generation}
         for sequence, custom_id, value in (
             (1, "who", [str(bob.id)]),
             (2, "role", [str(role.id)]),
@@ -366,58 +349,49 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
         ):
             result = await preview.action(
                 "python",
-                {
-                    **base,
-                    "sequence": sequence,
-                    "request_id": custom_id,
-                    "kind": "select",
-                    "custom_id": custom_id,
-                    "values": value,
-                    "published_revision": page.revision,
-                },
+                action_body(
+                    page,
+                    "select",
+                    sequence,
+                    request_id=custom_id,
+                    custom_id=custom_id,
+                    values=value,
+                    published_revision=page.revision,
+                ),
             )
             assert result["dispatched"] is True
         assert "Channel general" in channel.last_message.content
         rejected = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 4,
-                "request_id": "bad",
-                "kind": "select",
-                "custom_id": "who",
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                4,
+                request_id="bad",
+                custom_id="who",
+                published_revision=page.revision,
+            ),
         )
         assert rejected["dispatched"] is False
         rejected = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 4,
-                "request_id": "bad-option",
-                "kind": "select",
-                "custom_id": "who",
-                "values": ["999999999999"],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                4,
+                request_id="bad-option",
+                custom_id="who",
+                values=["999999999999"],
+                published_revision=page.revision,
+            ),
         )
         assert rejected["dispatched"] is False
-        gap = await preview.action(
-            "python",
-            {**base, "sequence": 7, "request_id": "gap", "kind": "refresh"},
-        )
+        gap = await preview.action("python", action_body(page, "refresh", 7, request_id="gap"))
         assert gap["rejected"] is True
         focused = await alice.slash(channel, "panel")
         focus = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 4,
-                "request_id": "focus",
-                "kind": "focus",
-                "target_id": str(focused.response.id),
-            },
+            action_body(page, "focus", 4, request_id="focus", target_id=str(focused.response.id)),
         )
         assert focus["dispatched"] is False
         page = preview._python
@@ -452,39 +426,35 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
         failed = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "boom",
-                "kind": "click",
-                "custom_id": "boom",
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="boom",
+                custom_id="boom",
+                published_revision=page.revision,
+            ),
         )
         assert failed["dispatched"] is True
         assert failed["acknowledgement"] == "unacknowledged"
 
         timed = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 2,
-                "request_id": "timeout",
-                "kind": "click",
-                "custom_id": "timeout",
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "click",
+                2,
+                request_id="timeout",
+                custom_id="timeout",
+                published_revision=page.revision,
+            ),
         )
         assert timed["dispatched"] is True
         assert timed["acknowledgement"] == "unacknowledged"
 
-        closed = await preview.action(
-            "python",
-            {**base, "sequence": 3, "request_id": "close", "kind": "close"},
-        )
+        closed = await preview.action("python", action_body(page, "close", 3, request_id="close"))
         assert closed["settlement"] == "settled"
         await preview.wait_closed()
 
@@ -540,29 +510,27 @@ async def test_preview_ephemeral_filter_and_action_validation(env, channel, alic
         bob_page = preview.open_page(bob.id, target_id=ephemeral.response.id)
         assert preview.page_payload(bob_page)["selected"] is None
 
-        base = {"generation": preview._python.generation, "bot_generation": env._generation}
+        page = preview._python
         rejections = (
             await preview.action("python", []),
-            await preview.action("python", {**base, "sequence": True, "request_id": "bad"}),
-            await preview.action("python", {**base, "sequence": 1, "request_id": ""}),
-            await preview.action("python", {**base, "sequence": 1, "request_id": "kind", "kind": "unknown"}),
+            await preview.action("python", action_body(page, "refresh", True, request_id="bad")),
+            await preview.action("python", action_body(page, "refresh", 1, request_id="")),
+            await preview.action("python", action_body(page, "unknown", 1, request_id="kind")),
             await preview.action(
-                "python",
-                {**base, "sequence": 1, "request_id": "generation", "generation": 999, "kind": "refresh"},
+                "python", action_body(page, "refresh", 1, request_id="generation", generation=999)
             ),
             await preview.action(
-                "python",
-                {**base, "sequence": 1, "request_id": "bot", "bot_generation": 999, "kind": "refresh"},
+                "python", action_body(page, "refresh", 1, request_id="bot", bot_generation=999)
             ),
         )
         assert all(item["rejected"] is True for item in rejections)
         assert all(item["expectedSequence"] == 0 for item in rejections)
 
-        body = {**base, "sequence": 1, "request_id": "refresh", "kind": "refresh"}
+        body = action_body(page, "refresh", 1, request_id="refresh")
         settled = await preview.action("python", body)
         assert settled["settlement"] == "settled"
         assert await preview.action("python", body) == settled
-        conflict = await preview.action("python", {**body, "kind": "focus"})
+        conflict = await preview.action("python", action_body(page, "focus", 1, request_id="refresh"))
         assert conflict["rejected"] is True
         assert conflict["diagnostics"][0]["code"] == "conflicting-request"
 
@@ -572,16 +540,15 @@ async def test_preview_ephemeral_filter_and_action_validation(env, channel, alic
         page = preview._python
         invalid = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "bad-modal",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"unknown": "x"},
-            },
+            action_body(
+                page,
+                "modal_submit",
+                1,
+                request_id="bad-modal",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values={"unknown": "x"},
+            ),
         )
         assert invalid["dispatched"] is False
 
@@ -612,18 +579,17 @@ async def test_preview_dm_entity_candidates_and_select(env, alice):
         page = preview._python
         payload = preview.page_payload(page)
         assert payload["candidates"]["who"][0]["id"] == str(alice.id)
-        base = {"generation": page.generation, "bot_generation": env._generation}
         result = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "dm-user",
-                "kind": "select",
-                "custom_id": "who",
-                "values": [str(alice.id)],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="dm-user",
+                custom_id="who",
+                values=[str(alice.id)],
+                published_revision=page.revision,
+            ),
         )
         assert result["dispatched"] is True
         assert dm.last_message.content == "Picked alice"

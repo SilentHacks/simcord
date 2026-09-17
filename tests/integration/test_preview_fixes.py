@@ -5,36 +5,15 @@ import io
 
 import pytest
 
-pytest.importorskip("aiohttp")
 pytest.importorskip("PIL")
 
 import discord
 from aiohttp import ClientSession
 from PIL import Image
+from preview_helpers import action_body, gif_bytes, png_bytes, preview_headers
 
 import simcord
 from simcord.components import walk_components
-
-
-def _png() -> bytes:
-    output = io.BytesIO()
-    Image.new("RGBA", (2, 2), (20, 40, 60, 255)).save(output, format="PNG")
-    return output.getvalue()
-
-
-def _gif() -> bytes:
-    first = Image.new("RGBA", (2, 2), (255, 0, 0, 255))
-    second = Image.new("RGBA", (2, 2), (0, 0, 255, 255))
-    output = io.BytesIO()
-    first.save(output, format="GIF", save_all=True, append_images=[second], duration=100, loop=0)
-    return output.getvalue()
-
-
-def _headers(preview, context_id):
-    return {
-        "X-Simcord-Capability": preview.capability,
-        "X-Simcord-Context": context_id,
-    }
 
 
 @pytest.mark.asyncio
@@ -44,7 +23,7 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
     ephemeral = await alice.context_menu(channel, "Report Member", bob)
     stored = env.backend.get_message(channel.id, ephemeral.response.id)
     attachment = env.backend.cdn.store_attachment(
-        ephemeral.response.id, channel.id, "secret.png", _png(), None
+        ephemeral.response.id, channel.id, "secret.png", png_bytes(), None
     )
     stored.attachments.append(attachment)
     embed = discord.Embed().set_image(url=attachment["url"])
@@ -60,7 +39,7 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
         async with ClientSession() as client:
             response = await client.get(
                 preview.origin + f"/api/assets/{image['asset_id']}",
-                headers=_headers(preview, bob_page.id),
+                headers=preview_headers(preview, bob_page.id),
             )
             assert response.status == 404
 
@@ -76,19 +55,19 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
         await preview.show(ephemeral.response)
         own = preview.page_payload(preview._python)["selected"]["attachments"][0]
         assert own["available"] is True
-        assert preview.asset("python", own["asset_id"])[1] == _png()
+        assert preview.asset("python", own["asset_id"])[1] == png_bytes()
 
 
 @pytest.mark.asyncio
 async def test_asset_unavailable_after_owner_deleted(env, channel, alice):
     """Deletion invalidates an asset immediately and after refresh."""
     message = await env.bot.get_channel(channel.id).send(
-        file=discord.File(io.BytesIO(_png()), filename="pic.png")
+        file=discord.File(io.BytesIO(png_bytes()), filename="pic.png")
     )
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         asset_id = preview.page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
-        assert preview.asset("python", asset_id)[1] == _png()
+        assert preview.asset("python", asset_id)[1] == png_bytes()
         await message.delete()
         with pytest.raises(simcord.SetupError, match="unavailable"):
             preview.asset("python", asset_id)
@@ -135,9 +114,8 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
 
-        gap = await preview.action("python", {**base, "sequence": 5, "request_id": "gap", "kind": "refresh"})
+        gap = await preview.action("python", action_body(page, "refresh", 5, request_id="gap"))
         assert gap["rejected"] is True
         assert gap["settlement"] == "rejected"
         assert gap["dispatch"] == "not_dispatched"
@@ -149,14 +127,14 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
 
         stale = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "stale",
-                "kind": "click",
-                "custom_id": "persistent:ping",
-                "published_revision": page.revision + 1,
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="stale",
+                custom_id="persistent:ping",
+                published_revision=page.revision + 1,
+            ),
         )
         assert stale["rejected"] is True
         assert stale["diagnostics"][0]["code"] == "stale-revision"
@@ -165,14 +143,14 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
         # Rejections consumed nothing: sequence 1 is still the next admission.
         settled = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "click",
-                "kind": "click",
-                "custom_id": "persistent:ping",
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="click",
+                custom_id="persistent:ping",
+                published_revision=page.revision,
+            ),
         )
         assert settled["rejected"] is False
         assert settled["settlement"] == "settled"
@@ -186,18 +164,17 @@ async def test_invalid_modal_submit_does_not_consume_sequence(env, channel, alic
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(feedback)
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
         invalid = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "bad-modal",
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"bogus": "x"},
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "modal_submit",
+                1,
+                request_id="bad-modal",
+                modal_handle=page.modal_handle,
+                values={"bogus": "x"},
+                published_revision=page.revision,
+            ),
         )
         assert invalid["rejected"] is True
         assert invalid["diagnostics"][0]["code"] == "validation-failed"
@@ -206,15 +183,15 @@ async def test_invalid_modal_submit_does_not_consume_sequence(env, channel, alic
         assert preview.page_payload(page)["modal"] is not None
         settled = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "good-modal",
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"name": "Ada"},
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "modal_submit",
+                1,
+                request_id="good-modal",
+                modal_handle=page.modal_handle,
+                values={"name": "Ada"},
+                published_revision=page.revision,
+            ),
         )
         assert settled["rejected"] is False
         assert settled["settlement"] == "settled"
@@ -255,12 +232,12 @@ async def test_page_lease_expiry_frees_slots(env, channel, alice):
 @pytest.mark.asyncio
 async def test_shared_blob_counts_once_against_media_budget(env, channel, alice):
     message = await env.bot.get_channel(channel.id).send(
-        file=discord.File(io.BytesIO(_png()), filename="pic.png")
+        file=discord.File(io.BytesIO(png_bytes()), filename="pic.png")
     )
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         retained = preview._retained_media_bytes
-        assert retained == len(_png())
+        assert retained == len(png_bytes())
         second = preview.open_page(alice.id, target_id=message.id)
         assert preview._retained_media_bytes == retained
         assert len(preview._blobs) == 1
@@ -272,7 +249,7 @@ async def test_shared_blob_counts_once_against_media_budget(env, channel, alice)
 
 @pytest.mark.asyncio
 async def test_display_normalizes_animation_and_download_serves_original(env, channel, alice):
-    original = _gif()
+    original = gif_bytes()
     message = await env.bot.get_channel(channel.id).send(
         file=discord.File(io.BytesIO(original), filename="anim.gif")
     )
@@ -280,7 +257,7 @@ async def test_display_normalizes_animation_and_download_serves_original(env, ch
         await preview.show(message)
         asset_id = preview.page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
         response = await client.get(
-            preview.origin + f"/api/assets/{asset_id}", headers=_headers(preview, "python")
+            preview.origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
         )
         assert response.status == 200
         assert response.headers["Content-Type"] == "image/png"
@@ -292,7 +269,7 @@ async def test_display_normalizes_animation_and_download_serves_original(env, ch
             assert getattr(image, "n_frames", 1) == 1
         response = await client.get(
             preview.origin + f"/api/assets/{asset_id}?download=1",
-            headers=_headers(preview, "python"),
+            headers=preview_headers(preview, "python"),
         )
         assert response.status == 200
         assert "attachment" in response.headers["Content-Disposition"]
@@ -303,7 +280,7 @@ async def test_display_normalizes_animation_and_download_serves_original(env, ch
 async def test_normalized_blob_charged_once_per_blob(env, channel, alice):
     """The shared normalized copy is charged once, not once per asset record."""
     message = await env.bot.get_channel(channel.id).send(
-        file=discord.File(io.BytesIO(_png()), filename="pic.png")
+        file=discord.File(io.BytesIO(png_bytes()), filename="pic.png")
     )
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         await preview.show(message)
@@ -311,13 +288,13 @@ async def test_normalized_blob_charged_once_per_blob(env, channel, alice):
         for page in (preview._python, second):
             asset_id = preview.page_payload(page)["selected"]["attachments"][0]["asset_id"]
             response = await client.get(
-                preview.origin + f"/api/assets/{asset_id}", headers=_headers(preview, page.id)
+                preview.origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, page.id)
             )
             assert response.status == 200
             await response.read()
         blob = next(iter(preview._blobs.values()))
         assert blob.normalized_refs == 2
-        expected = len(_png()) + blob.normalized_size
+        expected = len(png_bytes()) + blob.normalized_size
         assert preview._retained_media_bytes == expected
         preview.close_page(second.id)
         assert preview._retained_media_bytes == expected
@@ -336,18 +313,17 @@ async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(panel.response)
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
         rejected = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "disabled-select",
-                "kind": "select",
-                "custom_id": "color",
-                "values": ["red"],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="disabled-select",
+                custom_id="color",
+                values=["red"],
+                published_revision=page.revision,
+            ),
         )
         assert rejected["rejected"] is True
         assert rejected["dispatched"] is False
@@ -356,15 +332,15 @@ async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
         select["disabled"] = False
         settled = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "enabled-select",
-                "kind": "select",
-                "custom_id": "color",
-                "values": ["red"],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="enabled-select",
+                custom_id="color",
+                values=["red"],
+                published_revision=page.revision,
+            ),
         )
         assert settled["rejected"] is False
         assert settled["settlement"] == "settled"
@@ -380,15 +356,14 @@ async def test_click_on_select_rejected_before_dispatch(env, channel, alice):
         page = preview._python
         rejected = await preview.action(
             "python",
-            {
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "sequence": 1,
-                "request_id": "click-select",
-                "kind": "click",
-                "custom_id": "color",
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="click-select",
+                custom_id="color",
+                published_revision=page.revision,
+            ),
         )
         assert rejected["rejected"] is True
         assert rejected["dispatched"] is False
@@ -406,32 +381,30 @@ async def test_consumed_modal_rejected_on_second_page(env, channel, alice):
         assert second.modal_handle is not None
         settled = await preview.action(
             "python",
-            {
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "sequence": 1,
-                "request_id": "submit",
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"name": "Ada"},
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "modal_submit",
+                1,
+                request_id="submit",
+                modal_handle=page.modal_handle,
+                values={"name": "Ada"},
+                published_revision=page.revision,
+            ),
         )
         assert settled["rejected"] is False
         assert settled["settlement"] == "settled"
 
         resubmit = await preview.action(
             second.id,
-            {
-                "generation": second.generation,
-                "bot_generation": env._generation,
-                "sequence": 1,
-                "request_id": "resubmit",
-                "kind": "modal_submit",
-                "modal_handle": second.modal_handle,
-                "values": {"name": "Bob"},
-                "published_revision": second.revision,
-            },
+            action_body(
+                second,
+                "modal_submit",
+                1,
+                request_id="resubmit",
+                modal_handle=second.modal_handle,
+                values={"name": "Bob"},
+                published_revision=second.revision,
+            ),
         )
         assert resubmit["rejected"] is True
         assert resubmit["dispatched"] is False
@@ -448,16 +421,15 @@ async def test_modal_missing_required_control_rejected(env, channel, alice):
         page = preview._python
         rejected = await preview.action(
             "python",
-            {
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "sequence": 1,
-                "request_id": "missing-required",
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {},
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "modal_submit",
+                1,
+                request_id="missing-required",
+                modal_handle=page.modal_handle,
+                values={},
+                published_revision=page.revision,
+            ),
         )
         assert rejected["rejected"] is True
         assert rejected["dispatched"] is False
@@ -508,13 +480,7 @@ async def test_failed_dispatch_settles_instead_of_wedging_replays(env, channel, 
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
         page = preview._python
-        body = {
-            "sequence": 1,
-            "request_id": "boom",
-            "generation": page.generation,
-            "bot_generation": env._generation,
-            "kind": "refresh",
-        }
+        body = action_body(page, "refresh", 1, request_id="boom")
 
         async def boom():
             raise KeyError("guild vanished")

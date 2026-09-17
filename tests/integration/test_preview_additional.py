@@ -1,13 +1,10 @@
 import asyncio
 import sys
 
-import pytest
-
-pytest.importorskip("aiohttp")
-pytest.importorskip("playwright")
-
 import discord
+import pytest
 from aiohttp import ClientSession, FormData
+from preview_helpers import action_body, preview_headers
 
 import simcord
 from fixtures.sample_bot import create_bot
@@ -91,6 +88,7 @@ async def test_preview_private_thread_membership_and_revocation(env, channel, al
 
 @pytest.mark.asyncio
 async def test_preview_modal_capture_and_raster_limits(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
     feedback = await alice.slash(channel, "feedback")
     async with env.preview(channel, viewers=[alice], width=640, height=360) as preview:
         await preview.show(feedback)
@@ -108,6 +106,7 @@ async def test_preview_modal_capture_and_raster_limits(tmp_path, env, channel, a
 
 @pytest.mark.asyncio
 async def test_preview_capture_target_boundaries(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
     message = await env.bot.get_channel(channel.id).send(content="capture target")
     panel = await alice.slash(channel, "panel")
     feedback = await alice.slash(channel, "feedback")
@@ -154,24 +153,20 @@ async def test_preview_deferred_action_and_multipart_limits(env, channel, alice)
         page = preview._python
         result = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "defer",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "click",
-                "custom_id": "slow_edit",
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="defer",
+                published_revision=page.revision,
+                custom_id="slow_edit",
+            ),
         )
         assert result["dispatched"] is True
         assert result["acknowledgement"] == "deferred"
         assert channel.last_message.content == "edited in place"
 
-        headers = {
-            "X-Simcord-Capability": preview.capability,
-            "X-Simcord-Context": page.id,
-        }
+        headers = preview_headers(preview, page.id)
         form = FormData()
         form.add_field("file:upload", b"without envelope", filename="x.txt")
         response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
@@ -197,7 +192,7 @@ async def test_preview_deferred_action_and_multipart_limits(env, channel, alice)
 
         response = await client.get(
             preview.origin + "/api/state",
-            headers={"X-Simcord-Capability": preview.capability, "Host": "evil.invalid"},
+            headers={**preview_headers(preview), "Host": "evil.invalid"},
         )
         assert response.status == 401
 
@@ -208,24 +203,26 @@ async def test_preview_action_busy_cancellation_and_pending_replay(env, channel,
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        body = {
-            "sequence": 1,
-            "request_id": "blocked",
-            "generation": page.generation,
-            "bot_generation": env._generation,
-            "published_revision": page.revision,
-            "kind": "click",
-            "custom_id": "block",
-        }
+        body = action_body(
+            page,
+            "click",
+            1,
+            request_id="blocked",
+            published_revision=page.revision,
+            custom_id="block",
+        )
         task = asyncio.create_task(preview.action("python", body))
         await asyncio.sleep(0)
         busy = await preview.action(
             "python",
-            {
-                **body,
-                "sequence": 2,
-                "request_id": "busy",
-            },
+            action_body(
+                page,
+                "click",
+                2,
+                request_id="busy",
+                published_revision=page.revision,
+                custom_id="block",
+            ),
         )
         assert busy["rejected"] is True
         assert busy["diagnostics"][0]["code"] == "busy"
@@ -247,46 +244,43 @@ async def test_preview_modal_file_upload_validation_and_dispatch(env, channel, a
         page = preview._python
         opened = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "open-upload",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "click",
-                "custom_id": "open-upload",
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="open-upload",
+                published_revision=page.revision,
+                custom_id="open-upload",
+            ),
         )
         assert opened["dispatched"] is True
         assert page.modal is not None
 
         invalid = await preview.action(
             "python",
-            {
-                "sequence": 2,
-                "request_id": "bad-upload",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"upload": "not-a-file-list"},
-            },
+            action_body(
+                page,
+                "modal_submit",
+                2,
+                request_id="bad-upload",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values={"upload": "not-a-file-list"},
+            ),
         )
         assert invalid["dispatched"] is False
 
         submitted = await preview.action(
             "python",
-            {
-                "sequence": 2,
-                "request_id": "good-upload",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"upload": [["report.txt", b"contents"]]},
-            },
+            action_body(
+                page,
+                "modal_submit",
+                2,
+                request_id="good-upload",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values={"upload": [["report.txt", b"contents"]]},
+            ),
         )
         assert submitted["dispatched"] is True
         assert channel.last_message.content == "uploaded"
@@ -301,43 +295,40 @@ async def test_preview_modal_entity_resolution_and_validation(env, channel, alic
         page = preview._python
         opened = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "open-member",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "click",
-                "custom_id": "open-member",
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="open-member",
+                published_revision=page.revision,
+                custom_id="open-member",
+            ),
         )
         assert opened["dispatched"] is True
         invalid = await preview.action(
             "python",
-            {
-                "sequence": 2,
-                "request_id": "bad-member",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"member": ["999999999999"]},
-            },
+            action_body(
+                page,
+                "modal_submit",
+                2,
+                request_id="bad-member",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values={"member": ["999999999999"]},
+            ),
         )
         assert invalid["dispatched"] is False
         submitted = await preview.action(
             "python",
-            {
-                "sequence": 2,
-                "request_id": "good-member",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": {"member": [str(bob.id)]},
-            },
+            action_body(
+                page,
+                "modal_submit",
+                2,
+                request_id="good-member",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values={"member": [str(bob.id)]},
+            ),
         )
         assert submitted["dispatched"] is True
         assert channel.last_message.content == "member submitted"
@@ -398,8 +389,11 @@ async def test_preview_show_rejects_foreign_and_cross_channel_modals(env, channe
     bob = env.guild.add_member(env.create_user("bob"))
     ephemeral = await alice.context_menu(channel, "Report Member", bob)
     async with env.preview(channel, viewers=[bob]) as preview:
-        with pytest.raises(simcord.SetupError, match="not accessible"):
-            preview.open_page(target_id=str(ephemeral.response.id))
+        # A denied explicit target degrades to bob's own initial target
+        # rather than raising — the ephemeral is simply never pinned.
+        denied = preview.open_page(target_id=str(ephemeral.response.id))
+        assert denied.target_id is None
+        assert preview.page_payload(denied)["selected"] is None
         with pytest.raises(simcord.SetupError, match="not accessible"):
             await preview.show(ephemeral.response)
         with pytest.raises(simcord.SetupError, match="not accessible"):
@@ -487,22 +481,22 @@ async def test_preview_snapshot_deleted_reference_embeds_and_channel_filter(env,
         page = preview._python
         rejected = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "wrong-channel-type",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "select",
-                "custom_id": "typed-channel",
-                "values": [str(voice.id)],
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="wrong-channel-type",
+                published_revision=page.revision,
+                custom_id="typed-channel",
+                values=[str(voice.id)],
+            ),
         )
         assert rejected["dispatched"] is False
 
 
 @pytest.mark.asyncio
 async def test_preview_capture_rejects_unsettled_browser_action(monkeypatch, tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
 
@@ -573,17 +567,16 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
     empty = env.guild.create_text_channel("empty")
     async with env.preview(empty, viewers=[alice]) as preview:
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
         result = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "no-target",
-                "kind": "click",
-                "custom_id": "x",
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "click",
+                1,
+                request_id="no-target",
+                custom_id="x",
+                published_revision=page.revision,
+            ),
         )
         assert result["dispatched"] is False
 
@@ -591,44 +584,43 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(assign.response)
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
         non_string = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "non-string",
-                "kind": "select",
-                "custom_id": "who",
-                "values": [1],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="non-string",
+                custom_id="who",
+                values=[1],
+                published_revision=page.revision,
+            ),
         )
         assert non_string["dispatched"] is False
         unhashable = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "unhashable",
-                "kind": "select",
-                "custom_id": "who",
-                "values": [[]],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="unhashable",
+                custom_id="who",
+                values=[[]],
+                published_revision=page.revision,
+            ),
         )
         assert unhashable["dispatched"] is False
         unavailable = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "missing-select",
-                "kind": "select",
-                "custom_id": "missing",
-                "values": ["x"],
-                "published_revision": page.revision,
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="missing-select",
+                custom_id="missing",
+                values=["x"],
+                published_revision=page.revision,
+            ),
         )
         assert unavailable["dispatched"] is False
 
@@ -638,16 +630,15 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
         page = preview._python
         invalid = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "bad-values",
-                "generation": page.generation,
-                "bot_generation": env._generation,
-                "published_revision": page.revision,
-                "kind": "modal_submit",
-                "modal_handle": page.modal_handle,
-                "values": [],
-            },
+            action_body(
+                page,
+                "modal_submit",
+                1,
+                request_id="bad-values",
+                published_revision=page.revision,
+                modal_handle=page.modal_handle,
+                values=[],
+            ),
         )
         assert invalid["dispatched"] is False
 

@@ -4,7 +4,6 @@ import io
 import pytest
 
 pytest.importorskip("PIL")
-pytest.importorskip("playwright")
 
 from PIL import Image
 
@@ -54,6 +53,7 @@ async def test_preview_media_worker_validates_limits_and_lifecycle():
 
 @pytest.mark.asyncio
 async def test_preview_screenshot_surface_viewport_and_incomplete(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice], width=640, height=360) as preview:
         surface = await preview.screenshot(tmp_path / "surface.png")
@@ -85,6 +85,7 @@ async def test_preview_screenshot_surface_viewport_and_incomplete(tmp_path, env,
 
 @pytest.mark.asyncio
 async def test_preview_screenshot_busy_cancellation_and_idempotent_close(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
     await alice.slash(channel, "panel")
     preview = env.preview(channel, viewers=[alice])
     await preview.__aenter__()

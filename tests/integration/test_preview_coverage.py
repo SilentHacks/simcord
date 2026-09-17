@@ -3,12 +3,12 @@ import io
 
 import pytest
 
-pytest.importorskip("aiohttp")
 pytest.importorskip("PIL")
 
 import discord
 from aiohttp import ClientSession, FormData
 from PIL import Image
+from preview_helpers import action_body, preview_headers
 
 import simcord
 from simcord.preview import _media
@@ -29,10 +29,7 @@ async def test_preview_public_asset_and_lifecycle_contracts(env, channel, alice)
     with pytest.raises(simcord.SetupError, match="not entered"):
         _ = preview.url
     async with preview:
-        headers = {
-            "X-Simcord-Capability": preview.capability,
-            "X-Simcord-Context": "python",
-        }
+        headers = preview_headers(preview, "python")
         async with ClientSession() as client:
             async with client.get(preview.origin + "/api/state", headers=headers) as response:
                 assert response.status == 200
@@ -87,30 +84,27 @@ async def test_preview_public_media_session_budgets(monkeypatch, env, channel, a
         await preview.show(message)
         image = preview.page_payload(preview._python)["selected"]["embeds"][0]["image"]
         assert image["available"] is False
-        assert preview._python.assets[image["asset_id"]]["diagnostic"] == "session media budget exceeded"
+        assert preview._python.assets[image["asset_id"]].diagnostic == "session media budget exceeded"
 
 
 @pytest.mark.asyncio
 async def test_preview_public_focus_and_entity_select_errors(env, channel, alice):
     empty = env.guild.create_text_channel("empty")
     async with env.preview(empty, viewers=[alice]) as preview:
-        headers = {
-            "X-Simcord-Capability": preview.capability,
-            "X-Simcord-Context": "python",
-        }
+        headers = preview_headers(preview, "python")
         async with ClientSession() as client:
             async with client.get(preview.origin + "/api/state", headers=headers) as response:
                 state = await response.json()
         result = await preview.action(
             state["context"]["id"],
-            {
-                "sequence": 1,
-                "request_id": "missing-focus",
-                "generation": state["context"]["generation"],
-                "bot_generation": state["botGeneration"],
-                "kind": "focus",
-                "target_id": None,
-            },
+            action_body(
+                state["context"],
+                "focus",
+                1,
+                bot_generation=state["botGeneration"],
+                request_id="missing-focus",
+                target_id=None,
+            ),
         )
         assert result["dispatched"] is False
 
@@ -120,41 +114,36 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
     message = await env.bot.get_channel(channel.id).send(view=view)
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
-        headers = {
-            "X-Simcord-Capability": preview.capability,
-            "X-Simcord-Context": "python",
-        }
+        headers = preview_headers(preview, "python")
         async with ClientSession() as client:
             async with client.get(preview.origin + "/api/state", headers=headers) as response:
                 state = await response.json()
-        base = {
-            "generation": state["context"]["generation"],
-            "bot_generation": state["botGeneration"],
-        }
         invalid_user = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "bad-member-id",
-                "kind": "select",
-                "custom_id": "member",
-                "values": ["not-a-snowflake"],
-                "published_revision": state["publishedRevision"],
-            },
+            action_body(
+                state["context"],
+                "select",
+                1,
+                bot_generation=state["botGeneration"],
+                request_id="bad-member-id",
+                custom_id="member",
+                values=["not-a-snowflake"],
+                published_revision=state["publishedRevision"],
+            ),
         )
         assert invalid_user["dispatched"] is False
         invalid_channel = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "bad-channel-id",
-                "kind": "select",
-                "custom_id": "channel",
-                "values": ["not-a-channel"],
-                "published_revision": state["publishedRevision"],
-            },
+            action_body(
+                state["context"],
+                "select",
+                1,
+                bot_generation=state["botGeneration"],
+                request_id="bad-channel-id",
+                custom_id="channel",
+                values=["not-a-channel"],
+                published_revision=state["publishedRevision"],
+            ),
         )
         assert invalid_channel["dispatched"] is False
 
@@ -162,10 +151,7 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
 @pytest.mark.asyncio
 async def test_preview_public_multipart_unknown_part(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
-        headers = {
-            "X-Simcord-Capability": preview.capability,
-            "X-Simcord-Context": "python",
-        }
+        headers = preview_headers(preview, "python")
         form = FormData()
         form.add_field("payload", "{}")
         form.add_field("note", "ignored")
@@ -178,8 +164,7 @@ async def test_preview_public_multipart_unknown_part(env, channel, alice):
 async def test_preview_public_page_limit_and_http_size_limits(env, channel, alice):
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
-        base = {"X-Simcord-Capability": preview.capability}
-        headers = {**base, "X-Simcord-Context": "python"}
+        headers = preview_headers(preview, "python")
         for _ in range(preview._MAX_PAGES):
             preview.open_page()
         with pytest.raises(simcord.SetupError, match="page limit"):
@@ -227,7 +212,6 @@ async def test_preview_public_select_validation_boundaries(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        base = {"generation": page.generation, "bot_generation": env._generation}
         cases = (
             {"custom_id": "choice", "values": ["one", "one"]},
             {"custom_id": "missing", "values": ["one"]},
@@ -237,14 +221,14 @@ async def test_preview_public_select_validation_boundaries(env, channel, alice):
         for sequence, values in enumerate(cases, 1):
             result = await preview.action(
                 "python",
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": f"select-{sequence}",
-                    "kind": "select",
-                    "published_revision": page.revision,
+                action_body(
+                    page,
+                    "select",
+                    1,
+                    request_id=f"select-{sequence}",
+                    published_revision=page.revision,
                     **values,
-                },
+                ),
             )
             assert result["dispatched"] is False
             assert result["settlement"] == "rejected"
@@ -272,13 +256,13 @@ async def test_preview_publication_inheritance_and_asset_reauthorization(env, ch
 
         switched = await preview.action(
             "python",
-            {
-                "sequence": 1,
-                "request_id": "switch-viewer",
-                "generation": preview._python.generation,
-                "kind": "viewer",
-                "viewer_id": str(bob.id),
-            },
+            action_body(
+                preview._python,
+                "viewer",
+                1,
+                request_id="switch-viewer",
+                viewer_id=str(bob.id),
+            ),
         )
         assert switched["settlement"] == "settled"
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
@@ -307,12 +291,7 @@ async def test_preview_rejected_overlap_does_not_consume_action(env, channel, al
 
         holder = asyncio.create_task(hold_operation())
         await started.wait()
-        body = {
-            "sequence": 1,
-            "request_id": "refresh",
-            "generation": preview._python.generation,
-            "kind": "refresh",
-        }
+        body = action_body(preview._python, "refresh", 1, request_id="refresh")
         with pytest.raises(simcord.SetupError, match="overlaps"):
             await preview.action("python", body)
         release.set()
@@ -321,15 +300,7 @@ async def test_preview_rejected_overlap_does_not_consume_action(env, channel, al
 
         page = preview._python
         closed = await asyncio.wait_for(
-            preview.action(
-                "python",
-                {
-                    "sequence": 2,
-                    "request_id": "close",
-                    "generation": page.generation,
-                    "kind": "close",
-                },
-            ),
+            preview.action("python", action_body(page, "close", 2, request_id="close")),
             1,
         )
         assert closed["settlement"] == "settled"

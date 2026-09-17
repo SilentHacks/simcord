@@ -2,35 +2,14 @@ import io
 
 import pytest
 
-pytest.importorskip("aiohttp")
 pytest.importorskip("PIL")
 
 import discord
 from aiohttp import ClientSession
 from PIL import Image
+from preview_helpers import gif_bytes, png_bytes, preview_headers
 
 from simcord.preview._markdown import markdown_tokens
-
-
-def _png() -> bytes:
-    output = io.BytesIO()
-    Image.new("RGBA", (2, 2), (20, 40, 60, 255)).save(output, format="PNG")
-    return output.getvalue()
-
-
-def _gif() -> bytes:
-    first = Image.new("RGBA", (2, 2), (255, 0, 0, 255))
-    second = Image.new("RGBA", (2, 2), (0, 0, 255, 255))
-    output = io.BytesIO()
-    first.save(output, format="GIF", save_all=True, append_images=[second], duration=100, loop=0)
-    return output.getvalue()
-
-
-def _headers(preview, context_id):
-    return {
-        "X-Simcord-Capability": preview.capability,
-        "X-Simcord-Context": context_id,
-    }
 
 
 @pytest.mark.asyncio
@@ -52,19 +31,19 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         content=f"hello <@{bob.id}> <@999999999999> <@&{role.id}> <@&{env.guild.id}>",
         embeds=[embed, safe_embed],
         reference=referenced,
-        file=discord.File(io.BytesIO(_png()), filename="upload.png"),
+        file=discord.File(io.BytesIO(png_bytes()), filename="upload.png"),
     )
     view = discord.ui.LayoutView()
     view.add_item(discord.ui.TextDisplay("**v2**"))
     view.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://upload.png")))
     v2 = await env.bot.get_channel(channel.id).send(
-        view=view, file=discord.File(io.BytesIO(_png()), filename="upload.png")
+        view=view, file=discord.File(io.BytesIO(png_bytes()), filename="upload.png")
     )
 
     async with env.preview(
         channel,
         viewers=[alice],
-        assets={image_url: ("picture.png", _png())},
+        assets={image_url: ("picture.png", png_bytes())},
     ) as preview:
         await preview.show(reply)
         selected = preview.page_payload(preview._python)["selected"]
@@ -81,15 +60,12 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         assert "token" not in selected
 
         async with ClientSession() as client:
-            headers = {
-                "X-Simcord-Capability": preview.capability,
-                "X-Simcord-Context": preview._python.id,
-            }
+            headers = preview_headers(preview, preview._python.id)
             asset_id = selected["embeds"][0]["image"]["asset_id"]
             response = await client.get(preview.origin + f"/api/assets/{asset_id}", headers=headers)
             assert response.status == 200
             assert response.headers["Content-Type"].startswith("image/png")
-            assert await response.read() == _png()
+            assert await response.read() == png_bytes()
             response = await client.get(preview.origin + "/api/assets/not-an-asset", headers=headers)
             assert response.status == 404
 
@@ -154,7 +130,7 @@ async def test_delete_python_page_is_rejected_not_an_error(env, channel, alice):
     """The reserved python context maps to 400, not an untranslated 500."""
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         response = await client.delete(
-            preview.origin + "/api/pages/python", headers=_headers(preview, "python")
+            preview.origin + "/api/pages/python", headers=preview_headers(preview, "python")
         )
         assert response.status == 400
         assert "python" in (await response.text()).lower()
@@ -167,7 +143,7 @@ async def test_pages_body_over_limit_is_rejected(env, channel, alice):
         oversized = b'{"viewer_id":"' + b"0" * (256 * 1024) + b'"}'
         response = await client.post(
             preview.origin + "/api/pages",
-            headers={**_headers(preview, "python"), "Content-Type": "application/json"},
+            headers={**preview_headers(preview, "python"), "Content-Type": "application/json"},
             data=oversized,
         )
         assert response.status == 413
@@ -193,7 +169,7 @@ async def test_deleted_channel_snapshot_reports_access_denied(env, channel, alic
 @pytest.mark.asyncio
 async def test_asset_download_serves_original_bytes(env, channel, alice):
     """?download=1 returns the original bytes as an attachment; the default normalizes."""
-    original = _gif()
+    original = gif_bytes()
     message = await env.bot.get_channel(channel.id).send(
         file=discord.File(io.BytesIO(original), filename="anim.gif")
     )
@@ -201,7 +177,7 @@ async def test_asset_download_serves_original_bytes(env, channel, alice):
         await preview.show(message)
         asset_id = preview.page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
         display = await client.get(
-            preview.origin + f"/api/assets/{asset_id}", headers=_headers(preview, "python")
+            preview.origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
         )
         assert display.status == 200
         assert "inline" in display.headers["Content-Disposition"]
@@ -210,7 +186,7 @@ async def test_asset_download_serves_original_bytes(env, channel, alice):
             assert getattr(image, "n_frames", 1) == 1
         download = await client.get(
             preview.origin + f"/api/assets/{asset_id}?download=1",
-            headers=_headers(preview, "python"),
+            headers=preview_headers(preview, "python"),
         )
         assert download.status == 200
         assert "attachment" in download.headers["Content-Disposition"]

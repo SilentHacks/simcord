@@ -2,15 +2,10 @@ import io
 import json
 from pathlib import Path
 
-import pytest
-
-pytest.importorskip("aiohttp")
-pytest.importorskip("PIL")
-pytest.importorskip("playwright")
-
 import discord
+import pytest
 from aiohttp import ClientSession, FormData
-from PIL import Image
+from preview_helpers import action_body, png_bytes, preview_headers
 
 import simcord
 from simcord.backend.models import Interaction
@@ -107,77 +102,88 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        base = {
-            "generation": page.generation,
-            "bot_generation": env._generation,
-            "published_revision": page.revision,
-        }
         bads = (
-            ({**base, "sequence": 1, "request_id": "click", "kind": "click", "custom_id": 1}, "custom_id"),
             (
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": "values",
-                    "kind": "select",
-                    "custom_id": "edge-select",
-                    "values": "x",
-                },
+                action_body(
+                    page,
+                    "click",
+                    1,
+                    request_id="click",
+                    custom_id=1,
+                    published_revision=page.revision,
+                ),
+                "custom_id",
+            ),
+            (
+                action_body(
+                    page,
+                    "select",
+                    1,
+                    request_id="values",
+                    custom_id="edge-select",
+                    values="x",
+                    published_revision=page.revision,
+                ),
                 "values must be a list",
             ),
             (
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": "scalar",
-                    "kind": "select",
-                    "custom_id": "edge-select",
-                    "values": [[]],
-                },
+                action_body(
+                    page,
+                    "select",
+                    1,
+                    request_id="scalar",
+                    custom_id="edge-select",
+                    values=[[]],
+                    published_revision=page.revision,
+                ),
                 "scalar",
             ),
             (
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": "bounds",
-                    "kind": "select",
-                    "custom_id": "edge-select",
-                    "values": [],
-                },
+                action_body(
+                    page,
+                    "select",
+                    1,
+                    request_id="bounds",
+                    custom_id="edge-select",
+                    values=[],
+                    published_revision=page.revision,
+                ),
                 "expects",
             ),
             (
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": "string",
-                    "kind": "select",
-                    "custom_id": "edge-select",
-                    "values": [1],
-                },
+                action_body(
+                    page,
+                    "select",
+                    1,
+                    request_id="string",
+                    custom_id="edge-select",
+                    values=[1],
+                    published_revision=page.revision,
+                ),
                 "strings",
             ),
             (
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": "option",
-                    "kind": "select",
-                    "custom_id": "edge-select",
-                    "values": ["nope"],
-                },
+                action_body(
+                    page,
+                    "select",
+                    1,
+                    request_id="option",
+                    custom_id="edge-select",
+                    values=["nope"],
+                    published_revision=page.revision,
+                ),
                 "option",
             ),
             (
-                {
-                    **base,
-                    "sequence": 1,
-                    "request_id": "modal",
-                    "kind": "modal_submit",
-                    "modal_handle": "missing",
-                    "values": {},
-                },
+                action_body(
+                    page,
+                    "modal_submit",
+                    1,
+                    request_id="modal",
+                    modal_handle="missing",
+                    values={},
+                    published_revision=page.revision,
+                ),
                 "modal is stale",
             ),
         )
@@ -203,14 +209,15 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                 stack.extend(value for value in current.values() if isinstance(value, (dict, list)))
         broken = await preview.action(
             "python",
-            {
-                **base,
-                "sequence": 1,
-                "request_id": "broken",
-                "kind": "select",
-                "custom_id": "edge-select",
-                "values": ["one"],
-            },
+            action_body(
+                page,
+                "select",
+                1,
+                request_id="broken",
+                custom_id="edge-select",
+                values=["one"],
+                published_revision=page.revision,
+            ),
         )
         assert broken["dispatched"] is False
 
@@ -221,37 +228,25 @@ async def test_preview_edges_action_revision_replay_and_viewer_switch(env, chann
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         page = preview._python
-        body = {"sequence": 1, "request_id": "refresh", "generation": page.generation, "kind": "refresh"}
+        body = action_body(page, "refresh", 1, request_id="refresh")
         first = await preview.action("python", body)
         assert first["settlement"] == "settled"
-        conflict = await preview.action("python", {**body, "kind": "focus"})
+        conflict = await preview.action("python", action_body(page, "focus", 1, request_id="refresh"))
         assert conflict["rejected"] is True
         assert conflict["diagnostics"][0]["code"] == "conflicting-request"
-        stale = await preview.action("python", {**body, "request_id": "old"})
+        stale = await preview.action("python", action_body(page, "refresh", 1, request_id="old"))
         assert stale["rejected"] is True
         assert stale["diagnostics"][0]["code"] == "stale-sequence"
         switch = await preview.action(
             "python",
-            {
-                "sequence": 2,
-                "request_id": "viewer",
-                "generation": page.generation,
-                "kind": "viewer",
-                "viewer_id": str(bob.id),
-            },
+            action_body(page, "viewer", 2, request_id="viewer", viewer_id=str(bob.id)),
         )
         assert switch["dispatched"] is False
         assert page.viewer.id == bob.id
         assert page.generation == 2
         focus = await preview.action(
             "python",
-            {
-                "sequence": 3,
-                "request_id": "focus",
-                "generation": page.generation,
-                "kind": "focus",
-                "target_id": "999999999999",
-            },
+            action_body(page, "focus", 3, request_id="focus", target_id="999999999999"),
         )
         assert focus["dispatched"] is False
         assert focus["settlement"] == "rejected"
@@ -262,11 +257,11 @@ async def test_preview_edges_action_revision_replay_and_viewer_switch(env, chann
 async def test_preview_edges_server_authorization_json_and_multipart(env, channel, alice):
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
-        base = {"X-Simcord-Capability": preview.capability}
+        base = preview_headers(preview)
         page_response = await client.post(preview.origin + "/api/pages", headers=base, json={})
         page = await page_response.json()
         context = page["context"]["id"]
-        headers = {**base, "X-Simcord-Context": context}
+        headers = preview_headers(preview, context)
         for path, method in (
             ("/api/state", client.get),
             (f"/api/pages/{context}", client.delete),
@@ -305,10 +300,10 @@ async def test_preview_edges_server_authorization_json_and_multipart(env, channe
 
 @pytest.mark.asyncio
 async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
     bob = env.guild.add_member(env.create_user("bob"))
     role = env.guild.create_role("edge-role")
-    image = io.BytesIO()
-    Image.new("RGBA", (2, 2), (1, 2, 3, 255)).save(image, format="PNG")
+    image = io.BytesIO(png_bytes())
     url = "https://cdn.example.test/edge.png"
     embed = discord.Embed(
         title="[title](https://example.test)", description="||secret||", url="javascript:bad"
