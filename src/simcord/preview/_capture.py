@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from ..actors import MemberActor
-from ..backend.access import can_access_channel
-from ..backend.errors import SetupError
+from ..backend.access import can_access_channel, can_access_message
+from ..backend.errors import BackendError, SetupError
 from ..builders import UserHandle
 from ._pages import _Page
 from ._snapshot import build_snapshot
@@ -86,7 +86,7 @@ class PreviewCapture:
     calibrated: bool = False
     calibration: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     action: Mapping[str, Any] | None = None
-    png: bytes | None = None
+    png: bytes | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -396,9 +396,19 @@ class _CaptureOps:
     def _capture_target(self, viewer: Any, target: Any) -> tuple[int | None, InteractionResult | None]:
         if target is None:
             target_id = cast(_Page, self._python).target_id
+            if target_id is not None:
+                try:
+                    message = self.env.backend.get_message(self.channel.id, target_id)
+                except BackendError:
+                    message = None
+                if message is None or not can_access_message(
+                    self.env, self.channel.id, message, viewer, history=True
+                ):
+                    target_id = None
             if target_id is None:
-                # The preview may have been opened on an empty channel: fall
-                # back to the latest visible message rather than failing.
+                # The preview may have opened on an empty channel, or the
+                # inherited focus was deleted or made inaccessible to this
+                # viewer: fall back to the latest visible message.
                 target_id = self._initial_target(viewer, self.channel.id)
             return target_id, None
         return self._resolve_target(viewer, target, capture=True)
@@ -495,8 +505,9 @@ class _CaptureOps:
     ) -> PreviewCapture:
         """Capture one deterministic PNG of the preview, returning a report.
 
-        ``path`` is the file destination for the PNG, or ``None`` to keep
-        the capture in memory and expose the bytes on ``PreviewCapture.png``.
+        ``path`` is the file destination (``str`` or ``os.PathLike``) for the
+        PNG, or ``None`` to keep the capture in memory and expose the bytes on
+        ``PreviewCapture.png``.
         ``viewer`` defaults to the Python presentation viewer. ``target`` may
         be a Message, ResponseMessage, InteractionResult, or snowflake; the
         default is the focused message, falling back to the latest visible

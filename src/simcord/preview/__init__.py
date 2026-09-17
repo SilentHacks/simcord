@@ -120,6 +120,13 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         except BaseException:
             if self.env._preview is self:
                 self.env._preview = None
+            self._closed = True
+            if self._cleanup_task is None:
+                # Entry failed before close() could start: settle
+                # wait_closed() callers rather than leaving them on an
+                # unset event. When cleanup is already running it sets the
+                # event itself once it finishes.
+                self._closed_event.set()
             await self._server.close()
             raise
 

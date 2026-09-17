@@ -24,6 +24,7 @@ async def test_preview_snapshot_returns_detached_projection(env, channel, alice)
         assert snap["selected"]["content"] == "Panel"
 
         snap["selected"]["content"] = "mutated"
+        assert preview._page_payload(preview._python)["selected"]["content"] == "Panel"
         snap = await preview.snapshot()
         assert snap["selected"]["content"] == "Panel"
 
@@ -41,10 +42,9 @@ async def test_preview_snapshot_requires_active_session(env, channel, alice):
 
 @pytest.mark.asyncio
 async def test_preview_port_pins_loopback_port(env, channel, alice):
-    probe = socket.socket()
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
     async with env.preview(channel, viewers=[alice], port=port) as preview:
         assert f"127.0.0.1:{port}" in preview.url
 
@@ -63,11 +63,43 @@ async def test_preview_port_bind_failure(env, channel, alice):
     held.listen(1)
     try:
         port = held.getsockname()[1]
+        preview = env.preview(channel, viewers=[alice], port=port)
         with pytest.raises(simcord.SetupError, match="could not bind port"):
-            async with env.preview(channel, viewers=[alice], port=port):
+            async with preview:
                 pass
+        # A failed entry is dead but settled: the env is released and
+        # wait_closed() returns instead of hanging.
+        assert env._preview is None
+        await preview.wait_closed()
+        async with env.preview(channel, viewers=[alice]) as recovered:
+            assert recovered.url
     finally:
         held.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_port_80_elided_host_and_origin(env, channel, alice):
+    from simcord.preview._server import PreviewServer
+
+    async with env.preview(channel, viewers=[alice]) as preview:
+        # Browsers strip the http scheme-default port from Host and Origin, so
+        # a server bound to :80 must accept the port-less forms.
+        server = PreviewServer(preview)
+        server.port = 80
+        headers = {**preview_headers(preview), "Host": "127.0.0.1", "Origin": "http://127.0.0.1"}
+        assert server._authorized(_Request(headers)) is True
+        headers = {**headers, "Host": "localhost", "Origin": "http://localhost"}
+        assert server._authorized(_Request(headers)) is True
+        assert server._authorized(_Request({**headers, "Host": "127.0.0.1:80"})) is True
+        assert server._authorized(_Request({**headers, "Host": "evil.example"})) is False
+        assert server._authorized(_Request({**headers, "Origin": "http://evil.example"})) is False
+
+
+class _Request:
+    """Minimal stand-in for an aiohttp request for ``_authorized``."""
+
+    def __init__(self, headers):
+        self.headers = headers
 
 
 @pytest.mark.asyncio

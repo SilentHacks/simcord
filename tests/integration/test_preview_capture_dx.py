@@ -26,10 +26,25 @@ async def test_screenshot_fallback_focuses_latest_message(tmp_path, env, channel
     # The preview is entered while the channel is still empty, so the Python
     # presentation never received a focus target.
     async with env.preview(channel, viewers=[alice]) as preview:
-        await alice.slash(channel, "panel")
+        result = await alice.slash(channel, "panel")
         cap = await preview.screenshot(tmp_path / "panel.png")
         assert cap.complete is True
-        assert cap.target_id is not None
+        assert cap.target_id == str(result.response.id)
+
+
+@pytest.mark.asyncio
+async def test_screenshot_falls_back_when_focus_deleted(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
+    await alice.slash(channel, "panel")
+    focused = channel.last_message
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await alice.send(channel, "fallback target")
+        await focused.delete()
+        # The inherited focus is gone: the capture falls back to the latest
+        # visible message instead of failing mid-render.
+        cap = await preview.screenshot(tmp_path / "x.png")
+        assert cap.complete is True
+        assert cap.target_id == str(channel.last_message.id)
 
 
 @pytest.mark.asyncio

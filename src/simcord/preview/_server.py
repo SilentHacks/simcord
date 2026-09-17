@@ -92,6 +92,15 @@ class PreviewServer:
             self.site = None
             self.port = None
 
+    def _allowed_hosts(self) -> set[str]:
+        if self.port is None:
+            return set()
+        hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
+        if self.port == 80:
+            # Browsers elide the http scheme-default port from Host.
+            hosts.update({"127.0.0.1", "localhost"})
+        return hosts
+
     def _authorized(self, request: Any, *, context: str | None = None) -> bool:
         capability = request.headers.get("X-Simcord-Capability")
         supplied_context = request.headers.get("X-Simcord-Context")
@@ -99,22 +108,21 @@ class PreviewServer:
             return False
         if context is not None and supplied_context != context:
             return False
-        host = request.headers.get("Host", "")
-        if self.port is not None and host not in {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}:
+        if self.port is not None and request.headers.get("Host", "") not in self._allowed_hosts():
             return False
         origin = request.headers.get("Origin")
         allowed = {self.preview._origin, "null"}
         if self.port is not None:
             allowed.add(f"http://localhost:{self.port}")
+            if self.port == 80:
+                # The Origin header elides the scheme-default port too.
+                allowed.update({"http://127.0.0.1", "http://localhost"})
         if origin is not None and origin not in allowed:
             return False
         return True
 
     async def _index(self, request: Any) -> Any:
-        if self.port is None or request.headers.get("Host", "") not in {
-            f"127.0.0.1:{self.port}",
-            f"localhost:{self.port}",
-        }:
+        if self.port is None or request.headers.get("Host", "") not in self._allowed_hosts():
             raise web.HTTPForbidden()
         return await self._static(request)
 

@@ -43,7 +43,7 @@ Preview without the rest of the `preview` extra still serves — it degrades ins
 Markdown fields render as plain text, and inline image media reports a diagnostic advising
 `install simcord[preview]` (the explicit download path still serves the original bytes). Calling
 `preview.screenshot(...)` without Playwright or its browser gives a direct
-`install simcord[screenshot]` / `playwright install chromium` error.
+`install simcord[screenshot]` / `playwright install --with-deps chromium` error.
 
 ## Start and stop a session
 
@@ -277,7 +277,7 @@ assert capture.ready
 print(capture.complete, capture.diagnostics)
 ```
 
-`path` is `str | None`. Pass `None` to render entirely in memory: `capture.path` is then `None` and
+`path` is `str | os.PathLike | None`. Pass `None` to render entirely in memory: `capture.path` is then `None` and
 `capture.png` holds the PNG bytes (`bytes | None`, `None` when a filesystem path was given), which
 suits agents and diff tooling that never touch disk.
 
@@ -298,7 +298,7 @@ rechecked before bytes are served.
 
 ## Loopback security and SSH forwarding
 
-The server binds only to `127.0.0.1` on an OS-assigned port. Every API and asset request requires the
+The server binds only to `127.0.0.1` on a loopback port. Every API and asset request requires the
 random capability header and (for pages) the opaque context header. Host and Origin are checked,
 CORS is not enabled, and responses use no-store, no-referrer, `nosniff`, clickjacking protection,
 and a restrictive same-origin CSP. Static files come from an explicit packaged-file map. The bridge
@@ -321,13 +321,13 @@ With an OS-assigned port the forward can only be created after the URL is known.
 reverses that order — create the tunnel first, then start the session on the port it already
 forwards:
 
+```bash
+ssh -N -L 8765:127.0.0.1:8765 user@remote-host
+```
+
 ```python
 async with env.preview(channel, viewers=[alice], port=8765) as preview:
     ...
-```
-
-```bash
-ssh -N -L 8765:127.0.0.1:8765 user@remote-host
 ```
 
 A busy pinned port raises `SetupError` on entry rather than silently moving, so a stale forward
