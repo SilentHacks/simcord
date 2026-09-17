@@ -46,7 +46,7 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         assets={image_url: ("picture.png", png_bytes())},
     ) as preview:
         await preview.show(reply)
-        selected = preview.page_payload(preview._python)["selected"]
+        selected = preview._page_payload(preview._python)["selected"]
         assert selected["reference"]["message_id"] == str(referenced.id)
         assert selected["mention_user_ids"] == [str(bob.id)]
         assert selected["mention_role_ids"] == [str(role.id)]
@@ -62,15 +62,15 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         async with ClientSession() as client:
             headers = preview_headers(preview, preview._python.id)
             asset_id = selected["embeds"][0]["image"]["asset_id"]
-            response = await client.get(preview.origin + f"/api/assets/{asset_id}", headers=headers)
+            response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
             assert response.status == 200
             assert response.headers["Content-Type"].startswith("image/png")
             assert await response.read() == png_bytes()
-            response = await client.get(preview.origin + "/api/assets/not-an-asset", headers=headers)
+            response = await client.get(preview._origin + "/api/assets/not-an-asset", headers=headers)
             assert response.status == 404
 
         await preview.show(v2)
-        v2_selected = preview.page_payload(preview._python)["selected"]
+        v2_selected = preview._page_payload(preview._python)["selected"]
         assert v2_selected["components_v2"] is True
         media = v2_selected["components"][1]["items"][0]["media"]
         assert media["available"] is True
@@ -130,7 +130,7 @@ async def test_delete_python_page_is_rejected_not_an_error(env, channel, alice):
     """The reserved python context maps to 400, not an untranslated 500."""
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         response = await client.delete(
-            preview.origin + "/api/pages/python", headers=preview_headers(preview, "python")
+            preview._origin + "/api/pages/python", headers=preview_headers(preview, "python")
         )
         assert response.status == 400
         assert "python" in (await response.text()).lower()
@@ -142,7 +142,7 @@ async def test_pages_body_over_limit_is_rejected(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         oversized = b'{"viewer_id":"' + b"0" * (256 * 1024) + b'"}'
         response = await client.post(
-            preview.origin + "/api/pages",
+            preview._origin + "/api/pages",
             headers={**preview_headers(preview, "python"), "Content-Type": "application/json"},
             data=oversized,
         )
@@ -158,7 +158,7 @@ async def test_deleted_channel_snapshot_reports_access_denied(env, channel, alic
         await env.bot.get_channel(channel.id).delete()
         await env.settle()
         await preview.refresh()
-        payload = preview.page_payload(preview._python)
+        payload = preview._page_payload(preview._python)
         assert payload["status"] == "access_denied"
         assert payload["messages"] == []
         assert payload["selected"] is None
@@ -175,9 +175,9 @@ async def test_asset_download_serves_original_bytes(env, channel, alice):
     )
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         await preview.show(message)
-        asset_id = preview.page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
+        asset_id = preview._page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
         display = await client.get(
-            preview.origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
+            preview._origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
         )
         assert display.status == 200
         assert "inline" in display.headers["Content-Disposition"]
@@ -185,7 +185,7 @@ async def test_asset_download_serves_original_bytes(env, channel, alice):
             assert image.format == "PNG"
             assert getattr(image, "n_frames", 1) == 1
         download = await client.get(
-            preview.origin + f"/api/assets/{asset_id}?download=1",
+            preview._origin + f"/api/assets/{asset_id}?download=1",
             headers=preview_headers(preview, "python"),
         )
         assert download.status == 200

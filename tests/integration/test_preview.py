@@ -18,7 +18,7 @@ async def test_preview_public_flow_and_at_most_once(env, channel, alice):
         assert preview.url.startswith("http://127.0.0.1:")
         assert "#" in preview.url
         page = preview._python
-        state = preview.page_payload(page)
+        state = preview._page_payload(page)
         assert state["selected"]["content"] == "Panel"
 
         body = action_body(
@@ -29,11 +29,11 @@ async def test_preview_public_flow_and_at_most_once(env, channel, alice):
             published_revision=page.revision,
             custom_id="persistent:ping",
         )
-        first = await preview.action("python", body)
-        replay = await preview.action("python", body)
+        first = await preview._action("python", body)
+        replay = await preview._action("python", body)
         assert first["dispatched"] is True
         assert replay == first
-        assert [item["excerpt"] for item in preview.page_payload(page)["messages"]][-1] == "pong"
+        assert [item["excerpt"] for item in preview._page_payload(page)["messages"]][-1] == "pong"
 
     await preview.close()
     await preview.wait_closed()
@@ -65,7 +65,7 @@ async def test_preview_eager_validation_and_dm_access(env, channel, alice):
     with pytest.raises(simcord.SetupError, match="DM preview requires"):
         env.preview(dm, viewers=[bob])
     async with env.preview(dm, viewers=[alice.user]) as preview:
-        payload = preview.page_payload(preview._python)
+        payload = preview._page_payload(preview._python)
         assert payload["channel"]["guildId"] is None
         assert payload["viewerId"] == str(alice.id)
 
@@ -89,11 +89,11 @@ async def test_preview_show_refresh_delete_and_access_revocation(env, channel, a
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        assert preview.page_payload(page)["selected"]["id"] == str(message.id)
+        assert preview._page_payload(page)["selected"]["id"] == str(message.id)
 
         await message.delete()
         await preview.refresh()
-        assert preview.page_payload(page)["selected"] is None
+        assert preview._page_payload(page)["selected"] is None
 
         fresh = await alice.slash(channel, "panel")
         await preview.show(fresh.response)
@@ -101,8 +101,8 @@ async def test_preview_show_refresh_delete_and_access_revocation(env, channel, a
         member = env.bot.get_guild(env.guild.id).get_member(alice.id)
         await cached.set_permissions(member, view_channel=False)
         await preview.refresh()
-        assert preview.page_payload(page)["status"] == "access_denied"
-        result = await preview.action(
+        assert preview._page_payload(page)["status"] == "access_denied"
+        result = await preview._action(
             "python",
             action_body(
                 page,
@@ -123,7 +123,7 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(selected.response)
         page = preview._python
-        result = await preview.action(
+        result = await preview._action(
             "python",
             action_body(
                 page,
@@ -138,7 +138,7 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
         assert result["dispatched"] is True
         assert channel.last_message.content == "Picked red"
 
-        result = await preview.action(
+        result = await preview._action(
             "python",
             action_body(
                 page,
@@ -151,10 +151,10 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
             ),
         )
         assert result["dispatched"] is False
-        gap = await preview.action("python", action_body(page, "refresh", 4, request_id="gap"))
+        gap = await preview._action("python", action_body(page, "refresh", 4, request_id="gap"))
         assert gap["rejected"] is True
         assert gap["diagnostics"][0]["code"] == "sequence-gap"
-        stale = await preview.action("python", action_body(page, "refresh", 1, request_id="old"))
+        stale = await preview._action("python", action_body(page, "refresh", 1, request_id="old"))
         assert stale["rejected"] is True
         assert stale["diagnostics"][0]["code"] == "stale-sequence"
 
@@ -171,10 +171,10 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
             modal_handle=page.modal_handle,
             values={"name": "Ada"},
         )
-        result = await preview.action("python", body)
+        result = await preview._action("python", body)
         assert result["settlement"] == "settled"
         assert channel.last_message.content == "Thanks Ada"
-        stale = await preview.action(
+        stale = await preview._action(
             "python",
             action_body(
                 page,
@@ -195,69 +195,69 @@ async def test_preview_http_security_and_limits(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         headers = preview_headers(preview)
         response = await client.get(
-            preview.origin + "/app.js", headers={"Host": f"localhost:{preview._server.port}"}
+            preview._origin + "/app.js", headers={"Host": f"localhost:{preview._server.port}"}
         )
         assert response.status == 200
         assert response.headers["X-Frame-Options"] == "DENY"
         response = await client.get(
-            preview.origin + "/missing", headers={"Host": f"localhost:{preview._server.port}"}
+            preview._origin + "/missing", headers={"Host": f"localhost:{preview._server.port}"}
         )
         assert response.status == 404
         response = await client.post(
-            preview.origin + "/api/pages", headers=headers, json={"viewer_id": "999999999999"}
+            preview._origin + "/api/pages", headers=headers, json={"viewer_id": "999999999999"}
         )
         assert response.status == 400
-        response = await client.get(preview.origin + "/", headers={"Host": "evil.invalid"})
+        response = await client.get(preview._origin + "/", headers={"Host": "evil.invalid"})
         assert response.status == 403
-        response = await client.post(preview.origin + "/api/pages", headers={})
+        response = await client.post(preview._origin + "/api/pages", headers={})
         assert response.status == 401
         response = await client.post(
-            preview.origin + "/api/pages",
+            preview._origin + "/api/pages",
             headers={**headers, "Origin": "https://evil.invalid"},
             json={"viewer_id": str(alice.id)},
         )
         assert response.status == 401
-        response = await client.post(preview.origin + "/api/pages", headers=headers, json=[])
+        response = await client.post(preview._origin + "/api/pages", headers=headers, json=[])
         assert response.status == 400
 
         page_response = await client.post(
-            preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
+            preview._origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
         )
         page = await page_response.json()
         context_headers = preview_headers(preview, page["context"]["id"])
         response = await client.get(
-            preview.origin + "/api/assets/missing",
+            preview._origin + "/api/assets/missing",
             headers={"X-Simcord-Capability": "wrong", "X-Simcord-Context": "wrong"},
         )
         assert response.status == 401
-        response = await client.post(preview.origin + "/api/action", headers=headers, json={})
+        response = await client.post(preview._origin + "/api/action", headers=headers, json={})
         assert response.status == 400
-        response = await client.post(preview.origin + "/api/action", headers=context_headers, json={})
+        response = await client.post(preview._origin + "/api/action", headers=context_headers, json={})
         assert response.status == 200
         assert (await response.json())["rejected"] is True
         response = await client.post(
-            preview.origin + "/api/action",
+            preview._origin + "/api/action",
             headers={**context_headers, "Content-Type": "application/json"},
             data=b"{",
         )
         assert response.status == 400
         multipart = FormData()
         multipart.add_field("payload", json.dumps({"kind": "refresh"}), content_type="application/json")
-        response = await client.post(preview.origin + "/api/action", headers=context_headers, data=multipart)
+        response = await client.post(preview._origin + "/api/action", headers=context_headers, data=multipart)
         assert response.status == 400
         response = await client.post(
-            preview.origin + "/api/action",
+            preview._origin + "/api/action",
             headers={**context_headers, "Content-Type": "application/json"},
             data=b"x" * (256 * 1024 + 1),
         )
         assert response.status == 413
-        response = await client.post(preview.origin + "/api/action", headers=context_headers, data=b"[]")
+        response = await client.post(preview._origin + "/api/action", headers=context_headers, data=b"[]")
         assert response.status == 200
         assert (await response.json())["rejected"] is True
 
         multipart = FormData()
         multipart.add_field("payload", "{")
-        response = await client.post(preview.origin + "/api/action", headers=context_headers, data=multipart)
+        response = await client.post(preview._origin + "/api/action", headers=context_headers, data=multipart)
         assert response.status == 400
         multipart = FormData()
         multipart.add_field(
@@ -268,19 +268,19 @@ async def test_preview_http_security_and_limits(env, channel, alice):
             content_type="application/json",
         )
         multipart.add_field("file:extra", b"upload", filename="extra.txt")
-        response = await client.post(preview.origin + "/api/action", headers=context_headers, data=multipart)
+        response = await client.post(preview._origin + "/api/action", headers=context_headers, data=multipart)
         assert response.status == 200
         assert (await response.json())["settlement"] == "settled"
         multipart = FormData()
         multipart.add_field("file:name", b"x" * (10 * 1024 * 1024 + 1), filename="x.bin")
-        response = await client.post(preview.origin + "/api/action", headers=context_headers, data=multipart)
+        response = await client.post(preview._origin + "/api/action", headers=context_headers, data=multipart)
         assert response.status == 413
 
         response = await client.delete(
-            preview.origin + f"/api/pages/{page['context']['id']}", headers=context_headers
+            preview._origin + f"/api/pages/{page['context']['id']}", headers=context_headers
         )
         assert response.status == 200
-        response = await client.get(preview.origin + "/api/state", headers=context_headers)
+        response = await client.get(preview._origin + "/api/state", headers=context_headers)
         assert response.status == 410
 
 
@@ -293,12 +293,12 @@ async def test_preview_pages_keep_viewers_and_reject_stale_generation(env, chann
         headers = preview_headers(preview)
         async with ClientSession() as client:
             response = await client.post(
-                preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
+                preview._origin + "/api/pages", headers=headers, json={"viewer_id": str(alice.id)}
             )
             assert response.status == 200
             alice_page = await response.json()
             response = await client.post(
-                preview.origin + "/api/pages", headers=headers, json={"viewer_id": str(bob.id)}
+                preview._origin + "/api/pages", headers=headers, json={"viewer_id": str(bob.id)}
             )
             assert response.status == 200
             bob_page = await response.json()
@@ -312,18 +312,18 @@ async def test_preview_pages_keep_viewers_and_reject_stale_generation(env, chann
             switch = action_body(
                 context, "viewer", 1, env=env, request_id="switch-viewer", viewer_id=str(bob.id)
             )
-            response = await client.post(preview.origin + "/api/action", headers=action_headers, json=switch)
+            response = await client.post(preview._origin + "/api/action", headers=action_headers, json=switch)
             assert response.status == 200
             switched = await response.json()
             assert switched["dispatched"] is False
 
             stale = action_body(context, "refresh", 2, env=env, request_id="stale")
-            response = await client.post(preview.origin + "/api/action", headers=action_headers, json=stale)
+            response = await client.post(preview._origin + "/api/action", headers=action_headers, json=stale)
             assert response.status == 200
             assert (await response.json())["rejected"] is True
 
             other_headers = preview_headers(preview, bob_page["context"]["id"])
-            response = await client.get(preview.origin + "/api/state", headers=other_headers)
+            response = await client.get(preview._origin + "/api/state", headers=other_headers)
             assert response.status == 200
             other = await response.json()
             assert other["viewerId"] == str(bob.id)
@@ -337,7 +337,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(assign.response)
         page = preview._python
-        payload = preview.page_payload(page)
+        payload = preview._page_payload(page)
         assert {item["kind"] for item in payload["candidates"]["who"]} == {"user"}
         assert {item["kind"] for item in payload["candidates"]["role"]} == {"role"}
         assert {item["kind"] for item in payload["candidates"]["chan"]} == {"channel"}
@@ -347,7 +347,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
             (2, "role", [str(role.id)]),
             (3, "chan", [str(channel.id)]),
         ):
-            result = await preview.action(
+            result = await preview._action(
                 "python",
                 action_body(
                     page,
@@ -361,7 +361,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
             )
             assert result["dispatched"] is True
         assert "Channel general" in channel.last_message.content
-        rejected = await preview.action(
+        rejected = await preview._action(
             "python",
             action_body(
                 page,
@@ -373,7 +373,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
             ),
         )
         assert rejected["dispatched"] is False
-        rejected = await preview.action(
+        rejected = await preview._action(
             "python",
             action_body(
                 page,
@@ -386,23 +386,23 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
             ),
         )
         assert rejected["dispatched"] is False
-        gap = await preview.action("python", action_body(page, "refresh", 7, request_id="gap"))
+        gap = await preview._action("python", action_body(page, "refresh", 7, request_id="gap"))
         assert gap["rejected"] is True
         focused = await alice.slash(channel, "panel")
-        focus = await preview.action(
+        focus = await preview._action(
             "python",
             action_body(page, "focus", 4, request_id="focus", target_id=str(focused.response.id)),
         )
         assert focus["dispatched"] is False
         page = preview._python
-        assert preview.page_payload(page)["targetId"] == str(focused.response.id)
+        assert preview._page_payload(page)["targetId"] == str(focused.response.id)
 
         for _ in range(16):
-            preview.open_page(alice.id)
+            preview._open_page(alice.id)
         with pytest.raises(simcord.SetupError, match="page limit"):
-            preview.open_page(alice.id)
+            preview._open_page(alice.id)
         with pytest.raises(simcord.SetupError, match="cannot be closed"):
-            preview.close_page("python")
+            preview._close_page("python")
 
 
 @pytest.mark.asyncio
@@ -426,7 +426,7 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        failed = await preview.action(
+        failed = await preview._action(
             "python",
             action_body(
                 page,
@@ -440,7 +440,7 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
         assert failed["dispatched"] is True
         assert failed["acknowledgement"] == "unacknowledged"
 
-        timed = await preview.action(
+        timed = await preview._action(
             "python",
             action_body(
                 page,
@@ -454,7 +454,7 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
         assert timed["dispatched"] is True
         assert timed["acknowledgement"] == "unacknowledged"
 
-        closed = await preview.action("python", action_body(page, "close", 3, request_id="close"))
+        closed = await preview._action("python", action_body(page, "close", 3, request_id="close"))
         assert closed["settlement"] == "settled"
         await preview.wait_closed()
 
@@ -465,7 +465,7 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
     with pytest.raises(simcord.SetupError, match="not entered"):
         _ = unopened.url
     with pytest.raises(simcord.SetupError, match="active"):
-        unopened.open_page()
+        unopened._open_page()
 
     bad_url = "https://cdn.example.test/bad.png"
     embed = discord.Embed().set_image(url=bad_url)
@@ -473,13 +473,13 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
     async with env.preview(channel, viewers=[alice], assets={bad_url: ("bad.png", b"not-image")}) as preview:
         page = preview._python
         with pytest.raises(simcord.SetupError, match="unknown"):
-            preview.get_page("missing")
+            preview._get_page("missing")
         with pytest.raises(simcord.SetupError, match="snowflake"):
-            preview.open_page(target_id="bad")
+            preview._open_page(target_id="bad")
         with pytest.raises(simcord.SetupError, match="expects"):
             await preview.show(object())
         with pytest.raises(simcord.SetupError, match="unavailable"):
-            preview.open_page(target_id="999999999999")
+            preview._open_page(target_id="999999999999")
         with pytest.raises(simcord.SetupError, match="unavailable"):
             await preview.screenshot(tmp_path / "bad.png", target=999999999999)
         with pytest.raises(simcord.SetupError, match="filesystem-like"):
@@ -489,11 +489,11 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
         with pytest.raises(simcord.SetupError, match="capture target"):
             await preview.screenshot(tmp_path / "bad.png", target=object())
         await preview.show(message)
-        asset = preview.page_payload(page)["selected"]["embeds"][0]["image"]["asset_id"]
+        asset = preview._page_payload(page)["selected"]["embeds"][0]["image"]["asset_id"]
         with pytest.raises(simcord.SetupError, match="valid PNG"):
-            await preview.prepare_asset("python", asset)
+            await preview._prepare_asset("python", asset)
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
-            preview.asset("python", "missing")
+            preview._asset("python", "missing")
     await unopened.close()
     with pytest.raises(simcord.SetupError, match="not active"):
         await unopened.screenshot(tmp_path / "closed.png")
@@ -505,21 +505,21 @@ async def test_preview_ephemeral_filter_and_action_validation(env, channel, alic
     ephemeral = await alice.context_menu(channel, "Report Member", bob)
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         await preview.show(ephemeral.response)
-        alice_payload = preview.page_payload(preview._python)
+        alice_payload = preview._page_payload(preview._python)
         assert alice_payload["selected"]["ephemeral"] is True
-        bob_page = preview.open_page(bob.id, target_id=ephemeral.response.id)
-        assert preview.page_payload(bob_page)["selected"] is None
+        bob_page = preview._open_page(bob.id, target_id=ephemeral.response.id)
+        assert preview._page_payload(bob_page)["selected"] is None
 
         page = preview._python
         rejections = (
-            await preview.action("python", []),
-            await preview.action("python", action_body(page, "refresh", True, request_id="bad")),
-            await preview.action("python", action_body(page, "refresh", 1, request_id="")),
-            await preview.action("python", action_body(page, "unknown", 1, request_id="kind")),
-            await preview.action(
+            await preview._action("python", []),
+            await preview._action("python", action_body(page, "refresh", True, request_id="bad")),
+            await preview._action("python", action_body(page, "refresh", 1, request_id="")),
+            await preview._action("python", action_body(page, "unknown", 1, request_id="kind")),
+            await preview._action(
                 "python", action_body(page, "refresh", 1, request_id="generation", generation=999)
             ),
-            await preview.action(
+            await preview._action(
                 "python", action_body(page, "refresh", 1, request_id="bot", bot_generation=999)
             ),
         )
@@ -527,10 +527,10 @@ async def test_preview_ephemeral_filter_and_action_validation(env, channel, alic
         assert all(item["expectedSequence"] == 0 for item in rejections)
 
         body = action_body(page, "refresh", 1, request_id="refresh")
-        settled = await preview.action("python", body)
+        settled = await preview._action("python", body)
         assert settled["settlement"] == "settled"
-        assert await preview.action("python", body) == settled
-        conflict = await preview.action("python", action_body(page, "focus", 1, request_id="refresh"))
+        assert await preview._action("python", body) == settled
+        conflict = await preview._action("python", action_body(page, "focus", 1, request_id="refresh"))
         assert conflict["rejected"] is True
         assert conflict["diagnostics"][0]["code"] == "conflicting-request"
 
@@ -538,7 +538,7 @@ async def test_preview_ephemeral_filter_and_action_validation(env, channel, alic
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(feedback)
         page = preview._python
-        invalid = await preview.action(
+        invalid = await preview._action(
             "python",
             action_body(
                 page,
@@ -577,9 +577,9 @@ async def test_preview_dm_entity_candidates_and_select(env, alice):
     async with env.preview(dm, viewers=[alice.user]) as preview:
         await preview.show(message)
         page = preview._python
-        payload = preview.page_payload(page)
+        payload = preview._page_payload(page)
         assert payload["candidates"]["who"][0]["id"] == str(alice.id)
-        result = await preview.action(
+        result = await preview._action(
             "python",
             action_body(
                 page,

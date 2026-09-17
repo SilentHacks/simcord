@@ -31,14 +31,14 @@ async def test_preview_public_asset_and_lifecycle_contracts(env, channel, alice)
     async with preview:
         headers = preview_headers(preview, "python")
         async with ClientSession() as client:
-            async with client.get(preview.origin + "/api/state", headers=headers) as response:
+            async with client.get(preview._origin + "/api/state", headers=headers) as response:
                 assert response.status == 200
                 state = await response.json()
         assert state["selected"]["id"] == str(message.id)
         asset_id = state["selected"]["embeds"][0]["image"]["asset_id"]
-        content_type, body, filename = await preview.prepare_asset("python", asset_id)
+        content_type, body, filename = await preview._prepare_asset("python", asset_id)
         assert (content_type, body, filename) == ("text/plain", b"hello", "note.txt")
-        assert await preview.prepare_asset("python", asset_id) == ("text/plain", b"hello", "note.txt")
+        assert await preview._prepare_asset("python", asset_id) == ("text/plain", b"hello", "note.txt")
 
     worker = MediaWorker()
     with pytest.raises(MediaError, match="valid PNG"):
@@ -74,15 +74,15 @@ async def test_preview_public_media_session_budgets(monkeypatch, env, channel, a
 
     async with env.preview(channel, viewers=[alice], assets={url: ("budget.png", body)}) as preview:
         await preview.show(message)
-        asset = preview.page_payload(preview._python)["selected"]["embeds"][0]["image"]["asset_id"]
+        asset = preview._page_payload(preview._python)["selected"]["embeds"][0]["image"]["asset_id"]
         preview._retained_media_bytes = preview._MAX_MEDIA_BYTES
         with pytest.raises(simcord.SetupError, match="budget exceeded after normalization"):
-            await preview.prepare_asset("python", asset)
+            await preview._prepare_asset("python", asset)
 
     monkeypatch.setattr(simcord.Preview, "_MAX_MEDIA_BYTES", 1)
     async with env.preview(channel, viewers=[alice], assets={url: ("budget.png", body)}) as preview:
         await preview.show(message)
-        image = preview.page_payload(preview._python)["selected"]["embeds"][0]["image"]
+        image = preview._page_payload(preview._python)["selected"]["embeds"][0]["image"]
         assert image["available"] is False
         assert preview._python.assets[image["asset_id"]].diagnostic == "session media budget exceeded"
 
@@ -93,9 +93,9 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
     async with env.preview(empty, viewers=[alice]) as preview:
         headers = preview_headers(preview, "python")
         async with ClientSession() as client:
-            async with client.get(preview.origin + "/api/state", headers=headers) as response:
+            async with client.get(preview._origin + "/api/state", headers=headers) as response:
                 state = await response.json()
-        result = await preview.action(
+        result = await preview._action(
             state["context"]["id"],
             action_body(
                 state["context"],
@@ -116,9 +116,9 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
         await preview.show(message)
         headers = preview_headers(preview, "python")
         async with ClientSession() as client:
-            async with client.get(preview.origin + "/api/state", headers=headers) as response:
+            async with client.get(preview._origin + "/api/state", headers=headers) as response:
                 state = await response.json()
-        invalid_user = await preview.action(
+        invalid_user = await preview._action(
             "python",
             action_body(
                 state["context"],
@@ -132,7 +132,7 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
             ),
         )
         assert invalid_user["dispatched"] is False
-        invalid_channel = await preview.action(
+        invalid_channel = await preview._action(
             "python",
             action_body(
                 state["context"],
@@ -156,7 +156,7 @@ async def test_preview_public_multipart_unknown_part(env, channel, alice):
         form.add_field("payload", "{}")
         form.add_field("note", "ignored")
         async with ClientSession() as client:
-            async with client.post(preview.origin + "/api/action", headers=headers, data=form) as response:
+            async with client.post(preview._origin + "/api/action", headers=headers, data=form) as response:
                 assert response.status == 400
 
 
@@ -166,14 +166,14 @@ async def test_preview_public_page_limit_and_http_size_limits(env, channel, alic
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         headers = preview_headers(preview, "python")
         for _ in range(preview._MAX_PAGES):
-            preview.open_page()
+            preview._open_page()
         with pytest.raises(simcord.SetupError, match="page limit"):
-            preview.open_page()
+            preview._open_page()
 
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=b"")
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=b"")
         assert response.status == 400
         response = await client.post(
-            preview.origin + "/api/action",
+            preview._origin + "/api/action",
             headers={"X-Simcord-Capability": "wrong", "X-Simcord-Context": "python"},
             json={},
         )
@@ -181,18 +181,18 @@ async def test_preview_public_page_limit_and_http_size_limits(env, channel, alic
 
         form = FormData()
         form.add_field("payload", b"{" + b" " * (256 * 1024), filename="payload.json")
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=form)
         assert response.status == 413
         form = FormData()
         form.add_field("payload", b"not-json", filename="payload.json")
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=form)
         assert response.status == 400
 
         form = FormData()
         form.add_field("payload", "{}")
         for index in range(11):
             form.add_field(f"note-{index}", b"x", filename=f"{index}.txt")
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=form)
         assert response.status == 413
 
 
@@ -219,7 +219,7 @@ async def test_preview_public_select_validation_boundaries(env, channel, alice):
             {"custom_id": "place", "values": ["not-an-id"]},
         )
         for sequence, values in enumerate(cases, 1):
-            result = await preview.action(
+            result = await preview._action(
                 "python",
                 action_body(
                     page,
@@ -244,17 +244,17 @@ async def test_preview_publication_inheritance_and_asset_reauthorization(env, ch
         channel, viewers=[alice, bob], assets={url: ("private.txt", b"private")}
     ) as preview:
         await preview.show(first)
-        browser_page = preview.open_page()
+        browser_page = preview._open_page()
         assert browser_page.target_id == first.id
 
         await first.edit(content="edited")
-        assert preview.page_payload(preview._python)["selected"]["content"] == "first"
+        assert preview._page_payload(preview._python)["selected"]["content"] == "first"
         await preview.refresh()
-        snapshot = preview.page_payload(preview._python)
+        snapshot = preview._page_payload(preview._python)
         assert snapshot["selected"]["content"] == "edited"
         old_asset = snapshot["selected"]["embeds"][0]["image"]["asset_id"]
 
-        switched = await preview.action(
+        switched = await preview._action(
             "python",
             action_body(
                 preview._python,
@@ -266,12 +266,12 @@ async def test_preview_publication_inheritance_and_asset_reauthorization(env, ch
         )
         assert switched["settlement"] == "settled"
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
-            preview.asset("python", old_asset)
+            preview._asset("python", old_asset)
 
     feedback = await alice.slash(channel, "feedback")
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(feedback)
-        assert preview.open_page().modal is feedback
+        assert preview._open_page().modal is feedback
 
 
 @pytest.mark.asyncio
@@ -293,14 +293,14 @@ async def test_preview_rejected_overlap_does_not_consume_action(env, channel, al
         await started.wait()
         body = action_body(preview._python, "refresh", 1, request_id="refresh")
         with pytest.raises(simcord.SetupError, match="overlaps"):
-            await preview.action("python", body)
+            await preview._action("python", body)
         release.set()
         await holder
-        assert (await preview.action("python", body))["settlement"] == "settled"
+        assert (await preview._action("python", body))["settlement"] == "settled"
 
         page = preview._python
         closed = await asyncio.wait_for(
-            preview.action("python", action_body(page, "close", 2, request_id="close")),
+            preview._action("python", action_body(page, "close", 2, request_id="close")),
             1,
         )
         assert closed["settlement"] == "settled"

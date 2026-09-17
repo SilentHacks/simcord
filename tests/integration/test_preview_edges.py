@@ -44,27 +44,27 @@ async def test_preview_edges_configuration_and_page_lifecycle(env, channel, alic
 
     await alice.slash(channel, "panel")
     preview = env.preview(channel, viewers=[alice])
-    assert preview.origin == ""
+    assert preview._origin == ""
     with pytest.raises(simcord.SetupError, match="not entered"):
         _ = preview.url
     with pytest.raises(simcord.SetupError, match="not active"):
-        preview.open_page()
+        preview._open_page()
     async with preview:
-        assert preview.origin.startswith("http://127.0.0.1:")
-        assert preview.url.startswith(preview.origin + "/#")
+        assert preview._origin.startswith("http://127.0.0.1:")
+        assert preview.url.startswith(preview._origin + "/#")
         with pytest.raises(simcord.SetupError, match="unknown preview viewer"):
             preview._viewer(None)
         with pytest.raises(simcord.SetupError, match="authorized"):
             preview._viewer("999999999")
         with pytest.raises(simcord.SetupError, match="target_id"):
             preview._target_id("bad")
-        page = preview.open_page(alice.id)
-        preview.close_page(page.id)
-        preview.close_page(page.id)
+        page = preview._open_page(alice.id)
+        preview._close_page(page.id)
+        preview._close_page(page.id)
         with pytest.raises(simcord.SetupError, match="expired or unknown"):
-            preview.get_page(page.id)
+            preview._get_page(page.id)
         with pytest.raises(simcord.SetupError, match="cannot be closed"):
-            preview.close_page("python")
+            preview._close_page("python")
     await preview.close()
     await preview.wait_closed()
 
@@ -188,7 +188,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
             ),
         )
         for body, text in bads:
-            result = await preview.action("python", body)
+            result = await preview._action("python", body)
             assert result["dispatched"] is False
             assert (
                 text in " ".join(item["message"] for item in result["diagnostics"])
@@ -207,7 +207,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     current["type"] = "broken"
                     break
                 stack.extend(value for value in current.values() if isinstance(value, (dict, list)))
-        broken = await preview.action(
+        broken = await preview._action(
             "python",
             action_body(
                 page,
@@ -229,22 +229,22 @@ async def test_preview_edges_action_revision_replay_and_viewer_switch(env, chann
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         page = preview._python
         body = action_body(page, "refresh", 1, request_id="refresh")
-        first = await preview.action("python", body)
+        first = await preview._action("python", body)
         assert first["settlement"] == "settled"
-        conflict = await preview.action("python", action_body(page, "focus", 1, request_id="refresh"))
+        conflict = await preview._action("python", action_body(page, "focus", 1, request_id="refresh"))
         assert conflict["rejected"] is True
         assert conflict["diagnostics"][0]["code"] == "conflicting-request"
-        stale = await preview.action("python", action_body(page, "refresh", 1, request_id="old"))
+        stale = await preview._action("python", action_body(page, "refresh", 1, request_id="old"))
         assert stale["rejected"] is True
         assert stale["diagnostics"][0]["code"] == "stale-sequence"
-        switch = await preview.action(
+        switch = await preview._action(
             "python",
             action_body(page, "viewer", 2, request_id="viewer", viewer_id=str(bob.id)),
         )
         assert switch["dispatched"] is False
         assert page.viewer.id == bob.id
         assert page.generation == 2
-        focus = await preview.action(
+        focus = await preview._action(
             "python",
             action_body(page, "focus", 3, request_id="focus", target_id="999999999999"),
         )
@@ -258,7 +258,7 @@ async def test_preview_edges_server_authorization_json_and_multipart(env, channe
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         base = preview_headers(preview)
-        page_response = await client.post(preview.origin + "/api/pages", headers=base, json={})
+        page_response = await client.post(preview._origin + "/api/pages", headers=base, json={})
         page = await page_response.json()
         context = page["context"]["id"]
         headers = preview_headers(preview, context)
@@ -267,35 +267,35 @@ async def test_preview_edges_server_authorization_json_and_multipart(env, channe
             (f"/api/pages/{context}", client.delete),
             ("/api/action", client.post),
         ):
-            response = await method(preview.origin + path, headers={**headers, "X-Simcord-Context": "wrong"})
+            response = await method(preview._origin + path, headers={**headers, "X-Simcord-Context": "wrong"})
             assert response.status in (400, 401, 410)
-        response = await client.post(preview.origin + "/api/pages", headers=base, data=b"{")
+        response = await client.post(preview._origin + "/api/pages", headers=base, data=b"{")
         assert response.status == 400
-        response = await client.post(preview.origin + "/api/pages", headers=base, data=b"[]")
+        response = await client.post(preview._origin + "/api/pages", headers=base, data=b"[]")
         assert response.status == 400
-        response = await client.get(preview.origin + "/api/state", headers=headers)
+        response = await client.get(preview._origin + "/api/state", headers=headers)
         assert response.status == 200
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=b"null")
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=b"null")
         assert response.status == 200
         assert (await response.json())["rejected"] is True
         form = FormData()
         form.add_field("payload", "not-json")
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=form)
         assert response.status == 400
         form = FormData()
         form.add_field("payload", json.dumps({"values": {}}))
         form.add_field("file:x", b"x", filename="x.txt")
-        response = await client.post(preview.origin + "/api/action", headers=headers, data=form)
+        response = await client.post(preview._origin + "/api/action", headers=headers, data=form)
         assert response.status == 200
         assert (await response.json())["rejected"] is True
-        response = await client.get(preview.origin + "/api/assets/missing", headers=headers)
+        response = await client.get(preview._origin + "/api/assets/missing", headers=headers)
         assert response.status == 404
         response = await client.get(
-            preview.origin + "/api/app.js", headers={"Host": f"localhost:{preview._server.port}"}
+            preview._origin + "/api/app.js", headers={"Host": f"localhost:{preview._server.port}"}
         )
         assert response.status == 404
-        await client.delete(preview.origin + f"/api/pages/{context}", headers=headers)
-        assert (await client.get(preview.origin + "/api/state", headers=headers)).status == 410
+        await client.delete(preview._origin + f"/api/pages/{context}", headers=headers)
+        assert (await client.get(preview._origin + "/api/state", headers=headers)).status == 410
 
 
 @pytest.mark.asyncio
@@ -341,18 +341,18 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
     backend.reference = {"message_id": None}
     async with env.preview(channel, viewers=[alice], assets={url: ("edge.png", image.getvalue())}) as preview:
         await preview.show(message)
-        selected = preview.page_payload(preview._python)["selected"]
+        selected = preview._page_payload(preview._python)["selected"]
         assert selected["mention_names"][str(bob.id)] == "bob"
         assert str(role.id) in selected["mention_role_ids"]
         assert "reference" not in selected
         assert selected["embeds"][0]["image"]["available"] is True
         assert selected["embeds"][0]["thumbnail"]["available"] is True
         asset = selected["attachments"][0]["asset_id"]
-        assert preview.asset("python", asset)[1] == image.getvalue()
-        assert await preview.prepare_asset("python", asset)
-        assert await preview.prepare_asset("python", asset)
+        assert preview._asset("python", asset)[1] == image.getvalue()
+        assert await preview._prepare_asset("python", asset)
+        assert await preview._prepare_asset("python", asset)
         await preview.show(v2_message)
-        selected = preview.page_payload(preview._python)["selected"]
+        selected = preview._page_payload(preview._python)["selected"]
         assert selected["components"][1]["items"][0]["media"]["asset_id"]
         assert selected["components"][0]["markdown_tokens"]
         assert selected["components"][2]["accessory"]["media"]["asset_id"]
@@ -399,13 +399,13 @@ async def test_preview_edges_capture_live_invalidation_and_assets(env, channel, 
         page.pinned_snapshot = {"selected": {}}
         page.pinned_generation = env._generation + 1
         with pytest.raises(simcord.SetupError, match="bot restart"):
-            preview.page_payload(page)
+            preview._page_payload(page)
         page.pinned_generation = env._generation
         member = env.bot.get_guild(env.guild.id).get_member(alice.id)
         await env.bot.get_channel(channel.id).set_permissions(member, view_channel=False)
         await env.settle()
         with pytest.raises(simcord.SetupError, match="access was revoked"):
-            preview.page_payload(page)
+            preview._page_payload(page)
 
 
 @pytest.mark.asyncio
@@ -422,7 +422,7 @@ async def test_preview_edges_private_channel_access_branches(env, channel, alice
     async with env.preview(handle, viewers=[alice]) as preview:
         await cached.send("private")
         await preview.refresh()
-        assert preview.page_payload(preview._python)["status"] == "current"
+        assert preview._page_payload(preview._python)["status"] == "current"
 
 
 @pytest.mark.asyncio
@@ -439,6 +439,6 @@ async def test_preview_edges_server_static_missing_file(monkeypatch, env, channe
         monkeypatch.setattr(Path, "read_text", fail)
         async with ClientSession() as client:
             response = await client.get(
-                preview.origin + "/", headers={"Host": f"localhost:{preview._server.port}"}
+                preview._origin + "/", headers={"Host": f"localhost:{preview._server.port}"}
             )
             assert response.status == 404

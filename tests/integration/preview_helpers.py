@@ -42,7 +42,7 @@ def preview_headers(preview: Any, context_id: str | None = None) -> dict[str, st
 
 
 def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str, Any]:
-    """Build a ``preview.action`` request envelope for ``page``.
+    """Build a ``preview._action`` request envelope for ``page``.
 
     ``sequence``/``request_id``/``generation``/``bot_generation``/``kind`` are
     filled in: the generation defaults from ``page`` — a ``_Page`` (whose
