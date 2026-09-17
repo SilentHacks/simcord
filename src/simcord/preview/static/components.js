@@ -313,7 +313,8 @@ function mediaElement(media, className, options, label) {
     return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
   }
   if (!assetId || media.available === false || manifest?.available === false || !options.loadAsset) {
-    options.onDiagnostic?.({ code: media?.diagnostic ? "media-rejected" : "media-unavailable", severity: "warning", message: media?.diagnostic || `${label || "Media"} is unavailable offline`, complete: false });
+    const diagnostic = manifest?.diagnostic;
+    options.onDiagnostic?.({ code: diagnostic ? "media-rejected" : "media-unavailable", severity: "warning", message: diagnostic || `${label || "Media"} is unavailable offline`, complete: false });
     return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
   }
   const image = node("img", className); image.alt = String(media.description || label || "Preview media"); image.loading = "eager";
@@ -341,7 +342,7 @@ function downloadButton(file, options, label) {
   }
   download.addEventListener("click", async () => {
     try {
-      const url = await options.loadAsset(file.asset_id);
+      const url = await options.loadAsset(file.asset_id, { download: true });
       if (!url) return;
       const link = node("a"); link.href = url; link.download = file.filename || label; link.click();
     } catch (error) {
@@ -465,7 +466,7 @@ export function renderMessage(root, message, options = {}) {
         if (available) {
           const openAsset = async (download = false) => {
             try {
-              const url = await options.loadAsset?.(attachment.asset_id);
+              const url = await options.loadAsset?.(attachment.asset_id, { download: true });
               if (!url) return;
               const link = node("a");
               link.href = url;

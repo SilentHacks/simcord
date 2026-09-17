@@ -19,7 +19,7 @@ from ..backend.access import _viewer_id, can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE
 from ..backend.errors import BackendError
 from ..backend.models import EPHEMERAL_FLAG, Message
-from ..components import COMPONENTS_V2_FLAG
+from ..components import COMPONENTS_V2_FLAG, walk_components
 from ..enums import ComponentType
 from ._markdown import markdown_tokens
 
@@ -126,7 +126,7 @@ def _decorate_components(
     by_url = {str(item.get("url")): item for item in attachments if isinstance(item.get("url"), str)}
     by_name = {str(item.get("filename")): item for item in attachments if item.get("filename") is not None}
 
-    def visit(node: Any) -> None:
+    for node in walk_components(rows):
         typ = int(node["type"])
         if typ == int(ComponentType.BUTTON) and int(node.get("style", 0)) == 5:
             link = _safe_link(node.get("url"))
@@ -161,16 +161,6 @@ def _decorate_components(
             media.pop("url", None)
         if typ == int(ComponentType.TEXT_DISPLAY):
             node["markdown_tokens"] = markdown_tokens(node["content"], "text_display")
-        for key in ("components", "component", "accessory"):
-            child = node.get(key)
-            if isinstance(child, dict):
-                visit(child)
-            elif isinstance(child, list):
-                for item in child:
-                    visit(item)
-
-    for row in rows:
-        visit(row)
     return _clean(rows)
 
 
@@ -325,26 +315,13 @@ def _wire_asset(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _walk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        out.append(row)
-        for key in ("components", "component", "accessory"):
-            child = row.get(key)
-            if isinstance(child, dict):
-                out.extend(_walk([child]))
-            elif isinstance(child, list):
-                out.extend(_walk(child))
-    return out
-
-
 def _candidates(
     preview: Preview, page: _Page, components: list[dict[str, Any]]
 ) -> dict[str, list[dict[str, Any]]]:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
     result: dict[str, list[dict[str, Any]]] = {}
-    for component in _walk(components):
+    for component in walk_components(components):
         kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
         custom_id = component.get("custom_id")
         if kind is None or not isinstance(custom_id, str):
@@ -394,7 +371,7 @@ def _candidates(
                                 "label": role.name,
                                 "kind": "role",
                                 "color": int(getattr(role, "color", 0) or 0),
-                                "icon_color": int(getattr(role, "icon_color", 0) or 0),
+                                "icon_color": int(getattr(role, "color", 0) or 0),
                                 "members": sum(1 for m in guild.members.values() if rid in m.role_ids),
                             }
                         )
@@ -428,11 +405,15 @@ def _candidates(
 def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     """Build a detached projection for one page; no backend dictionaries escape."""
     env = preview.env
-    channel = env.backend.get_channel(page.channel_id)
-    allowed = can_access_channel(env, channel.id, page.viewer, history=True)
+    # A channel deleted mid-session denies access instead of failing the build.
+    try:
+        channel = env.backend.get_channel(page.channel_id)
+    except BackendError:
+        channel = None
+    allowed = channel is not None and can_access_channel(env, channel.id, page.viewer, history=True)
     page.referenced_assets.clear()
     messages: list[Message] = []
-    if allowed:
+    if channel is not None and allowed:
         # ponytail: explicit refresh rebuilds the small in-memory world; add an
         # index only when previews routinely exceed fixture-sized histories.
         for message in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id):
@@ -446,7 +427,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     modal = None
     if allowed and page.modal is not None:
         payload = _clean(deepcopy(page.modal.modal), drop_urls=True)
-        for component in _walk(payload.get("components", [])):
+        for component in walk_components(payload.get("components", [])):
             if isinstance(component.get("content"), str):
                 component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
         payload["application_name"] = _author(preview.env, preview.env.backend.bot_user.id)["name"]
@@ -461,13 +442,13 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "botGeneration": env._generation,
         "viewers": [_author(env, _viewer_id(viewer)) for viewer in preview.viewers],
         "viewerId": str(_viewer_id(page.viewer)),
-        "channelId": str(channel.id),
+        "channelId": str(page.channel_id),
         "channel": {
-            "id": str(channel.id),
-            "name": channel.name,
-            "guildId": str(channel.guild_id) if channel.guild_id else None,
+            "id": str(page.channel_id),
+            "name": channel.name if channel is not None else None,
+            "guildId": str(channel.guild_id) if channel is not None and channel.guild_id else None,
         },
-        "targetId": str(page.target_id) if page.target_id is not None else None,
+        "targetId": str(page.target_id) if selected is not None else None,
         "messages": [_message_summary(env, item) for item in messages],
         "selected": selected,
         "modal": modal,

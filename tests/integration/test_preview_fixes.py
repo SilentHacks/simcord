@@ -463,3 +463,72 @@ async def test_modal_missing_required_control_rejected(env, channel, alice):
         assert rejected["dispatched"] is False
         assert rejected["expectedSequence"] == 0
         assert preview.page_payload(page)["modal"] is not None
+
+
+@pytest.mark.asyncio
+async def test_open_page_authorizes_target_against_the_requested_viewer(env, channel, alice):
+    """target_id access is checked for the page's viewer, not viewers[0]."""
+    bob = env.guild.add_member(env.create_user("bob"))
+    # Ephemeral responses are visible only to their invoking user.
+    ephemeral = await bob.context_menu(channel, "Report Member", alice)
+    async with env.preview(channel, viewers=[alice, bob]) as preview:
+        page = preview.open_page(bob.id, target_id=ephemeral.response.id)
+        assert page.target_id == ephemeral.response.id
+        assert preview.page_payload(page)["selected"]["id"] == str(ephemeral.response.id)
+        # The reverse direction resolves against alice too: a message only bob
+        # can see is not pinned for alice's page, which falls back to her own
+        # initial (empty) target instead of leaking the ephemeral.
+        other = preview.open_page(alice.id, target_id=ephemeral.response.id)
+        assert other.target_id is None
+        assert preview.page_payload(other)["selected"] is None
+
+
+@pytest.mark.asyncio
+async def test_second_enter_rejected_and_close_preserves_first_registration(env, channel, alice):
+    """Two previews may be constructed; only the first registration may enter."""
+    first = env.preview(channel, viewers=[alice])
+    second = env.preview(channel, viewers=[alice])
+    await first.__aenter__()
+    try:
+        with pytest.raises(simcord.SetupError, match="Only one active"):
+            await second.__aenter__()
+        # Closing the rejected preview must not orphan the live registration.
+        await second.close()
+        assert env._preview is first
+        with pytest.raises(simcord.SetupError, match="Only one active"):
+            env.preview(channel, viewers=[alice])
+    finally:
+        await first.close()
+    assert env._preview is None
+
+
+@pytest.mark.asyncio
+async def test_failed_dispatch_settles_instead_of_wedging_replays(env, channel, alice, monkeypatch):
+    """An unexpected mid-dispatch error records a failed, replayable result."""
+    await alice.slash(channel, "panel")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._python
+        body = {
+            "sequence": 1,
+            "request_id": "boom",
+            "generation": page.generation,
+            "bot_generation": env._generation,
+            "kind": "refresh",
+        }
+
+        async def boom():
+            raise KeyError("guild vanished")
+
+        monkeypatch.setattr(env, "_settle_internal", boom)
+        first = await preview.action("python", dict(body))
+        assert first["rejected"] is False
+        assert first["settlement"] == "failed"
+        assert first["dispatched"] is False
+        assert {"type": "KeyError", "message": "'guild vanished'"} in first["diagnostics"]
+        assert page.status == "stale"
+
+        # The same sequence+request_id replays the stored result rather than
+        # reporting "pending" forever.
+        replayed = await preview.action("python", dict(body))
+        assert replayed == first
+        assert replayed["settlement"] == "failed"

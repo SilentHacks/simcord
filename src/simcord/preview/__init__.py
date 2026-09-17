@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import mimetypes
-import os
 import secrets
 import time
 from collections.abc import Mapping
@@ -19,11 +18,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 
-from ..actors import MemberActor, _find_component, _modal_submit_nodes
+from ..actors import MemberActor, _find_component, _modal_control_map, _modal_submit_nodes
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..backend.models import Interaction, Message
-from ..builders import ChannelHandle, UserHandle
+from ..builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
 from ..components import validate_modal
 from ..enums import SELECT_TYPES, ComponentType
 from ..results import InteractionResult, ResponseMessage
@@ -46,9 +45,9 @@ def _capture_destination(path: Any) -> Path:
         destination = Path(path)
     except TypeError as exc:
         raise SetupError("capture path must be filesystem-like") from exc
-    if os.path.isdir(destination):
+    if destination.is_dir():
         raise SetupError("capture path must be a file")
-    if not os.path.isdir(destination.parent):
+    if not destination.parent.is_dir():
         raise SetupError("capture destination directory does not exist")
     return destination
 
@@ -191,7 +190,7 @@ class Preview:
     _MAX_PAGES = 16
     _MAX_MEDIA_BYTES = 128 * 1024 * 1024
     _PAGE_LEASE_SECONDS = 600.0
-    _LOCALES: ClassVar[set[str]] = {"en-US", "en-GB", "de", "de-DE", "es-ES", "fr", "fr-FR", "ja", "ja-JP"}
+    _LOCALES: ClassVar[frozenset[str]] = frozenset(loc.value for loc in discord.Locale)
 
     def __init__(
         self,
@@ -253,11 +252,18 @@ class Preview:
     async def __aenter__(self) -> Preview:
         if self._active or self._closed:
             raise SetupError("Preview is already entered or closed")
+        if self.env._preview is not None and not self.env._preview._closed:
+            raise SetupError("Only one active Preview is allowed per Env")
         self.env._preview = self
         try:
             await self._server.start()
+            if self._closed or self._closed_event.is_set():
+                # A close() racing the bind already ran (or is running)
+                # _cleanup; fail entry cleanly rather than surfacing a stray
+                # RuntimeError from the half-bound server.
+                raise SetupError("Preview was closed while starting")
             self._python = _Page(self, "python", self.viewers[0], self.channel.id)
-            self._python.target_id = self._initial_target(self._python)
+            self._python.target_id = self._initial_target(self._python.viewer, self.channel.id)
             self._pages[self._python.id] = self._python
             self._publish(self._python)
             self._unregister_shutdown = self.env._register_pre_shutdown(self.close)
@@ -265,21 +271,22 @@ class Preview:
             self._active = True
             return self
         except BaseException:
-            self.env._preview = None
+            if self.env._preview is self:
+                self.env._preview = None
             await self._server.close()
             raise
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         await self.close()
 
-    def _initial_target(self, page: _Page) -> int | None:
-        if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
+    def _initial_target(self, viewer: Any, channel_id: int) -> int | None:
+        if not can_access_channel(self.env, channel_id, viewer, history=True):
             return None
-        messages = self.env.backend.messages.get(page.channel_id, {})
+        messages = self.env.backend.messages.get(channel_id, {})
         visible = [
             item
             for item in messages.values()
-            if can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
+            if can_access_message(self.env, channel_id, item, viewer, history=True)
         ]
         bot_id = self.env.backend.bot_user.id
         bot_messages = [item for item in visible if item.author_id == bot_id]
@@ -296,7 +303,7 @@ class Preview:
             # Every publish is a fresh settled projection: it is the only thing
             # that clears "stale" and restores revoked access.
             page.status = "current"
-        if page.modal is not None and getattr(page.modal._interaction, "modal_consumed", False):
+        if page.modal is not None and page.modal._interaction.modal_consumed:
             page.modal = None
             page.modal_handle = None
         page.snapshot = build_snapshot(self, page)
@@ -421,15 +428,23 @@ class Preview:
             if target is not None:
                 message = self.env.backend.get_message(self.channel.id, target)
                 if not can_access_message(self.env, self.channel.id, message, viewer, history=True):
-                    target = self._initial_target(_Page(self, "tmp", viewer, self.channel.id))
+                    target = self._initial_target(viewer, self.channel.id)
         else:
-            target = self._target_id(target_id)
+            # A denied explicit target degrades like an inaccessible
+            # inherited one: open on this viewer's own initial target.
+            target = self._target_id(target_id, viewer, denied_fallback=True)
         page = _Page(self, "p_" + secrets.token_urlsafe(12), viewer, self.channel.id, target)
         if source.modal is not None and source.modal._interaction.user_id == viewer.id:
             page.modal = source.modal
             page.modal_handle = "m_" + secrets.token_urlsafe(12)
+        try:
+            self._publish(page)
+        except BaseException:
+            # The page was never registered: drop any blobs its partial
+            # snapshot retained so a failed publish leaves nothing behind.
+            self._clear_page_assets(page)
+            raise
         self._pages[page.id] = page
-        self._publish(page)
         return page
 
     def close_page(self, context_id: str) -> None:
@@ -450,10 +465,10 @@ class Preview:
                 return viewer
         raise SetupError("viewer is not authorized for this Preview")
 
-    def _target_id(self, target_id: Any, viewer: Any = None) -> int | None:
+    def _target_id(self, target_id: Any, viewer: Any = None, *, denied_fallback: bool = False) -> int | None:
         selected_viewer = cast(_Page, self._python).viewer if viewer is None else viewer
         if target_id is None:
-            return self._initial_target(_Page(self, "tmp", selected_viewer, self.channel.id))
+            return self._initial_target(selected_viewer, self.channel.id)
         try:
             target = int(target_id)
         except (TypeError, ValueError) as exc:
@@ -463,8 +478,59 @@ class Preview:
         except BackendError as exc:
             raise SetupError("target message is unavailable") from exc
         if not can_access_message(self.env, self.channel.id, message, selected_viewer, history=True):
+            if denied_fallback:
+                return self._initial_target(selected_viewer, self.channel.id)
             raise SetupError("target message is not accessible")
         return target
+
+    def _resolve_target(
+        self, viewer: Any, target: Any, *, capture: bool = False
+    ) -> tuple[int | None, InteractionResult | None]:
+        """Resolve a show/capture target to ``(target_id, modal)`` for a viewer.
+
+        Messages resolve to their id after a live access check; an
+        InteractionResult carrying a modal short-circuits to its source
+        message and returns the modal for the caller to pin. ``capture``
+        selects the "capture target …" wording and enables bare snowflakes.
+        """
+        label = "capture target" if capture else "target"
+        result = target if isinstance(target, InteractionResult) else None
+        if result is not None:
+            if result._env is not self.env:
+                raise SetupError(f"{label} belongs to another Env")
+            if result.modal is not None:
+                if result._interaction.user_id != viewer.id:
+                    if capture:
+                        raise SetupError("capture modal opener is not the requested viewer")
+                    raise SetupError("a modal can only be shown to its opener")
+                if result._interaction.channel_id != self.channel.id:
+                    raise SetupError(f"{label} belongs to another channel")
+                return result._interaction.source_message_id, result
+            target = result.response
+            if target is None:
+                raise SetupError("interaction has no presentable response")
+        if isinstance(target, ResponseMessage):
+            if target._env is not self.env or target.channel_id != self.channel.id:
+                raise SetupError(f"{label} belongs to another Env or channel")
+            target_id = target.id
+        elif isinstance(target, discord.Message):
+            if target.channel is None or target.channel.id != self.channel.id:
+                raise SetupError(f"{label} belongs to another channel")
+            target_id = target.id
+        elif capture:
+            try:
+                target_id = int(cast(Any, target))
+            except (TypeError, ValueError) as exc:
+                raise SetupError("capture target must be a message, result, or snowflake") from exc
+        else:
+            raise SetupError("show expects a Message, ResponseMessage, or InteractionResult")
+        try:
+            message = self.env.backend.get_message(self.channel.id, target_id)
+        except BackendError as exc:
+            raise SetupError(f"{label} is unavailable") from exc
+        if not can_access_message(self.env, self.channel.id, message, viewer, history=True):
+            raise SetupError(f"{label} is not accessible")
+        return target_id, None
 
     async def show(self, target: Any) -> None:
         if not self._active or self._python is None:
@@ -472,42 +538,14 @@ class Preview:
         token = self.env._begin_operation("preview.show")
         try:
             page = self._python
-            result: InteractionResult | None = target if isinstance(target, InteractionResult) else None
-            if result is not None:
-                if result._env is not self.env:
-                    raise SetupError("target belongs to another Env")
-                if result.modal is not None:
-                    if result._interaction.user_id != page.viewer.id:
-                        raise SetupError("a modal can only be shown to its opener")
-                    if result._interaction.channel_id != page.channel_id:
-                        raise SetupError("target belongs to another channel")
-                    page.modal = result
-                    page.modal_handle = "m_" + secrets.token_urlsafe(12)
-                    page.target_id = result._interaction.source_message_id
-                elif result.response is not None:
-                    target = result.response
-                else:
-                    raise SetupError("interaction has no presentable response")
-            if isinstance(target, ResponseMessage):
-                if target._env is not self.env or target.channel_id != page.channel_id:
-                    raise SetupError("target belongs to another Env or channel")
-                stored = self.env.backend.get_message(target.channel_id, target.id)
-                if not can_access_message(self.env, page.channel_id, stored, page.viewer, history=True):
-                    raise SetupError("target message is not accessible")
-                page.target_id = stored.id
+            target_id, modal = self._resolve_target(page.viewer, target)
+            page.target_id = target_id
+            if modal is not None:
+                page.modal = modal
+                page.modal_handle = "m_" + secrets.token_urlsafe(12)
+            else:
                 page.modal = None
                 page.modal_handle = None
-            elif isinstance(target, discord.Message):
-                if target.channel is None or target.channel.id != page.channel_id:
-                    raise SetupError("target belongs to another channel")
-                stored = self.env.backend.get_message(page.channel_id, target.id)
-                if not can_access_message(self.env, page.channel_id, stored, page.viewer, history=True):
-                    raise SetupError("target message is not accessible")
-                page.target_id = stored.id
-                page.modal = None
-                page.modal_handle = None
-            elif result is None:
-                raise SetupError("show expects a Message, ResponseMessage, or InteractionResult")
             self._publish(page)
         finally:
             self.env._end_operation(token)
@@ -536,40 +574,7 @@ class Preview:
     def _capture_target(self, viewer: Any, target: Any) -> tuple[int | None, InteractionResult | None]:
         if target is None:
             return cast(_Page, self._python).target_id, None
-        result = target if isinstance(target, InteractionResult) else None
-        if result is not None:
-            if result._env is not self.env:
-                raise SetupError("capture target belongs to another Env")
-            if result.modal is not None:
-                if result._interaction.user_id != viewer.id:
-                    raise SetupError("capture modal opener is not the requested viewer")
-                if result._interaction.channel_id != self.channel.id:
-                    raise SetupError("capture target belongs to another channel")
-                target_id = result._interaction.source_message_id
-                return target_id, result
-            target = result.response
-            if target is None:
-                raise SetupError("interaction has no presentable response")
-        if isinstance(target, ResponseMessage):
-            if target._env is not self.env or target.channel_id != self.channel.id:
-                raise SetupError("capture target belongs to another Env or channel")
-            target_id = target.id
-        elif isinstance(target, discord.Message):
-            if target.channel is None or target.channel.id != self.channel.id:
-                raise SetupError("capture target belongs to another channel")
-            target_id = target.id
-        else:
-            try:
-                target_id = int(cast(Any, target))
-            except (TypeError, ValueError) as exc:
-                raise SetupError("capture target must be a message, result, or snowflake") from exc
-        try:
-            message = self.env.backend.get_message(self.channel.id, target_id)
-        except BackendError as exc:
-            raise SetupError("capture target is unavailable") from exc
-        if not can_access_message(self.env, self.channel.id, message, viewer, history=True):
-            raise SetupError("capture target is not accessible")
-        return target_id, None
+        return self._resolve_target(viewer, target, capture=True)
 
     @staticmethod
     def _capture_attachment_ids(snapshot: Mapping[str, Any]) -> dict[str, str]:
@@ -772,6 +777,33 @@ class Preview:
     )
 
     @staticmethod
+    def _result(
+        page: _Page,
+        *,
+        request_id: Any,
+        sequence: Any,
+        rejected: bool,
+        dispatch: str,
+        acknowledgement: str,
+        settlement: str,
+        diagnostics: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """The one action-result envelope shared by rejects, replays, settles."""
+        return {
+            "requestId": request_id,
+            "sequence": sequence,
+            "expectedSequence": page.last_sequence,
+            "rejected": rejected,
+            "dispatched": dispatch == "dispatched",
+            "dispatch": dispatch,
+            "acknowledgement": acknowledgement,
+            "settlement": settlement,
+            "presentation": page.status,
+            "revision": page.revision,
+            "diagnostics": diagnostics,
+        }
+
+    @staticmethod
     def _reject(
         page: _Page,
         code: str,
@@ -781,18 +813,16 @@ class Preview:
         sequence: Any = None,
     ) -> dict[str, Any]:
         """A pre-admission rejection: never consumes the per-page sequence."""
-        return {
-            "requestId": request_id,
-            "sequence": sequence,
-            "expectedSequence": page.last_sequence,
-            "rejected": True,
-            "dispatched": False,
-            "dispatch": "not_dispatched",
-            "settlement": "rejected",
-            "presentation": page.status,
-            "revision": page.revision,
-            "diagnostics": [{"code": code, "severity": "error", "message": message}],
-        }
+        return Preview._result(
+            page,
+            request_id=request_id,
+            sequence=sequence,
+            rejected=True,
+            dispatch="not_dispatched",
+            acknowledgement="pending",
+            settlement="rejected",
+            diagnostics=[{"code": code, "severity": "error", "message": message}],
+        )
 
     async def action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
         page = self.get_page(context_id)
@@ -823,19 +853,16 @@ class Preview:
                         sequence=sequence,
                     )
                 if latest.response is None:
-                    return {
-                        "requestId": latest.request_id,
-                        "sequence": latest.sequence,
-                        "expectedSequence": page.last_sequence,
-                        "rejected": False,
-                        "dispatched": False,
-                        "dispatch": "pending",
-                        "acknowledgement": "pending",
-                        "settlement": "pending",
-                        "presentation": page.status,
-                        "revision": page.revision,
-                        "diagnostics": [],
-                    }
+                    return self._result(
+                        page,
+                        request_id=latest.request_id,
+                        sequence=latest.sequence,
+                        rejected=False,
+                        dispatch="pending",
+                        acknowledgement="pending",
+                        settlement="pending",
+                        diagnostics=[],
+                    )
                 return dict(latest.response)
             return self._reject(
                 page,
@@ -924,9 +951,10 @@ class Preview:
             except TimeoutError:
                 page.status = "stale"
                 result = self._finish_action(page, action, "timeout", cursor)
-            except (SetupError, BackendError, ValueError) as exc:
-                # Expected mid-dispatch failures are reported honestly; they
-                # may already have mutated the backend, so the page is stale.
+            except Exception as exc:
+                # Expected or not, dispatch failures settle the consumed
+                # sequence: the recorded response lets an identical replay
+                # return the same outcome instead of wedging on "pending".
                 page.status = "stale"
                 result = self._finish_action(page, action, "failed", cursor, exc)
             action.response = result
@@ -958,7 +986,7 @@ class Preview:
                 self._clear_page_assets(page)
                 page.viewer = viewer
                 page.generation += 1
-                page.target_id = self._initial_target(page)
+                page.target_id = self._initial_target(page.viewer, page.channel_id)
                 page.modal = None
                 page.modal_handle = None
                 page.status = "current"
@@ -999,9 +1027,9 @@ class Preview:
             modal = page.modal
             if modal is None or body.get("modal_handle") != page.modal_handle:
                 raise SetupError("modal is stale or unavailable")
-            if getattr(modal._interaction, "modal_consumed", False):
+            if modal._interaction.modal_consumed:
                 raise SetupError("modal has already been submitted")
-            modal_values = self._modal_values(page, body.get("values"))
+            modal_values = self._modal_values(page, body.get("values"), modal)
 
             async def run_modal(action: _Action, cursor: int) -> dict[str, Any]:
                 result = await actor.submit_modal(modal, modal_values)
@@ -1128,8 +1156,6 @@ class Preview:
             and entity_id in guild.roles
             and entity_id != guild.id
         ):
-            from ..builders import GuildHandle, RoleHandle
-
             return RoleHandle(self.env, GuildHandle(self.env, guild), guild.roles[entity_id])
         if kind == ComponentType.CHANNEL_SELECT:
             candidate = self.env.backend.channels.get(entity_id)
@@ -1138,37 +1164,30 @@ class Preview:
                 and candidate.guild_id == channel.guild_id
                 and can_access_channel(self.env, candidate.id, page.viewer)
             ):
-                from ..builders import GuildHandle
-
                 return ChannelHandle(self.env, GuildHandle(self.env, guild), candidate)
         return None
 
     def _member_handle(self, page: _Page, user_id: int) -> MemberActor:
-        from ..builders import GuildHandle
-
         channel = self.env.backend.get_channel(page.channel_id)
         guild = self.env.backend.get_guild(channel.guild_id)
         return MemberActor(
             self.env, GuildHandle(self.env, guild), UserHandle(self.env, self.env.backend.get_user(user_id))
         )
 
-    def _modal_values(self, page: _Page, values: Any) -> dict[str, Any]:
+    def _modal_values(self, page: _Page, values: Any, modal: InteractionResult) -> dict[str, Any]:
         if not isinstance(values, dict):
             raise SetupError("modal values must be an object")
-        kinds: dict[str, ComponentType] = {}
-        stack: list[Any] = [page.modal.modal if page.modal is not None else {}]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, dict):
-                custom_id = node.get("custom_id")
-                try:
-                    if isinstance(custom_id, str):
-                        kinds[custom_id] = ComponentType(node["type"])
-                except (KeyError, TypeError, ValueError):
-                    pass
-                stack.extend(node.values())
-            elif isinstance(node, list):
-                stack.extend(node)
+        interaction = modal._interaction
+        try:
+            spec = validate_modal(interaction.modal)
+        except ValueError as exc:
+            raise SetupError(str(exc)) from exc
+        # The canonical control map rejects duplicate custom_ids up front;
+        # walking the raw payload here would silently last-win.
+        kinds = {
+            custom_id: ComponentType(control["type"])
+            for custom_id, control in _modal_control_map(spec).items()
+        }
         converted: dict[str, Any] = {}
         entity_types = {
             ComponentType.USER_SELECT,
@@ -1202,11 +1221,6 @@ class Preview:
         # Run the same per-control validation submit_modal applies at dispatch
         # (required presence, bounds, option membership) so violations reject at
         # admission instead of failing mid-dispatch with a consumed sequence.
-        interaction = page.modal._interaction
-        try:
-            spec = validate_modal(interaction.modal)
-        except ValueError as exc:
-            raise SetupError(str(exc)) from exc
         _modal_submit_nodes(
             spec.get("components") or [], page.viewer, converted, {}, interaction.channel_id, []
         )
@@ -1241,19 +1255,16 @@ class Preview:
             "acknowledgement": ack,
             "settlement": settlement,
         }
-        return {
-            "requestId": action.request_id,
-            "sequence": action.sequence,
-            "expectedSequence": page.last_sequence,
-            "rejected": False,
-            "dispatched": interaction is not None,
-            "dispatch": dispatch,
-            "acknowledgement": ack,
-            "settlement": settlement,
-            "presentation": page.status,
-            "revision": page.revision,
-            "diagnostics": diagnostics,
-        }
+        return self._result(
+            page,
+            request_id=action.request_id,
+            sequence=action.sequence,
+            rejected=False,
+            dispatch=dispatch,
+            acknowledgement=ack,
+            settlement=settlement,
+            diagnostics=diagnostics,
+        )
 
     def _authorize_asset(self, page: _Page, asset_id: str) -> dict[str, Any]:
         """Reauthorize one asset at serve time against live backend state."""
@@ -1282,24 +1293,28 @@ class Preview:
             raise SetupError("asset is unavailable")
         return entry.data
 
-    def asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
+    def _authorized_asset(self, context_id: str | None, asset_id: str) -> tuple[_Page, dict[str, Any], bytes]:
+        """Resolve, liveness-check, and authorize one asset; return its blob."""
         page = self.get_page(context_id)
         self._assert_capture_live(page)
         record = self._authorize_asset(page, asset_id)
-        return record["contentType"], self._asset_blob(record), record["filename"]
+        return page, record, self._asset_blob(record)
+
+    def asset(self, context_id: str | None, asset_id: str) -> tuple[str, bytes, str]:
+        _, record, body = self._authorized_asset(context_id, asset_id)
+        return record["contentType"], body, record["filename"]
 
     async def prepare_asset(
         self, context_id: str | None, asset_id: str, *, download: bool = False
     ) -> tuple[str, bytes, str]:
-        content_type, body, filename = self.asset(context_id, asset_id)
+        _, record, body = self._authorized_asset(context_id, asset_id)
+        content_type, filename = record["contentType"], record["filename"]
         if download or not content_type.startswith("image/"):
             # Downloads and non-image media are served the original bytes;
             # only the display path returns the normalized PNG first frame.
             return content_type, body, filename
         if self._media_worker is None:
             self._media_worker = MediaWorker()
-        page = self.get_page(context_id)
-        record = self._authorize_asset(page, asset_id)
         digest = record.get("digest")
         try:
             info = await self._media_worker.validate(digest if isinstance(digest, str) else asset_id, body)
@@ -1309,9 +1324,7 @@ class Preview:
             raise SetupError(str(exc)) from exc
         # Reauthorize after the awaited decode: access or membership may have
         # changed while validation was in flight.
-        page = self.get_page(context_id)
-        self._assert_capture_live(page)
-        record = self._authorize_asset(page, asset_id)
+        _, record, _ = self._authorized_asset(context_id, asset_id)
         entry = self._blobs.get(digest) if isinstance(digest, str) else None
         if entry is None:
             raise SetupError("asset is unavailable")

@@ -32,7 +32,7 @@ class MediaError(ValueError):
 
 def _inspect(blob: bytes) -> MediaInfo:
     try:
-        from PIL import Image, UnidentifiedImageError
+        from PIL import Image
     except ImportError as exc:  # pragma: no cover - optional extra
         raise MediaError("Preview media requires Pillow; install simcord[preview]") from exc
     if len(blob) > 10 * 1024 * 1024:
@@ -43,7 +43,8 @@ def _inspect(blob: bytes) -> MediaInfo:
             image = Image.open(io.BytesIO(blob))
             image.verify()
             image = Image.open(io.BytesIO(blob))
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
+        except Exception as exc:
+            # Every decoder failure mode produces the same cached rejection.
             raise MediaError("media is not a valid PNG, JPEG, WebP, or GIF") from exc
         if any("decompression bomb" in str(item.message).lower() for item in caught):
             raise MediaError("media rejected as a decompression bomb")

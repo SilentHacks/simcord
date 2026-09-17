@@ -185,18 +185,21 @@ function applyProfile() {
   ui.height.value = String(state.profile.height);
 }
 
-function loadAsset(assetId) {
-  const cached = state.objectUrls.get(assetId);
+function loadAsset(assetId, { download = false } = {}) {
+  // download=1 serves the original bytes for explicit save/open actions;
+  // display loads always take the normalized form under the plain key.
+  const key = download ? `${assetId}:download` : assetId;
+  const cached = state.objectUrls.get(key);
   if (cached) return Promise.resolve(cached);
   const generation = state.contextGeneration;
-  return fetch(`/api/assets/${encodeURIComponent(assetId)}`, { headers: authHeaders() }).then(async (response) => {
+  return fetch(`/api/assets/${encodeURIComponent(assetId)}${download ? "?download=1" : ""}`, { headers: authHeaders() }).then(async (response) => {
     if (!response.ok) throw new Error(`asset request failed (${response.status})`);
     const url = URL.createObjectURL(await response.blob());
     if (generation !== state.contextGeneration || state.closed) {
       URL.revokeObjectURL(url);
       throw new Error("stale asset generation");
     }
-    state.objectUrls.set(assetId, url);
+    state.objectUrls.set(key, url);
     return url;
   });
 }

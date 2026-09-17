@@ -6,10 +6,28 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from ..backend.errors import SetupError
+from ..backend.errors import BackendError, SetupError
 
 if TYPE_CHECKING:
     from . import Preview
+
+
+async def _read_json_body(request: Any) -> Any:
+    """Read a JSON body under the shared 256 KiB cap, rejecting oversize early."""
+    from aiohttp import web
+
+    raw = bytearray()
+    while len(raw) <= 256 * 1024 and not request.content.at_eof():
+        chunk = await request.content.read(min(64 * 1024, 256 * 1024 + 1 - len(raw)))
+        if not chunk:  # pragma: no cover - at_eof guards exhausted streams
+            break
+        raw.extend(chunk)
+    if len(raw) > 256 * 1024:
+        raise web.HTTPRequestEntityTooLarge(max_size=256 * 1024, actual_size=len(raw))
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="invalid JSON") from exc
 
 
 class PreviewServer:
@@ -116,15 +134,12 @@ class PreviewServer:
 
         if not self._authorized(request):
             raise web.HTTPUnauthorized()
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            raise web.HTTPBadRequest(text="invalid JSON") from None
+        body = await _read_json_body(request)
         if not isinstance(body, dict):
             raise web.HTTPBadRequest(text="JSON object required")
         try:
             page = self.preview.open_page(body.get("viewer_id"), body.get("target_id"))
-        except Exception as exc:
+        except (SetupError, BackendError) as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
         return web.json_response(self.preview.page_payload(page), headers=self._SECURITY_HEADERS)
 
@@ -134,7 +149,10 @@ class PreviewServer:
         context_id = request.match_info["context_id"]
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
-        self.preview.close_page(context_id)
+        try:
+            self.preview.close_page(context_id)
+        except (SetupError, BackendError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
         return web.json_response({"closed": True}, headers=self._SECURITY_HEADERS)
 
     async def _state(self, request: Any) -> Any:
@@ -146,7 +164,7 @@ class PreviewServer:
         try:
             page = self.preview.get_page(context_id)
             payload = self.preview.page_payload(page)
-        except Exception as exc:
+        except (SetupError, BackendError) as exc:
             raise web.HTTPGone(text=str(exc)) from exc
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
@@ -156,28 +174,15 @@ class PreviewServer:
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
-        try:
-            if request.content_type.startswith("multipart/"):
-                body = await self._multipart_action(request)
-            else:
-                raw = bytearray()
-                while len(raw) <= 256 * 1024 and not request.content.at_eof():
-                    chunk = await request.content.read(min(64 * 1024, 256 * 1024 + 1 - len(raw)))
-                    if not chunk:  # pragma: no cover - at_eof guards exhausted streams
-                        break
-                    raw.extend(chunk)
-                if len(raw) > 256 * 1024:
-                    raise web.HTTPRequestEntityTooLarge(max_size=256 * 1024, actual_size=len(raw))
-                body = json.loads(raw)
-        except web.HTTPException:
-            raise
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise web.HTTPBadRequest(text="invalid JSON") from exc
+        if request.content_type.startswith("multipart/"):
+            body = await self._multipart_action(request)
+        else:
+            body = await _read_json_body(request)
         # Malformed envelopes are not transport errors: action() answers every
         # parseable body with a structured result (rejections carry HTTP 200).
         try:
             result = await self.preview.action(context_id, body)
-        except Exception as exc:
+        except (SetupError, BackendError) as exc:
             raise web.HTTPBadRequest(text=str(exc)) from exc
         return web.json_response(result, headers=self._SECURITY_HEADERS)
 
@@ -243,7 +248,7 @@ class PreviewServer:
             content_type, body, filename = await self.preview.prepare_asset(
                 context_id, request.match_info["asset_id"], download=download
             )
-        except Exception as exc:
+        except (SetupError, BackendError) as exc:
             raise web.HTTPNotFound(text=str(exc)) from exc
         safe_filename = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
         disposition = "attachment" if download else "inline"
