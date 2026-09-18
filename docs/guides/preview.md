@@ -138,8 +138,9 @@ replaying the action.
 ## Controls, keyboard, and accessibility
 
 The bundled page uses semantic HTML buttons, inputs, textareas, native checkboxes/radios/file
-pickers, labels, focus rings, and a styled listbox for string/entity selects. It supports dark/light
-themes, bounded width/height controls, responsive wrapping, spoiler reveal, and accessible modal
+pickers, labels, focus rings, and a styled listbox for string/entity selects. It renders the Discord
+dark theme only — no legitimate light-mode reference exists to validate a second theme against —
+plus bounded width/height controls, responsive wrapping, spoiler reveal, and accessible modal
 focus containment. Use Tab/Shift+Tab to move through a modal, Escape to cancel a modal or close a
 select first, Arrow keys/Home/End to navigate an open select, and Enter/Space to select or commit.
 Single-select commits immediately; multi-select keeps a local draft until Enter/Apply semantics,

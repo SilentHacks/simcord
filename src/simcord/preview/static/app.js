@@ -9,7 +9,6 @@ const ui = {
   empty: $("message-picker-empty"),
   viewer: $("viewer-picker"),
   message: $("message-picker"),
-  theme: $("theme-toggle"),
   width: $("viewport-width"),
   height: $("viewport-height"),
   refresh: $("refresh"),
@@ -34,7 +33,7 @@ const state = {
   pendingAction: null,
   sequence: 0,
   profile: { theme: "dark", width: 960, height: 720, locale: "en-US", timezone: "UTC", deviceScale: 1, reducedMotion: true },
-  profileCustomized: { theme: false, width: false, height: false },
+  profileCustomized: { width: false, height: false },
   calibration: { status: "uncalibrated", reason: "No legitimate Discord reference fixture is bundled for this slice" },
   drafts: new Map(),
   modalDrafts: new Map(),
@@ -171,7 +170,6 @@ function profileFromSnapshot(snapshot) {
   const configured = snapshot?.profile || {};
   return {
     ...state.profile,
-    theme: state.profileCustomized.theme ? state.profile.theme : (configured.theme || "dark"),
     width: state.profileCustomized.width ? state.profile.width : Number(configured.width || 960),
     height: state.profileCustomized.height ? state.profile.height : Number(configured.height || 720),
     locale: configured.locale || state.profile.locale || "en-US",
@@ -180,10 +178,8 @@ function profileFromSnapshot(snapshot) {
 }
 
 function applyProfile() {
-  document.documentElement.dataset.theme = state.profile.theme;
   ui.app.style.setProperty("--preview-width", `${state.profile.width}px`);
   ui.app.style.setProperty("--preview-height", `${state.profile.height}px`);
-  ui.theme.textContent = state.profile.theme === "dark" ? "Light theme" : "Dark theme";
   ui.width.value = String(state.profile.width);
   ui.height.value = String(state.profile.height);
 }
@@ -635,11 +631,6 @@ async function bootstrap() {
 
 ui.viewer.addEventListener("change", () => dispatch("viewer", { viewer_id: ui.viewer.value }));
 ui.message.addEventListener("change", () => dispatch("focus", { target_id: ui.message.value }));
-ui.theme.addEventListener("click", () => {
-  state.profile.theme = state.profile.theme === "dark" ? "light" : "dark";
-  state.profileCustomized.theme = true;
-  localRender(true);
-});
 function updateViewport(field, minimum, maximum) {
   const value = Number(field.value);
   if (!Number.isInteger(value) || value < minimum || value > maximum) {

@@ -49,7 +49,6 @@ async def test_preview_eager_validation_and_dm_access(env, channel, alice):
         ({"viewers": []}, "viewers must be a non-empty sequence"),
         ({"viewers": [alice, alice]}, "viewers must be unique"),
         ({"viewers": [env.create_user("outsider")]}, "guild previews require members"),
-        ({"viewers": [alice], "theme": "blue"}, "theme must be"),
         ({"viewers": [alice], "width": True}, "width must be"),
         ({"viewers": [alice], "height": 0}, "height must be"),
         ({"viewers": [alice], "locale": "xx"}, "unsupported locale"),
@@ -59,6 +58,10 @@ async def test_preview_eager_validation_and_dm_access(env, channel, alice):
     for options, message in invalid:
         with pytest.raises(simcord.SetupError, match=message):
             env.preview(channel, **options)
+    # There is no theme option: dark is the only rendered theme, so a
+    # theme= argument is a signature error rather than a validation one.
+    with pytest.raises(TypeError):
+        env.preview(channel, viewers=[alice], theme="light")
     assert env._preview is None
     await alice.send_dm("open the DM")
     dm = alice.user.dm_channel

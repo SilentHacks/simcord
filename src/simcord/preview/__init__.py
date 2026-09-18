@@ -43,7 +43,6 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         channel: ChannelHandle,
         viewers: tuple[Any, ...],
         *,
-        theme: str,
         width: int,
         height: int,
         locale: str,
@@ -54,7 +53,6 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.env = env
         self.channel = channel
         self.viewers = viewers
-        self.theme = theme
         self.width = width
         self.height = height
         self.locale = locale
@@ -279,7 +277,6 @@ def _validate_preview(
     env: Any,
     channel: Any,
     viewers: Any,
-    theme: str,
     width: int,
     height: int,
     locale: str,
@@ -307,8 +304,6 @@ def _validate_preview(
             raise SetupError("guild previews require members of the selected guild")
         if not can_access_channel(env, channel.id, viewer, history=True):
             raise SetupError("viewer lacks channel and history access")
-    if theme not in {"dark", "light"}:
-        raise SetupError("theme must be 'dark' or 'light'")
     for value, name in ((width, "width"), (height, "height")):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise SetupError(f"{name} must be a positive integer")
@@ -345,7 +340,7 @@ def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
         viewers,
         assets=assets,
         port=port,
-        **{key: kwargs[key] for key in ("theme", "width", "height", "locale", "timezone")},
+        **{key: kwargs[key] for key in ("width", "height", "locale", "timezone")},
     )
 
 

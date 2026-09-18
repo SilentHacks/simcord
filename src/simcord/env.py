@@ -1010,7 +1010,6 @@ class Env:
         channel: ChannelHandle,
         *,
         viewers: Sequence[MemberActor | UserHandle],
-        theme: str = "dark",
         width: int = 960,
         height: int = 720,
         locale: str = "en-US",
@@ -1022,8 +1021,8 @@ class Env:
 
         ``channel`` is the channel the session presents. ``viewers`` is a
         non-empty allowlist of same-Env handles — members for guild channels,
-        the owning ``UserHandle`` for DMs. ``theme`` is ``"dark"`` or
-        ``"light"``; ``width``/``height`` are positive-int viewport sizes;
+        the owning ``UserHandle`` for DMs. ``width``/``height`` are
+        positive-int viewport sizes;
         ``locale`` and ``timezone`` seed the rendered profile. ``assets`` maps
         otherwise-remote media URLs to ``(filename, bytes)`` tuples so they
         render offline. ``port`` pins the loopback port: ``None``/``0`` lets
@@ -1045,7 +1044,6 @@ class Env:
                 self,
                 channel,
                 viewers=viewers,
-                theme=theme,
                 width=width,
                 height=height,
                 locale=locale,

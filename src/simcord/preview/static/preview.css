@@ -48,50 +48,6 @@
   --spoiler-cover-bg: #5f6067;
   --spoiler-media-bg: #7d7e87;
 }
-:root[data-theme="light"] {
-  color-scheme: light;
-  background: #f2f3f5;
-  color: #313338;
-  --discord-bg: #f2f3f5;
-  --discord-surface: #fff;
-  --discord-elevated: #e3e5e8;
-  --discord-control: #fff;
-  --discord-hover: #ebedef;
-  --discord-text: #313338;
-  --discord-muted: #5c6270;
-  --discord-subtle: #4e5058;
-  --discord-border: #c7c9ce;
-  --component-surface: #f2f3f5;
-  --component-border: #d4d7dc;
-  --modal-surface: #fff;
-  --modal-separator: #e3e5e8;
-  --control-border: #c7c9ce;
-  --chip-surface: #e3e5e8;
-  --list-surface: #fff;
-  --option-hover: #dddee1;
-  --subtle-surface: #d4d7dc;
-  --subtle-surface-text: #313338;
-  --entity-text: #4e5058;
-  --entity-dim: #6d6f78;
-  --input-surface: #ebedef;
-  --input-placeholder: #6d6f78;
-  --modal-trigger-border: #c7c9ce;
-  --choice-border: #80848e;
-  --button-alt: #747f8d;
-  --button-alt-hover: #656e7b;
-  --button-alt-active: #5d6875;
-  --code-surface: #f2f3f5;
-  --code-border: #d4d7dc;
-  --code-text: #2e3338;
-  --embed-field-name: #060607;
-  --link-text: #006ce7;
-  --link-accent: #006ce7;
-  --scrollbar-thumb: #c7c9ce;
-  --disclaimer-bg: #fdf0d5;
-  --disclaimer-text: #313338;
-  --spoiler-cover-bg: #b5bac1;
-  --spoiler-media-bg: #c7c9ce;
-}
 * { box-sizing: border-box; }
 html, body { min-width: 240px; min-height: 100%; }
 body { margin: 0; background: var(--discord-bg); }
@@ -129,7 +85,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: #1e1f22;
   border-bottom: 1px solid #111214;
 }
-:root[data-theme="light"] .preview-toolbar { background: #fff; border-color: #c7c9ce; }
 .toolbar-field {
   display: flex;
   flex-direction: column;
@@ -145,10 +100,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: #313338;
   border: 1px solid #1e1f22;
   border-radius: 4px;
-}
-:root[data-theme="light"] .toolbar-field select, :root[data-theme="light"] .toolbar-field input {
-  background: #fff;
-  border-color: #c7c9ce;
 }
 .toolbar-status {
   display: inline-flex;

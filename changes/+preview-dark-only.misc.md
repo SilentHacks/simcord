@@ -1,0 +1,1 @@
+The local component preview renders the Discord dark theme only: the `theme=` option and the browser theme toggle were removed because no legitimate light-mode reference exists to validate a second theme against. `profile.theme` still reports `"dark"` in snapshots and capture reports.
