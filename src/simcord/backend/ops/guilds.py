@@ -180,9 +180,23 @@ class GuildMixin(BackendBase):
 
     # ----------------------------------------------------------------- roles
 
+    def announce_role_updates(self, guild_id: int, roles: Iterable[Role]) -> None:
+        """Announce each role's current state with GUILD_ROLE_UPDATE.
+
+        Real Discord emits an update for every role whose position changed as a
+        side effect of another operation; without them a client's cache keeps
+        stale positions, so position-driven mutations must announce their shifts.
+        """
+        for role in roles:
+            self.emit(
+                "GUILD_ROLE_UPDATE",
+                {"guild_id": str(guild_id), "role": serializers.role_payload(role)},
+            )
+
     def create_role(self, guild_id: int, name: str, *, permissions: int = 0, **fields: Any) -> Role:
         guild = self.get_guild(guild_id)
         position = fields.pop("position", None)
+        shifted: list[Role] = []
         if position is None:
             # New roles insert just above @everyone, pushing existing roles up
             # (so the bot's integration role stays on top), as on real Discord.
@@ -190,6 +204,7 @@ class GuildMixin(BackendBase):
             for existing in guild.roles.values():
                 if existing.position >= 1:
                     existing.position += 1
+                    shifted.append(existing)
         role = Role(
             id=self.snowflake(),
             name=name,
@@ -202,6 +217,7 @@ class GuildMixin(BackendBase):
             "GUILD_ROLE_CREATE",
             {"guild_id": str(guild_id), "role": serializers.role_payload(role)},
         )
+        self.announce_role_updates(guild_id, shifted)
         return role
 
     def edit_role(self, guild_id: int, role_id: int, changes: Mapping[str, Any]) -> Role:
@@ -229,10 +245,7 @@ class GuildMixin(BackendBase):
             if role.position != new_position:
                 role.position = new_position
                 changed.append(role)
-        for role in changed:
-            self.emit(
-                "GUILD_ROLE_UPDATE", {"guild_id": str(guild_id), "role": serializers.role_payload(role)}
-            )
+        self.announce_role_updates(guild_id, changed)
         return guild
 
     def delete_role(self, guild_id: int, role_id: int) -> None:

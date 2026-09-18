@@ -54,6 +54,40 @@ async def test_edit_role_positions(env):
     assert guild.get_role(low.id).position == high_pos
 
 
+async def test_create_role_announces_position_shifts(env):
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.create_role(name="admin")
+    await guild.create_role(name="mod")
+    await env.settle()
+
+    # Each create inserts at position 1 and bumps every existing role up; the
+    # backend announces each shift with GUILD_ROLE_UPDATE (after the create, as
+    # real Discord does), so every cached position matches the backend's.
+    backend_guild = env.backend.get_guild(env.guild.id)
+    for backend_role in backend_guild.roles.values():
+        cached = guild.get_role(backend_role.id)
+        assert cached is not None
+        assert cached.position == backend_role.position
+
+    # The bot's managed role rides on top of the hierarchy, so hierarchy checks
+    # like "bot must outrank target" see a true ordering.
+    assert guild.me.top_role.position == max(r.position for r in backend_guild.roles.values())
+
+
+async def test_delete_role_leaves_position_gap(env):
+    guild = env.bot.get_guild(env.guild.id)
+    low = await guild.create_role(name="low")
+    mid = await guild.create_role(name="mid")
+    await env.settle()
+
+    await mid.delete()
+    await env.settle()
+
+    # Discord does not renumber positions on delete: the hole at 1 stays a hole.
+    assert env.backend.get_role(guild.id, low.id).position == 2
+    assert guild.get_role(low.id).position == 2
+
+
 async def test_reorder_cannot_lift_role_above_bot(env):
     guild = env.bot.get_guild(env.guild.id)
     role = await guild.create_role(name="Climber")
