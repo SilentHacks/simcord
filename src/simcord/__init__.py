@@ -19,6 +19,7 @@ Typical usage::
 """
 
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING
 
 from . import _dpy_internals
 
@@ -47,11 +48,26 @@ from .env import Env, run  # noqa: E402
 from .http import RouteNotImplemented, UnsupportedField  # noqa: E402
 from .results import InteractionResult, ResponseMessage  # noqa: E402
 
+if TYPE_CHECKING:
+    from .preview import Preview, PreviewCapture
+
+
+def __getattr__(name: str) -> object:
+    if name == "Preview":
+        from .preview import Preview
+
+        return Preview
+    if name == "PreviewCapture":
+        from .preview import PreviewCapture
+
+        return PreviewCapture
+    raise AttributeError(name)
+
+
 try:
     __version__ = version("simcord")
 except PackageNotFoundError:  # running from a source checkout without dist metadata
     __version__ = "0.0.0+unknown"
-
 __all__ = (
     "BackendError",
     "ChannelHandle",
@@ -59,6 +75,8 @@ __all__ = (
     "GuildHandle",
     "InteractionResult",
     "MemberActor",
+    "Preview",
+    "PreviewCapture",
     "ResponseMessage",
     "RoleHandle",
     "RouteNotImplemented",

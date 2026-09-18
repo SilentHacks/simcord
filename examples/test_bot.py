@@ -93,6 +93,19 @@ async def test_role_panel_survives_restart(simcord_env):
     assert any(role.name == "Gamer" for role in alice.member.roles)
 
 
+async def test_role_panel_edit_modal_updates_source_message(simcord_env):
+    channel = simcord_env.create_guild().create_text_channel("roles")
+    alice = simcord_env.guild.add_member(simcord_env.create_user("alice"))
+
+    await alice.send(channel, "!panel")
+    panel = channel.last_message
+
+    shown = await alice.click(panel, custom_id="panel:edit")
+    submitted = await alice.submit_modal(shown, {"title": "Updated panel"})
+
+    assert submitted.response.message.content == "Updated panel"
+
+
 async def test_env_is_strict_by_default(simcord_env):
     assert simcord_env.strict_sync is True
 

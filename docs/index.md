@@ -146,4 +146,10 @@ test ──► builders / actors ──► virtual backend (single source of tru
 
     Give coding agents deterministic Discord behavior instead of guessed mocks.
 
+- :material-monitor-dashboard: __[Component preview & screenshots](guides/preview.md)__
+
+    ---
+
+    Inspect real component callbacks in an authenticated local browser and capture diagnostic-rich PNGs.
+
 </div>

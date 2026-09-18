@@ -65,6 +65,7 @@ nav:
       - Time control: guides/time-control.md
       - Fixtures & configuration: guides/fixtures.md
       - Errors & diagnostics: guides/diagnostics.md
+      - Component preview & screenshots: guides/preview.md
   - Recipes: cookbook.md
   - Reference:
       - API reference: api.md

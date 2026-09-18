@@ -165,6 +165,13 @@ Pass a freshly built client — re-running the same instance would re-execute `s
 - [Slash commands](interactions.md) — invoking commands and the interaction lifecycle.
 - [Time control](time-control.md) — firing view timeouts and cooldowns instantly.
 - [Recipes](../cookbook.md) — a reusable paginator test, among others.
+
+## Inspect the result in a browser
+
+For an authenticated local page that renders the same real callback flow, see
+[Component preview and screenshots](preview.md). The preview is optional, keeps Python and browser
+presentations independent, and labels stale, incomplete, and uncalibrated output explicitly.
+
 ## Settlement and external input
 
 View/Modal completion waits are recognized by settlement. If a component flow waits on a

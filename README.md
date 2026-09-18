@@ -69,9 +69,14 @@ uv add --dev "simcord[pytest]"
 ```
 
 Requires **Python >=3.11** (tested on **3.11–3.14**) and **discord.py >=2.7.1,<3**.
-The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow runs against
-upstream `master`, rather than continuously testing every released 2.x version. No
-dependencies beyond discord.py itself.
+The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow checks upstream
+`master`, rather than continuously testing every released 2.x version. The base simulation
+adds no runtime dependency beyond discord.py.
+
+For an authenticated local browser page showing real component callbacks, install
+`simcord[preview]`; for deterministic PNGs also run `playwright install chromium` after installing
+`simcord[screenshot]`. See the [component preview and screenshots guide](https://simcord.readthedocs.io/en/latest/guides/preview/)
+for lifecycle, access, limits, SSH forwarding, diagnostics, and fidelity boundaries.
 
 ## Quickstart
 
@@ -181,6 +186,7 @@ See [Core concepts](https://simcord.readthedocs.io/en/latest/concepts/) for the 
 | **Polls** | `vote`, `remove_vote` | Poll answers and results. |
 | **Voice & events** | `join_voice`, `leave_voice`, `set_voice`, `subscribe_event` | Voice state, scheduled-event subscriptions. |
 | **DMs** | `send_dm` | Direct-message channels and flows. |
+| **Browser preview** | `env.preview`, `preview.refresh`, `preview.screenshot` | Loopback component pages, real callbacks, authorized viewers, explicit refresh, and immutable capture diagnostics. |
 
 Responses come back as a rich [`InteractionResult`](https://simcord.readthedocs.io/en/latest/api/)
 exposing `acknowledged`, `deferred`, `ephemeral`, `response`, `followups` and `modal`. Threads,
@@ -266,6 +272,7 @@ More in the [architecture docs](https://simcord.readthedocs.io/en/latest/archite
 | 🍳 [Recipes](https://simcord.readthedocs.io/en/latest/cookbook/) | Copy-paste patterns for common cases. |
 | 📋 [Parity matrix](https://simcord.readthedocs.io/en/latest/parity-matrix/) | Exactly what's implemented. |
 | 🔖 [API reference](https://simcord.readthedocs.io/en/latest/api/) | Every public object and verb. |
+| 🖥️ [Component preview](https://simcord.readthedocs.io/en/latest/guides/preview/) | Real browser callbacks, page-local viewers, offline assets, and deterministic screenshot reports. |
 
 ## Contributing
 

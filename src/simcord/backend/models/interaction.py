@@ -38,6 +38,7 @@ class Interaction:
     message_id: int | None = None
     source_message_id: int | None = None
     ephemeral: bool = False
+    modal_consumed: bool = False
     followup_ids: list[int] = field(default_factory=list)
     modal: dict[str, Any] | None = None
     autocomplete_choices: list[dict[str, Any]] | None = None

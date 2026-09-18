@@ -30,6 +30,13 @@ async def test_autocomplete(env, channel, alice):
     assert result.response.content == "Tag: pytest"
 
 
+async def test_autocomplete_choices_default_to_none(env, channel, alice):
+    # A non-autocomplete result reports no choices rather than raising
+    # AttributeError — actors read the field unconditionally.
+    result = await alice.slash(channel, "tag", name="pytest")
+    assert result.autocomplete_choices is None
+
+
 async def test_modal_flow(env, channel, alice):
     shown = await alice.slash(channel, "feedback")
     assert shown.modal is not None

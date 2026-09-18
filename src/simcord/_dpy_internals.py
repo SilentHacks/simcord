@@ -13,6 +13,7 @@ import discord
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
 from discord.state import ChunkRequest, ConnectionState
+from discord.ui import view as _view
 from discord.webhook.async_ import async_context
 
 from .backend.errors import SetupError
@@ -204,6 +205,18 @@ def task_label(coro: Any) -> str:
     if wrapper.endswith("Client._run_event") and callable(callback):
         return f"{getattr(callback, '__qualname__', '?')} via {wrapper}"
     return wrapper
+
+
+def view_time() -> Any:
+    """Return discord.py's View clock."""
+    return _view.time  # type: ignore[reportPrivateUsage]
+
+
+def swap_view_time(value: Any) -> Any:
+    """Replace discord.py's View clock and return the previous value."""
+    previous = _view.time  # type: ignore[reportPrivateUsage]
+    _view.time = value  # type: ignore[reportPrivateUsage]
+    return previous
 
 
 def get_state(client: discord.Client) -> Any:

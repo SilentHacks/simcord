@@ -41,12 +41,14 @@ async def test_create_user_account_attributes_reflected(env):
         global_name="Verified Bot",
         discriminator="4242",
         public_flags=discord.PublicUserFlags(verified_bot=True),
+        avatar="a_avatar_hash",
     )
     # Handle properties expose the same state for assertions.
     assert user.bot is True
     assert user.system is True
     assert user.global_name == "Verified Bot"
     assert user.discriminator == "4242"
+    assert user.avatar == "a_avatar_hash"
 
     member = env.guild.add_member(user)
     await env.settle()
@@ -57,6 +59,7 @@ async def test_create_user_account_attributes_reflected(env):
     assert fetched.global_name == "Verified Bot"
     assert fetched.discriminator == "4242"
     assert fetched.public_flags.verified_bot is True
+    assert fetched.avatar is not None and fetched.avatar.key == "a_avatar_hash"
     assert member.member is not None
 
 
