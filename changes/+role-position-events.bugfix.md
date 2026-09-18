@@ -1,1 +1,0 @@
-Fixed ``create_role`` leaving stale ``Role.position`` values in the bot's cache: inserting a role bumps every existing role's position, and the backend now announces each shift with ``GUILD_ROLE_UPDATE`` after ``GUILD_ROLE_CREATE``, as real Discord does. ``Member.top_role``, ``Role`` comparisons, and hierarchy checks now see the true ordering after role creation.
