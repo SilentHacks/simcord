@@ -447,8 +447,6 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "modal": modal,
         "candidates": _candidates(preview, page, candidate_components) if allowed else {},
         "profile": {
-            # Dark is the only rendered theme; no legitimate light-mode
-            # reference exists to validate a second theme against.
             "theme": "dark",
             "width": preview.width,
             "height": preview.height,
