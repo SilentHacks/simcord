@@ -99,6 +99,36 @@ async def test_delete_role_leaves_position_gap(env):
     assert guild.get_role(low.id).position == 2
 
 
+async def test_role_colour_reaches_the_cache(env):
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Tinted", colour=discord.Colour(0x112233))
+    await env.settle()
+
+    # discord.py reads the role "colors" object (primary/secondary/tertiary);
+    # the deprecated flat "color" field alone leaves every cached colour at 0.
+    assert role.colour == discord.Colour(0x112233)
+    cached = guild.get_role(role.id)
+    assert cached.colour == discord.Colour(0x112233)
+    assert cached.secondary_colour is None
+
+
+async def test_guild_roles_list_sorted_by_id(env):
+    odd = env.create_guild("Odd", id=8_000_000_000_000_000_000)
+    await env.settle()
+    guild = env.bot.get_guild(odd.id)
+    await guild.create_role(name="one")
+    await guild.create_role(name="two")
+    await env.settle()
+
+    # Real Discord returns a guild's roles sorted by id ascending — with an
+    # explicit guild id the @everyone role's snowflake is the largest, so
+    # insertion order alone would wrongly put it first.
+    fetched = await guild.fetch_roles()
+    ids = [r.id for r in fetched]
+    assert ids == sorted(ids)
+    assert ids[-1] == odd.id
+
+
 async def test_reorder_cannot_lift_role_above_bot(env):
     guild = env.bot.get_guild(env.guild.id)
     role = await guild.create_role(name="Climber")

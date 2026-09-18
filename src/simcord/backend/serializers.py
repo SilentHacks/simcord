@@ -88,6 +88,11 @@ def role_payload(role: Role) -> role_types.Role:
             "permissions": str(role.permissions),
             "position": role.position,
             "color": role.color,
+            "colors": {
+                "primary_color": role.color,
+                "secondary_color": None,
+                "tertiary_color": None,
+            },
             "hoist": role.hoist,
             "managed": role.managed,
             "mentionable": role.mentionable,
@@ -96,6 +101,12 @@ def role_payload(role: Role) -> role_types.Role:
             "unicode_emoji": None,
         },
     )
+
+
+def roles_payload(guild: Guild) -> list[role_types.Role]:
+    # Discord serves a guild's role list sorted by role id ascending (the
+    # @everyone role shares the guild id, so it can sort anywhere).
+    return [role_payload(r) for r in sorted(guild.roles.values(), key=lambda r: r.id)]
 
 
 def member_payload(
@@ -355,7 +366,7 @@ def guild_create_payload(backend: BackendBase, guild: Guild) -> guild_types.Guil
             "features": [],
             "emojis": [guild_emoji_payload(backend, e) for e in guild.emojis.values()],
             "stickers": [sticker_payload(backend, s) for s in guild.stickers.values()],
-            "roles": [role_payload(r) for r in guild.roles.values()],
+            "roles": roles_payload(guild),
             "member_count": len(guild.members),
             "large": False,
             "unavailable": False,

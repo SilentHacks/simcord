@@ -640,7 +640,7 @@ def delete_role(ctx: RequestContext) -> Any:
 @route("GET", "/guilds/{guild_id}/roles")
 def get_roles(ctx: RequestContext) -> Any:
     guild = ctx.backend.get_guild(ctx.int_arg("guild_id"))
-    return [dict(serializers.role_payload(r)) for r in guild.roles.values()]
+    return [dict(r) for r in serializers.roles_payload(guild)]
 
 
 @route("GET", "/guilds/{guild_id}/roles/{role_id}")
@@ -668,4 +668,4 @@ def move_role_positions(ctx: RequestContext) -> Any:
         backend.require_role_assignable(guild_id, bot_id, int(item["id"]))
         backend.require_position_assignable(guild_id, bot_id, int(item["position"]))
     guild = backend.reorder_roles(guild_id, positions)
-    return [dict(serializers.role_payload(r)) for r in guild.roles.values()]
+    return [dict(r) for r in serializers.roles_payload(guild)]

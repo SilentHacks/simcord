@@ -1,0 +1,1 @@
+Fixed ``role.colour`` always reading ``0`` in the bot's cache: role payloads now carry the ``colors`` object (``primary_color``/``secondary_color``/``tertiary_color``) that discord.py reads, alongside the deprecated flat ``color`` field.
