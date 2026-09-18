@@ -69,7 +69,12 @@ async def test_role_reorder_changes_positions(env):
     await env.settle()
 
     assert env.backend.get_role(env.guild.id, low.id).position == high_pos
-    assert "GUILD_ROLE_UPDATE" in env.transcript()
+    # The reorder itself announced the moved role (create_role updates alone
+    # would leave this assertion passing otherwise).
+    assert any(
+        name == "GUILD_ROLE_UPDATE" and payload["role"]["id"] == str(low.id)
+        for _, name, payload in env.backend.transcript
+    )
 
 
 async def test_second_stage_instance_rejected(env):

@@ -54,6 +54,81 @@ async def test_edit_role_positions(env):
     assert guild.get_role(low.id).position == high_pos
 
 
+async def test_create_role_announces_position_shifts(env):
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.create_role(name="admin")
+    await guild.create_role(name="mod")
+    await env.settle()
+
+    # Each create inserts at position 1 and bumps every existing role up; the
+    # backend announces each shift with GUILD_ROLE_UPDATE (after the create, as
+    # real Discord does), so every cached position matches the backend's.
+    backend_guild = env.backend.get_guild(env.guild.id)
+    for backend_role in backend_guild.roles.values():
+        cached = guild.get_role(backend_role.id)
+        assert cached is not None
+        assert cached.position == backend_role.position
+    assert backend_guild.roles[guild.id].position == 0
+
+    # Each create lands first, then the shift updates it caused.
+    role_events = [
+        (name, payload["role"]["name"])
+        for _, name, payload in env.backend.transcript
+        if name in ("GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE")
+    ]
+    assert role_events[:2] == [("GUILD_ROLE_CREATE", "admin"), ("GUILD_ROLE_UPDATE", "TestBot")]
+    assert role_events[2] == ("GUILD_ROLE_CREATE", "mod")
+    assert all(name == "GUILD_ROLE_UPDATE" for name, _ in role_events[3:])
+
+    # The bot's managed role rides on top of the hierarchy, so hierarchy checks
+    # like "bot must outrank target" see a true ordering.
+    assert guild.me.top_role.position == max(r.position for r in backend_guild.roles.values())
+
+
+async def test_delete_role_leaves_position_gap(env):
+    guild = env.bot.get_guild(env.guild.id)
+    low = await guild.create_role(name="low")
+    mid = await guild.create_role(name="mid")
+    await env.settle()
+
+    await mid.delete()
+    await env.settle()
+
+    # Discord does not renumber positions on delete: the hole at 1 stays a hole.
+    assert env.backend.get_role(guild.id, low.id).position == 2
+    assert guild.get_role(low.id).position == 2
+
+
+async def test_role_colour_reaches_the_cache(env):
+    guild = env.bot.get_guild(env.guild.id)
+    role = await guild.create_role(name="Tinted", colour=discord.Colour(0x112233))
+    await env.settle()
+
+    # discord.py reads the role "colors" object (primary/secondary/tertiary);
+    # the deprecated flat "color" field alone leaves every cached colour at 0.
+    assert role.colour == discord.Colour(0x112233)
+    cached = guild.get_role(role.id)
+    assert cached.colour == discord.Colour(0x112233)
+    assert cached.secondary_colour is None
+
+
+async def test_guild_roles_list_sorted_by_id(env):
+    odd = env.create_guild("Odd", id=8_000_000_000_000_000_000)
+    await env.settle()
+    guild = env.bot.get_guild(odd.id)
+    await guild.create_role(name="one")
+    await guild.create_role(name="two")
+    await env.settle()
+
+    # Real Discord returns a guild's roles sorted by id ascending — with an
+    # explicit guild id the @everyone role's snowflake is the largest, so
+    # insertion order alone would wrongly put it first.
+    fetched = await guild.fetch_roles()
+    ids = [r.id for r in fetched]
+    assert ids == sorted(ids)
+    assert ids[-1] == odd.id
+
+
 async def test_reorder_cannot_lift_role_above_bot(env):
     guild = env.bot.get_guild(env.guild.id)
     role = await guild.create_role(name="Climber")

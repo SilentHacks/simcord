@@ -4,6 +4,15 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 2.0.2 (2026-09-18)
+
+### Bug fixes
+
+- Fixed ``create_role`` leaving stale ``Role.position`` values in the bot's cache: inserting a role bumps every existing role's position, and the backend now announces each shift with ``GUILD_ROLE_UPDATE`` after ``GUILD_ROLE_CREATE``, as real Discord does. ``Member.top_role``, ``Role`` comparisons, and hierarchy checks now see the true ordering after role creation.
+- Fixed ``role.colour`` always reading ``0`` in the bot's cache: role payloads now carry the ``colors`` object (``primary_color``/``secondary_color``/``tertiary_color``) that discord.py reads, alongside the deprecated flat ``color`` field.
+- Fixed guild role listings to match real Discord's ordering: ``GET``/``PATCH /guilds/{id}/roles`` responses and the ``roles`` array inside guild payloads (``GUILD_CREATE``/``GUILD_UPDATE`` events and guild REST responses) are now sorted by role id ascending instead of insertion order (observable when a guild is created with an explicit id, which can make ``@everyone``'s snowflake the largest).
+
+
 ## 2.0.1 (2026-09-10)
 
 ### Bug fixes
