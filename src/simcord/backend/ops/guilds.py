@@ -187,7 +187,7 @@ class GuildMixin(BackendBase):
         side effect of another operation; without them a client's cache keeps
         stale positions, so position-driven mutations must announce their shifts.
         """
-        for role in roles:
+        for role in list(roles):
             self.emit(
                 "GUILD_ROLE_UPDATE",
                 {"guild_id": str(guild_id), "role": serializers.role_payload(role)},

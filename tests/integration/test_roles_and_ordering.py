@@ -68,6 +68,17 @@ async def test_create_role_announces_position_shifts(env):
         cached = guild.get_role(backend_role.id)
         assert cached is not None
         assert cached.position == backend_role.position
+    assert backend_guild.roles[guild.id].position == 0
+
+    # Each create lands first, then the shift updates it caused.
+    role_events = [
+        (name, payload["role"]["name"])
+        for _, name, payload in env.backend.transcript
+        if name in ("GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE")
+    ]
+    assert role_events[:2] == [("GUILD_ROLE_CREATE", "admin"), ("GUILD_ROLE_UPDATE", "TestBot")]
+    assert role_events[2] == ("GUILD_ROLE_CREATE", "mod")
+    assert all(name == "GUILD_ROLE_UPDATE" for name, _ in role_events[3:])
 
     # The bot's managed role rides on top of the hierarchy, so hierarchy checks
     # like "bot must outrank target" see a true ordering.
