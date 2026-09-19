@@ -87,7 +87,7 @@ async def test_http_requests_records_bot_calls(env, channel, alice):
 
 async def test_removed_http_log_property_raises_attribute_error(env):
     with pytest.raises(AttributeError):
-        env.http_log
+        env.http_log  # noqa: B018 - deliberate removed-attribute access
 
 
 async def test_embed_limits_enforced(env, channel):
