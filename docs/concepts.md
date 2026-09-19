@@ -23,8 +23,8 @@ async def test_something(simcord_env):
 ```
 
 The `Env` owns the virtual backend, tracks the bot's background tasks, captures errors,
-holds the virtual clock, and exposes the diagnostics (`env.http_log`, `env.transcript()`).
-A fresh `Env` is created for each test, so tests never leak state into each other.
+holds the virtual clock, and exposes the diagnostics (`env.http_requests`, `env.transcript()`).
+`env.http_log` is retained as a deprecated compatibility view.
 
 !!! info "One environment per event loop"
     `Env` monkeypatches `loop.create_task` and `time.monotonic` while it's live so it can
@@ -132,7 +132,7 @@ channel.history(viewer=mod)          # ephemeral-aware: what `mod` would see
 channel.pinned_messages()            # list[discord.Message]
 guild.get_ban(target)                # ban record | None
 env.errors                           # exceptions the bot swallowed
-env.http_log                         # every REST call the bot made
+env.http_requests                    # structured REST request records
 ```
 
 Interaction verbs return a richer [`InteractionResult`](api.md#simcord.InteractionResult) capturing

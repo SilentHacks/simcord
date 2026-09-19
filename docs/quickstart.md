@@ -124,10 +124,9 @@ see [Core concepts](concepts.md) for the deep dive.
   `alice.click(...)`, `alice.select(...)`, `alice.react(...)`, `alice.submit_modal(...)`.
   Do only what a real user physically could. Each one **waits for your bot to finish
   reacting** before returning — so there's never an `asyncio.sleep` in your tests.
-- **Queries** — `channel.history()`, `channel.last_message`,
-  [`env.errors`](guides/diagnostics.md) (errors your bot swallowed),
-  [`env.http_log`](guides/diagnostics.md) (every REST call it made). Assert with plain
-  Python against real `discord.Message` objects.
+- **Queries** — `channel.history()`, [`env.errors`](guides/diagnostics.md) (errors your bot
+  swallowed), and [`env.http_requests`](guides/diagnostics.md) (structured REST request
+  records). Assert with plain Python against real `discord.Message` objects.
 
 ## Testing failure paths
 

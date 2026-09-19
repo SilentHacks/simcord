@@ -47,6 +47,7 @@ from .builders import (  # noqa: E402
 from .env import Env, run  # noqa: E402
 from .http import RouteNotImplemented, UnsupportedField  # noqa: E402
 from .results import InteractionResult, ResponseMessage  # noqa: E402
+from .types import HttpLogEntry  # noqa: E402
 
 if TYPE_CHECKING:
     from .preview import Preview, PreviewCapture
@@ -73,6 +74,7 @@ __all__ = (
     "ChannelHandle",
     "Env",
     "GuildHandle",
+    "HttpLogEntry",
     "InteractionResult",
     "MemberActor",
     "Preview",

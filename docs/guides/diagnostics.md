@@ -107,19 +107,30 @@ The [pytest plugin attaches this to failing tests automatically](fixtures.md#the
 so a failure shows you exactly what the bot did, in order — usually enough to diagnose
 without a debugger.
 
-## The HTTP log (`env.http_log`)
+## HTTP request records (`env.http_requests`)
 
-For fine-grained assertions, `env.http_log` is the list of every REST call the bot made, as
-`(method, path, json_body)` tuples:
+For fine-grained assertions, `env.http_requests` is the list of every REST call the bot made,
+as [`simcord.HttpLogEntry`](../api.md#simcord.HttpLogEntry) records:
 
 ```python
-posts = [c for c in simcord_env.http_log if c[0] == "POST" and "/messages" in c[1]]
-assert len(posts) == 1                       # the bot sent exactly one message
-assert posts[0][2]["content"] == "Pong!"
+posts = [
+    entry
+    for entry in simcord_env.http_requests
+    if entry.method == "POST" and "/messages" in entry.path
+]
+assert len(posts) == 1
+assert posts[0].json["content"] == "Pong!"
 ```
 
-This is how you assert the bot **didn't** do something (e.g. didn't double-post), or made
-exactly the calls you expect.
+Each record exposes `method`, `path`, `params`, `json`, and `reason`. These values are the
+arguments discord.py passed to its transport: query parameters are not wire-normalized
+strings, and `reason` is not an encoded HTTP header value. Uploaded files are not captured.
+The request record is appended before fault injection and route handling, so failed and
+unimplemented requests remain observable.
+
+`env.http_log` remains available as a deprecated live list of legacy
+`(method, path, json_body)` tuples for 2.x compatibility. Access emits `DeprecationWarning`;
+use `env.http_requests` for new assertions.
 
 ## Injecting API failures
 

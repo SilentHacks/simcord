@@ -16,6 +16,29 @@ async def test_bulk_ban(env):
     assert alice.id not in env.backend.get_guild(env.guild.id).members
 
 
+async def test_ban_request_records_query_params_and_reason(env):
+    target = env.guild.add_member(env.create_user("baddie"))
+    await env.settle()
+
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.ban(
+        discord.Object(id=target.id),
+        delete_message_seconds=86400,
+        reason="cleanup needed",
+    )
+    await env.settle()
+
+    bans = [
+        entry
+        for entry in env.http_requests
+        if entry.method == "PUT" and entry.path.endswith(f"/bans/{target.id}")
+    ]
+    assert len(bans) == 1
+    assert bans[0].params == {"delete_message_seconds": 86400}
+    assert bans[0].reason == "cleanup needed"
+    assert bans[0].json is None
+
+
 async def test_bulk_ban_already_banned_reported_as_failed(env):
     # When nobody can be banned (all already banned), Discord still returns the
     # split result — not a 403 — with every id in `failed`.

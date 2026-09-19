@@ -1,6 +1,8 @@
 import pytest
 
+from simcord import HttpLogEntry
 from simcord.backend import Backend
+from simcord.backend.errors import BackendError
 from simcord.http import router
 from simcord.http import routes as _routes  # noqa: F401  — registers handlers
 
@@ -9,6 +11,7 @@ def test_unknown_route_raises_with_route_name():
     backend = Backend()
     with pytest.raises(router.RouteNotImplemented, match="GET /made/up/route"):
         router.dispatch(backend, "GET", "/made/up/route")
+    assert isinstance(backend.http_requests[-1], HttpLogEntry)
 
 
 def test_literal_segments_beat_parameters():
@@ -22,11 +25,49 @@ def test_literal_segments_beat_parameters():
     assert [int(i["message"]["id"]) for i in result["items"]] == [message.id]
 
 
-def test_http_log_records_calls():
+def test_http_request_records_defaults_and_coexists_with_legacy_tuples():
     backend = Backend()
     guild = backend.create_guild("g")
-    router.dispatch(backend, "GET", f"/guilds/{guild.id}")
-    assert backend.http_log[-1][:2] == ("GET", f"/guilds/{guild.id}")
+    path = f"/guilds/{guild.id}"
+    router.dispatch(backend, "GET", path)
+    entry = backend.http_requests[-1]
+    assert (entry.method, entry.path, entry.params, entry.json, entry.reason) == (
+        "GET",
+        path,
+        {},
+        None,
+        None,
+    )
+    assert backend.http_log[-1] == ("GET", path, None)
+
+    payload = {"name": "g"}
+    router.dispatch(backend, "GET", path, json=payload)
+    assert backend.http_requests[-1].json is payload
+    assert backend.http_log[-1] == ("GET", path, payload)
+
+
+def test_http_request_records_snapshot_transport_values_before_fault():
+    backend = Backend()
+    guild = backend.create_guild("g")
+    path = f"/guilds/{guild.id}"
+    params = {"limit": 3}
+    payload = ["raw", 1]
+    backend.faults.append(
+        {
+            "method": "GET",
+            "path": path,
+            "status": 500,
+            "code": 0,
+            "message": "boom",
+            "times": 1,
+        }
+    )
+    with pytest.raises(BackendError):
+        router.dispatch(backend, "GET", path, params=params, json=payload, reason="cleanup needed")
+    entry = backend.http_requests[-1]
+    assert entry.params == params and entry.params is not params
+    assert entry.json is payload
+    assert entry.reason == "cleanup needed"
 
 
 def test_snowflakes_are_monotonic_and_timestamped():
