@@ -125,6 +125,7 @@ straight from the bot's own cache, which doubles as a check that gateway dispatc
 it correctly. You then assert with plain Python and pytest's normal introspection; there's
 no verification DSL to learn.
 
+```python
 channel.last_message                 # discord.Message | None
 channel.history()                    # list[discord.Message], oldest first
 channel.history(viewer=mod)          # ephemeral-aware: what `mod` would see
@@ -132,6 +133,7 @@ channel.pinned_messages()            # list[discord.Message]
 guild.get_ban(target)                # ban record | None
 env.errors                           # exceptions the bot swallowed
 env.http_requests                    # structured REST request records
+```
 
 Interaction verbs return a richer [`InteractionResult`](api.md#simcord.InteractionResult) capturing
 the full response — `acknowledged`, `deferred`, `ephemeral`, `response`, `followups`,

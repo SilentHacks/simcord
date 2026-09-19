@@ -251,6 +251,7 @@ async def test_no_double_post(simcord_env):
         for entry in simcord_env.http_requests
         if entry.method == "POST" and "/messages" in entry.path
     ]
+    assert len(posts) == 1
 ```
 
 ## Reaction roles
