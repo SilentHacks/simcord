@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 2.1.0 (2026-09-19)
+
+### Features
+
+- Add `Env.http_requests` records with query parameters and audit reasons while preserving the deprecated live `Env.http_log` tuple list for 2.x compatibility.
+
+
 ## 2.0.2 (2026-09-18)
 
 ### Bug fixes
