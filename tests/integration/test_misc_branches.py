@@ -10,7 +10,7 @@ async def test_bot_typing_indicator(env, channel):
         pass
     await env.settle()
 
-    assert any(method == "POST" and path.endswith("/typing") for method, path, _ in env.http_log)
+    assert any(entry.method == "POST" and entry.path.endswith("/typing") for entry in env.http_requests)
 
 
 async def test_everyone_mention_requires_permission(env, channel):

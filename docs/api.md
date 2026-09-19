@@ -26,6 +26,16 @@ top-level `simcord` package.
 Use `await env.external_wait(awaitable, reason="...")` for one explicitly scoped external
 input wait. Unknown waits remain active and produce a diagnostic timeout.
 
+
+## Request observability
+
+::: simcord.HttpLogEntry
+
+`Env.http_requests` exposes these records for transport-level assertions. The `params` and
+`reason` fields contain discord.py transport arguments, not wire-normalized query strings or
+encoded headers; uploaded files are not captured. `Env.http_log` is a deprecated compatibility
+list of legacy tuples.
+
 ## Builders
 
 Synchronous, omnipotent handles for arranging the virtual Discord. Returned by `env`/`guild`

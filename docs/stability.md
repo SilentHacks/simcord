@@ -68,10 +68,17 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the world builders — `GuildHandle`, `ChannelHandle`, `UserHandle`,
   `RoleHandle` — and the `MemberActor` that drives simulated users;
 - the result objects `ResponseMessage` and `InteractionResult`;
+- the request-observability type `HttpLogEntry` and `Env.http_requests`;
 - the assertion helpers (`assert_responded`, `assert_sent`, `assert_message`,
   `assert_error`, `assert_no_errors`);
 - the error and parity-signal types `BackendError`, `SetupError`,
   `RouteNotImplemented` and `UnsupportedField`.
+
+`Env.http_requests` is the semver-covered request-observability API. Its
+`HttpLogEntry` fields preserve discord.py transport arguments (`params`, `json`, and
+`reason`); they are not wire-normalized query strings or encoded headers, and files are
+not captured. `Env.http_log` remains the live 2.x tuple list and emits
+`DeprecationWarning` on access.
 
 The `pytest` plugin (the `simcord_env` fixture) is part of the public surface
 too.

@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import math
 import time
+import warnings
 import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +23,7 @@ from .backend.errors import SetupError
 from .builders import GuildHandle, UserHandle
 from .gateway import ShardRouter
 from .http import FakeHTTPClient, FakeWebhookAdapter
+from .types import HttpLogEntry
 
 _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.ContextVar(
     "simcord_bot_scope", default=None
@@ -907,8 +909,18 @@ class Env:
     # ----------------------------------------------------------- diagnostics
 
     @property
+    def http_requests(self) -> list[HttpLogEntry]:
+        """Every REST call the bot made as a structured request record."""
+        return self.backend.http_requests
+
+    @property
     def http_log(self) -> list[tuple[str, str, dict[str, Any] | None]]:
-        """Every REST call the bot made: (method, path, json body)."""
+        """Deprecated live ``(method, path, json)`` REST call tuples."""
+        warnings.warn(
+            "Env.http_log is deprecated; use Env.http_requests instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self.backend.http_log
 
     def transcript(self) -> str:

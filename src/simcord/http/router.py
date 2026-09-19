@@ -3,7 +3,7 @@
 Unknown routes always fail loudly with :class:`RouteNotImplemented` — a
 testing tool must never silently fake success. The router also services
 test-injected faults (``env.inject_error``) and records every call to
-``backend.http_log`` for advanced assertions.
+``backend.http_requests`` plus the deprecated ``backend.http_log`` tuple list.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any
 from ..backend import Backend
 from ..backend.errors import BackendError
 from ..backend.models import Channel
+from ..types import HttpLogEntry
 
 
 class RouteNotImplemented(BackendError):
@@ -192,6 +193,7 @@ def dispatch(
     reason: str | None = None,
 ) -> Any:
     backend.http_log.append((method, path, json if isinstance(json, dict) else None))
+    backend.http_requests.append(HttpLogEntry(method, path, dict(params or {}), json, reason))
     backend.transcript.append(("HTTP", f"{method} {path}", json if isinstance(json, dict) else None))
     _check_faults(backend, method, path)
     segments = path.strip("/").split("/")

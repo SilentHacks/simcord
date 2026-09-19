@@ -46,7 +46,7 @@ serializer payloads are conformance-tested against discord.py's own model parser
 | Guilds (create/edit/delete) | ✅ | `Client.create_guild`, `Guild.edit`, `Guild.delete` (owner-only); `GUILD_UPDATE` audit; `Guild.leave`, `Client.fetch_guilds`, `ClientUser.edit` (bot username); `Guild.vanity_invite` (settable via `guild.set_vanity_url`) |
 | Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds; reorder/move (`Channel.move`); announcement `TextChannel.follow` |
 | Webhooks | ✅ | Create, execute (with per-message `username` override), fetch/edit/delete (by id or token), guild listing |
-| Fault injection / HTTP log | ✅ | `env.inject_error`, `env.http_log` |
+| Fault injection / HTTP log | ✅ | `env.inject_error`, structured `env.http_requests` records, deprecated `env.http_log` tuples |
 | Audit logs | ✅ | Recorded for ban/kick/role/member/channel/event actions; `guild.audit_logs()`, filtering |
 | Polls | ✅ | Message-level poll object; `actor.vote`, expiry (route + `advance_time`), vote events |
 | Scheduled events | ✅ | CRUD + subscribe/unsubscribe; auto status transitions via `advance_time` |

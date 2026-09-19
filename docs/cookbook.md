@@ -246,8 +246,11 @@ async def test_no_double_post(simcord_env):
 
     await alice.send(channel, "!announce")
 
-    posts = [c for c in simcord_env.http_log if c[0] == "POST" and "/messages" in c[1]]
-    assert len(posts) == 1
+    posts = [
+        entry
+        for entry in simcord_env.http_requests
+        if entry.method == "POST" and "/messages" in entry.path
+    ]
 ```
 
 ## Reaction roles
