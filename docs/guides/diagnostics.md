@@ -125,12 +125,10 @@ assert posts[0].json["content"] == "Pong!"
 Each record exposes `method`, `path`, `params`, `json`, and `reason`. These values are the
 arguments discord.py passed to its transport: query parameters are not wire-normalized
 strings, and `reason` is not an encoded HTTP header value. Uploaded files are not captured.
-The request record is appended before fault injection and route handling, so failed and
-unimplemented requests remain observable.
-
-`env.http_log` remains available as a deprecated live list of legacy
-`(method, path, json_body)` tuples for 2.x compatibility. Access emits `DeprecationWarning`;
-use `env.http_requests` for new assertions.
+The `json` field preserves every supplied JSON-compatible shape, including top-level arrays.
+`params` and `json` are detached deep snapshots, so later mutations to source containers do
+not alter a record. The request record is appended before fault injection and route handling,
+so failed and unimplemented requests remain observable.
 
 ## Injecting API failures
 

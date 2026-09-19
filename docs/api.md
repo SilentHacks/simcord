@@ -33,8 +33,9 @@ input wait. Unknown waits remain active and produce a diagnostic timeout.
 
 `Env.http_requests` exposes these records for transport-level assertions. The `params` and
 `reason` fields contain discord.py transport arguments, not wire-normalized query strings or
-encoded headers; uploaded files are not captured. `Env.http_log` is a deprecated compatibility
-list of legacy tuples.
+encoded headers; uploaded files are not captured. The `json` field preserves the supplied
+JSON-compatible shape, including top-level arrays. `params` and `json` are detached deep
+snapshots, so later mutations to source containers do not alter a record.
 
 ## Builders
 

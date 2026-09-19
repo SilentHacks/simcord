@@ -222,11 +222,11 @@ When something goes wrong, the `env` tells you what happened:
 
 - `env.transcript()`: the ordered log of gateway events and REST calls, auto-attached to
   failing pytest tests.
-- `env.http_requests`: structured records for every REST request (`method`, `path`, `params`,
-  `json`, `reason`). Values are discord.py transport arguments, not wire-normalized strings or
-  headers; uploaded files are not captured.
-- `env.http_log`: deprecated live `(method, path, json_body)` tuples for 2.x compatibility;
-  access emits `DeprecationWarning`.
+- `env.http_requests`: structured records for every attempted REST request (`method`, `path`,
+  `params`, `json`, `reason`). Values are discord.py transport arguments, not wire-normalized
+  strings or headers; uploaded files are not captured. JSON bodies retain their supplied
+  JSON-compatible shape, including top-level arrays. `params` and `json` are detached deep
+  snapshots, so later source-container mutations do not change a record.
 - `env.errors`: exceptions the bot swallowed.
 - `env.inject_error("POST", "/channels/*/messages", status=500)`: make matching REST calls
   fail, to test your bot's error handling.

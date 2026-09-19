@@ -75,7 +75,7 @@ async def test_unimplemented_route_attaches_parity_note(env, channel):
     assert any("parity matrix" in note for note in notes)
 
 
-async def test_http_log_records_bot_calls(env, channel, alice):
+async def test_http_requests_records_bot_calls(env, channel, alice):
     await alice.send(channel, "!ping")
     sends = [
         (entry.method, entry.path)
@@ -85,12 +85,9 @@ async def test_http_log_records_bot_calls(env, channel, alice):
     assert sends, env.http_requests
 
 
-async def test_http_log_legacy_tuples_warn_and_remain_live(env):
-    with pytest.warns(DeprecationWarning, match="use Env.http_requests"):
-        legacy = env.http_log
-    assert legacy is env.backend.http_log
-    legacy.append(("TEST", "/compatibility", None))
-    assert env.backend.http_log[-1] == ("TEST", "/compatibility", None)
+async def test_removed_http_log_property_raises_attribute_error(env):
+    with pytest.raises(AttributeError):
+        env.http_log
 
 
 async def test_embed_limits_enforced(env, channel):

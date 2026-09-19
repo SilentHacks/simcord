@@ -7,7 +7,6 @@ import contextvars
 import inspect
 import math
 import time
-import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -1167,16 +1166,6 @@ class Env:
     def http_requests(self) -> list[HttpLogEntry]:
         """Every REST call the bot made as a structured request record."""
         return self.backend.http_requests
-
-    @property
-    def http_log(self) -> list[tuple[str, str, dict[str, Any] | None]]:
-        """Deprecated live ``(method, path, json)`` REST call tuples."""
-        warnings.warn(
-            "Env.http_log is deprecated; use Env.http_requests instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.backend.http_log
 
     def transcript(self) -> str:
         """Human-readable record of everything that happened, in order.

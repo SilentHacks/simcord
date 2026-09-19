@@ -85,8 +85,9 @@ APIs.
 `Env.http_requests` is the semver-covered request-observability API. Its
 `HttpLogEntry` fields preserve discord.py transport arguments (`params`, `json`, and
 `reason`); they are not wire-normalized query strings or encoded headers, and files are
-not captured. `Env.http_log` remains the live 2.x tuple list and emits
-`DeprecationWarning` on access.
+not captured. The `json` field retains every supplied JSON-compatible shape, including
+top-level arrays. `params` and `json` are detached deep snapshots, so later source
+container mutations do not alter records.
 
 The `pytest` plugin (the `simcord_env` fixture) is part of the public surface too.
 

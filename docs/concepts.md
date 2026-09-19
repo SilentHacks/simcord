@@ -24,7 +24,6 @@ async def test_something(simcord_env):
 
 The `Env` owns the virtual backend, tracks the bot's background tasks, captures errors,
 holds the virtual clock, and exposes the diagnostics (`env.http_requests`, `env.transcript()`).
-`env.http_log` is retained as a deprecated compatibility view.
 
 !!! info "One environment per event loop"
     `Env` monkeypatches `loop.create_task` and `time.monotonic` while it's live so it can
