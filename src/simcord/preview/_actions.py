@@ -41,8 +41,10 @@ class _ActionOps:
     _active_action: _Action | None
     _active_task: asyncio.Task[Any] | None
     _action_page: _Page | None
+    _pending_page_closes: set[str]
     _close_task: asyncio.Task[None] | None
     _get_page: Callable[[str | None], _Page]
+    _close_page: Callable[[str], None]
     close: Callable[[], Coroutine[Any, Any, None]]
     _viewer: Callable[[Any], Any]
     _initial_target: Callable[[Any, int], int | None]
@@ -276,6 +278,9 @@ class _ActionOps:
             self._active_action = None
             self._active_task = None
             self._action_page = None
+            if page.id in self._pending_page_closes:
+                self._pending_page_closes.discard(page.id)
+                self._close_page(page.id)
 
     def _prepare_action(self, page: _Page, kind: str, body: Mapping[str, Any]) -> Any:
         """Validate everything that can fail pre-admission.

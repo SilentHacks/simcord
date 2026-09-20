@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import threading
 
 import pytest
 
@@ -14,6 +15,21 @@ from preview_helpers import action_body, gif_bytes, png_bytes, preview_headers
 
 import simcord
 from simcord.components import walk_components
+from simcord.preview import _media
+from simcord.preview._snapshot import _project_emoji
+
+
+class _ReleasableView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @discord.ui.button(label="Wait", custom_id="wait")
+    async def wait(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.started.set()
+        await self.release.wait()
+        await interaction.response.defer()
 
 
 @pytest.mark.asyncio
@@ -543,3 +559,73 @@ async def test_preview_page_release_allows_repeated_reload_contexts(env, channel
             )
             assert released.status == 200
         assert len(preview._pages) == 1
+
+
+@pytest.mark.asyncio
+async def test_page_close_waits_for_active_action_before_releasing_assets(env, channel, alice):
+    view = _ReleasableView()
+    message = await env.bot.get_channel(channel.id).send(
+        "wait",
+        view=view,
+        file=discord.File(io.BytesIO(png_bytes()), filename="owned.png"),
+    )
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        page = preview._open_page()
+        assert page.assets
+        task = asyncio.create_task(
+            preview._action(
+                page.id,
+                action_body(
+                    page,
+                    "click",
+                    1,
+                    request_id="active-close",
+                    published_revision=page.revision,
+                    custom_id="wait",
+                ),
+            )
+        )
+        await view.started.wait()
+        preview._close_page(page.id)
+        assert page.id in preview._pages
+        view.release.set()
+        assert (await task)["settlement"] == "settled"
+        assert page.id not in preview._pages
+        assert not page.assets
+        assert {blob.refs for blob in preview._blobs.values()} == {1}
+
+
+@pytest.mark.asyncio
+async def test_media_release_during_decode_does_not_cache_orphan(monkeypatch):
+    worker = _media.MediaWorker()
+    started = threading.Event()
+    release = threading.Event()
+    inspect = _media._inspect
+
+    def blocked_inspect(blob):
+        started.set()
+        assert release.wait(1)
+        return inspect(blob)
+
+    monkeypatch.setattr(_media, "_inspect", blocked_inspect)
+    task = asyncio.create_task(worker.validate("orphan", png_bytes()))
+    assert await asyncio.to_thread(started.wait, 1)
+    worker.release("orphan")
+    release.set()
+    await task
+    await asyncio.sleep(0)
+    assert "orphan" not in worker._cache
+    await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_emoji_projection_keeps_only_opaque_asset_reference(env, channel, alice):
+    async with env.preview(channel, viewers=[alice]) as preview:
+        projected = _project_emoji(
+            preview._python,
+            {"id": "123", "name": "party", "url": "https://secret.example/emoji.png"},
+        )
+        assert projected["asset_id"].startswith("a_")
+        assert projected["custom"] is True
+        assert "url" not in projected

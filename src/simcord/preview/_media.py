@@ -91,6 +91,7 @@ class MediaWorker:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="simcord-preview-media")
         self._cache: OrderedDict[str, MediaInfo | MediaError] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[MediaInfo]] = {}
+        self._released: set[str] = set()
         self._closed = False
 
     def _remember(self, key: str, value: MediaInfo | MediaError) -> None:
@@ -104,14 +105,23 @@ class MediaWorker:
         try:
             result = await loop.run_in_executor(self._executor, _inspect, blob)
         except MediaError as exc:
-            self._remember(key, exc)
+            if key not in self._released:
+                self._remember(key, exc)
             raise
-        self._remember(key, result)
+        if key not in self._released:
+            self._remember(key, result)
         return result
+
+    def _finish_inflight(self, key: str) -> None:
+        self._inflight.pop(key, None)
+        if key in self._released:
+            self._cache.pop(key, None)
+            self._released.discard(key)
 
     async def validate(self, key: str, blob: bytes) -> MediaInfo:
         if self._closed:
             raise MediaError("preview media worker is closed")
+        self._released.discard(key)
         cached = self._cache.get(key)
         if isinstance(cached, MediaError):
             self._cache.move_to_end(key)
@@ -125,13 +135,16 @@ class MediaWorker:
                 raise MediaError("preview media worker queue is full")
             task = asyncio.ensure_future(self._decode(key, blob))
             self._inflight[key] = task
-            task.add_done_callback(lambda _task: self._inflight.pop(key, None))
+            task.add_done_callback(lambda _task: self._finish_inflight(key))
         return await asyncio.shield(task)
 
     def release(self, key: str) -> None:
         """Forget a result after the last legitimate asset owner disappears."""
-        if key not in self._inflight:
+        if key in self._inflight:
+            self._released.add(key)
+        else:
             self._cache.pop(key, None)
+            self._released.discard(key)
 
     async def close(self) -> None:
         if self._closed:
@@ -140,6 +153,7 @@ class MediaWorker:
         await asyncio.to_thread(self._executor.shutdown, wait=True, cancel_futures=True)
         self._cache.clear()
         self._inflight.clear()
+        self._released.clear()
 
 
 __all__ = [

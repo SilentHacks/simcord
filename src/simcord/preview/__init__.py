@@ -74,6 +74,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self._unregister_dispatch: Any = None
         self._active_action: _Action | None = None
         self._action_page: _Page | None = None
+        self._pending_page_closes: set[str] = set()
         self._media_worker: MediaWorker | None = None
         self._blobs: dict[str, _Blob] = {}
         self._retained_media_bytes = 0
@@ -266,6 +267,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             for page in tuple(self._pages.values()):
                 self._clear_page_assets(page)
             self._pages.clear()
+            self._pending_page_closes.clear()
             self._blobs.clear()
             self._retained_media_bytes = 0
             self._capture_page = None

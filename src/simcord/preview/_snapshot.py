@@ -124,7 +124,7 @@ def _asset_meta(
 def _project_emoji(page: _Page, emoji: Any) -> Any:
     if not isinstance(emoji, dict) or not emoji.get("id"):
         return _clean(emoji)
-    value = _clean(emoji)
+    value = _clean(emoji, drop_urls=True)
     emoji_id = str(emoji["id"])
     url = emoji.get("url")
     if not isinstance(url, str) or not url:

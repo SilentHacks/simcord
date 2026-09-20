@@ -37,6 +37,7 @@ function appendEmojiValue(parent, emoji, options, label = "Custom emoji") {
       return;
     }
     const image = node("img", "custom-emoji");
+    image.alt = String(emoji.name || label || "Custom emoji");
     const pending = Promise.resolve(options.loadAsset(assetId)).then((url) => {
       if (options.isCurrent && !options.isCurrent()) return;
       image.src = url;
@@ -115,6 +116,8 @@ function renderInlineTokens(parent, tokens, options) {
     if (!token || typeof token !== "object") return;
     const type = token.type;
     if (type === "text") { appendTextWithMentions(stack[stack.length - 1], token.content, options); return; }
+    if (type === "code") { stack[stack.length - 1].append(node("code", "inline-code", token.content || "")); return; }
+    if (type === "break") { stack[stack.length - 1].append(document.createElement("br")); return; }
     if (type === "timestamp") {
       const date = new Date(Number(token.unix) * 1000);
       const valid = Number.isFinite(date.getTime());
@@ -430,7 +433,7 @@ function mediaElement(media, className, options, label) {
   const image = node("img", className); image.alt = String(media.description || label || "Preview media"); image.loading = "eager";
   if (Number(media.width) > 0) image.width = Number(media.width);
   if (Number(media.height) > 0) image.height = Number(media.height);
-  const pending = [Promise.resolve(options.loadAsset(assetId)).then((url) => { if (options.isCurrent && !options.isCurrent()) return; image.src = url; return image.decode ? image.decode().catch(() => undefined) : undefined; }).catch((error) => { if (!options.isCurrent || options.isCurrent()) { options.onDiagnostic?.({ code: "media-unavailable", severity: "warning", message: `${label || "Media"} is unavailable offline`, detail: String(error), complete: false }); image.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`)); } })];
+  const pending = [Promise.resolve(options.loadAsset(assetId)).then((url) => { if (options.isCurrent && !options.isCurrent()) return; image.src = url; return image.decode ? image.decode() : undefined; }).catch((error) => { if (!options.isCurrent || options.isCurrent()) { options.onDiagnostic?.({ code: "media-unavailable", severity: "warning", message: `${label || "Media"} is unavailable offline`, detail: String(error), complete: false }); image.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`)); } })];
   return { element: image, pending };
 }
 function revealSpoiler(element, spoiler, options, label) {

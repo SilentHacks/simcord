@@ -118,6 +118,7 @@ class _PageOps:
     _pages: dict[str, _Page]
     _python: _Page | None
     _action_page: _Page | None
+    _pending_page_closes: set[str]
     _active: bool
     _closed: bool
     _MAX_PAGES: ClassVar[int]
@@ -232,6 +233,10 @@ class _PageOps:
         if context_id == "python":
             raise SetupError("The Python presentation cannot be closed as a page")
         self._prune_expired()
+        page = self._pages.get(context_id)
+        if page is self._action_page:
+            self._pending_page_closes.add(context_id)
+            return
         page = self._pages.pop(context_id, None)
         if page is not None:
             self._clear_page_assets(page)

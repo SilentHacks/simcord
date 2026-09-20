@@ -114,6 +114,60 @@ async def test_browser_ready_waits_for_preview_media(env, channel, alice):
 
 
 @pytest.mark.asyncio
+async def test_browser_decode_failure_marks_visible_media_incomplete(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    image_url = "https://cdn.example.test/broken-in-browser.png"
+    await env.bot.get_channel(channel.id).send(embed=discord.Embed().set_image(url=image_url))
+    async with env.preview(
+        channel,
+        viewers=[alice],
+        assets={image_url: ("image.png", png_bytes())},
+    ) as preview:
+        playwright = await async_playwright().start()
+        try:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.add_init_script(
+                    "HTMLImageElement.prototype.decode = () => Promise.reject(new Error('decode failed'))"
+                )
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                status = await page.evaluate("() => window.simcordPreview")
+                assert status["complete"] is False
+                assert any(item["code"] == "media-unavailable" for item in status["diagnostics"])
+                assert await page.locator(".media-unavailable").count() >= 1
+            finally:
+                await browser.close()
+        finally:
+            await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_renders_inline_code_and_markdown_breaks(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    await env.bot.get_channel(channel.id).send("before `code`\nafter")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        playwright = await async_playwright().start()
+        try:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                assert await page.locator("code.inline-code", has_text="code").count() == 1
+                assert await page.locator(".message-content br").count() == 1
+            finally:
+                await browser.close()
+        finally:
+            await playwright.stop()
+
+
+@pytest.mark.asyncio
 async def test_browser_settled_action_clears_pending_and_allows_second_action(env, channel, alice):
     pytest.importorskip("playwright")
     from playwright.async_api import async_playwright
