@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "revision": "catalog-commit-01",
+  "profiles": [
+    {
+      "id": "discord-dark-idle-1280x900",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "locale": "unknown",
+      "timezone": "unknown",
+      "deviceScaleFactor": 1,
+      "zoom": 1,
+      "fontScale": "unknown",
+      "motion": "unknown",
+      "browser": "unknown",
+      "clientBuild": "unknown",
+      "observedAt": "2026-09-14",
+      "provenance": "manifest-only; settings beyond viewport/theme are unknown",
+      "referencePackKey": "discord-2026-09-14-dark",
+      "os": "unknown",
+      "fontIdentity": "unknown",
+      "emojiFallback": "unknown",
+      "reducedMotion": "unknown",
+      "density": "unknown",
+      "animationPolicy": "unknown",
+      "referencePackHash": null,
+      "fixtureHashSource": "coverage.json row historicalCapture.sha256"
+    },
+    {
+      "id": "discord-dark-guided-1280x700",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 700
+      },
+      "locale": "unknown",
+      "timezone": "unknown",
+      "deviceScaleFactor": 1,
+      "zoom": 1,
+      "fontScale": "unknown",
+      "motion": "unknown",
+      "browser": "unknown",
+      "clientBuild": "unknown",
+      "observedAt": "2026-09-14",
+      "provenance": "manifest-only; settings beyond viewport/theme are unknown",
+      "referencePackKey": "discord-2026-09-14-dark",
+      "os": "unknown",
+      "fontIdentity": "unknown",
+      "emojiFallback": "unknown",
+      "reducedMotion": "unknown",
+      "density": "unknown",
+      "animationPolicy": "unknown",
+      "referencePackHash": null,
+      "fixtureHashSource": "coverage.json row historicalCapture.sha256"
+    },
+    {
+      "id": "simcord-local-default",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "locale": "en-GB",
+      "timezone": "UTC",
+      "deviceScaleFactor": 1,
+      "zoom": 1,
+      "fontScale": "unknown",
+      "motion": "unknown",
+      "browser": "local-runtime",
+      "clientBuild": "n/a",
+      "observedAt": null,
+      "provenance": "local product fixture profile; not a Discord reference",
+      "referencePackKey": null,
+      "os": "local",
+      "fontIdentity": "runtime-dependent",
+      "emojiFallback": "runtime-dependent",
+      "reducedMotion": "unknown",
+      "density": "1x",
+      "animationPolicy": "unknown",
+      "referencePackHash": null,
+      "fixtureHashSource": "coverage.json row historicalCapture.sha256"
+    }
+  ]
+}

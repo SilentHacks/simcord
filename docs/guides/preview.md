@@ -299,6 +299,34 @@ atomically, so cancellation or a failed capture does not leave a partial PNG. A 
 cannot follow later focus, viewer, or backend changes; access and attachment membership are
 rechecked before bytes are served.
 
+## Reference fixture catalog
+
+The checkout keeps the reusable Discord gallery factories in
+`tests/fixtures/preview/catalog.py`. The authorized reference bot imports those factories and
+still supports its offline check:
+
+```bash
+python scripts/discord_reference_bot.py --check
+```
+
+`tests/fixtures/preview/coverage.json` is the single evidence ledger. Its rows retain fixture
+recipes, canonical payload hashes, aliases, crop/profile metadata, expected outcomes, and separate
+reference/implementation/comparison statuses. Profiles, state-transition recipes, and measured
+regions live beside it in `profiles.json`, `states.json`, and `measurements.json`. Validate the
+ledger without opening any image:
+
+```bash
+python scripts/compare_visual_reference.py \
+  --check-manifest tests/fixtures/preview/coverage.json
+```
+
+Historical captures are registered by filename, dimensions, and SHA-256 only. Private Discord
+images, identities, credentials, and capability URLs stay in the ignored local reference pack.
+Unknown provenance or unavailable authorized observations are recorded as deterministic `blocked`
+rows with their prerequisite and owner; they are never treated as passing comparisons. A
+whole-window modal image is `not_comparable` until every compared region belongs to the product
+surface—do not add a synthetic shell or fixture-specific CSS to make it pass.
+
 ## Loopback security and SSH forwarding
 
 The server binds only to `127.0.0.1` on a loopback port. Every API and asset request requires the
