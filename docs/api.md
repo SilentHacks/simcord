@@ -63,8 +63,8 @@ The optional [`Env.preview`](guides/preview.md#start-and-stop-a-session) context
 viewer-authorized messages and real component callbacks from a loopback browser. It is not a
 Discord connection. Install `simcord[preview]` for the bridge, or
 `simcord[screenshot]` and `playwright install --with-deps chromium` for managed PNG capture.
-Pass `port=` to pin the loopback port so the capability URL stays stable across reruns and
-pre-created SSH forwards.
+`port=` pins the loopback origin so a pre-created forward can use the same origin on both ends;
+it never makes the capability-bearing URL stable or safe to log. Keep `preview.url` secret.
 
 ::: simcord.preview.Preview
 

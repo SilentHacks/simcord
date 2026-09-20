@@ -97,6 +97,18 @@ def test_preview_markdown_safe_profiles_and_tokens(profile):
     assert "secret" in flat
 
 
+def test_preview_markdown_timestamp_styles_are_preserved():
+    tokens = markdown_tokens(" ".join(f"<t:1700000000:{style}>" for style in "tTdDfFR"))
+    styles = [
+        child["style"]
+        for block in tokens
+        for inline in block.get("children", [])
+        for child in inline.get("children", [])
+        if child.get("type") == "timestamp"
+    ]
+    assert styles == list("tTdDfFR")
+
+
 def test_preview_markdown_links_breaks_styles_and_spoilers():
     tokens = markdown_tokens(
         "[safe](https://example.test) [mail](mailto:test@example.test) "

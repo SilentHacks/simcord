@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: "gg sans", "gg sans vf", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
   font-size: 16px;
   background: #323339;
   color: #f2f3f5;
@@ -220,6 +220,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .markdown-link { color: var(--link-accent); }
 .mention { padding: 0 2px; color: #c9cdfb; background: rgba(88, 101, 242, .3); border-radius: 3px; font-weight: 500; }
 .discord-timestamp { color: var(--discord-muted); }
+.markdown-subtext { display: block; color: var(--discord-subtle); font-size: .875em; }
+.custom-emoji, .embed-author-icon, .embed-footer-icon { width: 20px; height: 20px; object-fit: contain; vertical-align: middle; }
+.emoji-unavailable { color: #faa61a; font-size: .8em; }
 .markdown-spoiler {
   padding: 0 2px;
   color: transparent;
@@ -404,13 +407,18 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 }
 .spoiler-cover::before {
   content: "SPOILER";
+  display: block;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  white-space: normal;
   padding: 8px 12px;
   color: #e3e5e8;
   background: rgba(0, 0, 0, 0.6);
   border-radius: 20px;
   font-size: 15px;
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.1;
   letter-spacing: 0.5px;
 }
 .spoiler-media > .spoiler-cover {

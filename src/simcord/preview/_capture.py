@@ -217,7 +217,8 @@ class ManagedCapture:
         return {
             "playwrightVersion": str(playwright_version),
             "browserVersion": str(version),
-            "fontIdentity": "system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif",
+            "fontStackConfigured": '"Noto Sans", "Segoe UI", system-ui, sans-serif',
+            "fontResolution": "unavailable until capture runtime",
             "emojiFallback": "environment",
             "animationPolicy": "cancel-animations-and-hide-caret",
             "deviceScale": 1,
@@ -270,6 +271,13 @@ class ManagedCapture:
 
                 self.preview._assert_capture_live(pin.page)
                 status = await self._status(page)
+                runtime_fonts = await page.evaluate(
+                    """() => ({
+                        computed: getComputedStyle(document.documentElement).fontFamily,
+                        loaded: document.fonts ? [...document.fonts].filter((font) => font.status === "loaded").map((font) => font.family) : [],
+                    })"""
+                )
+                profile["fontResolution"] = runtime_fonts
                 last_action = status.get("lastAction")
                 if isinstance(last_action, Mapping) and last_action.get("settlement") != "settled":
                     raise SetupError("managed capture requires a settled action")

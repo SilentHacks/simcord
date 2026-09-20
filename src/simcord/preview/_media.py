@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import warnings
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -78,28 +79,34 @@ def _inspect(blob: bytes) -> MediaInfo:
 class MediaWorker:
     """One lazily created bounded decoder, shared by a Preview session.
 
-    ``max_workers=1`` bounds decode concurrency, not the queue, so admission is
-    bounded separately: at most ``_MAX_INFLIGHT`` jobs may run or wait at once,
-    excess is rejected, and concurrent validations of the same key share one job.
-    Results (including failures) are cached by key so repeats never re-decode.
+    Decoded results are retained only while an owning asset retains the blob;
+    failures and successes are also capped so abandoned keys cannot grow the
+    worker without bound.
     """
 
     _MAX_INFLIGHT = 8
+    _MAX_CACHE = 64
 
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="simcord-preview-media")
-        self._cache: dict[str, MediaInfo | MediaError] = {}
+        self._cache: OrderedDict[str, MediaInfo | MediaError] = OrderedDict()
         self._inflight: dict[str, asyncio.Task[MediaInfo]] = {}
         self._closed = False
+
+    def _remember(self, key: str, value: MediaInfo | MediaError) -> None:
+        self._cache[key] = value
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._MAX_CACHE:
+            self._cache.popitem(last=False)
 
     async def _decode(self, key: str, blob: bytes) -> MediaInfo:
         loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(self._executor, _inspect, blob)
         except MediaError as exc:
-            self._cache[key] = exc
+            self._remember(key, exc)
             raise
-        self._cache[key] = result
+        self._remember(key, result)
         return result
 
     async def validate(self, key: str, blob: bytes) -> MediaInfo:
@@ -107,8 +114,10 @@ class MediaWorker:
             raise MediaError("preview media worker is closed")
         cached = self._cache.get(key)
         if isinstance(cached, MediaError):
+            self._cache.move_to_end(key)
             raise cached
         if cached is not None:
+            self._cache.move_to_end(key)
             return cached
         task = self._inflight.get(key)
         if task is None:
@@ -118,6 +127,11 @@ class MediaWorker:
             self._inflight[key] = task
             task.add_done_callback(lambda _task: self._inflight.pop(key, None))
         return await asyncio.shield(task)
+
+    def release(self, key: str) -> None:
+        """Forget a result after the last legitimate asset owner disappears."""
+        if key not in self._inflight:
+            self._cache.pop(key, None)
 
     async def close(self) -> None:
         if self._closed:

@@ -155,9 +155,15 @@ class _PageOps:
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
             return json.loads(json.dumps(page.pinned_snapshot))
-        page.last_activity = time.monotonic()
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
         if not allowed:
+            if page.status != "access_denied":
+                self._clear_page_assets(page)
+                page.modal = None
+                page.modal_handle = None
+                page.snapshot.update(
+                    {"messages": [], "selected": None, "modal": None, "candidates": {}, "assets": {}}
+                )
             page.status = "access_denied"
         # Reads never republish and never clear "stale": they serve the last
         # published projection with the live status overlaid, redacted on denial.

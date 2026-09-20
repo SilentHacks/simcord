@@ -98,11 +98,15 @@ class _AssetOps:
             if entry.normalized_refs == 0 and entry.normalized_size:
                 self._retained_media_bytes -= entry.normalized_size
                 entry.normalized_size = 0
+                if self._media_worker is not None:
+                    self._media_worker.release(digest)
         entry.refs -= 1
         if entry.refs <= 0:
             self._retained_media_bytes -= len(entry.data)
             if entry.normalized_size:
                 self._retained_media_bytes -= entry.normalized_size
+            if self._media_worker is not None:
+                self._media_worker.release(digest)
             del self._blobs[digest]
         self._retained_media_bytes = max(0, self._retained_media_bytes)
 

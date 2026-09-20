@@ -43,10 +43,10 @@ uv run playwright install --with-deps chromium
 uv run python examples/preview_example.py
 ```
 
-The example prints the live capability-gated preview URL and human-facing notes to stderr, and
-writes a PNG plus a JSON capture report to stdout — so `python examples/preview_example.py | jq`
-works. The session exits once the capture finishes; pass `--keep-open` to keep it open for
-clicking around (it calls `preview.wait_closed()`).
+The example writes a PNG plus a JSON capture report to stdout — so
+`python examples/preview_example.py | jq` works. Pass `--keep-open` for the
+interactive mode, which prints the live capability URL and human-facing notes
+to stderr and calls `preview.wait_closed()`.
 
 For more patterns, including selects, autocomplete, view timeouts, fault injection, and DMs,
 see the [recipe cookbook](../docs/cookbook.md) and the

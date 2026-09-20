@@ -3,6 +3,7 @@ import { renderMessage, renderModal } from "./components.js";
 const $ = (id) => document.getElementById(id);
 const ui = {
   app: $("preview-app"),
+  toolbar: $("toolbar"),
   surface: $("message-surface"),
   modal: $("modal-root"),
   diagnostics: $("diagnostics"),
@@ -45,12 +46,16 @@ const state = {
   dropdown: null,
   lastMessageKey: null,
   lastMessageFingerprint: "",
-  lastModalFingerprint: "",
-  viewerId: null,
   targetId: null,
   objectUrls: new Map(),
   closed: false,
+  authorized: true,
+  modalOpenerFocusKey: null,
   focusKey: null,
+  focusSelection: null,
+  focusInModal: false,
+  contextReleased: false,
+  statusFingerprint: "",
 };
 
 function freeze(value) {
@@ -73,33 +78,57 @@ function statusObject() {
     pendingAction: state.pendingAction,
     ready: state.ready,
     complete: state.complete,
+    authorized: state.authorized,
     calibration: state.calibration,
     diagnostics: [...state.diagnostics],
     profile: { ...state.profile },
   });
 }
 Object.defineProperty(window, "simcordPreview", { configurable: false, enumerable: true, get: statusObject });
-
 function rememberFocus() {
   const active = document.activeElement;
-  state.focusKey = active instanceof HTMLElement ? active.dataset.controlKey || null : null;
+  const owner = active instanceof HTMLElement ? active.closest("[data-control-key]") : null;
+  state.focusKey = owner?.dataset.controlKey || (active instanceof HTMLElement ? active.dataset.controlKey || null : null);
+  state.focusInModal = Boolean(active instanceof HTMLElement && active.closest(".modal-dialog"));
   state.focusVisible = active instanceof HTMLElement
     && (active.matches(":focus-visible") || active.classList.contains("focus-visible"));
+  state.focusSelection = active && typeof active.selectionStart === "number"
+    ? { start: active.selectionStart, end: active.selectionEnd }
+    : null;
 }
 
-function restoreFocus() {
-  if (!state.focusKey) return;
-  const controls = [...document.querySelectorAll("[data-control-key]")];
-  const target =
-    controls.find((item) => item.dataset.controlKey === state.focusKey && item.tabIndex >= 0)
-    || controls.find((item) => item.dataset.controlKey === state.focusKey);
-  if (target instanceof HTMLElement) {
-    target.focus();
-    if (state.focusVisible && !target.matches(":focus-visible")) {
-      target.classList.add("focus-visible");
-      target.addEventListener("blur", () => target.classList.remove("focus-visible"), { once: true });
-    }
+function focusTarget(key) {
+  if (!key) return null;
+  const owner = [...document.querySelectorAll("[data-control-key]")].find(
+    (item) => item.dataset.controlKey === key && item.tabIndex >= 0,
+  ) || [...document.querySelectorAll("[data-control-key]")].find(
+    (item) => item.dataset.controlKey === key,
+  );
+  if (!(owner instanceof HTMLElement)) return null;
+  return owner.matches("input, textarea, select, button, [role=listbox]")
+    ? owner
+    : owner.querySelector("input, textarea, select, button, [role=listbox]") || owner;
+}
+
+function restoreFocus(key = state.focusKey) {
+  const target = focusTarget(key);
+  if (!(target instanceof HTMLElement) || target.inert || target.matches(":disabled")) return false;
+  target.focus();
+  if (state.focusSelection && typeof target.setSelectionRange === "function") {
+    try { target.setSelectionRange(state.focusSelection.start, state.focusSelection.end); } catch (_) {}
   }
+  if (state.focusVisible && !target.matches(":focus-visible")) {
+    target.classList.add("focus-visible");
+    target.addEventListener("blur", () => target.classList.remove("focus-visible"), { once: true });
+  }
+  return true;
+}
+
+function setModalIsolation(open) {
+  [ui.toolbar, ui.empty, ui.surface, ui.diagnostics].forEach((element) => {
+    if (element) element.inert = open;
+  });
+  ui.modal.setAttribute("aria-hidden", String(!open));
 }
 
 function revokeAssets() {
@@ -302,12 +331,23 @@ function localRender(renderDom = true) {
 function openDropdown(key, selected, multi, minimum, maximum, highlight) {
   rememberFocus();
   if (state.dropdown?.key === key) {
-    commitDropdown(key);
+    cancelDropdown(key);
     return;
-  } else {
-    state.dropdown = { key, selected: [...selected], multi, minimum, maximum, highlight: highlight ?? selected[0] };
   }
+  state.dropdown = {
+    key,
+    selected: [...selected],
+    multi,
+    minimum,
+    maximum,
+    highlight: highlight ?? selected[0] ?? null,
+  };
   localRender(true);
+  state.focusKey = `${key}:list`;
+  const list = [...document.querySelectorAll("[data-control-key]")].find(
+    (item) => item.dataset.controlKey === `${key}:list`,
+  );
+  if (list instanceof HTMLElement) list.focus();
 }
 
 function updateDraft(key, value, multi, minimum, maximum, selected) {
@@ -389,11 +429,32 @@ function submitModal(values) {
 function renderSnapshot(snapshot, generation, force = false) {
   if (generation !== state.renderGeneration || state.closed) return;
   state.snapshot = snapshot;
+  state.authorized = snapshot.status !== "access_denied";
+  if (state.authorized) {
+    state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "access-denied");
+  }
+  if (!state.authorized) {
+    revokeAssets();
+    state.localDiagnostics = [{
+      code: "access-denied",
+      severity: "error",
+      message: "Preview access was revoked; refresh after authorization is restored.",
+      complete: false,
+    }];
+    state.drafts.clear();
+    state.modalDrafts.clear();
+    state.modalTouched.clear();
+    state.dropdown = null;
+    state.dismissedModal = null;
+    state.modalHandle = null;
+    state.modalOpenerFocusKey = null;
+    ui.surface.replaceChildren();
+  }
   state.contextId = snapshot.context?.id || state.contextId;
   const nextGeneration = Number(snapshot.context?.generation || 0);
   const nextRevision = Number(snapshot.publishedRevision || 0);
   const nextViewer = snapshot.viewerId || null;
-  if (nextGeneration !== state.contextGeneration || nextRevision !== state.publishedRevision) state.localDiagnostics = [];
+  if (state.authorized && (nextGeneration !== state.contextGeneration || nextRevision !== state.publishedRevision)) state.localDiagnostics = [];
   if (nextGeneration !== state.contextGeneration || nextViewer !== state.viewerId) revokeAssets();
   state.contextGeneration = nextGeneration;
   state.botGeneration = Number(snapshot.botGeneration || 0);
@@ -415,9 +476,13 @@ function renderSnapshot(snapshot, generation, force = false) {
       drafts: state.drafts,
       candidates: snapshot.candidates || {},
       assets: snapshot.assets || {},
-      mentions: selected?.mention_names || {},
+      mentions: {
+        ...(selected?.mention_names || {}),
+        ...(selected?.mention_channel_names || {}),
+      },
       locale: state.profile.locale,
       timezone: state.profile.timezone,
+      captureTime: state.profile.captureTime,
       dropdown: state.dropdown,
       onInit: initDraft,
       onOpen: openDropdown,
@@ -444,10 +509,13 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.modalErrorHandle = null;
   }
   const nextHandle = modal?.handle || null;
+  const previousHandle = state.modalHandle;
+  if (nextHandle && !previousHandle) state.modalOpenerFocusKey = state.focusKey;
   if (nextHandle !== state.modalHandle) {
     state.modalDrafts.clear();
     state.modalTouched.clear();
   }
+  setModalIsolation(Boolean(nextHandle));
   if (force || modalKey !== state.lastModalFingerprint) {
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
@@ -460,6 +528,9 @@ function renderSnapshot(snapshot, generation, force = false) {
       validationError: state.modalError,
       locale: state.profile.locale,
       timezone: state.profile.timezone,
+      captureTime: state.profile.captureTime,
+      pendingMedia,
+      isCurrent: () => generation === state.renderGeneration,
       onInit: initDraft,
       onSelectOpen: openDropdown,
       onSelectDraft: (key, value, multi, minimum, maximum, selected) => {
@@ -500,7 +571,9 @@ function renderSnapshot(snapshot, generation, force = false) {
       onSubmit: submitModal,
       onDiagnostic: addDiagnostic,
     });
-    if (rendered.focus instanceof HTMLElement) requestAnimationFrame(() => rendered.focus.focus());
+    if (nextHandle && !previousHandle) requestAnimationFrame(() => rendered.focus?.focus());
+    else if (nextHandle) restoreFocus();
+    else if (previousHandle) restoreFocus(state.modalOpenerFocusKey) || (ui.message.disabled ? ui.viewer : ui.message).focus();
   }
   state.modalHandle = nextHandle;
   state.lastModalFingerprint = modalKey;
@@ -508,7 +581,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   updateActionStatus();
   fitOpenDropdowns();
   waitReady(generation, pendingMedia);
-  requestAnimationFrame(restoreFocus);
+  if (!nextHandle && !previousHandle) requestAnimationFrame(() => restoreFocus());
 }
 
 function fitOpenDropdowns() {
@@ -524,6 +597,7 @@ function fitOpenDropdowns() {
 
 async function installSnapshot(snapshot, force = false) {
   if (!snapshot || state.closed) return;
+  rememberFocus();
   if (!state.pendingAction && "lastAction" in snapshot) state.lastAction = snapshot.lastAction;
   const generation = beginRender();
   renderSnapshot(snapshot, generation, force);
@@ -557,7 +631,7 @@ function validateModalValues(modal, values) {
 }
 
 async function dispatch(kind, extra = {}) {
-  if (state.pendingAction || state.closed || !state.contextId) return;
+  if (state.pendingAction || state.closed || !state.authorized || !state.contextId) return;
   const requestId = globalThis.crypto?.randomUUID?.() || `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const sequence = state.sequence + 1;
   state.sequence = sequence;
@@ -575,8 +649,8 @@ async function dispatch(kind, extra = {}) {
   try {
     const result = await requestAction(body);
     if (result && typeof result.expectedSequence === "number") state.sequence = result.expectedSequence;
-    state.lastAction = result;
     state.pendingAction = null;
+    state.lastAction = result;
     if (Array.isArray(result.diagnostics)) result.diagnostics.forEach((item) => addDiagnostic(item));
     if (kind === "close") { state.closed = true; state.ready = false; revokeAssets(); updateActionStatus(); return; }
     const snapshot = await request("/api/state");
@@ -601,7 +675,19 @@ async function poll() {
   if (state.closed || !state.contextId) return;
   try {
     const snapshot = await request("/api/state");
-    if (snapshot.publishedRevision !== state.publishedRevision || snapshot.context?.generation !== state.contextGeneration || fingerprint(snapshot.modal) !== state.lastModalFingerprint) {
+    const statusFingerprint = JSON.stringify({
+      status: snapshot.status,
+      diagnostics: snapshot.diagnostics,
+      botGeneration: snapshot.botGeneration,
+      context: snapshot.context,
+    });
+    if (
+      snapshot.publishedRevision !== state.publishedRevision
+      || snapshot.context?.generation !== state.contextGeneration
+      || fingerprint(snapshot.modal) !== state.lastModalFingerprint
+      || statusFingerprint !== state.statusFingerprint
+    ) {
+      state.statusFingerprint = statusFingerprint;
       await installSnapshot(snapshot, false);
     }
   } catch (error) {
@@ -610,6 +696,25 @@ async function poll() {
     if (!state.closed) window.setTimeout(poll, 500);
   }
 }
+
+function releaseContext() {
+  if (state.contextReleased || state.closed || !state.contextId || !state.capability) return;
+  state.contextReleased = true;
+  fetch(`/api/pages/${encodeURIComponent(state.contextId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+    cache: "no-store",
+    keepalive: true,
+  }).catch(() => {});
+}
+
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) releaseContext();
+});
+window.addEventListener("beforeunload", () => releaseContext());
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && !state.closed) poll();
+});
 
 async function bootstrap() {
   applyProfile();
@@ -620,11 +725,23 @@ async function bootstrap() {
     return;
   }
   try {
-    const snapshot = await request("/api/pages", "POST", {} , null);
+    const snapshot = await request("/api/pages", "POST", {}, null);
+    state.contextReleased = false;
+    state.statusFingerprint = JSON.stringify({
+      status: snapshot.status,
+      diagnostics: snapshot.diagnostics,
+      botGeneration: snapshot.botGeneration,
+      context: snapshot.context,
+    });
     await installSnapshot(snapshot, true);
     poll();
   } catch (error) {
-    addDiagnostic({ code: "bootstrap-failed", severity: "error", message: String(error), complete: false });
+    addDiagnostic({
+      code: String(error).includes("expired") ? "context-expired" : "bootstrap-failed",
+      severity: "error",
+      message: String(error),
+      complete: false,
+    });
     ui.app.setAttribute("aria-busy", "false");
   }
 }

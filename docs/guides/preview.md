@@ -60,7 +60,7 @@ async with simcord.run(create_bot()) as env:
     await alice.send(channel, "!panel")
 
     async with env.preview(channel, viewers=[alice]) as preview:
-        print(preview.url)  # sensitive loopback capability URL
+        await preview.show(channel.last_message)
         await preview.wait_closed()  # returns after browser Close or preview.close()
 ```
 
@@ -69,10 +69,10 @@ environment shutdown, and cancellation. Closing a browser tab releases only that
 not stop Python or the Preview. The toolbar's **Close** action closes the whole session. No browser
 is launched automatically.
 
-`port=` pins the loopback port: `None` or `0` keeps the OS-assigned default, while an integer in
-1–65535 binds that exact port so the capability URL is stable across reruns and pre-created SSH
-forwards. The URL stays capability-gated either way. An out-of-range value raises `SetupError`, and
-a port that is already occupied raises `SetupError` when the session is entered.
+`port=` pins the loopback origin: `None` or `0` keeps the OS-assigned port, while an integer in
+1–65535 binds that exact origin so a pre-created SSH forward can use the same port on both ends.
+It does not make the capability-bearing URL stable or safe to log. An out-of-range value raises
+`SetupError`, and a port that is already occupied raises `SetupError` when the session is entered.
 
 `env.restart_bot()` does **not** close a Preview — the session, pages, and URL survive the restart.
 The restart advances the bot generation, so action envelopes sent by a page loaded before it are
@@ -218,10 +218,12 @@ focus changes; `botGeneration` changes on restart; render generations also cover
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render
 continuations cannot update a newer generation.
 
-Every callback action carries a context generation, bot generation, request ID, published revision,
-and positive per-page sequence. Kind, control resolution, and values are validated before the
-sequence is admitted. Admission is at-most-once: a duplicate latest request with the same payload
-returns its
+Every callback action carries a positive integer `generation` and `bot_generation`, a context
+generation, bot generation, request ID, published revision, and positive per-page sequence.
+Missing or malformed generation fields return structured `bad-envelope` before admission and do
+not consume the sequence; correctly typed but stale values return `stale-context` or
+`stale-generation`. Kind, control resolution, and values are validated before the sequence is
+admitted. Admission is at-most-once: a duplicate latest request with the same payload returns its
 recorded status, a changed payload conflicts, old sequences expire, and gaps are rejected. Busy,
 stale, unauthorized, disabled, deleted, or invalid controls are rejected before admission and are
 never automatically retried. A disconnected client does not cancel an admitted callback; delivery

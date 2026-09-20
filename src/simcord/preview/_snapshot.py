@@ -11,6 +11,7 @@ keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -120,6 +121,39 @@ def _asset_meta(
     return page.asset_id(f"url:{metadata['url']}", metadata, source=source)
 
 
+def _project_emoji(page: _Page, emoji: Any) -> Any:
+    if not isinstance(emoji, dict) or not emoji.get("id"):
+        return _clean(emoji)
+    value = _clean(emoji)
+    emoji_id = str(emoji["id"])
+    url = emoji.get("url")
+    if not isinstance(url, str) or not url:
+        url = f"{CDN_BASE}/emojis/{emoji_id}.png"
+    asset_id = page.asset_id(
+        f"emoji:{emoji_id}",
+        {"url": url, "filename": f"{emoji_id}.png", "content_type": "image/png"},
+    )
+    value.update(
+        {
+            "custom": True,
+            "asset_id": asset_id,
+            "available": _asset_available(page, asset_id),
+        }
+    )
+    return value
+
+
+def _decorate_emoji(value: Any, page: _Page) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _project_emoji(page, item) if key == "emoji" else _decorate_emoji(item, page)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_decorate_emoji(item, page) for item in value]
+    return value
+
+
 def _attachment_index(
     attachments: list[dict[str, Any]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -169,16 +203,30 @@ def _decorate_components(
             media.pop("url", None)
         if typ == int(ComponentType.TEXT_DISPLAY):
             node["markdown_tokens"] = markdown_tokens(node["content"], "text_display")
-    return _clean(rows)
+    return _clean(_decorate_emoji(rows, page))
 
 
 def _embed_projection(
     page: _Page, message: Message, embed: dict[str, Any], attachments: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    value = _clean(deepcopy(embed), drop_urls=True)
+    value = _clean(_decorate_emoji(deepcopy(embed), page), drop_urls=True)
     link = _safe_link(embed.get("url"))
     if link:
         value["url"] = link
+    for owner_key in ("author", "footer"):
+        owner = embed.get(owner_key)
+        if not isinstance(owner, dict):
+            continue
+        owner_value = value.setdefault(owner_key, {})
+        owner_link = _safe_link(owner.get("url"))
+        if owner_link:
+            owner_value["url"] = owner_link
+        icon_url = owner.get("icon_url") or owner.get("icon_proxy_url")
+        if isinstance(icon_url, str):
+            icon_id = _asset_meta(page, icon_url, None, None)
+            if icon_id:
+                owner_value["icon_asset_id"] = icon_id
+                owner_value["icon_available"] = _asset_available(page, icon_id)
     by_url, by_name = _attachment_index(attachments)
     for key in ("image", "thumbnail", "video"):
         media = embed.get(key)
@@ -205,7 +253,7 @@ def _embed_projection(
         target = value["fields"][index]
         target["name_tokens"] = markdown_tokens(field["name"], "embed_field")
         target["value_tokens"] = markdown_tokens(field["value"], "embed_field")
-    return value
+    return _clean(_decorate_emoji(value, page))
 
 
 def _is_compact_message(preview: Preview, message: Message) -> bool:
@@ -253,6 +301,22 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
     data["mention_names"] = {}
     for uid in data["mention_user_ids"]:
         data["mention_names"][uid] = _author(env, int(uid))["name"]
+    data["mention_channel_ids"] = []
+    data["mention_channel_names"] = {}
+    preview_channel = env.backend.get_channel(page.channel_id)
+    for match in re.finditer(r"<#([0-9]+)>", message.content or ""):
+        channel_id = int(match.group(1))
+        try:
+            mentioned = env.backend.get_channel(channel_id)
+        except BackendError:
+            continue
+        if mentioned.guild_id == preview_channel.guild_id and can_access_channel(
+            env, channel_id, page.viewer
+        ):
+            key = str(channel_id)
+            if key not in data["mention_channel_names"]:
+                data["mention_channel_ids"].append(key)
+                data["mention_channel_names"][key] = mentioned.name or key
     reference = message.reference
     if reference:
         try:
@@ -335,6 +399,7 @@ def _candidates(
                                 else user.name,
                                 "bot": user.bot,
                                 "avatar": _user_avatar(page, user),
+                                "avatar_available": _asset_available(page, _user_avatar(page, user)),
                             }
                         )
         else:
@@ -353,6 +418,7 @@ def _candidates(
                                 else user.name,
                                 "bot": user.bot,
                                 "avatar": _user_avatar(page, user),
+                                "avatar_available": _asset_available(page, _user_avatar(page, user)),
                             }
                         )
             if kind in {"roles", "mentionables"}:
@@ -419,7 +485,8 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             selected = _message_projection(preview, page, selected_message)
     modal = None
     if allowed and page.modal is not None:
-        payload = _clean(deepcopy(page.modal.modal), drop_urls=True)
+        payload = _decorate_emoji(deepcopy(page.modal.modal), page)
+        payload = _clean(payload, drop_urls=True)
         for component in walk_components(payload.get("components", [])):
             if isinstance(component.get("content"), str):
                 component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
@@ -448,10 +515,14 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "candidates": _candidates(preview, page, candidate_components) if allowed else {},
         "profile": {
             "theme": "dark",
+            "scope": "desktop-dark",
             "width": preview.width,
             "height": preview.height,
             "locale": preview.locale,
             "timezone": preview.timezone,
+            "captureTime": preview.capture_time.isoformat(),
+            "fontStackConfigured": '"Noto Sans", "Segoe UI", system-ui, sans-serif',
+            "fontResolution": "unavailable until capture runtime",
         },
         "status": page.status,
         "diagnostics": list(page.diagnostics),

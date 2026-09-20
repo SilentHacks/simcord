@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -58,6 +59,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.locale = locale
         self.timezone = timezone
         self._explicit_assets = dict(assets or {})
+        self.capture_time = datetime.now(UTC)
         self.capability = secrets.token_urlsafe(32)
         self._server = PreviewServer(self, port)
         self._pages: dict[str, _Page] = {}

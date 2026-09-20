@@ -6,9 +6,9 @@ Install the optional browser tools before running this example::
     playwright install --with-deps chromium
     python examples/preview_example.py
 
-Pass ``--keep-open`` to hold the session open after the capture so the printed
-URL stays live for clicking. The URL and human-facing notes go to stderr, so
-stdout carries only the JSON capture report for automation to consume.
+Pass ``--keep-open`` to hold the session open after the capture; only that
+interactive mode prints the capability URL to stderr. Automated stdout remains
+the JSON capture report and diagnostics are credential-free.
 
 The callback is dispatched by SimCord's actor, not mocked by the example. The
 capture report is printed so automation can inspect completeness diagnostics.
@@ -40,7 +40,8 @@ async def main(destination: str = "preview-example.png", keep_open: bool = False
 
         async with env.preview(channel, viewers=[alice]) as preview:
             # Stays live until the context exits; await preview.wait_closed() keeps it open.
-            print(preview.url, file=sys.stderr)
+            if keep_open:
+                print(preview.url, file=sys.stderr)
             opened = await alice.click(panel, custom_id="panel:edit")
             updated = await alice.submit_modal(opened, {"title": "Edited from the preview"})
 

@@ -17,6 +17,42 @@ function node(tag, className, text) {
 function appendEmojiText(parent, text) {
   parent.append(document.createTextNode(String(text ?? "")));
 }
+
+function appendEmojiValue(parent, emoji, options, label = "Custom emoji") {
+  if (!emoji || typeof emoji !== "object") {
+    appendEmojiText(parent, emoji);
+    return;
+  }
+  if (emoji.custom === true || emoji.id) {
+    const assetId = typeof emoji.asset_id === "string" ? emoji.asset_id : null;
+    const manifest = assetId ? options.assets?.[assetId] : null;
+    if (!assetId || emoji.available === false || manifest?.available === false || !options.loadAsset) {
+      parent.append(node("span", "emoji-unavailable", `${label} unavailable`));
+      options.onDiagnostic?.({
+        code: "custom-emoji-unavailable",
+        severity: "warning",
+        message: `${label} is unavailable from supplied offline assets`,
+        complete: false,
+      });
+      return;
+    }
+    const image = node("img", "custom-emoji");
+    const pending = Promise.resolve(options.loadAsset(assetId)).then((url) => {
+      if (options.isCurrent && !options.isCurrent()) return;
+      image.src = url;
+      return image.decode ? image.decode() : undefined;
+    }).catch((error) => {
+      if (!options.isCurrent || options.isCurrent()) {
+        image.replaceWith(node("span", "emoji-unavailable", `${label} unavailable`));
+        options.onDiagnostic?.({ code: "custom-emoji-unavailable", severity: "warning", message: `${label} failed to decode`, detail: String(error), complete: false });
+      }
+    });
+    options.pendingMedia?.push(pending);
+    parent.append(image);
+    return;
+  }
+  appendEmojiText(parent, emoji.name || "");
+}
 function keyFor(component, path) {
   if (typeof component.custom_id === "string") return component.custom_id;
   if (typeof component.id === "number" && component.id > 0) return `id-${component.id}`;
@@ -58,14 +94,16 @@ function displaySelection(values, entries, placeholder) {
 function appendTextWithMentions(parent, value, options) {
   const text = String(value ?? "");
   const names = options.mentions || {};
-  const pattern = /<@!?([0-9]+)>|<@&([0-9]+)>/g;
+  const pattern = /<@!?([0-9]+)>|<@&([0-9]+)>|<#([0-9]+)>/g;
   let offset = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index > offset) appendEmojiText(parent, text.slice(offset, match.index));
-    const id = match[1] || match[2];
+    const id = match[1] || match[2] || match[3];
     const name = names[id];
-    if (name) parent.append(node("span", "mention", `@${name}`));
-    else appendEmojiText(parent, match[0]);
+    if (name) {
+      const prefix = match[3] ? "#" : "@";
+      parent.append(node("span", "mention", `${prefix}${name}`));
+    } else appendEmojiText(parent, match[0]);
     offset = match.index + match[0].length;
   }
   if (offset < text.length) appendEmojiText(parent, text.slice(offset));
@@ -77,12 +115,33 @@ function renderInlineTokens(parent, tokens, options) {
     if (!token || typeof token !== "object") return;
     const type = token.type;
     if (type === "text") { appendTextWithMentions(stack[stack.length - 1], token.content, options); return; }
-    if (type === "code") { stack[stack.length - 1].append(node("code", "inline-code", token.content)); return; }
-    if (type === "break") { stack[stack.length - 1].append(document.createElement("br")); return; }
     if (type === "timestamp") {
       const date = new Date(Number(token.unix) * 1000);
-      const time = node("time", "discord-timestamp", Number.isFinite(date.getTime()) ? date.toLocaleString(options.locale || "en-US", { timeZone: options.timezone || "UTC" }) : `<t:${token.unix}>`);
-      if (Number.isFinite(date.getTime())) time.dateTime = date.toISOString();
+      const valid = Number.isFinite(date.getTime());
+      const style = token.style || "f";
+      const locale = options.locale || "en-US";
+      const timezone = options.timezone || "UTC";
+      const dateOptions = { timeZone: timezone };
+      let rendered = `<t:${token.unix}${style ? `:${style}` : ""}>`;
+      if (valid && style !== "R") {
+        const formats = {
+          t: { hour: "numeric", minute: "2-digit" },
+          T: { hour: "numeric", minute: "2-digit", second: "2-digit" },
+          d: { year: "numeric", month: "2-digit", day: "2-digit" },
+          D: { year: "numeric", month: "long", day: "numeric" },
+          f: { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
+          F: { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" },
+        };
+        rendered = new Intl.DateTimeFormat(locale, { ...dateOptions, ...(formats[style] || formats.f) }).format(date);
+      } else if (valid) {
+        const basis = new Date(options.captureTime || Date.now());
+        const seconds = (date.getTime() - basis.getTime()) / 1000;
+        const absolute = Math.abs(seconds);
+        const unit = absolute < 60 ? ["second", seconds] : absolute < 3600 ? ["minute", seconds / 60] : absolute < 86400 ? ["hour", seconds / 3600] : absolute < 604800 ? ["day", seconds / 86400] : ["week", seconds / 604800];
+        rendered = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(Math.round(unit[1]), unit[0]);
+      }
+      const time = node("time", "discord-timestamp", rendered);
+      if (valid) time.dateTime = date.toISOString();
       stack[stack.length - 1].append(time);
       return;
     }
@@ -118,7 +177,18 @@ function renderMarkdown(parent, tokens, options = {}) {
   const renderBlock = (block, target) => {
     if (!block || typeof block !== "object") return;
     const type = block.type;
-    if (type === "inline") { renderInlineTokens(target, block.children, options); return; }
+    if (type === "inline") {
+      const first = block.children?.[0];
+      if (options.subtext !== false && first?.type === "text" && String(first.content).startsWith("-# ")) {
+        const children = block.children.map((item, index) => index === 0 ? { ...item, content: String(item.content).slice(3) } : item);
+        const subtext = node("small", "markdown-subtext");
+        renderInlineTokens(subtext, children, options);
+        target.append(subtext);
+      } else {
+        renderInlineTokens(target, block.children, options);
+      }
+      return;
+    }
     if (type === "code_block") { target.append(node("pre", "code-block", block.content || "")); return; }
     const tags = { paragraph: "p", blockquote: "blockquote", bullet_list: "ul", ordered_list: "ol", list_item: "li", heading: /^h[1-6]$/.test(block.tag || "") ? block.tag : "h3" };
     const element = node(tags[type] || "div", `markdown-${type || "block"}`);
@@ -143,11 +213,22 @@ function renderSelect(component, path, options) {
     const icon = node("span", "entity-icon");
     if (kind === "user") {
       const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
-      if (entry.avatar) {
+      if (entry.avatar && options.loadAsset) {
         const img = node("img", "entity-avatar-img");
         img.alt = "";
-        options.loadAsset?.(entry.avatar).then((url) => { img.src = url; }).catch(() => {});
-        avatar.append(img);
+        const manifest = options.assets?.[entry.avatar];
+        const pending = Promise.resolve(options.loadAsset(entry.avatar)).then((url) => {
+          if (options.isCurrent && !options.isCurrent()) return;
+          img.src = url;
+          return img.decode ? img.decode() : undefined;
+        }).catch((error) => {
+          if (!options.isCurrent || options.isCurrent()) {
+            options.onDiagnostic?.({ code: "avatar-unavailable", severity: "warning", message: "Supplied avatar failed to load or decode", detail: String(error), complete: false });
+          }
+        });
+        options.pendingMedia?.push(pending);
+        if (manifest?.available !== false) avatar.append(img);
+        else options.onDiagnostic?.({ code: "avatar-unavailable", severity: "warning", message: "Supplied avatar is unavailable offline", complete: false });
       }
       icon.append(avatar, node("span", "entity-presence"));
       return icon;
@@ -183,7 +264,7 @@ function renderSelect(component, path, options) {
     for (const value of selected) {
       const entry = entries.find((item) => String(item.value ?? item.id ?? "") === value);
       const chip = node("span", "select-chip");
-      if (entry?.emoji?.name) appendEmojiText(chip, entry.emoji.name);
+      if (entry?.emoji) appendEmojiValue(chip, entry.emoji, options);
       const chipLabel = node("span", "select-chip-label");
       appendEmojiText(chipLabel, entry ? (entry.label ?? entry.name ?? value) : value);
       chip.append(chipLabel);
@@ -202,7 +283,7 @@ function renderSelect(component, path, options) {
     chip.append(node("span", "select-entity-name", single.label ?? single.name ?? selected[0]));
     valueDisplay.append(chip);
   } else {
-    if (single?.emoji?.name) { const emoji = node("span", "selected-emoji"); appendEmojiText(emoji, single.emoji.name); valueDisplay.append(emoji); }
+    if (single?.emoji) { const emoji = node("span", "selected-emoji"); appendEmojiValue(emoji, single.emoji, options); valueDisplay.append(emoji); }
     const valueLabel = node("span", "select-value-label");
     if (selected.length === 1 && single) appendEmojiText(valueLabel, single.label ?? single.name ?? selected[0]);
     else valueLabel.textContent = displaySelection(selected, entries, label);
@@ -221,19 +302,45 @@ function renderSelect(component, path, options) {
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
   trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${safeId(path)}`);
   trigger.addEventListener("click", () => onOpen?.(key, selected, multi, minimum, maximum));
-  trigger.addEventListener("keydown", (event) => { if (["ArrowDown", "Enter", " "].includes(event.key)) { event.preventDefault(); onOpen?.(key, selected, multi, minimum, maximum); } });
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && isOpen) {
+      event.preventDefault();
+      onCancel?.(key);
+    } else if (["ArrowDown", "Enter", " "].includes(event.key)) {
+      event.preventDefault();
+      onOpen?.(key, selected, multi, minimum, maximum, dropdown?.highlight);
+    }
+  });
   wrap.append(trigger);
   const list = node("div", "select-list"); list.id = `listbox-${safeId(path)}`; list.hidden = !isOpen;
   list.setAttribute("role", "listbox"); list.setAttribute("aria-multiselectable", String(multi)); list.tabIndex = isOpen ? 0 : -1;
   list.dataset.controlKey = `${key}:list`;
+  if (isOpen && dropdown?.highlight != null) list.setAttribute("aria-activedescendant", `option-${safeId(path)}-${safeId(String(dropdown.highlight))}`);
   if (isOpen) {
     list.addEventListener("keydown", (event) => {
-      const optionNodes = [...list.querySelectorAll('[role="option"]')];
+      const optionNodes = [...list.querySelectorAll('[role="option"]:not(.is-disabled)')];
       let index = Math.max(0, optionNodes.findIndex((item) => item.dataset.value === String(dropdown.highlight)));
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); index = Math.max(0, Math.min(optionNodes.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); onNavigate?.(key, optionNodes[index]?.dataset.value); }
-      else if (event.key === "Home" || event.key === "End") { event.preventDefault(); index = event.key === "Home" ? 0 : optionNodes.length - 1; onNavigate?.(key, optionNodes[index]?.dataset.value); }
-      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const node = optionNodes[index]; const value = node?.dataset.value; if (value !== undefined && !node?.classList.contains("is-disabled")) onDraft?.(key, value, multi, minimum, maximum, selected); if (!multi && value !== undefined) onCommit?.(key, [value]); }
-      else if (event.key === "Escape") { event.preventDefault(); onCancel?.(key); }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        index = Math.max(0, Math.min(optionNodes.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+        onNavigate?.(key, optionNodes[index]?.dataset.value);
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        index = event.key === "Home" ? 0 : optionNodes.length - 1;
+        onNavigate?.(key, optionNodes[index]?.dataset.value);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        const option = optionNodes[index];
+        const value = option?.dataset.value;
+        if (value !== undefined) {
+          onDraft?.(key, value, multi, minimum, maximum, selected);
+          onCommit?.(key, multi ? undefined : [value]);
+        }
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel?.(key);
+      }
     });
   }
   const decorateEntity = (option, entry, kind) => {
@@ -264,14 +371,14 @@ function renderSelect(component, path, options) {
   };
   const atMax = multi && selected.length >= maximum;
   entries.forEach((entry) => {
-    const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
+    const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.id = `option-${safeId(path)}-${safeId(value)}`; option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
     const disabled = atMax && !selected.includes(value);
     if (disabled) { option.classList.add("is-disabled"); option.setAttribute("aria-disabled", "true"); }
     if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
     if (entry.kind && entry.kind !== "string") {
       decorateEntity(option, entry, entry.kind);
     } else {
-      if (entry.emoji?.name) { const emoji = node("span", "option-emoji"); appendEmojiText(emoji, entry.emoji.name); option.append(emoji); }
+      if (entry.emoji) { const emoji = node("span", "option-emoji"); appendEmojiValue(emoji, entry.emoji, options); option.append(emoji); }
       const optionLabel = node("span", "option-label"); appendEmojiText(optionLabel, entry.label ?? entry.name ?? value); option.append(optionLabel);
       if (entry.description) option.append(node("small", "option-description", entry.description));
     }
@@ -284,7 +391,7 @@ function renderSelect(component, path, options) {
 
 function renderButton(component, path, options) {
   const style = Number(component.style || 1); const button = node("button", `component-button button-style-${style}`); button.type = "button"; button.disabled = component.disabled === true; button.dataset.controlKey = keyFor(component, path);
-  if (component.emoji && typeof component.emoji === "object") { const emoji = node("span", "button-emoji"); appendEmojiText(emoji, component.emoji.name || ""); button.append(emoji); }
+  if (component.emoji && typeof component.emoji === "object") { const emoji = node("span", "button-emoji"); appendEmojiValue(emoji, component.emoji, options); button.append(emoji); }
   if (component.label) { const buttonLabel = node("span", "button-label"); appendEmojiText(buttonLabel, component.label); button.append(buttonLabel); }
   if (style === 5) {
     const href = safeLink(component.url);
@@ -323,7 +430,7 @@ function mediaElement(media, className, options, label) {
   const image = node("img", className); image.alt = String(media.description || label || "Preview media"); image.loading = "eager";
   if (Number(media.width) > 0) image.width = Number(media.width);
   if (Number(media.height) > 0) image.height = Number(media.height);
-  const pending = [Promise.resolve(options.loadAsset(assetId)).then((url) => { if (!options.isCurrent?.()) return; image.src = url; return image.decode ? image.decode().catch(() => undefined) : undefined; }).catch((error) => { if (options.isCurrent?.()) { options.onDiagnostic?.({ code: "media-unavailable", severity: "warning", message: `${label || "Media"} is unavailable offline`, detail: String(error), complete: false }); image.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`)); } })];
+  const pending = [Promise.resolve(options.loadAsset(assetId)).then((url) => { if (options.isCurrent && !options.isCurrent()) return; image.src = url; return image.decode ? image.decode().catch(() => undefined) : undefined; }).catch((error) => { if (!options.isCurrent || options.isCurrent()) { options.onDiagnostic?.({ code: "media-unavailable", severity: "warning", message: `${label || "Media"} is unavailable offline`, detail: String(error), complete: false }); image.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`)); } })];
   return { element: image, pending };
 }
 function revealSpoiler(element, spoiler, options, label) {
@@ -399,15 +506,42 @@ function renderNode(component, path, options) {
 }
 function renderEmbed(embed, index, options) {
   const card = node("article", "embed-card"); const color = Number(embed.color ?? embed.color_value); if (Number.isFinite(color)) card.style.setProperty("--embed-color", `#${color.toString(16).padStart(6, "0").slice(-6)}`);
-  if (embed.author?.name) card.append(node("div", "embed-author", embed.author.name));
+  if (embed.author?.name) {
+    const author = node("div", "embed-author");
+    if (embed.author.icon_asset_id) {
+      const icon = mediaElement(
+        { asset_id: embed.author.icon_asset_id, available: embed.author.icon_available !== false },
+        "embed-author-icon",
+        options,
+        "Embed author icon",
+      );
+      author.append(icon.element);
+      options.pendingMedia?.push(...icon.pending);
+    }
+    const name = embed.author.url ? node("a", "embed-author-link", embed.author.name) : node("span", "", embed.author.name);
+    if (embed.author.url) { name.href = safeLink(embed.author.url) || "#"; name.target = "_blank"; name.rel = "noopener noreferrer"; }
+    author.append(name);
+    card.append(author);
+  }
   if (embed.title) { const href = safeLink(embed.url); const title = href ? node("a", "embed-title", "") : node("div", "embed-title"); if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener noreferrer"; } appendMarkdownOrText(title, embed.title, embed.title_tokens, options); card.append(title); }
   if (embed.description) { const description = node("div", "embed-description"); appendMarkdownOrText(description, embed.description, embed.description_tokens, options); card.append(description); }
   if (Array.isArray(embed.fields) && embed.fields.length) { const fields = node("div", "embed-fields"); embed.fields.forEach((field) => { const item = node("div", field.inline ? "embed-field inline" : "embed-field"); const name = node("strong", "embed-field-name"); appendMarkdownOrText(name, field.name || "", field.name_tokens, options); const value = node("span", "embed-field-value"); appendMarkdownOrText(value, field.value || "", field.value_tokens, options); item.append(name, value); fields.append(item); }); card.append(fields); }
   for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
   if (embed.video) { card.append(node("div", "component-unavailable", "Embed video unavailable")); options.onDiagnostic?.({ code: "unsupported-embed-video", severity: "warning", message: `Embed ${index + 1} video playback is unavailable`, complete: false }); }
-  if (embed.footer?.text || embed.timestamp) {
+  if (embed.footer?.text || embed.timestamp || embed.footer?.icon_asset_id) {
     const timestamp = embed.timestamp ? new Intl.DateTimeFormat(options.locale || "en-US", { timeZone: options.timezone || "UTC", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(embed.timestamp)) : "";
-    const footer = node("footer", "embed-footer", [embed.footer?.text, timestamp].filter(Boolean).join(" • "));
+    const footer = node("footer", "embed-footer");
+    if (embed.footer?.icon_asset_id) {
+      const icon = mediaElement(
+        { asset_id: embed.footer.icon_asset_id, available: embed.footer.icon_available !== false },
+        "embed-footer-icon",
+        options,
+        "Embed footer icon",
+      );
+      footer.append(icon.element);
+      options.pendingMedia?.push(...icon.pending);
+    }
+    appendTextWithMentions(footer, [embed.footer?.text, timestamp].filter(Boolean).join(" • "), options);
     card.append(footer);
   }
   return card;
@@ -592,6 +726,7 @@ export function renderModal(root, modal, options = {}) {
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
   dialog.setAttribute("aria-labelledby", "modal-title");
+  dialog.setAttribute("tabindex", "-1");
   const heading = node("header", "modal-header");
   const identity = node("span", "modal-identity", "●");
   identity.setAttribute("aria-hidden", "true");
@@ -699,5 +834,5 @@ export function renderModal(root, modal, options = {}) {
   });
   backdrop.append(dialog);
   root.append(backdrop);
-  return { controls, focus: dialog.querySelector("input, textarea, button") };
+  return { controls, focus: dialog.querySelector("input, textarea, button") || dialog };
 }

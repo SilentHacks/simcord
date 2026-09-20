@@ -120,7 +120,28 @@ class _ActionOps:
             )
         if not isinstance(request_id, str) or not request_id:
             return self._reject(
-                page, "bad-envelope", "request_id must be a non-empty string", sequence=sequence
+                page,
+                "bad-envelope",
+                "request_id must be a non-empty string",
+                sequence=sequence,
+            )
+        generation = body.get("generation")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            return self._reject(
+                page,
+                "bad-envelope",
+                "generation must be a positive integer",
+                request_id=request_id,
+                sequence=sequence,
+            )
+        bot_generation = body.get("bot_generation")
+        if not isinstance(bot_generation, int) or isinstance(bot_generation, bool) or bot_generation < 1:
+            return self._reject(
+                page,
+                "bad-envelope",
+                "bot_generation must be a positive integer",
+                request_id=request_id,
+                sequence=sequence,
             )
         fingerprint = hashlib.sha256(
             json.dumps(dict(body), sort_keys=True, separators=(",", ":"), default=str).encode()
@@ -171,7 +192,7 @@ class _ActionOps:
                 request_id=request_id,
                 sequence=sequence,
             )
-        if body.get("generation") != page.generation:
+        if generation != page.generation:
             return self._reject(
                 page,
                 "stale-context",
@@ -179,7 +200,7 @@ class _ActionOps:
                 request_id=request_id,
                 sequence=sequence,
             )
-        if body.get("bot_generation", self.env._generation) != self.env._generation:
+        if bot_generation != self.env._generation:
             return self._reject(
                 page,
                 "stale-generation",

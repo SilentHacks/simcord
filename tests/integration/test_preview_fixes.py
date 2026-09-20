@@ -504,3 +504,42 @@ async def test_failed_dispatch_settles_instead_of_wedging_replays(env, channel, 
         assert isinstance(env.errors[-1], KeyError)
         with pytest.raises(ExceptionGroup):
             env.raise_errors()
+
+
+@pytest.mark.asyncio
+async def test_preview_generation_fields_reject_before_sequence_admission(env, channel, alice):
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._python
+        missing = action_body(page, "refresh", 1)
+        missing.pop("generation")
+        rejected = await preview._action("python", missing)
+        assert rejected["rejected"] is True
+        assert rejected["diagnostics"][0]["code"] == "bad-envelope"
+        assert rejected["expectedSequence"] == 0
+
+        malformed = action_body(page, "refresh", 1, request_id="malformed", bot_generation=True)
+        rejected = await preview._action("python", malformed)
+        assert rejected["rejected"] is True
+        assert rejected["diagnostics"][0]["code"] == "bad-envelope"
+        assert rejected["expectedSequence"] == 0
+
+        admitted = await preview._action("python", action_body(page, "refresh", 1, request_id="valid"))
+        assert admitted["rejected"] is False
+        assert admitted["sequence"] == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_page_release_allows_repeated_reload_contexts(env, channel, alice):
+    async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
+        headers = preview_headers(preview)
+        for _ in range(preview._MAX_PAGES + 4):
+            response = await client.post(preview._origin + "/api/pages", headers=headers, json={})
+            assert response.status == 200
+            page = await response.json()
+            context = page["context"]["id"]
+            released = await client.delete(
+                preview._origin + f"/api/pages/{context}",
+                headers=preview_headers(preview, context),
+            )
+            assert released.status == 200
+        assert len(preview._pages) == 1

@@ -8,7 +8,7 @@ pytest.importorskip("PIL")
 import discord
 from aiohttp import ClientSession, FormData
 from PIL import Image
-from preview_helpers import action_body, preview_headers
+from preview_helpers import action_body, png_bytes, preview_headers
 
 import simcord
 from simcord.preview import _media
@@ -305,3 +305,14 @@ async def test_preview_rejected_overlap_does_not_consume_action(env, channel, al
         )
         assert closed["settlement"] == "settled"
         await asyncio.wait_for(preview.wait_closed(), 1)
+
+
+@pytest.mark.asyncio
+async def test_preview_media_worker_release_forgets_decoded_entries():
+    worker = MediaWorker()
+    body = png_bytes()
+    await worker.validate("owned", body)
+    assert "owned" in worker._cache
+    worker.release("owned")
+    assert "owned" not in worker._cache
+    await worker.close()
