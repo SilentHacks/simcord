@@ -390,3 +390,94 @@ def _layout_view() -> tuple[discord.ui.LayoutView, list[discord.File]]:
         discord.File(io.BytesIO(b"SimCord visual reference fixture\n"), filename="ref-document.txt"),
     ]
     return view, files
+
+
+def gallery_payload(
+    reference_id: str,
+    *,
+    viewer_mention: str = "@simcord-viewer",
+    sku_id: int | None = None,
+) -> dict[str, object]:
+    """Build one of the labelled gallery messages for local capture worlds.
+
+    The payloads intentionally mirror ``scripts.discord_reference_bot``.  The
+    capture runner uses this small factory rather than importing the bot
+    process, so a world can be created and torn down in one command.
+    """
+    if reference_id == "REF-00-INDEX":
+        return {
+            "content": (
+                "**REF-00-INDEX — visual reference gallery**\n"
+                "Keep browser zoom at 100% and use the agreed capture profile."
+            )
+        }
+    if reference_id == "REF-10-LEGACY-EMBED":
+        return {
+            "content": (
+                f"**REF-10-LEGACY-EMBED**\nReference viewer: {viewer_mention}\n"
+                "Markdown: **bold**, *italic*, __underline__, ~~strike~~, ||spoiler||, "
+                "`inline code`, and a very-long-token-for-wrap-testing-0123456789."
+            ),
+            "embed": _embed(),
+            "files": [
+                _image_file("ref-thumbnail.png", (88, 101, 242), (35, 39, 42)),
+                _image_file("ref-hero.png", (35, 165, 90), (20, 80, 130)),
+            ],
+        }
+    if reference_id == "REF-11-ATTACHMENTS":
+        return {
+            "content": (
+                "**REF-11-ATTACHMENTS**\nCapture the inline image, file tile, filename "
+                "wrapping, sizes, and download controls."
+            ),
+            "files": [
+                _image_file("ref-inline-image-with-a-long-name.png", (210, 70, 90), (65, 25, 90)),
+                discord.File(
+                    io.BytesIO(b"Standalone legacy attachment reference\n"),
+                    filename="ref-standalone-document-with-a-long-name.txt",
+                ),
+            ],
+        }
+    if reference_id == "REF-20-BUTTONS":
+        return {
+            "content": (
+                "**REF-20-BUTTONS**\nCapture idle, hover, pressed, keyboard focus, and disabled "
+                "states." + (" Included: active premium SKU." if sku_id is not None else "")
+            ),
+            "view": ButtonGallery(sku_id),
+        }
+    if reference_id == "REF-30-STRING-SELECT":
+        return {
+            "content": (
+                "**REF-30-STRING-SELECT**\nCapture closed, open, hover, keyboard focus, "
+                "one/two selected, cleared, and disabled states."
+            ),
+            "view": StringSelectGallery(),
+        }
+    if reference_id == "REF-31-ENTITY-SELECTS":
+        return {
+            "content": (
+                "**REF-31-ENTITY-SELECTS**\nOpen each menu and capture its candidate "
+                "decoration, selection, and keyboard focus."
+            ),
+            "view": EntitySelectGallery(),
+        }
+    if reference_id == "REF-40-V2-LAYOUT-MEDIA":
+        view, files = _layout_view()
+        return {"view": view, "files": files}
+    if reference_id == "REF-50-MODALS":
+        return {
+            "content": (
+                "**REF-50-MODALS**\nOpen each modal. Capture empty, focus, filled, validation, "
+                "selection/upload, and button-focus states."
+            ),
+            "view": ModalGallery(),
+        }
+    raise ValueError(f"unknown reference fixture {reference_id!r}")
+
+
+def close_payload(payload: dict[str, object]) -> None:
+    """Close files owned by a payload after a local world has settled."""
+    for value in payload.get("files", ()):
+        if isinstance(value, discord.File):
+            value.close()
