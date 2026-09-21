@@ -2,9 +2,9 @@
 
 Projection contract (implemented jointly with the bundled client): every
 snapshot is a detached JSON-safe copy — no backend dicts, tokens, signed URLs,
-or internal asset bookkeeping escape. ``messages`` carries lightweight
-summaries (``id``/``author_name``/``excerpt``); the full projection lives in
-``selected``. ``assets`` records expose only
+or internal asset bookkeeping escape. ``messageIndex`` carries lightweight
+picker summaries; ``messages`` is a map of full authorized projections and
+``timeline`` identifies their visible order. ``assets`` records expose only
 ``{id, filename, contentType, available, bytes?, diagnostic?}`` — internal
 keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 """
@@ -12,6 +12,7 @@ keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from . import Preview
     from ._pages import _Page
 
-_PROTOCOL_VERSION = 1
+_PROTOCOL_VERSION = 2
 _ENTITY_TYPES = {
     int(ComponentType.USER_SELECT): "users",
     int(ComponentType.ROLE_SELECT): "roles",
@@ -118,7 +119,12 @@ def _asset_meta(
     source = None
     if fallback is not None and message is not None:
         source = ("attachment", message.channel_id, message.id, str(fallback.get("id", "")))
-    return page.asset_id(f"url:{metadata['url']}", metadata, source=source)
+    key = f"url:{url}"
+    if fallback is None and message is not None:
+        # A bare embed URL must not inherit a same-URL attachment owned by
+        # another message already projected on this page.
+        key = f"{key}:message:{message.channel_id}:{message.id}"
+    return page.asset_id(key, metadata, source=source)
 
 
 def _project_emoji(page: _Page, emoji: Any) -> Any:
@@ -154,6 +160,54 @@ def _decorate_emoji(value: Any, page: _Page) -> Any:
     return value
 
 
+def _control_key(scope: str, component: Mapping[str, Any], path: str) -> str | None:
+    kind = component.get("type")
+    interactive = {
+        int(ComponentType.BUTTON),
+        int(ComponentType.STRING_SELECT),
+        int(ComponentType.USER_SELECT),
+        int(ComponentType.ROLE_SELECT),
+        int(ComponentType.MENTIONABLE_SELECT),
+        int(ComponentType.CHANNEL_SELECT),
+        int(ComponentType.TEXT_INPUT),
+        int(ComponentType.RADIO_GROUP),
+        int(ComponentType.CHECKBOX_GROUP),
+        int(ComponentType.CHECKBOX),
+        int(ComponentType.FILE_UPLOAD),
+    }
+    if kind not in interactive:
+        return None
+    wire_id = component.get("id")
+    identity = (
+        str(wire_id) if isinstance(wire_id, int) and not isinstance(wire_id, bool) and wire_id > 0 else path
+    )
+    return f"{scope}:component:{identity}"
+
+
+def _annotate_control_keys(value: Any, scope: str, path: str = "0") -> None:
+    if not isinstance(value, dict):
+        return
+    key = _control_key(scope, value, path)
+    if key is not None:
+        value["control_key"] = key
+    children = value.get("components")
+    if isinstance(children, list):
+        for index, child in enumerate(children):
+            _annotate_control_keys(child, scope, f"{path}.components.{index}")
+    for child_name in ("accessory", "component"):
+        child = value.get(child_name)
+        if isinstance(child, dict):
+            _annotate_control_keys(child, scope, f"{path}.{child_name}")
+
+
+def _annotate_tree(value: Any, scope: str) -> None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _annotate_control_keys(item, scope, str(index))
+    else:
+        _annotate_control_keys(value, scope)
+
+
 def _attachment_index(
     attachments: list[dict[str, Any]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -163,9 +217,13 @@ def _attachment_index(
 
 
 def _decorate_components(
-    page: _Page, message: Message, components: Any, attachments: list[dict[str, Any]]
+    page: _Page,
+    message: Message,
+    components: Any,
+    attachments: list[dict[str, Any]],
 ) -> Any:
     rows = deepcopy(components)
+    _annotate_tree(rows, f"message:{message.id}")
     by_url, by_name = _attachment_index(attachments)
 
     for node in walk_components(rows):
@@ -256,12 +314,13 @@ def _embed_projection(
     return _clean(_decorate_emoji(value, page))
 
 
-def _is_compact_message(preview: Preview, message: Message) -> bool:
+def _is_compact_message(preview: Preview, page: _Page, message: Message) -> bool:
     previous = max(
         (
             item
             for item in preview.env.backend.messages.get(message.channel_id, {}).values()
             if item.id < message.id
+            and can_access_message(preview.env, message.channel_id, item, page.viewer, history=True)
         ),
         key=lambda item: item.id,
         default=None,
@@ -280,16 +339,20 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "id": str(message.id),
         "channel_id": str(message.channel_id),
         "author": _author(env, message.author_id, override=message.author_name),
+        "author_ref": {"kind": "user", "id": str(message.author_id)},
         "timestamp": message.timestamp,
         "edited_timestamp": message.edited_timestamp,
+        "type": int(message.type),
+        "pinned": bool(message.pinned),
+        "tts": bool(message.tts),
         "content": message.content,
         "content_tokens": markdown_tokens(message.content, "message"),
         "embeds": [_embed_projection(page, message, item, attachments) for item in message.embeds],
         "components": _decorate_components(page, message, message.components, attachments),
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
-        "components_v2": bool(int(message.flags) & COMPONENTS_V2_FLAG),
-        "compact": _is_compact_message(preview, message),
+        "components_v2": bool(message.flags & COMPONENTS_V2_FLAG),
+        "compact": _is_compact_message(preview, page, message),
         "attachments": [_attachment(env, message, item, page) for item in attachments],
         "mention_user_ids": [
             str(uid) for uid in message.mention_user_ids if _user_allowed(preview, page, uid)
@@ -297,7 +360,44 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "mention_role_ids": [
             str(rid) for rid in message.mention_role_ids if _role_allowed(preview, page, rid)
         ],
+        "mention_everyone": bool(message.mention_everyone),
+        "mentions": {"users": [], "roles": [], "channels": [], "everyone": bool(message.mention_everyone)},
+        "reactions": [
+            {
+                "emoji": reaction.emoji,
+                "count": len(reaction.user_ids),
+                "viewer_reacted": page.viewer.id in reaction.user_ids,
+                "burst": False,
+            }
+            for reaction in message.reactions
+        ],
+        "poll": None,
+        "stickers": [],
+        "thread": None,
+        "allowed_actions": [],
+        "reply": {"state": "unavailable"},
     }
+    data["mentions"]["users"] = list(data["mention_user_ids"])
+    data["mentions"]["roles"] = list(data["mention_role_ids"])
+    if message.poll is not None:
+        poll = message.poll
+        data["poll"] = {
+            "question": poll.question,
+            "answers": [
+                {
+                    "id": str(answer.answer_id),
+                    "text": answer.text,
+                    "emoji": answer.emoji,
+                    "count": len(poll.votes.get(answer.answer_id, set())),
+                    "viewer_selected": page.viewer.id in poll.votes.get(answer.answer_id, set()),
+                }
+                for answer in poll.answers
+            ],
+            "expiry": poll.expiry,
+            "finalized": bool(poll.finalized),
+            "multiselect": bool(poll.allow_multiselect),
+            "layout_type": int(poll.layout_type),
+        }
     data["mention_names"] = {}
     for uid in data["mention_user_ids"]:
         data["mention_names"][uid] = _author(env, int(uid))["name"]
@@ -317,18 +417,32 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
             if key not in data["mention_channel_names"]:
                 data["mention_channel_ids"].append(key)
                 data["mention_channel_names"][key] = mentioned.name or key
+                data["mentions"]["channels"].append(key)
     reference = message.reference
     if reference:
         try:
-            reference_id = reference.get("message_id")
-            if reference_id is None:
-                raise ValueError
-            referenced_id = int(reference_id)
-            referenced = env.backend.get_message(message.channel_id, referenced_id)
+            reference_message_id = reference.get("message_id")
+            if reference_message_id is None:
+                raise TypeError("reference message id is missing")
+            reference_id = int(reference_message_id)
+            reference_channel = reference.get("channel_id", message.channel_id)
+            if reference_channel is None:
+                raise TypeError("reference channel id is missing")
+            reference_channel_id = int(reference_channel)
+            referenced = env.backend.get_message(reference_channel_id, reference_id)
         except (BackendError, TypeError, ValueError):
             referenced = None
-        if referenced is not None and can_access_message(env, message.channel_id, referenced, page.viewer):
-            data["reference"] = {"message_id": str(referenced.id), "channel_id": str(referenced.channel_id)}
+        if referenced is not None and can_access_message(
+            env, reference_channel_id, referenced, page.viewer, history=True
+        ):
+            data["reply"] = {
+                "state": "resolved",
+                "message_id": str(referenced.id),
+                "channel_id": str(referenced.channel_id),
+                "author": _author(env, referenced.author_id, override=referenced.author_name),
+                "excerpt_tokens": markdown_tokens(referenced.content[:100], "message"),
+                "preview_kind": "message",
+            }
     return data
 
 
@@ -380,8 +494,8 @@ def _candidates(
     result: dict[str, list[dict[str, Any]]] = {}
     for component in walk_components(components):
         kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
-        custom_id = component.get("custom_id")
-        if kind is None or not isinstance(custom_id, str):
+        control_key = component.get("control_key")
+        if kind is None or not isinstance(control_key, str):
             continue
         entries: list[dict[str, Any]] = []
         if channel.guild_id is None:
@@ -457,44 +571,74 @@ def _candidates(
                             "type": candidate.type,
                         }
                     )
-        result[custom_id] = entries
+        result[control_key] = entries
     return result
 
 
 def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     """Build a detached projection for one page; no backend dictionaries escape."""
     env = preview.env
-    # A channel deleted mid-session denies access instead of failing the build.
     try:
         channel = env.backend.get_channel(page.channel_id)
     except BackendError:
         channel = None
     allowed = channel is not None and can_access_channel(env, channel.id, page.viewer, history=True)
     page.referenced_assets.clear()
-    messages: list[Message] = []
+    visible: list[Message] = []
     if channel is not None and allowed:
-        # ponytail: explicit refresh rebuilds the small in-memory world; add an
-        # index only when previews routinely exceed fixture-sized histories.
-        for message in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id):
-            if can_access_message(env, channel.id, message, page.viewer, history=True):
-                messages.append(message)
-    selected = None
-    if page.target_id is not None:
-        selected_message = next((item for item in messages if item.id == page.target_id), None)
-        if selected_message is not None:
-            selected = _message_projection(preview, page, selected_message)
+        # ponytail: rebuild the bounded fixture-sized history instead of adding
+        # an index that would need its own invalidation and authorization model.
+        visible = [
+            item
+            for item in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id)
+            if can_access_message(env, channel.id, item, page.viewer, history=True)
+        ]
+    target = next((item for item in visible if item.id == page.target_id), None)
+    target_id = str(target.id) if target is not None else None
+    projected: dict[str, dict[str, Any]] = {}
+    candidate_components: list[dict[str, Any]] = []
+    if target is not None:
+        value = _message_projection(preview, page, target)
+        projected[str(target.id)] = value
+        candidate_components.extend(value.get("components", []))
+
     modal = None
     if allowed and page.modal is not None:
         payload = _decorate_emoji(deepcopy(page.modal.modal), page)
         payload = _clean(payload, drop_urls=True)
+        handle = page.modal_handle or ""
+        _annotate_tree(payload.get("components", []), f"modal:{handle}")
         for component in walk_components(payload.get("components", [])):
             if isinstance(component.get("content"), str):
                 component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
         payload["application_name"] = _author(preview.env, preview.env.backend.bot_user.id)["name"]
         modal = {"handle": page.modal_handle, "payload": payload}
-    candidate_components = list((selected or {}).get("components", []))
-    if modal is not None:
-        candidate_components.extend(modal["payload"].get("components", []))
+    entities: dict[str, dict[str, dict[str, Any]]] = {
+        "users": {},
+        "members": {},
+        "roles": {},
+        "channels": {},
+        "applications": {},
+    }
+    if channel is not None and allowed:
+        entities["channels"][str(channel.id)] = {
+            "id": str(channel.id),
+            "name": channel.name,
+            "type": int(channel.type),
+            "guild_id": str(channel.guild_id) if channel.guild_id is not None else None,
+        }
+        if target is not None:
+            entities["users"][str(target.author_id)] = _author(
+                env, target.author_id, override=target.author_name
+            )
+    diagnostics: list[dict[str, Any]] = []
+    for item in page.diagnostics:
+        value = dict(item)
+        value.setdefault("code", "preview")
+        value.setdefault("severity", "warning")
+        value.setdefault("message", "")
+        value.setdefault("complete", False)
+        diagnostics.append(value)
     snapshot = {
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,
@@ -508,10 +652,13 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "name": channel.name if channel is not None else None,
             "guildId": str(channel.guild_id) if channel is not None and channel.guild_id else None,
         },
-        "targetId": str(page.target_id) if selected is not None else None,
-        "messages": [_message_summary(env, item) for item in messages],
-        "selected": selected,
+        "targetId": target_id,
+        "messageIndex": [_message_summary(env, item) for item in visible],
+        "messages": projected,
+        "timeline": [target_id] if target_id is not None else [],
+        "history": {"hasBefore": False, "hasAfter": False},
         "modal": modal,
+        "entities": entities,
         "candidates": _candidates(preview, page, candidate_components) if allowed else {},
         "profile": {
             "theme": "dark",
@@ -520,12 +667,12 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "height": preview.height,
             "locale": preview.locale,
             "timezone": preview.timezone,
-            "captureTime": preview.capture_time.isoformat(),
+            "presentationTime": preview.capture_time.isoformat(),
             "fontStackConfigured": '"Noto Sans", "Segoe UI", system-ui, sans-serif',
             "fontResolution": "unavailable until capture runtime",
         },
         "status": page.status,
-        "diagnostics": list(page.diagnostics),
+        "diagnostics": diagnostics,
         "lastAction": page.last_action,
     }
     preview._reconcile_assets(page)

@@ -142,6 +142,19 @@ class _PageOps:
             max(bot_messages or visible, key=lambda item: item.id).id if (bot_messages or visible) else None
         )
 
+    def _viewer(self, viewer_id: Any) -> Any:
+        """Resolve a requested viewer from the preview's explicit allowlist."""
+        if isinstance(viewer_id, bool) or not isinstance(viewer_id, (str, int)):
+            raise SetupError("unknown preview viewer")
+        try:
+            selected_id = int(viewer_id)
+        except ValueError as exc:
+            raise SetupError("unknown preview viewer") from exc
+        for viewer in self.viewers:
+            if viewer.id == selected_id:
+                return viewer
+        raise SetupError("viewer is not authorized for this preview")
+
     def _prune_expired(self, *, keep: _Page | None = None) -> None:
         """Enforce the inactivity lease: expired browser pages are released."""
         now = time.monotonic()
@@ -163,15 +176,33 @@ class _PageOps:
                 page.modal = None
                 page.modal_handle = None
                 page.snapshot.update(
-                    {"messages": [], "selected": None, "modal": None, "candidates": {}, "assets": {}}
+                    {
+                        "messageIndex": [],
+                        "messages": {},
+                        "timeline": [],
+                        "entities": {},
+                        "modal": None,
+                        "candidates": {},
+                        "assets": {},
+                    }
                 )
             page.status = "access_denied"
         # Reads never republish and never clear "stale": they serve the last
         # published projection with the live status overlaid, redacted on denial.
         payload = json.loads(json.dumps(page.snapshot))
-        payload["status"] = page.status
         if not allowed:
-            payload.update({"messages": [], "selected": None, "modal": None, "candidates": {}, "assets": {}})
+            payload.update(
+                {
+                    "messageIndex": [],
+                    "messages": {},
+                    "timeline": [],
+                    "entities": {},
+                    "modal": None,
+                    "candidates": {},
+                    "assets": {},
+                }
+            )
+        payload["status"] = page.status
         return payload
 
     def _get_page(self, context_id: str | None) -> _Page:
@@ -241,16 +272,6 @@ class _PageOps:
         if page is not None:
             self._clear_page_assets(page)
 
-    def _viewer(self, viewer_id: Any) -> Any:
-        try:
-            value = int(viewer_id)
-        except (TypeError, ValueError) as exc:
-            raise SetupError("unknown preview viewer") from exc
-        for viewer in self.viewers:
-            if viewer.id == value:
-                return viewer
-        raise SetupError("viewer is not authorized for this Preview")
-
     def _target_id(self, target_id: Any, viewer: Any = None, *, denied_fallback: bool = False) -> int | None:
         selected_viewer = cast(_Page, self._python).viewer if viewer is None else viewer
         if target_id is None:
@@ -258,15 +279,15 @@ class _PageOps:
         try:
             target = int(target_id)
         except (TypeError, ValueError) as exc:
-            raise SetupError("target_id must be a snowflake string") from exc
+            raise SetupError("authorized target is unavailable") from exc
         try:
             message = self.env.backend.get_message(self.channel.id, target)
         except BackendError as exc:
-            raise SetupError("target message is unavailable") from exc
+            raise SetupError("authorized target is unavailable") from exc
         if not can_access_message(self.env, self.channel.id, message, selected_viewer, history=True):
             if denied_fallback:
                 return self._initial_target(selected_viewer, self.channel.id)
-            raise SetupError("target message is not accessible")
+            raise SetupError("authorized target is unavailable")
         return target
 
     def _resolve_target(

@@ -8,7 +8,7 @@ pytest.importorskip("PIL")
 import discord
 from aiohttp import ClientSession, FormData
 from PIL import Image
-from preview_helpers import action_body, png_bytes, preview_headers
+from preview_helpers import action_body, control_key, png_bytes, preview_headers, target_message
 
 import simcord
 from simcord.preview import _media
@@ -34,8 +34,9 @@ async def test_preview_public_asset_and_lifecycle_contracts(env, channel, alice)
             async with client.get(preview._origin + "/api/state", headers=headers) as response:
                 assert response.status == 200
                 state = await response.json()
-        assert state["selected"]["id"] == str(message.id)
-        asset_id = state["selected"]["embeds"][0]["image"]["asset_id"]
+        target = target_message(state)
+        assert target["id"] == str(message.id)
+        asset_id = target["embeds"][0]["image"]["asset_id"]
         content_type, body, filename = await preview._prepare_asset("python", asset_id)
         assert (content_type, body, filename) == ("text/plain", b"hello", "note.txt")
         assert await preview._prepare_asset("python", asset_id) == ("text/plain", b"hello", "note.txt")
@@ -74,7 +75,7 @@ async def test_preview_public_media_session_budgets(monkeypatch, env, channel, a
 
     async with env.preview(channel, viewers=[alice], assets={url: ("budget.png", body)}) as preview:
         await preview.show(message)
-        asset = preview._page_payload(preview._python)["selected"]["embeds"][0]["image"]["asset_id"]
+        asset = target_message(preview._page_payload(preview._python))["embeds"][0]["image"]["asset_id"]
         preview._retained_media_bytes = preview._MAX_MEDIA_BYTES
         with pytest.raises(simcord.SetupError, match="budget exceeded after normalization"):
             await preview._prepare_asset("python", asset)
@@ -82,7 +83,7 @@ async def test_preview_public_media_session_budgets(monkeypatch, env, channel, a
     monkeypatch.setattr(simcord.Preview, "_MAX_MEDIA_BYTES", 1)
     async with env.preview(channel, viewers=[alice], assets={url: ("budget.png", body)}) as preview:
         await preview.show(message)
-        image = preview._page_payload(preview._python)["selected"]["embeds"][0]["image"]
+        image = target_message(preview._page_payload(preview._python))["embeds"][0]["image"]
         assert image["available"] is False
         assert preview._python.assets[image["asset_id"]].diagnostic == "session media budget exceeded"
 
@@ -118,6 +119,8 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
         async with ClientSession() as client:
             async with client.get(preview._origin + "/api/state", headers=headers) as response:
                 state = await response.json()
+        member_key = control_key(state, "member")
+        channel_key = control_key(state, "channel")
         invalid_user = await preview._action(
             "python",
             action_body(
@@ -126,7 +129,8 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
                 1,
                 bot_generation=state["botGeneration"],
                 request_id="bad-member-id",
-                custom_id="member",
+                target_id=state["targetId"],
+                control_key=member_key,
                 values=["not-a-snowflake"],
                 published_revision=state["publishedRevision"],
             ),
@@ -140,7 +144,8 @@ async def test_preview_public_focus_and_entity_select_errors(env, channel, alice
                 1,
                 bot_generation=state["botGeneration"],
                 request_id="bad-channel-id",
-                custom_id="channel",
+                target_id=state["targetId"],
+                control_key=channel_key,
                 values=["not-a-channel"],
                 published_revision=state["publishedRevision"],
             ),
@@ -212,11 +217,14 @@ async def test_preview_public_select_validation_boundaries(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
+        payload = preview._page_payload(page)
+        choice_key = control_key(payload, "choice")
+        place_key = control_key(payload, "place")
         cases = (
-            {"custom_id": "choice", "values": ["one", "one"]},
-            {"custom_id": "missing", "values": ["one"]},
-            {"custom_id": "place", "values": [str(channel.id)]},
-            {"custom_id": "place", "values": ["not-an-id"]},
+            {"control_key": choice_key, "values": ["one", "one"]},
+            {"control_key": "message:missing:component:0", "values": ["one"]},
+            {"control_key": place_key, "values": [str(channel.id)]},
+            {"control_key": place_key, "values": ["not-an-id"]},
         )
         for sequence, values in enumerate(cases, 1):
             result = await preview._action(
@@ -248,11 +256,12 @@ async def test_preview_publication_inheritance_and_asset_reauthorization(env, ch
         assert browser_page.target_id == first.id
 
         await first.edit(content="edited")
-        assert preview._page_payload(preview._python)["selected"]["content"] == "first"
+        assert target_message(preview._page_payload(preview._python))["content"] == "first"
         await preview.refresh()
         snapshot = preview._page_payload(preview._python)
-        assert snapshot["selected"]["content"] == "edited"
-        old_asset = snapshot["selected"]["embeds"][0]["image"]["asset_id"]
+        target = target_message(snapshot)
+        assert target["content"] == "edited"
+        old_asset = target["embeds"][0]["image"]["asset_id"]
 
         switched = await preview._action(
             "python",

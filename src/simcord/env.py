@@ -11,6 +11,7 @@ import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -1015,6 +1016,7 @@ class Env:
         height: int = 720,
         locale: str = "en-US",
         timezone: str = "UTC",
+        presentation_time: datetime | None = None,
         assets: Mapping[str, tuple[str, bytes]] | None = None,
         port: int | None = None,
     ) -> Preview:
@@ -1049,6 +1051,7 @@ class Env:
                 height=height,
                 locale=locale,
                 timezone=timezone,
+                presentation_time=presentation_time,
                 assets=assets,
                 port=port,
             )

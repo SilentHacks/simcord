@@ -7,6 +7,7 @@ const TYPE = Object.freeze({
 const SELECT_TYPES = new Set([TYPE.STRING_SELECT, TYPE.USER_SELECT, TYPE.ROLE_SELECT, TYPE.MENTIONABLE_SELECT, TYPE.CHANNEL_SELECT]);
 const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADIO_GROUP, TYPE.CHECKBOX_GROUP, TYPE.CHECKBOX, TYPE.FILE_UPLOAD]);
 const FILE_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
+const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"/></svg>';
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -54,10 +55,10 @@ function appendEmojiValue(parent, emoji, options, label = "Custom emoji") {
   }
   appendEmojiText(parent, emoji.name || "");
 }
-function keyFor(component, path) {
-  if (typeof component.custom_id === "string") return component.custom_id;
-  if (typeof component.id === "number" && component.id > 0) return `id-${component.id}`;
-  return path;
+function keyFor(component, path, scope = "message") {
+  if (typeof component.control_key === "string") return component.control_key;
+  if (typeof component.id === "number" && component.id > 0) return `${scope}:component:${component.id}`;
+  return `${scope}:component:${path}`;
 }
 function safeId(path) {
   return path.replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -137,7 +138,7 @@ function renderInlineTokens(parent, tokens, options) {
         };
         rendered = new Intl.DateTimeFormat(locale, { ...dateOptions, ...(formats[style] || formats.f) }).format(date);
       } else if (valid) {
-        const basis = new Date(options.captureTime || Date.now());
+        const basis = new Date(options.presentationTime || 0);
         const seconds = (date.getTime() - basis.getTime()) / 1000;
         const absolute = Math.abs(seconds);
         const unit = absolute < 60 ? ["second", seconds] : absolute < 3600 ? ["minute", seconds / 60] : absolute < 86400 ? ["hour", seconds / 3600] : absolute < 604800 ? ["day", seconds / 86400] : ["week", seconds / 604800];
@@ -207,9 +208,8 @@ function appendMarkdownOrText(parent, value, tokens, options) {
 
 function renderSelect(component, path, options) {
   const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel, onNavigate, onClear } = options;
-  const key = `${scope}:${keyFor(component, path)}`;
-  const entries = optionEntries(component, candidates?.[component.custom_id]);
-  const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.15 0-8 2.02-8 4.5V21h16v-2.5c0-2.48-3.85-4.5-8-4.5z"/></svg>';
+  const key = keyFor(component, path, scope);
+  const entries = optionEntries(component, candidates?.[component.control_key || key]);
   const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
   const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
   const entityIcon = (entry, kind) => {
@@ -303,7 +303,7 @@ function renderSelect(component, path, options) {
   }
   trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
-  trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${safeId(path)}`);
+  trigger.setAttribute("aria-label", label); trigger.setAttribute("aria-controls", `listbox-${safeId(key)}`);
   trigger.addEventListener("click", () => onOpen?.(key, selected, multi, minimum, maximum));
   trigger.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && isOpen) {
@@ -315,10 +315,10 @@ function renderSelect(component, path, options) {
     }
   });
   wrap.append(trigger);
-  const list = node("div", "select-list"); list.id = `listbox-${safeId(path)}`; list.hidden = !isOpen;
+  const list = node("div", "select-list"); list.id = `listbox-${safeId(key)}`; list.hidden = !isOpen;
   list.setAttribute("role", "listbox"); list.setAttribute("aria-multiselectable", String(multi)); list.tabIndex = isOpen ? 0 : -1;
   list.dataset.controlKey = `${key}:list`;
-  if (isOpen && dropdown?.highlight != null) list.setAttribute("aria-activedescendant", `option-${safeId(path)}-${safeId(String(dropdown.highlight))}`);
+  if (isOpen && dropdown?.highlight != null) list.setAttribute("aria-activedescendant", `option-${safeId(key)}-${safeId(String(dropdown.highlight))}`);
   if (isOpen) {
     list.addEventListener("keydown", (event) => {
       const optionNodes = [...list.querySelectorAll('[role="option"]:not(.is-disabled)')];
@@ -374,7 +374,7 @@ function renderSelect(component, path, options) {
   };
   const atMax = multi && selected.length >= maximum;
   entries.forEach((entry) => {
-    const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.id = `option-${safeId(path)}-${safeId(value)}`; option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
+    const value = String(entry.value ?? entry.id ?? ""); const option = node("div", "select-option"); option.id = `option-${safeId(key)}-${safeId(value)}`; option.dataset.value = value; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(selected.includes(value))); option.tabIndex = -1;
     const disabled = atMax && !selected.includes(value);
     if (disabled) { option.classList.add("is-disabled"); option.setAttribute("aria-disabled", "true"); }
     if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
@@ -393,9 +393,22 @@ function renderSelect(component, path, options) {
 }
 
 function renderButton(component, path, options) {
-  const style = Number(component.style || 1); const button = node("button", `component-button button-style-${style}`); button.type = "button"; button.disabled = component.disabled === true; button.dataset.controlKey = keyFor(component, path);
-  if (component.emoji && typeof component.emoji === "object") { const emoji = node("span", "button-emoji"); appendEmojiValue(emoji, component.emoji, options); button.append(emoji); }
-  if (component.label) { const buttonLabel = node("span", "button-label"); appendEmojiText(buttonLabel, component.label); button.append(buttonLabel); }
+  const style = Number(component.style || 1);
+  const button = node("button", `component-button button-style-${style}`);
+  button.type = "button";
+  button.disabled = component.disabled === true;
+  const controlKey = keyFor(component, path, options.scope || "message");
+  button.dataset.controlKey = controlKey;
+  if (component.emoji && typeof component.emoji === "object") {
+    const emoji = node("span", "button-emoji");
+    appendEmojiValue(emoji, component.emoji, options);
+    button.append(emoji);
+  }
+  if (component.label) {
+    const buttonLabel = node("span", "button-label");
+    appendEmojiText(buttonLabel, component.label);
+    button.append(buttonLabel);
+  }
   if (style === 5) {
     const href = safeLink(component.url);
     if (href) {
@@ -415,7 +428,7 @@ function renderButton(component, path, options) {
     button.disabled = true; button.append(node("span", "button-unavailable", "Unavailable link")); options.onDiagnostic?.({ code: "invalid-link", severity: "warning", message: "Link button has no safe URL", complete: false });
   } else if (style === 6) {
     button.disabled = true; button.append(node("span", "button-unavailable", "Premium purchase unavailable")); options.onDiagnostic?.({ code: "premium-unavailable", severity: "info", message: `Premium SKU ${component.sku_id ?? "unknown"} cannot be purchased offline`, complete: false });
-  } else if (typeof component.custom_id === "string") button.addEventListener("click", () => options.onClick?.(component.custom_id));
+  } else if (typeof component.custom_id === "string") button.addEventListener("click", () => options.onClick?.(controlKey));
   return button;
 }
 function mediaElement(media, className, options, label) {
@@ -656,7 +669,12 @@ function checkboxGlyph(isCheckbox) {
 }
 
 function modalControl(component, path, labelText, options) {
-  const customId = String(component.custom_id || path), key = `modal:${options.modalHandle ?? ""}:${customId}`, field = node("div", "modal-field"); field.dataset.controlKey = key;
+  const customId = String(component.custom_id || path);
+  const key = typeof component.control_key === "string"
+    ? component.control_key
+    : `modal:${options.modalHandle ?? ""}:component:${path}`;
+  const field = node("div", "modal-field");
+  field.dataset.controlKey = key;
   const type = Number(component.type);
   const required = component.required === true || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type)));
   // Optional controls the user never touched submit nothing unless a real
@@ -666,8 +684,8 @@ function modalControl(component, path, labelText, options) {
     const label = appendLabel(field, labelText, required);
     if (options.validationError?.includes(customId)) label.append(node("em", "field-error", " - This field is required."));
   }
-  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${safeId(path)}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? input.value), include: include(String(component.value ?? component.default ?? "") !== "") }; }
-  if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[customId]); const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const select = renderSelect(component, path, { ...options, scope: `modal:${options.modalHandle ?? ""}`, onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value, include: include(defaults.length > 0) }; }
+  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${safeId(path)}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? ""), include: include(Boolean(component.value ?? component.default)) }; }
+  if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[component.control_key || key]); const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const select = renderSelect(component, path, { ...options, scope: `modal:${options.modalHandle ?? ""}`, onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value, include: include(defaults.length > 0) }; }
   if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : defaults.length > 0; return { field, get: () => options.drafts.get(key), include: include(hasDefault) }; }
   if (type === TYPE.CHECKBOX) { if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); const choice = node("label", "modal-choice"), input = node("input"); input.type = "checkbox"; input.name = customId; input.checked = options.drafts.get(key) === true; input.addEventListener("change", () => options.onDraft?.(key, input.checked)); choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId)); field.append(choice); return { field, get: () => options.drafts.get(key) === true, include: include(component.default === true) }; }
   if (type === TYPE.FILE_UPLOAD) {

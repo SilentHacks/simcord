@@ -129,11 +129,11 @@ await preview.refresh()
 `refresh()` settles bot work and republishes every page while preserving each page's viewer, target,
 modal, and drafts. Browser actions that settle also publish their resulting edits/followups. A
 publication is labeled by `publishedRevision` and simulated time; it is not a live synchronization
-promise. Each publication's `messages` list carries detached summaries (`id`, `author_name`, and an
-`excerpt` of roughly the first hundred content characters); the full message projection lives in
-`selected`. A failed or timed-out action may already have mutated the backend: its last settled
-projection is retained and marked stale, then a later successful refresh reconciles it without
-replaying the action.
+promise. Each publication's `messageIndex` array carries detached picker summaries, while `messages`
+maps authorized message IDs to full projections and `timeline` gives their visible order. The focused
+message is `messages[targetId]`; there is no `selected` alias. A failed or timed-out action may
+already have mutated the backend: its last settled projection is retained and marked stale, then a
+later successful refresh reconciles it without replaying the action.
 
 ## Controls, keyboard, and accessibility
 
@@ -200,13 +200,14 @@ These limits bound accepted work but are not an operating-system sandbox for mal
 
 ## Readiness, generations, and action reconciliation
 
-A browser exposes a read-only `window.simcordPreview` object for agents and capture tooling:
+A browser exposes a deeply read-only `window.simcordPreview` object for agents and capture tooling:
 
 ```javascript
 {
-  protocolVersion, contextId, contextGeneration, botGeneration,
-  viewerId, targetId, publishedRevision, renderGeneration,
-  lastAction, ready, complete, calibration, diagnostics, profile
+  schemaVersion, protocolVersion, contextId, contextGeneration, botGeneration,
+  viewerId, targetId, activeControlKey, visibleMessageIds, publishedRevision,
+  renderGeneration, renderState, lastAction, ready, complete, calibration,
+  diagnostics, profile
 }
 ```
 
@@ -255,16 +256,19 @@ active:
 
 ```python
 snapshot = await preview.snapshot()
-assert snapshot["selected"] is not None
+target = snapshot["messages"].get(snapshot["targetId"])
+assert target is not None
 print(snapshot["diagnostics"], snapshot["lastAction"])
 ```
 
-The payload is protocol-versioned diagnostic data, not pixel output: `protocolVersion` labels the
-shape, `publishedRevision`/`botGeneration` label the settled publication it reflects, and the
-remaining keys — `context`, `viewers`, `viewerId`, `channelId`, `channel`, `targetId`, `messages`,
-`selected`, `modal`, `candidates`, `assets`, `profile`, `status`, `diagnostics`, and `lastAction` —
-describe the focused presentation. Field-level details may evolve under `protocolVersion`; assert on
-the documented keys rather than the exact payload layout.
+The payload is protocol-versioned diagnostic data, not pixel output:
+`protocolVersion` is `2`; `publishedRevision`/`botGeneration` label the settled publication it
+reflects. `messageIndex` is picker-only summary data. `messages` contains full authorized
+projections, `timeline` gives visible order, and `history` reports omitted history. `targetId`
+identifies the focused projection. `modal`, `candidates`, `assets`, `entities`, `profile`,
+`status`, `diagnostics`, and `lastAction` describe the same focused presentation. Field-level
+details may evolve under `protocolVersion`; assert on documented keys rather than exact payload
+layout.
 
 ## Screenshot profiles, modes, and reports
 

@@ -439,7 +439,7 @@ class _CaptureOps:
                 for item in value:
                     visit(item)
 
-        visit(snapshot.get("selected"))
+        visit(snapshot.get("messages", {}).get(str(snapshot.get("targetId"))))
         return {key: value for key, value in found.items() if value}
 
     def _pin_capture(self, viewer: Any, target: Any) -> CapturePin:

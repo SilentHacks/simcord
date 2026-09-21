@@ -11,7 +11,7 @@ pytest.importorskip("PIL")
 import discord
 from aiohttp import ClientSession
 from PIL import Image
-from preview_helpers import action_body, gif_bytes, png_bytes, preview_headers
+from preview_helpers import action_body, control_key, gif_bytes, png_bytes, preview_headers, target_message
 
 import simcord
 from simcord.components import walk_components
@@ -47,7 +47,7 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
 
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         bob_page = preview._open_page(bob.id, target_id=foreign.id)
-        image = preview._page_payload(bob_page)["selected"]["embeds"][0]["image"]
+        image = target_message(preview._page_payload(bob_page))["embeds"][0]["image"]
         assert image["asset_id"]
         assert image["available"] is False
         with pytest.raises(simcord.SetupError, match="unavailable"):
@@ -62,14 +62,14 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
         # Even the authorized viewer cannot resolve the foreign embed's URL to
         # the ephemeral attachment: ownership, not visibility, gates CDN bytes.
         await preview.show(foreign)
-        image = preview._page_payload(preview._python)["selected"]["embeds"][0]["image"]
+        image = target_message(preview._page_payload(preview._python))["embeds"][0]["image"]
         assert image["available"] is False
         with pytest.raises(simcord.SetupError, match="unavailable"):
             preview._asset("python", image["asset_id"])
 
         # The owning message itself still serves its attachment to alice.
         await preview.show(ephemeral.response)
-        own = preview._page_payload(preview._python)["selected"]["attachments"][0]
+        own = target_message(preview._page_payload(preview._python))["attachments"][0]
         assert own["available"] is True
         assert preview._asset("python", own["asset_id"])[1] == png_bytes()
 
@@ -82,7 +82,7 @@ async def test_asset_unavailable_after_owner_deleted(env, channel, alice):
     )
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
-        asset_id = preview._page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
+        asset_id = target_message(preview._page_payload(preview._python))["attachments"][0]["asset_id"]
         assert preview._asset("python", asset_id)[1] == png_bytes()
         await message.delete()
         with pytest.raises(simcord.SetupError, match="unavailable"):
@@ -99,7 +99,8 @@ async def test_revoked_access_snapshot_omits_modal_and_candidates(env, channel, 
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(assign.response)
         page = preview._python
-        assert preview._page_payload(page)["candidates"]["who"]
+        payload = preview._page_payload(page)
+        assert payload["candidates"][control_key(payload, "who")]
 
         cached = env.bot.get_channel(channel.id)
         member = env.bot.get_guild(env.guild.id).get_member(alice.id)
@@ -109,8 +110,9 @@ async def test_revoked_access_snapshot_omits_modal_and_candidates(env, channel, 
         assert denied["status"] == "access_denied"
         assert denied["modal"] is None
         assert denied["candidates"] == {}
-        assert denied["messages"] == []
-        assert denied["selected"] is None
+        assert denied["messageIndex"] == []
+        assert denied["messages"] == {}
+        assert denied["targetId"] is None
         assert denied["assets"] == {}
 
         await cached.set_permissions(member, view_channel=True)
@@ -141,6 +143,8 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
         assert gap["diagnostics"][0]["code"] == "sequence-gap"
         assert gap["diagnostics"][0]["severity"] == "error"
 
+        payload = preview._page_payload(page)
+        ping_key = control_key(payload, "persistent:ping")
         stale = await preview._action(
             "python",
             action_body(
@@ -148,7 +152,7 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
                 "click",
                 1,
                 request_id="stale",
-                custom_id="persistent:ping",
+                control_key=ping_key,
                 published_revision=page.revision + 1,
             ),
         )
@@ -164,7 +168,7 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
                 "click",
                 1,
                 request_id="click",
-                custom_id="persistent:ping",
+                control_key=ping_key,
                 published_revision=page.revision,
             ),
         )
@@ -271,7 +275,7 @@ async def test_display_normalizes_animation_and_download_serves_original(env, ch
     )
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         await preview.show(message)
-        asset_id = preview._page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
+        asset_id = target_message(preview._page_payload(preview._python))["attachments"][0]["asset_id"]
         response = await client.get(
             preview._origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
         )
@@ -302,7 +306,7 @@ async def test_normalized_blob_charged_once_per_blob(env, channel, alice):
         await preview.show(message)
         second = preview._open_page(alice.id, target_id=message.id)
         for page in (preview._python, second):
-            asset_id = preview._page_payload(page)["selected"]["attachments"][0]["asset_id"]
+            asset_id = target_message(preview._page_payload(page))["attachments"][0]["asset_id"]
             response = await client.get(
                 preview._origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, page.id)
             )
@@ -329,6 +333,7 @@ async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(panel.response)
         page = preview._python
+        color_key = control_key(preview._page_payload(page), "color")
         rejected = await preview._action(
             "python",
             action_body(
@@ -336,7 +341,7 @@ async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
                 "select",
                 1,
                 request_id="disabled-select",
-                custom_id="color",
+                control_key=color_key,
                 values=["red"],
                 published_revision=page.revision,
             ),
@@ -353,7 +358,7 @@ async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
                 "select",
                 1,
                 request_id="enabled-select",
-                custom_id="color",
+                control_key=color_key,
                 values=["red"],
                 published_revision=page.revision,
             ),
@@ -370,6 +375,7 @@ async def test_click_on_select_rejected_before_dispatch(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(panel.response)
         page = preview._python
+        color_key = control_key(preview._page_payload(page), "color")
         rejected = await preview._action(
             "python",
             action_body(
@@ -377,7 +383,7 @@ async def test_click_on_select_rejected_before_dispatch(env, channel, alice):
                 "click",
                 1,
                 request_id="click-select",
-                custom_id="color",
+                control_key=color_key,
                 published_revision=page.revision,
             ),
         )
@@ -462,13 +468,13 @@ async def test_open_page_authorizes_target_against_the_requested_viewer(env, cha
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         page = preview._open_page(bob.id, target_id=ephemeral.response.id)
         assert page.target_id == ephemeral.response.id
-        assert preview._page_payload(page)["selected"]["id"] == str(ephemeral.response.id)
+        assert target_message(preview._page_payload(page))["id"] == str(ephemeral.response.id)
         # The reverse direction resolves against alice too: a message only bob
         # can see is not pinned for alice's page, which falls back to her own
         # initial (empty) target instead of leaking the ephemeral.
         other = preview._open_page(alice.id, target_id=ephemeral.response.id)
         assert other.target_id is None
-        assert preview._page_payload(other)["selected"] is None
+        assert target_message(preview._page_payload(other)) is None
 
 
 @pytest.mark.asyncio
@@ -573,6 +579,7 @@ async def test_page_close_waits_for_active_action_before_releasing_assets(env, c
         await preview.show(message)
         page = preview._open_page()
         assert page.assets
+        wait_key = control_key(preview._page_payload(page), "wait")
         task = asyncio.create_task(
             preview._action(
                 page.id,
@@ -581,8 +588,8 @@ async def test_page_close_waits_for_active_action_before_releasing_assets(env, c
                     "click",
                     1,
                     request_id="active-close",
+                    control_key=wait_key,
                     published_revision=page.revision,
-                    custom_id="wait",
                 ),
             )
         )

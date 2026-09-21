@@ -1,9 +1,10 @@
 import json
+from datetime import UTC, datetime
 
 import discord
 import pytest
 from aiohttp import ClientSession, FormData
-from preview_helpers import action_body, preview_headers
+from preview_helpers import action_body, control_key, preview_headers, target_message
 
 import simcord
 from fixtures.sample_bot import create_bot
@@ -19,26 +20,44 @@ async def test_preview_public_flow_and_at_most_once(env, channel, alice):
         assert "#" in preview.url
         page = preview._python
         state = preview._page_payload(page)
-        assert state["selected"]["content"] == "Panel"
+        assert target_message(state)["content"] == "Panel"
 
+        ping_key = control_key(state, "persistent:ping")
         body = action_body(
             page,
             "click",
             1,
             request_id="preview-click",
             published_revision=page.revision,
-            custom_id="persistent:ping",
+            control_key=ping_key,
         )
         first = await preview._action("python", body)
         replay = await preview._action("python", body)
         assert first["dispatched"] is True
         assert replay == first
-        assert [item["excerpt"] for item in preview._page_payload(page)["messages"]][-1] == "pong"
+        refreshed = preview._page_payload(page)
+        assert any(item["excerpt"] == "pong" for item in refreshed["messageIndex"])
+        assert set(refreshed["timeline"]) == set(refreshed["messages"])
 
     await preview.close()
     await preview.wait_closed()
     assert preview._server.port is None
     assert env._preview is None
+
+
+@pytest.mark.asyncio
+async def test_preview_presentation_time_is_deterministic_and_timezone_aware(env, channel, alice):
+    naive = datetime(2030, 1, 2, 3, 4, 5)
+    with pytest.raises(simcord.SetupError, match="timezone-aware"):
+        env.preview(channel, viewers=[alice], presentation_time=naive)
+
+    when = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
+    async with env.preview(channel, viewers=[alice], presentation_time=when) as preview:
+        first = await preview.snapshot()
+        await preview.refresh()
+        second = await preview.snapshot()
+        assert first["profile"]["presentationTime"] == when.isoformat()
+        assert second["profile"]["presentationTime"] == when.isoformat()
 
 
 @pytest.mark.asyncio
@@ -92,14 +111,16 @@ async def test_preview_show_refresh_delete_and_access_revocation(env, channel, a
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
-        assert preview._page_payload(page)["selected"]["id"] == str(message.id)
+        assert target_message(preview._page_payload(page))["id"] == str(message.id)
 
         await message.delete()
         await preview.refresh()
-        assert preview._page_payload(page)["selected"] is None
+        assert target_message(preview._page_payload(page)) is None
 
         fresh = await alice.slash(channel, "panel")
         await preview.show(fresh.response)
+        page = preview._python
+        ping_key = control_key(preview._page_payload(page), "persistent:ping")
         cached = env.bot.get_channel(channel.id)
         member = env.bot.get_guild(env.guild.id).get_member(alice.id)
         await cached.set_permissions(member, view_channel=False)
@@ -113,7 +134,7 @@ async def test_preview_show_refresh_delete_and_access_revocation(env, channel, a
                 1,
                 request_id="revoked",
                 published_revision=page.revision,
-                custom_id="persistent:ping",
+                control_key=ping_key,
             ),
         )
         assert result["dispatched"] is False
@@ -126,6 +147,7 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(selected.response)
         page = preview._python
+        color_key = control_key(preview._page_payload(page), "color")
         result = await preview._action(
             "python",
             action_body(
@@ -133,7 +155,7 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
                 "select",
                 1,
                 request_id="pick",
-                custom_id="color",
+                control_key=color_key,
                 values=["red"],
                 published_revision=page.revision,
             ),
@@ -148,7 +170,7 @@ async def test_preview_select_modal_and_result_states(env, channel, alice):
                 "select",
                 2,
                 request_id="dupe",
-                custom_id="color",
+                control_key=color_key,
                 values=["red", "red"],
                 published_revision=page.revision,
             ),
@@ -341,10 +363,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
         await preview.show(assign.response)
         page = preview._python
         payload = preview._page_payload(page)
-        assert {item["kind"] for item in payload["candidates"]["who"]} == {"user"}
-        assert {item["kind"] for item in payload["candidates"]["role"]} == {"role"}
-        assert {item["kind"] for item in payload["candidates"]["chan"]} == {"channel"}
-
+        control_keys = {custom_id: control_key(payload, custom_id) for custom_id in ("who", "role", "chan")}
         for sequence, custom_id, value in (
             (1, "who", [str(bob.id)]),
             (2, "role", [str(role.id)]),
@@ -357,7 +376,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
                     "select",
                     sequence,
                     request_id=custom_id,
-                    custom_id=custom_id,
+                    control_key=control_keys[custom_id],
                     values=value,
                     published_revision=page.revision,
                 ),
@@ -371,7 +390,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
                 "select",
                 4,
                 request_id="bad",
-                custom_id="who",
+                control_key=control_keys["who"],
                 published_revision=page.revision,
             ),
         )
@@ -383,7 +402,7 @@ async def test_preview_candidates_focus_pages_and_failure_states(env, channel, a
                 "select",
                 4,
                 request_id="bad-option",
-                custom_id="who",
+                control_key=control_keys["who"],
                 values=["999999999999"],
                 published_revision=page.revision,
             ),
@@ -429,6 +448,9 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
+        payload = preview._page_payload(page)
+        boom_key = control_key(payload, "boom")
+        timeout_key = control_key(payload, "timeout")
         failed = await preview._action(
             "python",
             action_body(
@@ -436,7 +458,7 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
                 "click",
                 1,
                 request_id="boom",
-                custom_id="boom",
+                control_key=boom_key,
                 published_revision=page.revision,
             ),
         )
@@ -450,7 +472,7 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
                 "click",
                 2,
                 request_id="timeout",
-                custom_id="timeout",
+                control_key=timeout_key,
                 published_revision=page.revision,
             ),
         )
@@ -477,7 +499,7 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
         page = preview._python
         with pytest.raises(simcord.SetupError, match="unknown"):
             preview._get_page("missing")
-        with pytest.raises(simcord.SetupError, match="snowflake"):
+        with pytest.raises(simcord.SetupError, match="authorized target"):
             preview._open_page(target_id="bad")
         with pytest.raises(simcord.SetupError, match="expects"):
             await preview.show(object())
@@ -492,7 +514,7 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
         with pytest.raises(simcord.SetupError, match="capture target"):
             await preview.screenshot(tmp_path / "bad.png", target=object())
         await preview.show(message)
-        asset = preview._page_payload(page)["selected"]["embeds"][0]["image"]["asset_id"]
+        asset = target_message(preview._page_payload(page))["embeds"][0]["image"]["asset_id"]
         with pytest.raises(simcord.SetupError, match="valid PNG"):
             await preview._prepare_asset("python", asset)
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
@@ -509,9 +531,9 @@ async def test_preview_ephemeral_filter_and_action_validation(env, channel, alic
     async with env.preview(channel, viewers=[alice, bob]) as preview:
         await preview.show(ephemeral.response)
         alice_payload = preview._page_payload(preview._python)
-        assert alice_payload["selected"]["ephemeral"] is True
+        assert target_message(alice_payload)["ephemeral"] is True
         bob_page = preview._open_page(bob.id, target_id=ephemeral.response.id)
-        assert preview._page_payload(bob_page)["selected"] is None
+        assert target_message(preview._page_payload(bob_page)) is None
 
         page = preview._python
         rejections = (
@@ -576,12 +598,12 @@ async def test_preview_show_rejects_foreign_channel_and_modal_opener(env, channe
 async def test_preview_dm_entity_candidates_and_select(env, alice):
     await alice.send_dm("start")
     dm = alice.user.dm_channel
-    message = await (await env.bot.fetch_channel(dm.id)).send(content="pick", view=AssignView())
+    await (await env.bot.fetch_channel(dm.id)).send(content="pick", view=AssignView())
     async with env.preview(dm, viewers=[alice.user]) as preview:
-        await preview.show(message)
         page = preview._python
         payload = preview._page_payload(page)
-        assert payload["candidates"]["who"][0]["id"] == str(alice.id)
+        who_key = control_key(payload, "who")
+        assert payload["candidates"][who_key][0]["id"] == str(alice.id)
         result = await preview._action(
             "python",
             action_body(
@@ -589,7 +611,7 @@ async def test_preview_dm_entity_candidates_and_select(env, alice):
                 "select",
                 1,
                 request_id="dm-user",
-                custom_id="who",
+                control_key=who_key,
                 values=[str(alice.id)],
                 published_revision=page.revision,
             ),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -48,6 +48,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         height: int,
         locale: str,
         timezone: str,
+        presentation_time: datetime | None,
         assets: Mapping[str, tuple[str, bytes]] | None,
         port: int,
     ) -> None:
@@ -59,7 +60,8 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.locale = locale
         self.timezone = timezone
         self._explicit_assets = dict(assets or {})
-        self.capture_time = datetime.now(UTC)
+        self._presentation_time_explicit = presentation_time is not None
+        self.capture_time = presentation_time or datetime.fromisoformat(self.env.backend.now_iso())
         self.capability = secrets.token_urlsafe(32)
         self._server = PreviewServer(self, port)
         self._pages: dict[str, _Page] = {}
@@ -148,6 +150,10 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             page.modal_handle = None
         page.snapshot = build_snapshot(self, page)
 
+    def _advance_presentation_time(self) -> None:
+        if not self._presentation_time_explicit:
+            self.capture_time = datetime.fromisoformat(self.env.backend.now_iso())
+
     def _assert_capture_live(self, page: _Page) -> None:
         if self._closed:
             raise SetupError("managed capture was closed")
@@ -201,6 +207,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         token = self.env._begin_operation("preview.refresh")
         try:
             await self.env._settle_internal()
+            self._advance_presentation_time()
             for page in tuple(self._pages.values()):
                 if page.id in self._pages:  # earlier publishes prune expired pages
                     self._publish(page)
@@ -211,9 +218,10 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         """Settle bot work, republish, and return the detached JSON projection.
 
         This is the structured, agent-facing read surface: the same projection
-        the bundled page renders, covering ``messages``, ``selected``,
-        ``modal``, ``candidates``, ``assets``, ``diagnostics``, ``lastAction``,
-        and ``status``. Fields evolve under ``protocolVersion``.
+        the bundled page renders, covering ``messageIndex`` summaries, the
+        authorized target in ``messages``/``timeline``, ``targetId``, ``modal``,
+        ``candidates``, ``entities``, ``assets``, ``diagnostics``, and
+        ``lastAction``. Fields evolve under ``protocolVersion``.
         """
         if not self._active or self._python is None:
             raise SetupError("Preview is not active")
@@ -285,8 +293,9 @@ def _validate_preview(
     height: int,
     locale: str,
     timezone: str,
-    assets: Any,
-    port: Any,
+    presentation_time: Any = None,
+    assets: Any = None,
+    port: Any = None,
 ) -> tuple[ChannelHandle, tuple[Any, ...], Mapping[str, tuple[str, bytes]], int]:
     if not isinstance(channel, ChannelHandle) or channel._env is not env:
         raise SetupError("preview channel must belong to this Env")
@@ -317,6 +326,13 @@ def _validate_preview(
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise SetupError(f"unsupported timezone {timezone!r}") from exc
+    if presentation_time is not None:
+        if (
+            not isinstance(presentation_time, datetime)
+            or presentation_time.tzinfo is None
+            or presentation_time.utcoffset() is None
+        ):
+            raise SetupError("presentation_time must be timezone-aware")
     if assets is None:
         assets = {}
     if not isinstance(assets, Mapping):
@@ -342,9 +358,9 @@ def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
         env,
         channel,
         viewers,
+        **{key: kwargs[key] for key in ("width", "height", "locale", "timezone", "presentation_time")},
         assets=assets,
         port=port,
-        **{key: kwargs[key] for key in ("width", "height", "locale", "timezone")},
     )
 
 

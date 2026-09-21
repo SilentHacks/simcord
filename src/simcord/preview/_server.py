@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..backend.errors import BackendError, SetupError
 
 if TYPE_CHECKING:
-    from aiohttp import web
-
     from . import Preview
 
 
@@ -38,6 +36,7 @@ class PreviewServer:
         "/app.js": "app.js",
         "/components.js": "components.js",
         "/preview.css": "preview.css",
+        "/protocol.schema.json": "protocol.schema.json",
     }
     _SECURITY_HEADERS: ClassVar[dict[str, str]] = {
         "Cache-Control": "no-store",
@@ -66,7 +65,7 @@ class PreviewServer:
             raise SetupError("Preview requires aiohttp; install simcord[preview]") from exc
         app = web.Application(handler_args={"handler_cancellation": False})
         app.router.add_get("/", self._index)
-        for route in ("/app.js", "/components.js", "/preview.css"):
+        for route in ("/app.js", "/components.js", "/preview.css", "/protocol.schema.json"):
             app.router.add_get(route, self._static)
         app.router.add_post("/api/pages", self._pages)
         app.router.add_delete("/api/pages/{context_id}", self._delete_page)
@@ -130,7 +129,11 @@ class PreviewServer:
         filename = self._STATIC_FILES.get(request.path)
         if filename is None:  # pragma: no cover - only registered static routes call this
             raise web.HTTPNotFound()
-        path = Path(__file__).with_name("static") / filename
+        path = (
+            Path(__file__).with_name(filename)
+            if filename == "protocol.schema.json"
+            else Path(__file__).with_name("static") / filename
+        )
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -140,6 +143,7 @@ class PreviewServer:
             "app.js": "application/javascript",
             "components.js": "application/javascript",
             "preview.css": "text/css",
+            "protocol.schema.json": "application/schema+json",
         }[filename]
         return web.Response(text=text, content_type=content_type, headers=self._SECURITY_HEADERS)
 

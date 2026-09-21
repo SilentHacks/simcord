@@ -4,7 +4,7 @@ import sys
 import discord
 import pytest
 from aiohttp import ClientSession, FormData
-from preview_helpers import action_body, preview_headers
+from preview_helpers import action_body, control_key, preview_headers, target_message
 
 import simcord
 from fixtures.sample_bot import create_bot
@@ -78,7 +78,7 @@ async def test_preview_private_thread_membership_and_revocation(env, channel, al
 
     async with env.preview(private, viewers=[alice]) as preview:
         await preview.show(message)
-        assert preview._page_payload(preview._python)["selected"]["content"] == "secret"
+        assert target_message(preview._page_payload(preview._python))["content"] == "secret"
 
         await cached_thread.remove_user(discord.Object(id=alice.id))
         await env.settle()
@@ -151,6 +151,7 @@ async def test_preview_deferred_action_and_multipart_limits(env, channel, alice)
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         await preview.show(message)
         page = preview._python
+        slow_key = control_key(preview._page_payload(page), "slow_edit")
         result = await preview._action(
             "python",
             action_body(
@@ -158,8 +159,8 @@ async def test_preview_deferred_action_and_multipart_limits(env, channel, alice)
                 "click",
                 1,
                 request_id="defer",
+                control_key=slow_key,
                 published_revision=page.revision,
-                custom_id="slow_edit",
             ),
         )
         assert result["dispatched"] is True
@@ -203,13 +204,14 @@ async def test_preview_action_busy_cancellation_and_pending_replay(env, channel,
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
+        block_key = control_key(preview._page_payload(page), "block")
         body = action_body(
             page,
             "click",
             1,
             request_id="blocked",
+            control_key=block_key,
             published_revision=page.revision,
-            custom_id="block",
         )
         task = asyncio.create_task(preview._action("python", body))
         await asyncio.sleep(0)
@@ -220,8 +222,8 @@ async def test_preview_action_busy_cancellation_and_pending_replay(env, channel,
                 "click",
                 2,
                 request_id="busy",
+                control_key=block_key,
                 published_revision=page.revision,
-                custom_id="block",
             ),
         )
         assert busy["rejected"] is True
@@ -242,6 +244,7 @@ async def test_preview_modal_file_upload_validation_and_dispatch(env, channel, a
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
+        upload_key = control_key(preview._page_payload(page), "open-upload")
         opened = await preview._action(
             "python",
             action_body(
@@ -249,8 +252,8 @@ async def test_preview_modal_file_upload_validation_and_dispatch(env, channel, a
                 "click",
                 1,
                 request_id="open-upload",
+                control_key=upload_key,
                 published_revision=page.revision,
-                custom_id="open-upload",
             ),
         )
         assert opened["dispatched"] is True
@@ -293,6 +296,7 @@ async def test_preview_modal_entity_resolution_and_validation(env, channel, alic
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
+        member_key = control_key(preview._page_payload(page), "open-member")
         opened = await preview._action(
             "python",
             action_body(
@@ -300,8 +304,8 @@ async def test_preview_modal_entity_resolution_and_validation(env, channel, alic
                 "click",
                 1,
                 request_id="open-member",
+                control_key=member_key,
                 published_revision=page.revision,
-                custom_id="open-member",
             ),
         )
         assert opened["dispatched"] is True
@@ -393,7 +397,7 @@ async def test_preview_show_rejects_foreign_and_cross_channel_modals(env, channe
         # rather than raising — the ephemeral is simply never pinned.
         denied = preview._open_page(target_id=str(ephemeral.response.id))
         assert denied.target_id is None
-        assert preview._page_payload(denied)["selected"] is None
+        assert target_message(preview._page_payload(denied)) is None
         with pytest.raises(simcord.SetupError, match="not accessible"):
             await preview.show(ephemeral.response)
         with pytest.raises(simcord.SetupError, match="not accessible"):
@@ -419,9 +423,9 @@ async def test_preview_missing_assets_and_restored_private_access(env, channel, 
     message = await env.bot.get_channel(channel.id).send(embed=discord.Embed().set_image(url=url))
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
-        selected = preview._page_payload(preview._python)["selected"]
-        asset_id = selected["embeds"][0]["image"]["asset_id"]
-        assert selected["embeds"][0]["image"]["available"] is False
+        target = target_message(preview._page_payload(preview._python))
+        asset_id = target["embeds"][0]["image"]["asset_id"]
+        assert target["embeds"][0]["image"]["available"] is False
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
             preview._asset("python", asset_id)
 
@@ -466,19 +470,21 @@ async def test_preview_snapshot_deleted_reference_embeds_and_channel_filter(env,
 
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(reply)
-        selected = preview._page_payload(preview._python)["selected"]
-        assert "reference" not in selected
-        assert selected["embeds"][0]["url"] == "https://example.test/embed"
-        assert selected["embeds"][0]["video"]["available"] is False
-        assert selected["embeds"][0]["footer_tokens"]
-        assert selected["embeds"][0]["fields"][0]["name_tokens"]
+        target = target_message(preview._page_payload(preview._python))
+        assert "reference" not in target
+        assert target["embeds"][0]["url"] == "https://example.test/embed"
+        assert target["embeds"][0]["video"]["available"] is False
+        assert target["embeds"][0]["footer_tokens"]
+        assert target["embeds"][0]["fields"][0]["name_tokens"]
 
         await preview.show(controls)
-        candidates = preview._page_payload(preview._python)["candidates"]["typed-channel"]
+        page = preview._python
+        payload = preview._page_payload(page)
+        typed_key = control_key(payload, "typed-channel")
+        candidates = payload["candidates"][typed_key]
         candidate_ids = {item["id"] for item in candidates}
         assert str(channel.id) in candidate_ids
         assert str(voice.id) not in candidate_ids
-        page = preview._python
         rejected = await preview._action(
             "python",
             action_body(
@@ -486,9 +492,9 @@ async def test_preview_snapshot_deleted_reference_embeds_and_channel_filter(env,
                 "select",
                 1,
                 request_id="wrong-channel-type",
-                published_revision=page.revision,
-                custom_id="typed-channel",
+                control_key=typed_key,
                 values=[str(voice.id)],
+                published_revision=page.revision,
             ),
         )
         assert rejected["dispatched"] is False
@@ -574,16 +580,17 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
                 "click",
                 1,
                 request_id="no-target",
-                custom_id="x",
+                control_key="message:missing:component:0",
                 published_revision=page.revision,
             ),
         )
         assert result["dispatched"] is False
 
-    assign = await alice.slash(channel, "assign")
+    await alice.slash(channel, "assign")
     async with env.preview(channel, viewers=[alice]) as preview:
-        await preview.show(assign.response)
         page = preview._python
+        payload = preview._page_payload(page)
+        who_key = control_key(payload, "who")
         non_string = await preview._action(
             "python",
             action_body(
@@ -591,7 +598,7 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
                 "select",
                 1,
                 request_id="non-string",
-                custom_id="who",
+                control_key=who_key,
                 values=[1],
                 published_revision=page.revision,
             ),
@@ -604,7 +611,7 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
                 "select",
                 1,
                 request_id="unhashable",
-                custom_id="who",
+                control_key=who_key,
                 values=[[]],
                 published_revision=page.revision,
             ),
@@ -617,7 +624,7 @@ async def test_preview_action_validation_without_target_and_bad_values(env, chan
                 "select",
                 1,
                 request_id="missing-select",
-                custom_id="missing",
+                control_key="message:missing:component:0",
                 values=["x"],
                 published_revision=page.revision,
             ),

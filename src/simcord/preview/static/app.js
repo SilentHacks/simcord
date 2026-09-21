@@ -21,6 +21,7 @@ const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1
 const state = {
   capability: hash,
   snapshot: null,
+  protocolCompatible: true,
   contextId: null,
   contextGeneration: 0,
   botGeneration: 0,
@@ -57,7 +58,6 @@ const state = {
   contextReleased: false,
   statusFingerprint: "",
 };
-
 function freeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   Object.values(value).forEach(freeze);
@@ -65,24 +65,35 @@ function freeze(value) {
 }
 
 function statusObject() {
-  return freeze({
-    protocolVersion: state.snapshot?.protocolVersion ?? 1,
+  const renderState = {
+    openPopupKey: state.dropdown?.key || null,
+    modalHandle: state.modalHandle,
+    validationPaths: state.modalError ? [state.modalErrorHandle] : [],
+    mediaCaptureTimes: {},
+  };
+  const value = {
+    schemaVersion: state.snapshot?.protocolVersion ?? 2,
+    protocolVersion: state.snapshot?.protocolVersion ?? 2,
     contextId: state.contextId,
     contextGeneration: state.contextGeneration,
     botGeneration: state.botGeneration,
     viewerId: state.viewerId,
     targetId: state.targetId,
+    activeControlKey: state.focusKey,
+    visibleMessageIds: [...(state.snapshot?.timeline || [])],
     publishedRevision: state.publishedRevision,
     renderGeneration: state.renderGeneration,
-    lastAction: state.lastAction,
-    pendingAction: state.pendingAction,
+    renderState,
+    lastAction: state.lastAction ? JSON.parse(JSON.stringify(state.lastAction)) : null,
+    pendingAction: state.pendingAction ? JSON.parse(JSON.stringify(state.pendingAction)) : null,
     ready: state.ready,
     complete: state.complete,
     authorized: state.authorized,
-    calibration: state.calibration,
-    diagnostics: [...state.diagnostics],
+    calibration: { ...state.calibration },
+    diagnostics: JSON.parse(JSON.stringify(state.diagnostics)),
     profile: { ...state.profile },
-  });
+  };
+  return freeze(value);
 }
 Object.defineProperty(window, "simcordPreview", { configurable: false, enumerable: true, get: statusObject });
 function rememberFocus() {
@@ -203,6 +214,7 @@ function profileFromSnapshot(snapshot) {
     height: state.profileCustomized.height ? state.profile.height : Number(configured.height || 720),
     locale: configured.locale || state.profile.locale || "en-US",
     timezone: configured.timezone || state.profile.timezone || "UTC",
+    presentationTime: configured.presentationTime || state.profile.presentationTime || null,
   };
 }
 
@@ -287,16 +299,17 @@ function updatePickers(snapshot) {
   });
   ui.viewer.value = snapshot.viewerId || "";
   ui.message.replaceChildren();
-  (snapshot.messages || []).forEach((message) => {
+  (snapshot.messageIndex || []).forEach((message) => {
     const option = document.createElement("option");
     option.value = String(message.id);
     option.textContent = `${message.author_name || "Unknown"}: ${String(message.excerpt ?? "").slice(0, 70) || "(component message)"}`;
     ui.message.append(option);
   });
   ui.message.value = snapshot.targetId || "";
-  ui.message.disabled = !(snapshot.messages || []).length;
-  ui.empty.hidden = Boolean(snapshot.selected);
-  ui.surface.hidden = !snapshot.selected;
+  ui.message.disabled = !(snapshot.messageIndex || []).length;
+  const target = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] : null;
+  ui.empty.hidden = Boolean(target);
+  ui.surface.hidden = !target;
 }
 
 function updateActionStatus() {
@@ -379,7 +392,7 @@ function clearSelection(key) {
     state.dropdown = null;
   }
   localRender(true);
-  if (!key.startsWith("modal:")) dispatch("select", { custom_id: key.slice("message:".length), values: [] });
+  if (!key.startsWith("modal:")) dispatch("select", { control_key: key, values: [] });
 }
 
 function commitDropdown(key) {
@@ -392,7 +405,7 @@ function commitDropdown(key) {
   }
   state.dropdown = null;
   localRender(true);
-  if (!key.startsWith("modal:")) dispatch("select", { custom_id: key.slice("message:".length), values });
+  if (!key.startsWith("modal:")) dispatch("select", { control_key: key, values });
 }
 
 function cancelDropdown(key) {
@@ -464,7 +477,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   state.profile = profileFromSnapshot(snapshot);
   applyProfile();
   updatePickers(snapshot);
-  const selected = snapshot.selected;
+  const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
   const selectedKey = selected ? String(selected.id) : null;
   const selectedFingerprint = fingerprint(selected);
   const shouldRenderMessage = force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
@@ -482,12 +495,12 @@ function renderSnapshot(snapshot, generation, force = false) {
       },
       locale: state.profile.locale,
       timezone: state.profile.timezone,
-      captureTime: state.profile.captureTime,
+      presentationTime: state.profile.presentationTime,
       dropdown: state.dropdown,
       onInit: initDraft,
       onOpen: openDropdown,
       onDraft: updateDraft,
-      onClick: (customId) => dispatch("click", { custom_id: customId }),
+      onClick: (controlKey) => dispatch("click", { control_key: controlKey }),
       onCommit: commitDropdown,
       onCancel: cancelDropdown,
       onNavigate: navigateDropdown,
@@ -527,8 +540,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       assets: snapshot.assets || {},
       validationError: state.modalError,
       locale: state.profile.locale,
-      timezone: state.profile.timezone,
-      captureTime: state.profile.captureTime,
+      presentationTime: state.profile.presentationTime,
       pendingMedia,
       isCurrent: () => generation === state.renderGeneration,
       onInit: initDraft,
@@ -596,11 +608,35 @@ function fitOpenDropdowns() {
 }
 
 async function installSnapshot(snapshot, force = false) {
-  if (!snapshot || state.closed) return;
+  if (!snapshot || state.closed) return false;
+  const compatible = Number(snapshot.protocolVersion) === 2
+    && snapshot.context && typeof snapshot.context.id === "string"
+    && Number.isInteger(snapshot.context.generation)
+    && Array.isArray(snapshot.messageIndex)
+    && snapshot.messages && typeof snapshot.messages === "object" && !Array.isArray(snapshot.messages)
+    && Array.isArray(snapshot.timeline)
+    && snapshot.history && typeof snapshot.history === "object";
+  if (!compatible) {
+    state.protocolCompatible = false;
+    state.authorized = false;
+    state.snapshot = null;
+    state.localDiagnostics = [{
+      code: "protocol-mismatch",
+      severity: "error",
+      message: "Preview protocol 2 is required; reload this page.",
+      remediation: "Reload the Preview URL to receive a compatible snapshot.",
+      complete: false,
+    }];
+    renderDiagnostics();
+    ui.app.setAttribute("aria-busy", "false");
+    return false;
+  }
+  state.protocolCompatible = true;
   rememberFocus();
   if (!state.pendingAction && "lastAction" in snapshot) state.lastAction = snapshot.lastAction;
   const generation = beginRender();
   renderSnapshot(snapshot, generation, force);
+  return true;
 }
 
 function validateModalValues(modal, values) {
@@ -631,10 +667,15 @@ function validateModalValues(modal, values) {
 }
 
 async function dispatch(kind, extra = {}) {
-  if (state.pendingAction || state.closed || !state.authorized || !state.contextId) return;
+  if (
+    state.pendingAction
+    || state.closed
+    || !state.authorized
+    || !state.protocolCompatible
+    || !state.contextId
+  ) return;
   const requestId = globalThis.crypto?.randomUUID?.() || `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const sequence = state.sequence + 1;
-  state.sequence = sequence;
   const body = {
     sequence,
     request_id: requestId,
@@ -644,6 +685,7 @@ async function dispatch(kind, extra = {}) {
     published_revision: state.publishedRevision,
     ...extra,
   };
+  if (["click", "select"].includes(kind)) body.target_id = state.targetId;
   state.pendingAction = { kind, requestId, sequence };
   localRender(false);
   try {
@@ -672,7 +714,7 @@ async function dispatch(kind, extra = {}) {
 }
 
 async function poll() {
-  if (state.closed || !state.contextId) return;
+  if (state.closed || !state.contextId || !state.protocolCompatible) return;
   try {
     const snapshot = await request("/api/state");
     const statusFingerprint = JSON.stringify({

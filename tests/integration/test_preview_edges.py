@@ -5,7 +5,7 @@ from pathlib import Path
 import discord
 import pytest
 from aiohttp import ClientSession, FormData
-from preview_helpers import action_body, png_bytes, preview_headers
+from preview_helpers import action_body, control_key, png_bytes, preview_headers, target_message
 
 import simcord
 from simcord.backend.models import Interaction
@@ -56,7 +56,7 @@ async def test_preview_edges_configuration_and_page_lifecycle(env, channel, alic
             preview._viewer(None)
         with pytest.raises(simcord.SetupError, match="authorized"):
             preview._viewer("999999999")
-        with pytest.raises(simcord.SetupError, match="target_id"):
+        with pytest.raises(simcord.SetupError, match="authorized target"):
             preview._target_id("bad")
         page = preview._open_page(alice.id)
         preview._close_page(page.id)
@@ -102,6 +102,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         page = preview._python
+        edge_key = control_key(preview._page_payload(page), "edge-select")
         bads = (
             (
                 action_body(
@@ -109,10 +110,10 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     "click",
                     1,
                     request_id="click",
-                    custom_id=1,
+                    control_key=1,
                     published_revision=page.revision,
                 ),
-                "custom_id",
+                "control_key",
             ),
             (
                 action_body(
@@ -120,7 +121,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     "select",
                     1,
                     request_id="values",
-                    custom_id="edge-select",
+                    control_key=edge_key,
                     values="x",
                     published_revision=page.revision,
                 ),
@@ -132,7 +133,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     "select",
                     1,
                     request_id="scalar",
-                    custom_id="edge-select",
+                    control_key=edge_key,
                     values=[[]],
                     published_revision=page.revision,
                 ),
@@ -144,7 +145,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     "select",
                     1,
                     request_id="bounds",
-                    custom_id="edge-select",
+                    control_key=edge_key,
                     values=[],
                     published_revision=page.revision,
                 ),
@@ -156,7 +157,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     "select",
                     1,
                     request_id="string",
-                    custom_id="edge-select",
+                    control_key=edge_key,
                     values=[1],
                     published_revision=page.revision,
                 ),
@@ -168,7 +169,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     "select",
                     1,
                     request_id="option",
-                    custom_id="edge-select",
+                    control_key=edge_key,
                     values=["nope"],
                     published_revision=page.revision,
                 ),
@@ -214,7 +215,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                 "select",
                 1,
                 request_id="broken",
-                custom_id="edge-select",
+                control_key=edge_key,
                 values=["one"],
                 published_revision=page.revision,
             ),
@@ -341,7 +342,7 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
     backend.reference = {"message_id": None}
     async with env.preview(channel, viewers=[alice], assets={url: ("edge.png", image.getvalue())}) as preview:
         await preview.show(message)
-        selected = preview._page_payload(preview._python)["selected"]
+        selected = target_message(preview._page_payload(preview._python))
         assert selected["mention_names"][str(bob.id)] == "bob"
         assert str(role.id) in selected["mention_role_ids"]
         assert "reference" not in selected
@@ -352,7 +353,7 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert await preview._prepare_asset("python", asset)
         assert await preview._prepare_asset("python", asset)
         await preview.show(v2_message)
-        selected = preview._page_payload(preview._python)["selected"]
+        selected = target_message(preview._page_payload(preview._python))
         assert selected["components"][1]["items"][0]["media"]["asset_id"]
         assert selected["components"][0]["markdown_tokens"]
         assert selected["components"][2]["accessory"]["media"]["asset_id"]
@@ -396,7 +397,7 @@ async def test_preview_edges_capture_live_invalidation_and_assets(env, channel, 
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
         page = preview._python
-        page.pinned_snapshot = {"selected": {}}
+        page.pinned_snapshot = {"targetId": None, "messages": {}, "timeline": [], "messageIndex": []}
         page.pinned_generation = env._generation + 1
         with pytest.raises(simcord.SetupError, match="bot restart"):
             preview._page_payload(page)

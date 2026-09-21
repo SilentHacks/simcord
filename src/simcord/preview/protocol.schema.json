@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simcord.dev/schemas/preview/protocol-2.json",
+  "title": "SimCord preview protocol 2 snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocolVersion", "publishedRevision", "context", "botGeneration", "viewers",
+    "viewerId", "channelId", "channel", "targetId", "messageIndex", "messages",
+    "timeline", "history", "modal", "entities", "candidates", "assets", "profile",
+    "status", "diagnostics", "lastAction"
+  ],
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "publishedRevision": { "type": "integer", "minimum": 0 },
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "generation"],
+      "properties": { "id": { "type": "string" }, "generation": { "type": "integer", "minimum": 1 } }
+    },
+    "botGeneration": { "type": "integer", "minimum": 1 },
+    "viewers": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
+    "viewerId": { "type": "string" },
+    "channelId": { "type": "string" },
+    "channel": { "type": ["object", "null"] },
+    "targetId": { "type": ["string", "null"] },
+    "messageIndex": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "author_name", "excerpt"],
+        "properties": { "id": { "type": "string" }, "author_name": { "type": "string" }, "excerpt": { "type": "string" } }
+      }
+    },
+    "messages": { "type": "object", "description": "The authorized target message only; channel summaries belong in messageIndex.", "maxProperties": 1, "additionalProperties": { "$ref": "#/$defs/message" } },
+    "timeline": { "type": "array", "description": "The target message id only when targetId is authorized and present.", "maxItems": 1, "items": { "type": "string" } },
+    "history": {
+      "type": "object", "additionalProperties": false,
+      "required": ["hasBefore", "hasAfter"],
+      "properties": { "hasBefore": { "type": "boolean" }, "hasAfter": { "type": "boolean" } }
+    },
+    "modal": { "type": ["object", "null"] },
+    "entities": { "type": "object", "additionalProperties": { "type": "object" } },
+    "candidates": { "type": "object", "additionalProperties": { "type": "array" } },
+    "assets": { "type": "object", "additionalProperties": { "$ref": "#/$defs/asset" } },
+    "profile": { "type": "object", "required": ["theme", "width", "height", "locale", "timezone", "presentationTime"], "additionalProperties": true, "properties": {
+      "theme": { "type": "string" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+      "locale": { "type": "string" }, "timezone": { "type": "string" }, "presentationTime": { "type": "string", "format": "date-time" }
+    } },
+    "status": { "type": "string" },
+    "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
+    "lastAction": { "type": ["object", "null"] }
+  },
+  "$defs": {
+    "identity": { "type": "object", "required": ["id", "name"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "name": { "type": "string" } } },
+    "asset": { "type": "object", "required": ["id", "filename", "contentType", "available"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "filename": { "type": "string" }, "contentType": { "type": "string" }, "available": { "type": "boolean" }, "bytes": { "type": "integer", "minimum": 0 }, "diagnostic": { "type": ["string", "null"] } } },
+    "diagnostic": { "type": "object", "required": ["code", "severity", "message", "complete"], "additionalProperties": true, "properties": { "code": { "type": "string" }, "severity": { "type": "string" }, "message": { "type": "string" }, "complete": { "type": "boolean" }, "path": { "type": ["string", "null"] }, "feature": { "type": ["string", "null"] }, "fixtureId": { "type": ["string", "null"] }, "remediation": { "type": ["string", "null"] } } },
+    "message": { "type": "object", "required": ["id", "channel_id", "author", "timestamp", "edited_timestamp", "type", "pinned", "tts", "content", "content_tokens", "embeds", "components", "flags", "ephemeral", "components_v2", "compact", "attachments", "mention_user_ids", "mention_role_ids", "mention_everyone", "reactions", "poll", "stickers", "thread", "allowed_actions", "reply"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "channel_id": { "type": "string" }, "author": { "type": "object" }, "timestamp": { "type": "string" }, "edited_timestamp": { "type": ["string", "null"] }, "type": { "type": "integer" }, "pinned": { "type": "boolean" }, "tts": { "type": "boolean" }, "content": { "type": "string" }, "content_tokens": { "type": "array" }, "embeds": { "type": "array" }, "components": { "type": "array" }, "flags": { "type": "integer" }, "ephemeral": { "type": "boolean" }, "components_v2": { "type": "boolean" }, "compact": { "type": "boolean" }, "attachments": { "type": "array" }, "mention_user_ids": { "type": "array" }, "mention_role_ids": { "type": "array" }, "mention_everyone": { "type": "boolean" }, "reactions": { "type": "array" }, "poll": { "type": ["object", "null"] }, "stickers": { "type": "array" }, "thread": { "type": ["object", "null"] }, "allowed_actions": { "type": "array" }, "reply": { "type": "object" } } }
+  }
+}

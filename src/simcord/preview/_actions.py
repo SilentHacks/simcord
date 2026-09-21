@@ -10,7 +10,7 @@ from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from ..actors import MemberActor, _find_component, _modal_control_map, _modal_submit_nodes
+from ..actors import MemberActor, _modal_control_map, _modal_submit_nodes
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
@@ -23,6 +23,56 @@ if TYPE_CHECKING:
     from ..env import Env
     from ..results import InteractionResult
     from ._pages import _Page
+
+
+def _component_key(component: Mapping[str, Any], path: str, message_id: int) -> str | None:
+    if component.get("type") not in {
+        int(ComponentType.BUTTON),
+        int(ComponentType.STRING_SELECT),
+        int(ComponentType.USER_SELECT),
+        int(ComponentType.ROLE_SELECT),
+        int(ComponentType.MENTIONABLE_SELECT),
+        int(ComponentType.CHANNEL_SELECT),
+    }:
+        return None
+    wire_id = component.get("id")
+    identity = (
+        str(wire_id) if isinstance(wire_id, int) and not isinstance(wire_id, bool) and wire_id > 0 else path
+    )
+    return f"message:{message_id}:component:{identity}"
+
+
+def _component_paths(value: Any, path: str = "0") -> Any:
+    if not isinstance(value, dict):
+        return
+    yield path, value
+    children = value.get("components")
+    if isinstance(children, list):
+        for index, child in enumerate(children):
+            yield from _component_paths(child, f"{path}.components.{index}")
+    for child_name in ("accessory", "component"):
+        child = value.get(child_name)
+        if isinstance(child, dict):
+            yield from _component_paths(child, f"{path}.{child_name}")
+
+
+def _find_scoped_component(
+    message: Message,
+    control_key: Any,
+    *,
+    types: tuple[int, ...],
+) -> dict[str, Any]:
+    if not isinstance(control_key, str):
+        raise SetupError("control_key is required")
+    for root_index, root in enumerate(message.components):
+        for path, component in _component_paths(root, str(root_index)):
+            if component.get("type") not in types:
+                continue
+            if _component_key(component, path, message.id) == control_key:
+                if component.get("disabled"):
+                    raise SetupError("control is unavailable")
+                return component
+    raise SetupError("control is unavailable")
 
 
 @dataclass(slots=True)
@@ -51,6 +101,7 @@ class _ActionOps:
     _target_id: Callable[..., int | None]
     _clear_page_assets: Callable[[_Page], None]
     _publish: Callable[[_Page], None]
+    _advance_presentation_time: Callable[[], None]
 
     _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset({"click", "select", "modal_submit"})
     _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(
@@ -227,6 +278,16 @@ class _ActionOps:
                 request_id=request_id,
                 sequence=sequence,
             )
+        if kind in {"click", "select"} and (
+            isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))
+        ):
+            return self._reject(
+                page,
+                "missing-target",
+                "authorized target is unavailable",
+                request_id=request_id,
+                sequence=sequence,
+            )
         token = self.env._begin_operation("preview.action")
         try:
             # Kind, control resolution, and values are validated before the
@@ -332,6 +393,7 @@ class _ActionOps:
 
             async def run_refresh(action: _Action, cursor: int) -> dict[str, Any]:
                 await self.env._settle_internal()
+                self._advance_presentation_time()
                 result = self._finish_action(page, action, "settled", cursor)
                 self._publish(page)
                 return result
@@ -359,19 +421,20 @@ class _ActionOps:
                 return finished
 
             return run_modal
-        message = self._target_message(page)
+        target_id = self._target_id(body.get("target_id"), page.viewer)
+        if target_id is None:
+            raise SetupError("authorized target is unavailable")
+        message = self._target_message(page, target_id)
         if kind == "click":
-            custom_id = body.get("custom_id")
-            if not isinstance(custom_id, str):
-                raise SetupError("click requires custom_id")
-            component = _find_component(
-                message.components,
-                types=(ComponentType.BUTTON,),
-                custom_id=custom_id,
-                label=None,
+            control_key = body.get("control_key")
+            component = _find_scoped_component(
+                message,
+                control_key,
+                types=(int(ComponentType.BUTTON),),
             )
             if component.get("style") in (5, 6) or not component.get("custom_id"):
-                raise SetupError("click control is a link or premium button")
+                raise SetupError("control is unavailable")
+            custom_id = str(component["custom_id"])
 
             async def run_click(action: _Action, cursor: int) -> dict[str, Any]:
                 return await self._run_component_action(
@@ -382,8 +445,13 @@ class _ActionOps:
                 )
 
             return run_click
-        custom_id = body.get("custom_id")
-        select_values = self._select_values(page, body.get("values"), custom_id)
+        control_key = body.get("control_key")
+        select_values = self._select_values(page, message, body.get("values"), control_key)
+        custom_id = str(
+            _find_scoped_component(message, control_key, types=tuple(int(item) for item in SELECT_TYPES))[
+                "custom_id"
+            ]
+        )
 
         async def run_select(action: _Action, cursor: int) -> dict[str, Any]:
             return await self._run_component_action(
@@ -408,18 +476,25 @@ class _ActionOps:
         self._publish(page)
         return finished
 
-    def _target_message(self, page: _Page) -> Message:
-        if page.target_id is None:
-            raise SetupError("no focused message")
+    def _target_message(self, page: _Page, target_id: int | None = None) -> Message:
+        target = page.target_id if target_id is None else target_id
+        if target is None:
+            raise SetupError("authorized target is unavailable")
         try:
-            message = self.env.backend.get_message(page.channel_id, page.target_id)
+            message = self.env.backend.get_message(page.channel_id, target)
         except BackendError as exc:
-            raise SetupError("focused message is unavailable") from exc
+            raise SetupError("authorized target is unavailable") from exc
         if not can_access_message(self.env, page.channel_id, message, page.viewer, history=True):
-            raise SetupError("focused message is inaccessible")
+            raise SetupError("authorized target is unavailable")
         return message
 
-    def _select_values(self, page: _Page, values: Any, custom_id: Any) -> list[Any]:
+    def _select_values(
+        self,
+        page: _Page,
+        message: Message,
+        values: Any,
+        control_key: Any,
+    ) -> list[Any]:
         if not isinstance(values, list):
             raise SetupError("select values must be a list")
         try:
@@ -427,8 +502,11 @@ class _ActionOps:
                 raise SetupError("select values must be unique")
         except TypeError as exc:
             raise SetupError("select values must be scalar") from exc
-        message = self._target_message(page)
-        component = _find_component(message.components, types=SELECT_TYPES, custom_id=custom_id, label=None)
+        component = _find_scoped_component(
+            message,
+            control_key,
+            types=tuple(int(item) for item in SELECT_TYPES),
+        )
         kind = ComponentType(component["type"])
         minimum = component.get("min_values", 1)
         maximum = component.get("max_values", 1)
@@ -443,7 +521,7 @@ class _ActionOps:
             return list(values)
         if kind == ComponentType.CHANNEL_SELECT and isinstance(component.get("channel_types"), list):
             allowed = set(component["channel_types"])
-            for value in values:  # pragma: no branch - empty selections are validated above
+            for value in values:
                 try:
                     candidate = self.env.backend.channels.get(int(value))
                 except (TypeError, ValueError):

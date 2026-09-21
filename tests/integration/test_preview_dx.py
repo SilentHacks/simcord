@@ -1,10 +1,29 @@
+import json
 import socket
+from importlib import resources
 
+import discord
+import jsonschema
 import pytest
 from aiohttp import ClientSession
-from preview_helpers import preview_headers
+from preview_helpers import control_key, preview_headers, target_message
 
 import simcord
+
+
+@pytest.mark.asyncio
+async def test_preview_snapshot_matches_packaged_schema(env, channel, alice):
+    schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    await alice.slash(channel, "panel")
+
+    async with env.preview(channel, viewers=[alice]) as preview:
+        snapshot = await preview.snapshot()
+
+    validator.validate(snapshot)
+    invalid = {**snapshot, "protocolVersion": 1}
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(invalid)
 
 
 @pytest.mark.asyncio
@@ -12,21 +31,57 @@ async def test_preview_snapshot_returns_detached_projection(env, channel, alice)
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
         snap = await preview.snapshot()
-        assert snap["protocolVersion"] == 1
+        assert snap["protocolVersion"] == 2
+        assert "selected" not in snap
         assert snap["viewerId"] == str(alice.id)
-        assert snap["selected"]["content"] == "Panel"
-        for key in ("messages", "modal", "candidates", "assets", "diagnostics", "lastAction", "status"):
+        assert target_message(snap)["content"] == "Panel"
+        assert isinstance(snap["messageIndex"], list)
+        assert isinstance(snap["messages"], dict)
+        assert snap["targetId"] in snap["messages"]
+        assert snap["timeline"] == [snap["targetId"]]
+        for key in (
+            "messages",
+            "messageIndex",
+            "timeline",
+            "modal",
+            "candidates",
+            "assets",
+            "diagnostics",
+            "lastAction",
+            "status",
+        ):
             assert key in snap
 
         await alice.send(channel, "hello")
         snap = await preview.snapshot()
-        assert "hello" in [item["excerpt"] for item in snap["messages"]]
-        assert snap["selected"]["content"] == "Panel"
+        assert "hello" in [item["excerpt"] for item in snap["messageIndex"]]
+        assert target_message(snap)["content"] == "Panel"
 
-        snap["selected"]["content"] = "mutated"
-        assert preview._page_payload(preview._python)["selected"]["content"] == "Panel"
+        target_message(snap)["content"] = "mutated"
+        assert target_message(preview._page_payload(preview._python))["content"] == "Panel"
         snap = await preview.snapshot()
-        assert snap["selected"]["content"] == "Panel"
+        assert target_message(snap)["content"] == "Panel"
+
+
+@pytest.mark.asyncio
+async def test_preview_control_keys_are_scoped_per_message(env, channel, alice):
+    first_view = discord.ui.View()
+    first_view.add_item(discord.ui.Button(label="First", custom_id="same"))
+    second_view = discord.ui.View()
+    second_view.add_item(discord.ui.Button(label="Second", custom_id="same"))
+    first = await env.bot.get_channel(channel.id).send(view=first_view)
+    second = await env.bot.get_channel(channel.id).send(view=second_view)
+
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(first)
+        first_snapshot = preview._page_payload(preview._python)
+        await preview.show(second)
+        second_snapshot = preview._page_payload(preview._python)
+        first_key = control_key(first_snapshot, "same")
+        second_key = control_key(second_snapshot, "same")
+        assert first_key != second_key
+        assert first_key.startswith(f"message:{first.id}:")
+        assert second_key.startswith(f"message:{second.id}:")
 
 
 @pytest.mark.asyncio

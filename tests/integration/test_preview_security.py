@@ -7,7 +7,7 @@ pytest.importorskip("PIL")
 import discord
 from aiohttp import ClientSession
 from PIL import Image
-from preview_helpers import gif_bytes, png_bytes, preview_headers
+from preview_helpers import gif_bytes, png_bytes, preview_headers, target_message
 
 from simcord.preview._markdown import markdown_tokens
 
@@ -46,8 +46,9 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         assets={image_url: ("picture.png", png_bytes())},
     ) as preview:
         await preview.show(reply)
-        selected = preview._page_payload(preview._python)["selected"]
-        assert selected["reference"]["message_id"] == str(referenced.id)
+        selected = target_message(preview._page_payload(preview._python))
+        assert selected["reply"]["state"] == "resolved"
+        assert selected["reply"]["message_id"] == str(referenced.id)
         assert selected["mention_user_ids"] == [str(bob.id)]
         assert selected["mention_role_ids"] == [str(role.id)]
         assert "url" not in selected["embeds"][0]
@@ -70,7 +71,7 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
             assert response.status == 404
 
         await preview.show(v2)
-        v2_selected = preview._page_payload(preview._python)["selected"]
+        v2_selected = target_message(preview._page_payload(preview._python))
         assert v2_selected["components_v2"] is True
         media = v2_selected["components"][1]["items"][0]["media"]
         assert media["available"] is True
@@ -172,8 +173,9 @@ async def test_deleted_channel_snapshot_reports_access_denied(env, channel, alic
         await preview.refresh()
         payload = preview._page_payload(preview._python)
         assert payload["status"] == "access_denied"
-        assert payload["messages"] == []
-        assert payload["selected"] is None
+        assert payload["messageIndex"] == []
+        assert payload["messages"] == {}
+        assert payload["targetId"] is None
         assert payload["channelId"] == str(channel.id)
         assert payload["channel"]["name"] is None
 
@@ -187,7 +189,7 @@ async def test_asset_download_serves_original_bytes(env, channel, alice):
     )
     async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
         await preview.show(message)
-        asset_id = preview._page_payload(preview._python)["selected"]["attachments"][0]["asset_id"]
+        asset_id = target_message(preview._page_payload(preview._python))["attachments"][0]["asset_id"]
         display = await client.get(
             preview._origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
         )

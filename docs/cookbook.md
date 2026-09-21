@@ -281,7 +281,8 @@ async def test_panel_preview(simcord_env):
         capture = await preview.screenshot("panel.png")
         assert capture.complete and capture.ready
         snapshot = await preview.snapshot()
-        assert snapshot["selected"] is not None
+        target = snapshot["messages"].get(snapshot["targetId"])
+        assert target is not None
 ```
 
 Reach for a preview when assertions alone aren't enough: the screenshot verifies what a user would
