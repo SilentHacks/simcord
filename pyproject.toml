@@ -61,6 +61,7 @@ Changelog = "https://github.com/SilentHacks/simcord/blob/master/CHANGELOG.md"
 [tool.hatch.build.targets.wheel]
 packages = ["src/simcord"]
 
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

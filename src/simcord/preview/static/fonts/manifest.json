@@ -1,0 +1,202 @@
+{
+  "schema": 1,
+  "purpose": "Offline SimCord preview typography assets",
+  "generated_from": "Pinned official Noto releases; binary bytes are unmodified upstream files.",
+  "required_faces": [
+    "Noto Sans",
+    "Noto Sans Italic",
+    "Noto Sans Mono",
+    "Noto Color Emoji",
+    "Noto Sans Arabic",
+    "Noto Sans Hebrew",
+    "Noto Sans Devanagari",
+    "Noto Sans SC"
+  ],
+  "fonts": [
+    {
+      "family": "Noto Sans",
+      "style": "normal",
+      "weights": "100 900",
+      "scripts": [
+        "Latin",
+        "Greek",
+        "Cyrillic",
+        "Vietnamese"
+      ],
+      "release": "NotoSans-v2.015",
+      "url": "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip",
+      "license": "OFL-1.1-Noto.txt",
+      "filename": "noto-sans-latin-v2.015.ttf",
+      "bytes": 2049096,
+      "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Sans",
+      "style": "italic",
+      "weights": "100 900",
+      "scripts": [
+        "Latin",
+        "Greek",
+        "Cyrillic",
+        "Vietnamese"
+      ],
+      "release": "NotoSans-v2.015",
+      "url": "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip",
+      "license": "OFL-1.1-Noto.txt",
+      "filename": "noto-sans-latin-italic-v2.015.ttf",
+      "bytes": 2322640,
+      "sha256": "58e6e0ebd1931b29a365aa2d3e2ee9a9e831a3af7cf3ad1462d4e72154f0b291",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Sans Mono",
+      "style": "normal",
+      "weights": "100 900",
+      "scripts": [
+        "Latin",
+        "Greek",
+        "Cyrillic",
+        "Vietnamese"
+      ],
+      "release": "NotoSansMono-v2.014",
+      "url": "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSansMono-v2.014/NotoSansMono-v2.014.zip",
+      "license": "OFL-1.1-Noto.txt",
+      "filename": "noto-sans-mono-v2.014.ttf",
+      "bytes": 1708408,
+      "sha256": "2cb2adb378a8f574213e23df697050b83c54c27df465a2015552740b2769a081",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Sans Arabic",
+      "style": "normal",
+      "weights": "100 900",
+      "scripts": [
+        "Arabic",
+        "Latin",
+        "Latin Extended",
+        "Math",
+        "Symbols"
+      ],
+      "release": "NotoSansArabic-v2.012",
+      "url": "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.012/NotoSansArabic-v2.012.zip",
+      "license": "OFL-1.1-Noto-Arabic.txt",
+      "filename": "noto-sans-arabic-v2.012.ttf",
+      "bytes": 844676,
+      "sha256": "63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Sans Hebrew",
+      "style": "normal",
+      "weights": "100 900",
+      "scripts": [
+        "Hebrew",
+        "Latin",
+        "Latin Extended",
+        "Greek Extended",
+        "Cyrillic Extended"
+      ],
+      "release": "NotoSansHebrew-v3.001",
+      "url": "https://github.com/notofonts/hebrew/releases/download/NotoSansHebrew-v3.001/NotoSansHebrew-v3.001.zip",
+      "license": "OFL-1.1-Noto-Hebrew.txt",
+      "filename": "noto-sans-hebrew-v3.001.ttf",
+      "bytes": 112640,
+      "sha256": "7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Sans Devanagari",
+      "style": "normal",
+      "weights": "100 900",
+      "scripts": [
+        "Devanagari",
+        "Latin",
+        "Latin Extended"
+      ],
+      "release": "NotoSansDevanagari-v2.007",
+      "url": "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip",
+      "license": "OFL-1.1-Noto-Devanagari.txt",
+      "filename": "noto-sans-devanagari-v2.007.ttf",
+      "bytes": 641944,
+      "sha256": "14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Sans SC",
+      "style": "normal",
+      "weights": "100 900",
+      "scripts": [
+        "Simplified Chinese (Han)",
+        "Latin",
+        "Cyrillic",
+        "Vietnamese"
+      ],
+      "release": "Google Fonts commit e44c4b0",
+      "url": "https://raw.githubusercontent.com/google/fonts/e44c4b011a820c2cbe2fd2cfa8052037d7edb571/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+      "license": "OFL-1.1-Noto-CJK.txt",
+      "filename": "noto-sans-sc-v2.004.ttf",
+      "bytes": 17772300,
+      "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    },
+    {
+      "family": "Noto Color Emoji",
+      "style": "normal",
+      "weights": "400",
+      "scripts": [
+        "Emoji presentation sequences",
+        "ZWJ sequences",
+        "skin-tone modifiers",
+        "variation selectors"
+      ],
+      "release": "noto-emoji v2.051 / commit 0612165",
+      "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/06121655d0e82f9cae6e7ba6feed4fa6fdbfc2a4/2D/fonts/Noto-COLRv1-noflags.ttf",
+      "license": "OFL-1.1-Noto-Emoji.txt",
+      "filename": "noto-color-emoji-v2.051.ttf",
+      "bytes": 3038756,
+      "sha256": "741815c198323b067670a1cfe6660ad8463ffcb8733314af30868eab9c4eb18b",
+      "format": "truetype",
+      "unicode_coverage": "Published upstream script coverage; no subsetting"
+    }
+  ],
+  "licenses": [
+    {
+      "file": "OFL-1.1-Noto-Arabic.txt",
+      "license": "SIL Open Font License 1.1",
+      "url": "https://scripts.sil.org/OFL"
+    },
+    {
+      "file": "OFL-1.1-Noto-CJK.txt",
+      "license": "SIL Open Font License 1.1",
+      "url": "https://scripts.sil.org/OFL"
+    },
+    {
+      "file": "OFL-1.1-Noto-Devanagari.txt",
+      "license": "SIL Open Font License 1.1",
+      "url": "https://scripts.sil.org/OFL"
+    },
+    {
+      "file": "OFL-1.1-Noto-Emoji.txt",
+      "license": "SIL Open Font License 1.1",
+      "url": "https://scripts.sil.org/OFL"
+    },
+    {
+      "file": "OFL-1.1-Noto-Hebrew.txt",
+      "license": "SIL Open Font License 1.1",
+      "url": "https://scripts.sil.org/OFL"
+    },
+    {
+      "file": "OFL-1.1-Noto.txt",
+      "license": "SIL Open Font License 1.1",
+      "url": "https://scripts.sil.org/OFL"
+    }
+  ]
+}

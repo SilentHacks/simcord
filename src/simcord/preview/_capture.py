@@ -217,13 +217,38 @@ class ManagedCapture:
         return {
             "playwrightVersion": str(playwright_version),
             "browserVersion": str(version),
-            "fontStackConfigured": '"Noto Sans", "Segoe UI", system-ui, sans-serif',
-            "fontResolution": "unavailable until capture runtime",
-            "emojiFallback": "environment",
+            "fontStackConfigured": '"Noto Sans", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans SC", sans-serif',
+            "fontResolution": "unavailable until Chromium platform-font inspection",
+            "emojiFallback": "packaged Noto Color Emoji",
             "animationPolicy": "cancel-animations-and-hide-caret",
             "deviceScale": 1,
             "reducedMotion": True,
         }
+
+    @staticmethod
+    async def _platform_fonts(page: Any) -> dict[str, Any]:
+        """Ask Chromium which platform faces supplied glyphs for the rendered surface."""
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.enable")
+            await cdp.send("CSS.enable")
+            document = await cdp.send("DOM.getDocument")
+            root_id = int(document["root"]["nodeId"])
+            node = await cdp.send(
+                "DOM.querySelector",
+                {
+                    "nodeId": root_id,
+                    "selector": ".message-content, .message-author, .text-display, button",
+                },
+            )
+            node_id = int(node.get("nodeId", 0))
+            if not node_id:
+                return {"available": False, "faces": [], "error": "preview surface is unavailable"}
+            result = await cdp.send("CSS.getPlatformFontsForNode", {"nodeId": node_id})
+            faces = result.get("fonts", [])
+            return {"available": True, "faces": [dict(face) for face in faces if isinstance(face, Mapping)]}
+        except Exception as exc:  # pragma: no cover - depends on Chromium CDP support
+            return {"available": False, "faces": [], "error": str(exc)}
 
     async def render(
         self,
@@ -271,18 +296,34 @@ class ManagedCapture:
 
                 self.preview._assert_capture_live(pin.page)
                 status = await self._status(page)
+                platform_fonts = await self._platform_fonts(page)
                 runtime_fonts = await page.evaluate(
                     """() => ({
                         computed: getComputedStyle(document.documentElement).fontFamily,
-                        loaded: document.fonts ? [...document.fonts].filter((font) => font.status === "loaded").map((font) => font.family) : [],
+                        loaded: document.fonts ? [...document.fonts]
+                          .filter((font) => font.status === "loaded")
+                          .map((font) => ({ family: font.family, style: font.style, weight: font.weight })) : [],
+                        status: window.simcordPreview?.profile?.fontStatus || null,
                     })"""
                 )
+                runtime_fonts["platform"] = platform_fonts
                 profile["fontResolution"] = runtime_fonts
                 last_action = status.get("lastAction")
                 if isinstance(last_action, Mapping) and last_action.get("settlement") != "settled":
                     raise SetupError("managed capture requires a settled action")
                 diagnostics = self._diagnostics(status)
-                complete = bool(status.get("complete", True))
+                if not platform_fonts.get("available"):
+                    diagnostics.append(
+                        {
+                            "code": "font-platform-inspection",
+                            "severity": "error",
+                            "message": platform_fonts.get(
+                                "error", "Chromium platform-font inspection unavailable"
+                            ),
+                            "complete": False,
+                        }
+                    )
+                complete = bool(status.get("complete", True)) and bool(platform_fonts.get("available"))
                 if not complete and not allow_incomplete:
                     raise SetupError("managed capture is incomplete; pass allow_incomplete=True")
 

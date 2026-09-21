@@ -11,7 +11,14 @@ import sys
 
 def test_base_import_loads_no_optional_deps():
     code = (
+        "import builtins\n"
         "import sys\n"
+        "real_open = builtins.open\n"
+        "def audited_open(file, *args, **kwargs):\n"
+        "    if 'preview/static/fonts' in str(file):\n"
+        "        raise AssertionError('base import read preview font assets')\n"
+        "    return real_open(file, *args, **kwargs)\n"
+        "builtins.open = audited_open\n"
         "import simcord\n"
         "leaked = {'PIL', 'playwright', 'markdown_it'} & set(sys.modules)\n"
         "assert not leaked, f'optional deps imported eagerly: {leaked}'\n"

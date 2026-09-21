@@ -57,6 +57,7 @@ const state = {
   focusInModal: false,
   contextReleased: false,
   statusFingerprint: "",
+  fontStatus: { loaded: [], missing: [], faces: [] },
 };
 function freeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -88,10 +89,10 @@ function statusObject() {
     pendingAction: state.pendingAction ? JSON.parse(JSON.stringify(state.pendingAction)) : null,
     ready: state.ready,
     complete: state.complete,
+    diagnostics: JSON.parse(JSON.stringify(state.diagnostics)),
     authorized: state.authorized,
     calibration: { ...state.calibration },
-    diagnostics: JSON.parse(JSON.stringify(state.diagnostics)),
-    profile: { ...state.profile },
+    profile: { ...state.profile, fontStatus: JSON.parse(JSON.stringify(state.fontStatus)) },
   };
   return freeze(value);
 }
@@ -193,13 +194,68 @@ function renderDiagnostics() {
   ui.diagnostics.append(list);
 }
 
+const FONT_REQUIREMENTS = [
+  { family: "Noto Sans", css: 'normal 16px "Noto Sans"', sample: "Discord Preview" },
+  { family: "Noto Sans", css: 'italic 16px "Noto Sans"', sample: "Italic Preview" },
+  { family: "Noto Sans Mono", css: 'normal 16px "Noto Sans Mono"', sample: "const x = 1;" },
+  { family: "Noto Color Emoji", css: 'normal 16px "Noto Color Emoji"', sample: "👩🏽‍💻❤️‍🔥" },
+  { family: "Noto Sans Arabic", css: 'normal 16px "Noto Sans Arabic"', sample: "مرحبا بالعالم" },
+  { family: "Noto Sans Hebrew", css: 'normal 16px "Noto Sans Hebrew"', sample: "שלום עולם" },
+  { family: "Noto Sans Devanagari", css: 'normal 16px "Noto Sans Devanagari"', sample: "नमस्ते दुनिया" },
+  { family: "Noto Sans SC", css: 'normal 16px "Noto Sans SC"', sample: "你好世界" },
+];
+let requiredFontsPromise;
+
+async function loadRequiredFonts() {
+  if (!document.fonts?.load || !document.fonts?.check) {
+    throw new Error("This browser does not expose the CSS Font Loading API.");
+  }
+  if (!requiredFontsPromise) {
+    requiredFontsPromise = Promise.all(FONT_REQUIREMENTS.map(async (requirement) => {
+      try {
+        await document.fonts.load(requirement.css, requirement.sample);
+        const loaded = document.fonts.check(requirement.css, requirement.sample);
+        return { ...requirement, loaded };
+      } catch (error) {
+        return { ...requirement, loaded: false, error: String(error?.message || error) };
+      }
+    }));
+  }
+  const faces = await requiredFontsPromise;
+  const missing = faces.filter((face) => !face.loaded).map((face) => ({
+    family: face.family,
+    sample: face.sample,
+    error: face.error || "font face or certified glyphs are unavailable",
+  }));
+  state.fontStatus = {
+    loaded: faces.filter((face) => face.loaded).map((face) => face.family),
+    missing,
+    faces: faces.map((face) => ({ family: face.family, sample: face.sample, loaded: face.loaded })),
+  };
+  if (missing.length) {
+    const names = missing.map((face) => face.family).join(", ");
+    throw new Error(`Packaged preview fonts failed to load: ${names}. Reinstall simcord[preview] and retry.`);
+  }
+  return faces;
+}
+
 async function waitReady(generation, pendingMedia) {
+  let fontError = null;
   try {
     await Promise.all(pendingMedia || []);
-    if (document.fonts?.ready) await document.fonts.ready;
+    await loadRequiredFonts();
     await nextFrames();
-  } catch (_) {
-    // Media failures are represented by a diagnostic and an unavailable tile.
+  } catch (error) {
+    fontError = error;
+  }
+  if (fontError) {
+    addDiagnostic({
+      code: "preview-fonts",
+      severity: "error",
+      message: fontError.message || String(fontError),
+      remediation: "Install the preview assets with `pip install simcord[preview]`, then reload the Preview URL.",
+      complete: false,
+    });
   }
   if (generation !== state.renderGeneration || state.closed) return;
   state.ready = true;

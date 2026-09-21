@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib.util
+import json
 import secrets
 from collections.abc import Mapping
 from datetime import datetime
+from functools import cache
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,6 +28,31 @@ from ._media import MediaWorker
 from ._pages import _Page, _PageOps
 from ._server import PreviewServer
 from ._snapshot import build_snapshot
+
+_PREVIEW_FONT_MANIFEST = Path(__file__).with_name("static") / "fonts" / "manifest.json"
+_PREVIEW_RUNTIME_MODULES = ("aiohttp", "markdown_it", "PIL")
+
+
+@cache
+def _require_preview_runtime() -> None:
+    missing = [module for module in _PREVIEW_RUNTIME_MODULES if importlib.util.find_spec(module) is None]
+    if missing:
+        names = ", ".join(missing)
+        raise SetupError(
+            f"Preview requires {names}; install the optional runtime with `pip install simcord[preview]`."
+        )
+    try:
+        manifest = json.loads(_PREVIEW_FONT_MANIFEST.read_text(encoding="utf-8"))
+        fonts = manifest["fonts"]
+        for item in fonts:
+            filename = item["filename"]
+            path = _PREVIEW_FONT_MANIFEST.parent / filename
+            if hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
+                raise ValueError(filename)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SetupError(
+            "Preview typography assets are missing or corrupt; reinstall with `pip install simcord[preview]`."
+        ) from exc
 
 
 class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
@@ -106,6 +136,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             raise SetupError("Only one active Preview is allowed per Env")
         self.env._preview = self
         try:
+            _require_preview_runtime()
             await self._server.start()
             if self._closed or self._closed_event.is_set():
                 # A close() racing the bind already ran (or is running)

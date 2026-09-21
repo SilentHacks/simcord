@@ -37,6 +37,22 @@ class PreviewServer:
         "/components.js": "components.js",
         "/preview.css": "preview.css",
         "/protocol.schema.json": "protocol.schema.json",
+        "/fonts/noto-sans-latin-v2.015.ttf": "fonts/noto-sans-latin-v2.015.ttf",
+        "/fonts/noto-sans-latin-italic-v2.015.ttf": "fonts/noto-sans-latin-italic-v2.015.ttf",
+        "/fonts/noto-sans-mono-v2.014.ttf": "fonts/noto-sans-mono-v2.014.ttf",
+        "/fonts/noto-sans-arabic-v2.012.ttf": "fonts/noto-sans-arabic-v2.012.ttf",
+        "/fonts/noto-sans-hebrew-v3.001.ttf": "fonts/noto-sans-hebrew-v3.001.ttf",
+        "/fonts/noto-sans-devanagari-v2.007.ttf": "fonts/noto-sans-devanagari-v2.007.ttf",
+        "/fonts/noto-sans-sc-v2.004.ttf": "fonts/noto-sans-sc-v2.004.ttf",
+        "/fonts/noto-color-emoji-v2.051.ttf": "fonts/noto-color-emoji-v2.051.ttf",
+    }
+    _FONT_FILES = frozenset(value for value in _STATIC_FILES.values() if value.startswith("fonts/"))
+    _STATIC_CONTENT_TYPES: ClassVar[dict[str, str]] = {
+        "index.html": "text/html",
+        "app.js": "application/javascript",
+        "components.js": "application/javascript",
+        "preview.css": "text/css",
+        "protocol.schema.json": "application/schema+json",
     }
     _SECURITY_HEADERS: ClassVar[dict[str, str]] = {
         "Cache-Control": "no-store",
@@ -46,7 +62,7 @@ class PreviewServer:
         "X-Frame-Options": "DENY",
         "Content-Security-Policy": (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; img-src 'self' blob:; object-src 'none'; "
+            "font-src 'self'; connect-src 'self'; img-src 'self' blob:; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'"
         ),
     }
@@ -65,7 +81,7 @@ class PreviewServer:
             raise SetupError("Preview requires aiohttp; install simcord[preview]") from exc
         app = web.Application(handler_args={"handler_cancellation": False})
         app.router.add_get("/", self._index)
-        for route in ("/app.js", "/components.js", "/preview.css", "/protocol.schema.json"):
+        for route in (route for route in self._STATIC_FILES if route != "/"):
             app.router.add_get(route, self._static)
         app.router.add_post("/api/pages", self._pages)
         app.router.add_delete("/api/pages/{context_id}", self._delete_page)
@@ -126,6 +142,8 @@ class PreviewServer:
         return await self._static(request)
 
     async def _static(self, request: Any) -> Any:
+        if self.port is None or request.headers.get("Host", "") not in self._allowed_hosts():
+            raise web.HTTPForbidden()
         filename = self._STATIC_FILES.get(request.path)
         if filename is None:  # pragma: no cover - only registered static routes call this
             raise web.HTTPNotFound()
@@ -134,17 +152,18 @@ class PreviewServer:
             if filename == "protocol.schema.json"
             else Path(__file__).with_name("static") / filename
         )
+        content_type = (
+            "font/ttf" if filename in self._FONT_FILES else self._STATIC_CONTENT_TYPES.get(filename)
+        )
+        if content_type is None:  # pragma: no cover - static map is class-owned
+            raise web.HTTPNotFound()
         try:
+            if filename in self._FONT_FILES:
+                body = path.read_bytes()
+                return web.Response(body=body, content_type=content_type, headers=self._SECURITY_HEADERS)
             text = path.read_text(encoding="utf-8")
         except OSError:
             raise web.HTTPNotFound() from None
-        content_type = {
-            "index.html": "text/html",
-            "app.js": "application/javascript",
-            "components.js": "application/javascript",
-            "preview.css": "text/css",
-            "protocol.schema.json": "application/schema+json",
-        }[filename]
         return web.Response(text=text, content_type=content_type, headers=self._SECURITY_HEADERS)
 
     async def _pages(self, request: Any) -> Any:

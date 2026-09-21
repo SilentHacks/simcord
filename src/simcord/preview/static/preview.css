@@ -1,7 +1,70 @@
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/noto-sans-latin-v2.015.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/noto-sans-latin-italic-v2.015.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans Mono";
+  src: url("/fonts/noto-sans-mono-v2.014.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Color Emoji";
+  src: url("/fonts/noto-color-emoji-v2.051.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans Arabic";
+  src: url("/fonts/noto-sans-arabic-v2.012.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans Hebrew";
+  src: url("/fonts/noto-sans-hebrew-v3.001.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans Devanagari";
+  src: url("/fonts/noto-sans-devanagari-v2.007.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans SC";
+  src: url("/fonts/noto-sans-sc-v2.004.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+
 :root {
+  --preview-font-sans: "Noto Sans", "Noto Sans Arabic", "Noto Sans Hebrew",
+    "Noto Sans Devanagari", "Noto Sans SC", sans-serif;
+  --preview-font-mono: "Noto Sans Mono", "Noto Sans", monospace;
+  --preview-font-emoji: "Noto Color Emoji";
   color-scheme: dark;
-  font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--preview-font-sans);
   font-size: 16px;
+  line-height: 22px;
+  text-rendering: optimizeLegibility;
   background: #323339;
   color: #f2f3f5;
   --discord-bg: #323339;
@@ -50,8 +113,8 @@
 }
 * { box-sizing: border-box; }
 html, body { min-width: 240px; min-height: 100%; }
-body { margin: 0; background: var(--discord-bg); }
-button, input, select, textarea { font: inherit; }
+body { margin: 0; background: var(--discord-bg); font-family: var(--preview-font-sans); line-height: 22px; }
+button, input, select, textarea { font: inherit; line-height: 20px; }
 button, input, select, textarea { color: inherit; }
 button { cursor: pointer; border: 0; border-radius: 4px; padding: 2px 16px; background: var(--discord-control); }
 button:disabled { cursor: not-allowed; opacity: .45; }
@@ -213,7 +276,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: var(--code-surface);
   border: 1px solid var(--code-border);
   border-radius: 3px;
-  font-family: "gg sans mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--preview-font-mono);
+  font-variant-ligatures: none;
 }
 .inline-code { padding: 1px 4px; font-size: .875em; }
 .code-block { display: block; margin: 6px 0; padding: 8px; overflow: auto; white-space: pre; }
@@ -256,6 +320,7 @@ a.embed-title, .embed-card .markdown-link { color: var(--link-text); }
   margin-top: 8px;
 }
 .embed-field { grid-column: span 12; display: grid; gap: 2px; min-width: 0; }
+.button-emoji, .option-emoji, .selected-emoji { font-family: var(--preview-font-emoji); font-variant-emoji: emoji; }
 .embed-field.inline { grid-column: span 4; }
 .embed-field-name { overflow-wrap: anywhere; color: var(--embed-field-name); font-size: 14px; }
 .embed-field-value { font-size: 14px; line-height: 18px; }
@@ -483,7 +548,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .attachment-image, .component-file-preview { width: 100%; max-height: 280px; }
 .attachment-inline .attachment-image { width: 100%; height: auto; max-height: none; aspect-ratio: 16 / 9; }
 .attachment-footer { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--discord-hover); font-size: 14px; }
-.attachment-preview { min-height: 124px; margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-family: "gg sans mono", ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--discord-bg); }
+.attachment-preview { min-height: 124px; margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-family: var(--preview-font-mono); font-variant-ligatures: none; background: var(--discord-bg); }
 .message-attachments { list-style: none; margin: 2px 0 0 72px; padding: 0; }
 .attachment-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .attachment-action {
