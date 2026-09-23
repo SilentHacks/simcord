@@ -4,12 +4,12 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
-## 3.0.0 (2026-09-23)
+## 2.2.0 (2026-09-23)
 
 ### Features
 
 - Add an optional local component preview with real callback interactions, authorized viewer contexts, offline media assets, and deterministic Playwright screenshot reports. The base package remains lazy and networkless; install `simcord[preview]` for the bridge or `simcord[screenshot]` plus Chromium for capture.
-- Breaking in SimCord 3.0: remove `Env.http_log`; use `Env.http_requests` and its `HttpLogEntry` records instead.
+- Breaking in SimCord 2.2: remove `Env.http_log`; use `Env.http_requests` and its `HttpLogEntry` records instead.
 - Extend the local component preview: `env.preview(port=...)` pins the loopback port for stable capability URLs and pre-created SSH forwards, `await preview.snapshot()` returns the detached JSON projection as the structured/agent read surface, `screenshot(path=None)` captures in memory with PNG bytes on `PreviewCapture.png`, `window.simcordPreview` exposes `viewerId`/`targetId`, localhost origins are accepted, and internal bridge methods are now private by default.
 - Hardened the local preview with deterministic presentation diagnostics, generation-scoped media readiness, modal focus isolation, safe page release, and strict action-envelope validation.
 - Preview snapshots now publish protocol 2: `messageIndex` is picker-only summary data, `messages` maps authorized IDs to full projections, and `targetId` replaces `selected`. Component and modal controls use scoped stable control keys, mutating browser actions carry an explicit target and published revision, and `presentation_time` is deterministic and timezone-aware. Snapshot consumers must migrate; protocol 1 keys are not supported.
