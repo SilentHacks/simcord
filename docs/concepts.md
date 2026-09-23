@@ -94,9 +94,14 @@ assert channel.last_message.content == "Pong!"   # the reply is already here
 ```
 
 Bot-owned work stays bot-owned across parking, timeout, cancellation, later actions, startup,
-and restart. Recognized waits — `Client.wait_for`, View/Modal completion, composed
-`gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`, and verified
-far-future sleeps — may remain. Unknown waits remain active and time out. Use a reasoned,
+and restart. Recognized waits — `Client.wait_for` (including its `timeout=`),
+`asyncio.wait_for` timeouts, View/Modal completion, store-registered View/Modal expiry
+timers, `discord.ext.tasks` loop intervals, composed
+`gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`
+and the timers its awaited work schedules, and verified far-future sleeps — may remain.
+Recognized waits are virtual: their timers fire only via `env.advance_time()` or the awaited
+input, never the wall clock. (A View sent with no dispatchable items never registers, so its
+expiry keeps real-time behavior.) Unknown waits remain active and time out. Use a reasoned,
 scoped declaration for external input:
 
 ```python
