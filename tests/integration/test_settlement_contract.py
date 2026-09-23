@@ -15,6 +15,7 @@ from typing import Any
 
 import discord
 import pytest
+from discord.ext import tasks
 
 import simcord
 from fixtures.sample_bot import create_bot
@@ -992,3 +993,202 @@ async def test_timeout_zero_reports_immediate_callback_label_and_guidance():
         assert "pending_callback" in text
         assert "external_wait" in text
         assert "advance_time" in text
+
+
+@pytest.mark.asyncio
+async def test_view_timeout_parks_instead_of_blocking_settle():
+    """A registered View expiry is a recognized wait: the verb returns
+    promptly while the view is pending, and only advance_time() fires
+    on_timeout — once."""
+    bot = create_bot()
+    timeouts = 0
+
+    class OfferView(discord.ui.View):
+        def __init__(self) -> None:
+            super().__init__(timeout=0.3)
+
+        async def on_timeout(self) -> None:
+            nonlocal timeouts
+            timeouts += 1
+
+        @discord.ui.button(label="Claim", custom_id="claim")
+        async def claim(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+            await interaction.response.send_message("claimed")
+
+    @bot.listen("on_message")
+    async def offer(message: discord.Message) -> None:
+        if message.content == "offer":
+            await message.channel.send("expiring offer", view=OfferView())
+
+    async with simcord.run(bot, settle_timeout=1.0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        await alice.send(channel, "offer")
+        assert time.monotonic() - started < 0.25
+        assert timeouts == 0
+        await env.advance_time(0.3)
+        assert timeouts == 1
+        await env.advance_time(0.3)
+        assert timeouts == 1
+
+
+@pytest.mark.asyncio
+async def test_view_button_click_before_expiry_is_joined():
+    """Clicking a view's button before expiry is joined normally, and
+    advancing past the timeout afterwards cannot fire on_timeout on the
+    stopped view."""
+    bot = create_bot()
+    timeouts = 0
+
+    class OfferView(discord.ui.View):
+        def __init__(self) -> None:
+            super().__init__(timeout=0.3)
+
+        async def on_timeout(self) -> None:
+            nonlocal timeouts
+            timeouts += 1
+
+        @discord.ui.button(label="Claim", custom_id="claim")
+        async def claim(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+            await interaction.response.send_message("claimed")
+            self.stop()
+
+    @bot.listen("on_message")
+    async def offer(message: discord.Message) -> None:
+        if message.content == "offer":
+            await message.channel.send("expiring offer", view=OfferView())
+
+    async with simcord.run(bot, settle_timeout=1.0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await alice.send(channel, "offer")
+        message = channel.last_message
+        assert message is not None
+        result = await alice.click(message, custom_id="claim")
+        assert result.response is not None
+        assert result.response.content == "claimed"
+        await env.advance_time(0.3)
+        assert timeouts == 0
+
+
+@pytest.mark.asyncio
+async def test_external_wait_covers_timed_awaitable():
+    """A declared external_wait around a timed awaitable is fully virtual:
+    the verb returns promptly and only advance_time() resumes the handler."""
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def timed_wait(message: discord.Message) -> None:
+        if message.content != "timed":
+            return
+        await env.external_wait(asyncio.sleep(0.25), reason="await test input")
+        await message.channel.send("resumed")
+
+    async with simcord.run(bot, settle_timeout=1.0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        await alice.send(channel, "timed")
+        assert time.monotonic() - started < 0.25
+        assert channel.last_message is not None
+        assert channel.last_message.content == "timed"
+        await env.advance_time(0.25)
+        assert channel.last_message is not None
+        assert channel.last_message.content == "resumed"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_timeout_is_virtual_only():
+    """A Client.wait_for(timeout=...) deadline is virtual: the listener parks
+    without burning real seconds, and advance_time() drives its TimeoutError
+    continuation."""
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def armed(message: discord.Message) -> None:
+        if message.content != "arm":
+            return
+        try:
+            await bot.wait_for("message", check=lambda item: item.content == "fire", timeout=5)
+        except TimeoutError:
+            await message.channel.send("timed out")
+
+    async with simcord.run(bot, settle_timeout=30) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        await alice.send(channel, "arm")
+        assert time.monotonic() - started < 1.0
+        assert channel.last_message is not None
+        assert channel.last_message.content == "arm"
+        await env.advance_time(5)
+        assert channel.last_message is not None
+        assert channel.last_message.content == "timed out"
+
+
+@pytest.mark.asyncio
+async def test_modal_timeout_is_virtual_only():
+    """A Modal's store-registered expiry task parks like a View's: the slash
+    verb returns promptly and advance_time() fires on_timeout."""
+    bot = create_bot()
+    timeouts = 0
+
+    class TimedModal(discord.ui.Modal, title="Timed"):
+        name = discord.ui.TextInput(label="Name")
+
+        async def on_timeout(self) -> None:
+            nonlocal timeouts
+            timeouts += 1
+
+    @bot.tree.command(name="timed-modal")
+    async def timed_modal(interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(TimedModal(timeout=30))
+
+    async with simcord.run(bot, settle_timeout=60) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        result = await alice.slash(channel, "timed-modal")
+        assert time.monotonic() - started < 1.0
+        assert result.modal is not None
+        assert timeouts == 0
+        await env.advance_time(30)
+        assert timeouts == 1
+
+
+@pytest.mark.asyncio
+async def test_tasks_loop_interval_is_virtual_only():
+    """A discord.ext.tasks between-iteration sleep is a recognized wait: the
+    interval never burns real time and advance_time() runs the loop body."""
+    ran: list[str] = []
+    bot = create_bot()
+
+    @tasks.loop(seconds=30)
+    async def ticker() -> None:
+        ran.append("tick")
+
+    original_setup = bot.setup_hook
+
+    async def setup_hook() -> None:
+        await original_setup()
+        ticker.start()
+
+    bot.setup_hook = setup_hook
+
+    async with simcord.run(bot, settle_timeout=60) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        await alice.send(channel, "ping")
+        assert time.monotonic() - started < 1.0
+        assert ran == ["tick"]  # the body ran once at start
+        await env.advance_time(30)
+        assert ran == ["tick", "tick"]
+        ticker.cancel()

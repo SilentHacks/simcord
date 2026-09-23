@@ -106,18 +106,27 @@ async def test_settle_joins_short_bot_sleep_after_advance(env):
     await task
 
 
-async def test_view_timeout_expires_on_real_clock():
-    """Without advance_time(), a View timeout still fires via the real-clock
-    fallback instead of resleeping forever on the frozen virtual monotonic."""
+async def test_view_timeout_expires_on_virtual_clock_only():
+    """A registered View timeout is a parked wait: the real clock never fires
+    it — only advance_time() does, exactly once."""
     bot = create_bot()
     timed_out = asyncio.Event()
+    timeouts = 0
 
     class QuickView(discord.ui.View):
         def __init__(self) -> None:
             super().__init__(timeout=0.05)
 
         async def on_timeout(self) -> None:
+            nonlocal timeouts
+            timeouts += 1
             timed_out.set()
+
+        # A dispatchable item registers the view in the store — only
+        # registered views get a recognized (virtual-only) expiry timer.
+        @discord.ui.button(label="Quick", custom_id="quick")
+        async def quick(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+            await interaction.response.send_message("clicked")
 
     @bot.tree.command(name="quick-view")
     async def quick_view(interaction: discord.Interaction) -> None:
@@ -128,7 +137,11 @@ async def test_view_timeout_expires_on_real_clock():
         alice = guild.add_member(env.create_user("alice"))
         channel = guild.create_text_channel("general")
         await alice.slash(channel, "quick-view")
-        await asyncio.wait_for(timed_out.wait(), 1)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(timed_out.wait(), 0.3)
+        await env.advance_time(0.05)
+        assert timed_out.is_set()
+        assert timeouts == 1
 
 
 async def test_zero_delay_timer_chain_respects_settle_deadline():

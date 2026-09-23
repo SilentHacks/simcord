@@ -423,9 +423,13 @@ class Env:
 
             assert real_call_at is not None and real_monotonic is not None
             remaining = max(when - self._virtual_time, 0.0)
-            record.real_handle = real_call_at(
-                real_monotonic() + remaining, run_real, context=schedule_context
-            )
+            current = _current_task()
+            if current is None or current not in self._external_waits:
+                # Timers scheduled inside a declared wait are virtual from
+                # birth — only advance_time() may ever fire them.
+                record.real_handle = real_call_at(
+                    real_monotonic() + remaining, run_real, context=schedule_context
+                )
         record.handle = handle
         if not called:
             self._callbacks.append(record)
@@ -647,7 +651,12 @@ class Env:
         self._external_waits.clear()
 
     async def external_wait(self, awaitable: Any, *, reason: str) -> Any:
-        """Await one explicitly declared external input without blocking settlement."""
+        """Await one explicitly declared external input without blocking settlement.
+
+        Timers scheduled by the awaited work are virtual: they resume only
+        through :meth:`advance_time` or the awaited input itself, never the
+        wall clock.
+        """
         task = _current_task()
         record = self._task_records.get(task) if task is not None else None
         if not isinstance(reason, str) or not reason.strip():
@@ -706,6 +715,7 @@ class Env:
                     return
                 continue
             stable_empty = 0
+            self._virtualize_recognized_waits(pending)
             parked = [task for task in pending if self._is_parked(task, deadline)]
             active_callbacks = [
                 record for record in callbacks if not self._callback_is_parked(record, deadline)
@@ -715,6 +725,7 @@ class Env:
                 # callback scheduled by a just-finished task cannot escape.
                 await asyncio.sleep(0)
                 again = [task for task in self._owned_tasks() if not task.done()]
+                self._virtualize_recognized_waits(again)
                 again_callbacks = [
                     record
                     for record in self._active_callbacks(deadline)
@@ -811,6 +822,55 @@ class Env:
                 return True
         return False
 
+    def _timer_records_waking(self, task: asyncio.Task[Any], waiter: Any) -> list[_CallbackRecord]:
+        """Tracked timers whose only effect is resuming this task's current wait."""
+        if waiter is None:
+            return []
+        found: list[_CallbackRecord] = []
+        for record in self._callbacks:
+            handle = record.handle
+            if record.when is None or handle is None or handle.cancelled():
+                continue
+            if record.when <= self._virtual_time:
+                continue  # already due — the due-callback pass fires it this turn
+            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
+            if _dpy_internals.is_wakeup_callback(callback, getattr(handle, "_args", ()), waiter, task):
+                found.append(record)
+        return found
+
+    def _virtualize_recognized_waits(self, pending: list[asyncio.Task[Any]]) -> None:
+        """Strip the real fallback from timers that only resume a recognized wait.
+
+        A wait parked on purpose must fire exclusively through advance_time(): a
+        wall-clock fallback would let it expire mid-operation and reintroduce the
+        nondeterminism settlement exists to remove.
+        """
+        for task in pending:
+            waiter = getattr(task, "_fut_waiter", None)
+            recognized = (
+                task in self._external_waits
+                or _dpy_internals.is_listener_future(self.bot, waiter)
+                or _dpy_internals.is_wait_for_listener(self.bot, task)
+                or _dpy_internals.is_view_wait_future(self.bot, waiter)
+                or _dpy_internals.view_expiry_task(self.bot, task, waiter)
+                or _dpy_internals.tasks_loop_sleep(task, waiter)
+            )
+            if not recognized:
+                continue
+            targets = [task]
+            if task in self._external_waits:
+                targets.extend(
+                    dependency
+                    for dependency in _dpy_internals.composed_tasks(task, waiter)
+                    if isinstance(dependency, asyncio.Task)
+                )
+            for target in targets:
+                dep_waiter = getattr(target, "_fut_waiter", None)
+                for record in self._timer_records_waking(target, dep_waiter):
+                    real = record.real_handle
+                    if real is not None and not real.cancelled():
+                        real.cancel()
+
     def _owned_tasks(self) -> list[asyncio.Task[Any]]:
         return [task for task in self._task_records if not task.done()]
 
@@ -850,6 +910,12 @@ class Env:
             return "discord Client.wait_for listener"
         if _dpy_internals.is_view_wait_future(self.bot, waiter):
             return "discord View/Modal completion"
+        if _dpy_internals.view_expiry_task(self.bot, task, waiter) and self._timer_records_waking(
+            task, waiter
+        ):
+            return "discord View/Modal expiry timer"
+        if _dpy_internals.tasks_loop_sleep(task, waiter) and self._timer_records_waking(task, waiter):
+            return "discord.ext.tasks loop interval"
         dependencies = _dpy_internals.composed_tasks(task, waiter)
         unresolved = [dependency for dependency in dependencies if not dependency.done()]
         if unresolved:
@@ -901,6 +967,14 @@ class Env:
                     reason = "Client.wait_for listener"
                 elif _dpy_internals.is_view_wait_future(self.bot, waiter):
                     reason = "View/Modal completion"
+                elif _dpy_internals.view_expiry_task(self.bot, task, waiter) and self._timer_records_waking(
+                    task, waiter
+                ):
+                    reason = "registered View/Modal expiry"
+                elif _dpy_internals.tasks_loop_sleep(task, waiter) and self._timer_records_waking(
+                    task, waiter
+                ):
+                    reason = "discord.ext.tasks loop interval"
                 elif waiter is None:
                     reason = "runnable continuation"
                 else:

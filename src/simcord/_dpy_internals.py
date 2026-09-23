@@ -6,10 +6,12 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 """
 
 import asyncio
+import asyncio.timeouts
 import sys
 from typing import Any
 
 import discord
+from discord.ext import tasks as _ext_tasks
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
 from discord.state import ChunkRequest, ConnectionState
@@ -50,6 +52,12 @@ def verify() -> None:
         (ChunkRequest, "done"),
         (DiscordWebSocket, "request_chunks"),
         (discord.Client, "_get_websocket"),
+        # Settlement recognizes (and virtualizes) the timers behind these waits:
+        (_view.BaseView, "_dispatch_timeout"),
+        (_view.BaseView, "_BaseView__timeout_task_impl"),
+        (_ext_tasks.Loop, "_loop"),
+        (_ext_tasks.SleepHandle, "_wrapped_set_result"),
+        (asyncio.timeouts.Timeout, "_on_timeout"),
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
@@ -132,6 +140,55 @@ def _stored_wait_futures(client: discord.Client) -> set[Any]:
 
 def is_view_wait_future(client: discord.Client, waiter: Any) -> bool:
     return waiter in _stored_wait_futures(client) and not waiter.done()
+
+
+def is_wakeup_callback(callback: Any, args: tuple[Any, ...], waiter: Any, task: asyncio.Task[Any]) -> bool:
+    """True when a timer callback exists only to resume this task's current wait."""
+    if waiter is not None and any(arg is waiter for arg in args):
+        return True
+    owner = getattr(callback, "__self__", None)
+    return (
+        getattr(callback, "__name__", "") == "_on_timeout"
+        and getattr(type(owner), "__module__", "") == "asyncio.timeouts"
+        and getattr(owner, "_task", None) is task
+    )
+
+
+def view_expiry_task(client: discord.Client, task: asyncio.Task[Any], waiter: Any) -> bool:
+    """True while task is a store-registered View/Modal expiry task suspended on its timer."""
+    if waiter is None or waiter.done():
+        return False
+    store = getattr(get_state(client), "_view_store", None)
+    if store is None:
+        return False
+    candidates = [
+        getattr(item, "_view", None)
+        for entries in getattr(store, "_views", {}).values()
+        for item in entries.values()
+    ]
+    candidates.extend(getattr(store, "_modals", {}).values())
+    for view in candidates:
+        if view is None:
+            continue
+        for name, value in vars(view).items():
+            if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
+                break
+            if name.endswith("__timeout_task") and value is task:
+                return True
+    return False
+
+
+def tasks_loop_sleep(task: asyncio.Task[Any], waiter: Any) -> bool:
+    """True while a discord.ext.tasks Loop is suspended on its between-iteration sleep."""
+    if waiter is None or waiter.done():
+        return False
+    coro = task.get_coro()
+    frame = getattr(coro, "cr_frame", None)
+    self_obj = frame.f_locals.get("self") if frame is not None else None
+    if not isinstance(self_obj, _ext_tasks.Loop):
+        return False
+    handle = getattr(self_obj, "_handle", None)
+    return getattr(handle, "future", None) is waiter
 
 
 def _original_callback(callback: Any) -> Any:
