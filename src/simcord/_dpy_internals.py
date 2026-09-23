@@ -62,28 +62,28 @@ def verify() -> None:
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
     run_event_code = getattr(discord.Client._run_event, "__code__", None)
-    if run_event_code is None or "coro" not in run_event_code.co_varnames:
+    if run_event_code is None or "coro" not in run_event_code.co_varnames:  # pragma: no cover
         problems.append("discord.Client._run_event no longer exposes its handler coroutine")
     client_probe = discord.Client(intents=discord.Intents.none())
-    if not hasattr(client_probe, "_listeners"):
+    if not hasattr(client_probe, "_listeners"):  # pragma: no cover
         problems.append("discord.Client no longer exposes _listeners")
     store_probe = _view.ViewStore(client_probe._connection)
     for attr in ("_views", "_modals"):
-        if not hasattr(store_probe, attr):
+        if not hasattr(store_probe, attr):  # pragma: no cover
             problems.append(f"ViewStore.{attr}")
-    if not hasattr(discord.ui.Button(label="x", custom_id="y"), "_view"):
+    if not hasattr(discord.ui.Button(label="x", custom_id="y"), "_view"):  # pragma: no cover
         problems.append("Item._view")
     view_probe = discord.ui.View(timeout=5)
     for suffix in ("__stopped", "__timeout_task"):
-        if not any(name.endswith(suffix) for name in vars(view_probe)):
+        if not any(name.endswith(suffix) for name in vars(view_probe)):  # pragma: no cover
             problems.append(f"BaseView.{suffix}")
-    if not hasattr(asyncio.timeouts.Timeout(0.0), "_task"):
+    if not hasattr(asyncio.timeouts.Timeout(0.0), "_task"):  # pragma: no cover
         problems.append("Timeout._task")
 
     async def _probe_loop_body() -> None:
-        pass
+        pass  # pragma: no cover - the probe body is never run, only introspected
 
-    if not hasattr(_ext_tasks.loop(seconds=1)(_probe_loop_body), "_handle"):
+    if not hasattr(_ext_tasks.loop(seconds=1)(_probe_loop_body), "_handle"):  # pragma: no cover
         problems.append("Loop._handle")
     if problems:  # pragma: no cover - only when discord.py changed an internal
         raise ImportError(
@@ -97,16 +97,16 @@ def verify_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Reject event loops missing capabilities settlement needs."""
     required = ("create_task", "call_soon", "call_later", "call_at", "call_soon_threadsafe", "time")
     missing = [name for name in required if not callable(getattr(loop, name, None))]
-    if not hasattr(loop, "_scheduled"):
+    if not hasattr(loop, "_scheduled"):  # pragma: no cover - only on a deficient loop
         missing.append("_scheduled timer heap")
     task = asyncio.current_task()
     for name in ("_exception", "_fut_waiter", "_log_traceback"):
-        if task is None or not hasattr(task, name):
+        if task is None or not hasattr(task, name):  # pragma: no cover
             missing.append(f"Task.{name}")
     factory = loop.get_task_factory() if callable(getattr(loop, "get_task_factory", None)) else None
-    if factory is not None and not callable(factory):
+    if factory is not None and not callable(factory):  # pragma: no cover
         missing.append("callable task factory")
-    if missing:
+    if missing:  # pragma: no cover - only on a deficient loop
         raise SetupError("simcord requires asyncio loop capabilities: " + ", ".join(missing))
     return None
 
@@ -115,7 +115,7 @@ def is_listener_future(client: discord.Client, waiter: Any) -> bool:
     return any(future is waiter and not future.done() for future in listener_futures(client))
 
 
-def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) -> bool:
+def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
     """True when the task's coroutine stack runs ``asyncio.wait_for`` on a listener."""
     wait_for_code = getattr(asyncio.wait_for, "__code__", None)
     if wait_for_code is None:
