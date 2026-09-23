@@ -21,6 +21,9 @@ def _fake_task(waiter: Any = None) -> Mock:
     task = Mock()
     task.done.return_value = False
     task._fut_waiter = waiter
+    # A Mock coroutine's auto-generated cr_await children never terminate the
+    # 3.11 listener/compose stack walk; end it deterministically instead.
+    task.get_coro = lambda: SimpleNamespace(cr_frame=None)
     return task
 
 
@@ -153,7 +156,7 @@ async def test_view_expiry_task_requires_pending_waiter() -> None:
 
 
 def _task_with_frame(f_locals: dict[str, Any] | None) -> Any:
-    frame = SimpleNamespace(f_locals=f_locals) if f_locals is not None else None
+    frame = SimpleNamespace(f_locals=f_locals, f_code=None) if f_locals is not None else None
     coro = SimpleNamespace(cr_frame=frame)
     return SimpleNamespace(get_coro=lambda: coro)
 
@@ -290,9 +293,7 @@ async def test_wakes_recognized_wait_rejects_unrecognized_task(env: Any) -> None
 
 def _parked_task(waiter: Any) -> Any:
     """A hashable fake suspended task whose coroutine introspection ends quickly."""
-    task = _fake_task(waiter)
-    task.get_coro = lambda: SimpleNamespace(cr_frame=None)
-    return task
+    return _fake_task(waiter)
 
 
 def _register_view(env: Any, view: Any) -> None:
@@ -446,7 +447,9 @@ async def test_park_reason_names_view_expiry_and_loop_interval(env: Any) -> None
     waiter: asyncio.Future[Any] = asyncio.Future()
     probe._handle = SimpleNamespace(future=waiter)  # type: ignore[attr-defined]
     loop_task = _parked_task(waiter)
-    loop_task.get_coro = lambda: SimpleNamespace(cr_frame=SimpleNamespace(f_locals={"self": probe}))
+    loop_task.get_coro = lambda: SimpleNamespace(
+        cr_frame=SimpleNamespace(f_locals={"self": probe}, f_code=None)
+    )
     _record(env, _wrapped_set_result, (waiter,), 10.0)
     assert env._park_reason(loop_task, 5.0) == "discord.ext.tasks loop interval"
 
