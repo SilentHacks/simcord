@@ -145,3 +145,4 @@ More in [Errors & diagnostics](guides/diagnostics.md).
 - [Core concepts](concepts.md) — builders, actors and queries in depth.
 - [Messages & prefix commands](guides/messages.md) — the first guide.
 - [Recipes](cookbook.md) — ready-made patterns for common test scenarios.
+- [Component preview & screenshots](guides/preview.md) — see your bot's components in a real browser.

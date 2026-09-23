@@ -68,20 +68,28 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the world builders — `GuildHandle`, `ChannelHandle`, `UserHandle`,
   `RoleHandle` — and the `MemberActor` that drives simulated users;
 - the result objects `ResponseMessage` and `InteractionResult`;
+- `Preview`, `PreviewCapture`, and the documented `window.simcordPreview` readiness fields for
+  the optional local component preview;
 - the request-observability type `HttpLogEntry` and `Env.http_requests`;
 - the assertion helpers (`assert_responded`, `assert_sent`, `assert_message`,
   `assert_error`, `assert_no_errors`);
 - the error and parity-signal types `BackendError`, `SetupError`,
   `RouteNotImplemented` and `UnsupportedField`.
 
+Preview's public Python lifecycle, capture report fields, and readiness semantics are covered by
+semantic versioning. `preview.snapshot()` is the covered structured read surface; its payload fields
+may evolve under its `protocolVersion` key rather than the package version. Internal HTTP payloads,
+endpoint names, DOM structure, and CSS classes are implementation details, not general extension
+APIs.
+
 `Env.http_requests` is the semver-covered request-observability API. Its
 `HttpLogEntry` fields preserve discord.py transport arguments (`params`, `json`, and
 `reason`); they are not wire-normalized query strings or encoded headers, and files are
-not captured. `Env.http_log` remains the live 2.x tuple list and emits
-`DeprecationWarning` on access.
+not captured. The `json` field retains every supplied JSON-compatible shape, including
+top-level arrays. `params` and `json` are detached deep snapshots, so later source
+container mutations do not alter records.
 
-The `pytest` plugin (the `simcord_env` fixture) is part of the public surface
-too.
+The `pytest` plugin (the `simcord_env` fixture) is part of the public surface too.
 
 ## What is intentionally internal
 

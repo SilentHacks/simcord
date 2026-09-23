@@ -19,6 +19,15 @@ PANEL_ROLES = ("Gamer", "Artist")
 DAILY_COOLDOWN = 60 * 60 * 24
 
 
+class PanelModal(discord.ui.Modal, title="Edit panel"):
+    """Edit the panel message from the browser/actor flow."""
+
+    title_input = discord.ui.TextInput(label="Panel title", custom_id="title", default="Pick your roles:")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.title_input.value, view=RolePanel())
+
+
 class FeedbackModal(discord.ui.Modal, title="Feedback"):
     """Collects a name and a comment, then thanks the user."""
 
@@ -68,6 +77,10 @@ class RolePanel(discord.ui.View):
         await interaction.response.send_message(
             f"Updated roles: {', '.join(added) or 'none'}", ephemeral=True
         )
+
+    @discord.ui.button(label="Edit panel", custom_id="panel:edit", style=discord.ButtonStyle.secondary)
+    async def edit_panel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PanelModal())
 
 
 def create_bot() -> commands.Bot:

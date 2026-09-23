@@ -19,6 +19,18 @@ uv run pyright src
 The pre-commit hooks mirror the CI `lint` job (ruff on commit, pyright on push)
 using the project's own pinned tools, so a clean commit means a green CI lint.
 
+Optional extras layer on top of `dev` depending on what you work on:
+
+| Extra | Unlocks |
+| --- | --- |
+| `preview` | `markdown-it-py` + `Pillow`, so the non-browser preview tests run; browser capture tests still skip via `importorskip`. |
+| `screenshot` | Playwright as well — the full preview suite, `examples/preview_example.py`, and real types for pyright's check of the lazy optional imports. |
+
+```bash
+uv sync --extra dev --extra screenshot                # matches the CI lint job
+uv run playwright install --with-deps chromium        # needed once for browser capture tests + the example
+```
+
 ## Project layout
 
 - `src/simcord/backend/`: the virtual Discord with dataclass models, wire-format

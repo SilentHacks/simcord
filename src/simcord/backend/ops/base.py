@@ -59,7 +59,6 @@ class BackendBase:
         self.command_permissions: dict[tuple[int, int], list[dict[str, Any]]] = {}
         self.cdn = CdnStore()
         self.subscribers: list[EventListener] = []
-        self.http_log: list[tuple[str, str, dict[str, Any] | None]] = []
         self.http_requests: list[HttpLogEntry] = []
         #: Interleaved record of everything that crossed either seam, in order:
         #: ("HTTP", "METHOD /path", body) and ("GATEWAY", event, payload).
@@ -118,7 +117,7 @@ class BackendBase:
     def make_user(self, name: str, **fields: Any) -> User:
         """Create and register a user. ``fields`` are :class:`User` attributes
         (``bot``, ``system``, ``global_name``, ``discriminator``,
-        ``public_flags``); their defaults live on the model, not here."""
+        ``public_flags``, ``avatar``); their defaults live on the model, not here."""
         user = User(id=self.snowflake(), name=name, **fields)
         self.users[user.id] = user
         return user

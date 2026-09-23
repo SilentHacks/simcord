@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "revision": "catalog-commit-01",
+  "stateRecipes": [
+    {
+      "id": "pointer-hover",
+      "input": "pointer",
+      "action": "move over control",
+      "outcome": {
+        "backend": "unchanged",
+        "visible": "hover styling"
+      },
+      "observationStatus": "historical"
+    },
+    {
+      "id": "pointer-active",
+      "input": "pointer",
+      "action": "press and release control",
+      "outcome": {
+        "backend": "callback outcome when accepted",
+        "visible": "active styling then settled state"
+      },
+      "observationStatus": "historical"
+    },
+    {
+      "id": "keyboard-focus",
+      "input": "keyboard",
+      "action": "Tab/Shift+Tab to control",
+      "outcome": {
+        "backend": "unchanged",
+        "visible": "focus treatment"
+      },
+      "observationStatus": "partially-observed; message buttons and closed string select equivalent to idle in manifest"
+    },
+    {
+      "id": "select-commit",
+      "input": "pointer-or-keyboard",
+      "action": "open, choose value, commit",
+      "outcome": {
+        "backend": "selection callback/value",
+        "visible": "selected value"
+      },
+      "observationStatus": "blocked",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    },
+    {
+      "id": "select-cancel",
+      "input": "keyboard-or-pointer",
+      "action": "open, change draft, Escape/outside click",
+      "outcome": {
+        "backend": "no selection callback",
+        "visible": "previous value"
+      },
+      "observationStatus": "blocked",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    },
+    {
+      "id": "modal-validation",
+      "input": "pointer-or-keyboard",
+      "action": "open, submit invalid effective values",
+      "outcome": {
+        "backend": "callback not dispatched",
+        "visible": "field validation retained"
+      },
+      "observationStatus": "blocked",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    },
+    {
+      "id": "media-spoiler-reveal",
+      "input": "pointer-or-keyboard",
+      "action": "activate spoiler reveal",
+      "outcome": {
+        "backend": "unchanged",
+        "visible": "authorized media revealed"
+      },
+      "observationStatus": "historical for V2 captures; expanded formats blocked"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "message-select",
+      "states": [
+        "closed",
+        "open",
+        "highlighted",
+        "selected",
+        "cleared",
+        "cancelled"
+      ],
+      "commit": "blocked pending authorized trace",
+      "cancel": "blocked pending authorized trace",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    },
+    {
+      "id": "modal-select",
+      "states": [
+        "closed",
+        "open",
+        "highlighted",
+        "selected",
+        "cleared",
+        "submitted",
+        "cancelled"
+      ],
+      "commit": "blocked pending authorized trace",
+      "cancel": "blocked pending authorized trace",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    },
+    {
+      "id": "modal-validation",
+      "states": [
+        "empty",
+        "focused",
+        "invalid",
+        "filled",
+        "submitted"
+      ],
+      "commit": "blocked pending authorized trace",
+      "cancel": "Escape restores opener; exact observation blocked",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    },
+    {
+      "id": "media-hover",
+      "states": [
+        "idle",
+        "hover",
+        "pressed",
+        "focused",
+        "revealed",
+        "unavailable"
+      ],
+      "commit": "blocked pending authorized trace",
+      "cancel": "not applicable",
+      "prerequisite": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace"
+    }
+  ]
+}

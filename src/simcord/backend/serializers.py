@@ -67,7 +67,7 @@ def user_payload(user: User) -> user_types.User:
             "username": user.name,
             "discriminator": user.discriminator,
             "global_name": user.global_name if user.global_name is not None else user.name,
-            "avatar": None,
+            "avatar": user.avatar,
             "bot": user.bot,
             "system": user.system,
             "public_flags": user.public_flags,

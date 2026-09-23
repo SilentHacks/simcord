@@ -15,3 +15,5 @@ class User:
     discriminator: str = "0"
     #: discord.py ``User.public_flags`` bitfield (badges, incl. ``verified_bot``).
     public_flags: int = 0
+    #: Avatar image hash (discord.py ``User.avatar``); ``None`` falls back to a default avatar.
+    avatar: str | None = None

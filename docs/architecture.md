@@ -63,6 +63,21 @@ test ──► builders/actors ──► virtual backend (single source of truth
   discord.py's master branch to catch drift early.
 - **Deterministic snowflakes** with valid embedded timestamps, from a fixed virtual epoch.
 
+## Optional browser presentation
+
+`Env.preview(...)` adds a local presentation layer above the same backend; it is not another
+Discord transport. An `aiohttp` server binds to `127.0.0.1` only, serves packaged ES modules/CSS,
+and exposes viewer-filtered snapshots and closed action envelopes. A random capability in the URL
+fragment plus page context headers authorize reads and real actor callbacks. Python owns the
+session and default presentation; each browser page and managed screenshot has an independent
+viewer/focus/generation, so one tab cannot retarget another.
+
+Preview polling is explicit and revision-based rather than websocket-driven. `refresh()` settles
+the environment and republishes current projections; it does not make background mutations live.
+Optional Pillow media work is bounded and outside Env's loop. Optional Playwright capture pins a
+settled projection and reports geometry, readiness, completeness, calibration, and diagnostics.
+Base imports do not allocate any preview server, worker, or browser.
+
 ## What it will never do
 
 Connect to Discord. There is no "integration mode"; automating a real client violates

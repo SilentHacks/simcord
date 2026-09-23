@@ -74,6 +74,11 @@ class UserHandle:
         return self._user.discriminator
 
     @property
+    def avatar(self) -> str | None:
+        """The avatar image hash; ``None`` falls back to a default avatar."""
+        return self._user.avatar
+
+    @property
     def mention(self) -> str:
         return f"<@{self.id}>"
 

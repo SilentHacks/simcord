@@ -1,6 +1,6 @@
 ---
 title: "Installation"
-description: "Install SimCord, the discord.py testing framework. Requirements, the pytest extra, and discord.py version compatibility."
+description: "Install SimCord, the discord.py testing framework, with optional pytest, local preview, and screenshot extras."
 ---
 
 # Installation
@@ -12,8 +12,8 @@ description: "Install SimCord, the discord.py testing framework. Requirements, t
 | Python | >=3.11 (tested on 3.11–3.14) |
 | discord.py | >=2.7.1,<3 |
 
-SimCord has **zero runtime dependencies beyond discord.py itself**. It deliberately never
-opens a socket, so there is no networking stack to install or configure.
+SimCord has no runtime dependencies beyond discord.py itself for the base simulation. It deliberately
+never opens a Discord socket or needs a token.
 
 ## Install with the pytest plugin
 
@@ -53,8 +53,30 @@ If you drive the environment yourself with [`simcord.run`](guides/fixtures.md#wi
 pip install simcord
 ```
 
-You can still write tests; you just provide your own async test harness instead of the
-pytest fixtures.
+You can still write tests; you just provide your own async test harness instead of the pytest fixtures.
+
+
+## Install the local preview
+
+The optional [component preview](guides/preview.md) serves an authenticated browser page on
+loopback and renders real callbacks without connecting to Discord:
+
+```bash
+python -m pip install "simcord[preview]"
+```
+
+For screenshots, install Playwright and its browser explicitly:
+
+```bash
+python -m pip install "simcord[screenshot]"
+playwright install --with-deps chromium
+```
+
+(`--with-deps` installs the system libraries Chromium needs; plain `playwright install chromium` is
+enough when those dependencies are already present.)
+
+Missing `aiohttp`, Pillow, Playwright, or browser binaries produce direct installation guidance
+when the feature is used. They are never imported or downloaded by a base `import simcord`.
 
 ## Verify the install
 

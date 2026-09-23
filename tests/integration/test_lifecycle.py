@@ -1,3 +1,5 @@
+import asyncio
+
 import discord
 import pytest
 from discord.ext import commands
@@ -65,6 +67,41 @@ async def test_restart_before_start_is_rejected():
     env = simcord.Env(bot)
     with pytest.raises(simcord.SetupError, match="not started"):
         await env.restart_bot()
+
+
+async def test_shutdown_runs_registered_cleanup_before_operation_guard(env):
+    calls: list[asyncio.Task[object] | None] = []
+
+    async def cleanup() -> None:
+        calls.append(env._operation_task)
+
+    env._register_pre_shutdown(cleanup)
+    await env.shutdown()
+    await env.shutdown()
+
+    assert calls == [None]
+
+
+async def test_restart_rejects_overlapping_external_operation(env):
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def external_operation() -> None:
+        token = env._begin_operation("external probe")
+        try:
+            started.set()
+            await release.wait()
+        finally:
+            env._end_operation(token)
+
+    operation = asyncio.create_task(external_operation())
+    await started.wait()
+    original_bot = env.bot
+    with pytest.raises(simcord.SetupError, match="overlaps active external probe"):
+        await env.restart_bot(create_bot())
+    assert env.bot is original_bot
+    release.set()
+    await operation
 
 
 async def test_unknown_route_is_loud(env, channel):

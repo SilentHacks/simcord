@@ -24,7 +24,6 @@ async def test_something(simcord_env):
 
 The `Env` owns the virtual backend, tracks the bot's background tasks, captures errors,
 holds the virtual clock, and exposes the diagnostics (`env.http_requests`, `env.transcript()`).
-`env.http_log` is retained as a deprecated compatibility view.
 
 !!! info "One environment per event loop"
     `Env` monkeypatches `loop.create_task` and `time.monotonic` while it's live so it can
@@ -95,10 +94,16 @@ assert channel.last_message.content == "Pong!"   # the reply is already here
 ```
 
 Bot-owned work stays bot-owned across parking, timeout, cancellation, later actions, startup,
-and restart. Recognized waits — `Client.wait_for`, View/Modal completion, composed
-`gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`, and verified
-far-future sleeps — may remain. Unknown waits remain active and time out. Use a reasoned,
-scoped declaration for external input:
+and restart. Recognized waits — `Client.wait_for` (including its `timeout=`), View/Modal
+completion, store-registered View/Modal expiry timers, `discord.ext.tasks` loop intervals,
+composed `gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`, and verified
+far-future sleeps — may remain. A timer whose only job is resuming a recognized wait — a
+`wait_for` deadline on a listener, a View/Modal expiry, a loop interval, a wake-up timer
+scheduled inside `external_wait` — is virtual: it fires only via `env.advance_time()` or the
+awaited input, never the wall clock. Verified far-future sleeps keep their real fallback, and
+a View sent with no dispatchable items never registers (its expiry keeps real-time behavior).
+Unknown waits remain active and time out. Use a reasoned, scoped declaration for external
+input:
 
 ```python
 await env.external_wait(stop.wait(), reason="wait for the next message")

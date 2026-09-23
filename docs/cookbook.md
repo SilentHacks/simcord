@@ -269,6 +269,27 @@ async def test_reaction_role(simcord_env):
     assert any(r.name == "Gamer" for r in alice.member.roles)
 ```
 
+## Preview a component message and capture a screenshot
+
+```python
+async def test_panel_preview(simcord_env):
+    channel = simcord_env.create_guild().create_text_channel("roles")
+    alice = simcord_env.guild.add_member(simcord_env.create_user("alice"))
+    await alice.slash(channel, "panel")
+
+    async with simcord_env.preview(channel, viewers=[alice]) as preview:
+        capture = await preview.screenshot("panel.png")
+        assert capture.complete and capture.ready
+        snapshot = await preview.snapshot()
+        target = snapshot["messages"].get(snapshot["targetId"])
+        assert target is not None
+```
+
+Reach for a preview when assertions alone aren't enough: the screenshot verifies what a user would
+actually see, and `snapshot()` returns the structured projection for agent or text-only checks. It
+requires the `simcord[preview]` extra (plus `simcord[screenshot]` and Chromium for `screenshot()`);
+see the [preview guide](guides/preview.md) for lifecycle, viewer access, and resource limits.
+
 ## See also
 
 - [Messages](guides/messages.md) · [Slash commands](guides/interactions.md) ·

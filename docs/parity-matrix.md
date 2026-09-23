@@ -12,9 +12,10 @@ hides a parity gap. Please open a
 [parity gap issue](https://github.com/SilentHacks/simcord/issues/new?template=parity-gap.md)
 if your bot needs one.
 
-Both lists below are generated and verified in CI: implemented routes come from the route
-table, the not-yet-implemented list is derived from `discord.http.HTTPClient`, and
-serializer payloads are conformance-tested against discord.py's own model parsers.
+Both lists below are generated and verified in CI: implemented Discord routes come from the route
+table, the not-yet-implemented list is derived from `discord.http.HTTPClient`, and serializer
+payloads are conformance-tested against discord.py's own model parsers. Preview's `/api/*` bridge
+routes are local presentation endpoints and are intentionally not part of the Discord route list.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -40,13 +41,17 @@ serializer payloads are conformance-tested against discord.py's own model parser
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
 | Components V2 / `LayoutView` | ✅ | Legal wire-tree nesting, 40-component limit, stable IDs, V2 flag/content invariants, media attachments and webhook `with_components`; arbitrary remote media is metadata-only offline |
+| Local component preview | ✅ | Optional loopback page, real actor callbacks, page-local authorized viewers, explicit refresh/staleness, packaged offline assets; not a Discord client or network connection |
+| Preview screenshots | ✅ | Optional Playwright capture returns immutable `PreviewCapture` reports with surface/viewport modes, readiness, diagnostics, completeness, and calibration metadata; no pixel-perfect claim |
+| Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
+| Preview fidelity boundary | ⚠️ | System font/emoji fallback, first-frame animation capture, unsupported audio/video/premium/mobile behavior, and uncalibrated references are reported differences, not backend parity claims |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
 | Guilds (create/edit/delete) | ✅ | `Client.create_guild`, `Guild.edit`, `Guild.delete` (owner-only); `GUILD_UPDATE` audit; `Guild.leave`, `Client.fetch_guilds`, `ClientUser.edit` (bot username); `Guild.vanity_invite` (settable via `guild.set_vanity_url`) |
 | Channels (create/edit/delete, overwrites) | ✅ | Runtime create + list; text, voice, stage, category & forum kinds; reorder/move (`Channel.move`); announcement `TextChannel.follow` |
 | Webhooks | ✅ | Create, execute (with per-message `username` override), fetch/edit/delete (by id or token), guild listing |
-| Fault injection / HTTP log | ✅ | `env.inject_error`, structured `env.http_requests` records, deprecated `env.http_log` tuples |
+| Fault injection / HTTP request log | ✅ | `env.inject_error`, structured `env.http_requests` records for every attempt, including faulted and unknown-route requests |
 | Audit logs | ✅ | Recorded for ban/kick/role/member/channel/event actions; `guild.audit_logs()`, filtering |
 | Polls | ✅ | Message-level poll object; `actor.vote`, expiry (route + `advance_time`), vote events |
 | Scheduled events | ✅ | CRUD + subscribe/unsubscribe; auto status transitions via `advance_time` |

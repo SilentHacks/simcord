@@ -27,6 +27,14 @@ No. The library makes no outbound network requests and collects no usage or runt
 telemetry. Package hosts and source platforms may publish their own aggregate statistics,
 but SimCord does not transmit data from your tests.
 
+## Does the component preview connect to Discord?
+
+No. The optional preview uses a loopback-only `aiohttp` server and an authenticated capability;
+it does not need a bot token or a Discord connection. Install `simcord[preview]` for the browser
+bridge, and `simcord[screenshot]` plus `playwright install chromium` for managed screenshots.
+The [preview guide](guides/preview.md) documents forwarding, access checks, limits, and
+incomplete/uncalibrated captures.
+
 ## Is this a mock library?
 
 It's more than a mock. It is a **simulator**. A mock returns canned responses; SimCord

@@ -7,25 +7,17 @@ from simcord.http import router
 from simcord.http import routes as _routes  # noqa: F401  — registers handlers
 
 
-def test_unknown_route_raises_with_route_name():
+def test_unknown_route_raises_with_route_name_and_records_attempt():
     backend = Backend()
+    params = {"nested": {"limit": 3}}
     with pytest.raises(router.RouteNotImplemented, match="GET /made/up/route"):
-        router.dispatch(backend, "GET", "/made/up/route")
-    assert isinstance(backend.http_requests[-1], HttpLogEntry)
+        router.dispatch(backend, "GET", "/made/up/route", params=params)
+    entry = backend.http_requests[-1]
+    assert isinstance(entry, HttpLogEntry)
+    assert entry.params == params and entry.params is not params
 
 
-def test_literal_segments_beat_parameters():
-    backend = Backend()
-    guild = backend.create_guild("g")
-    channel = backend.create_channel(guild.id, "general")
-    message = backend.create_message(channel.id, backend.bot_user.id, "hi")
-    backend.set_pinned(channel.id, message.id, True)
-    # ".../messages/pins" must not be captured by ".../messages/{message_id}".
-    result = router.dispatch(backend, "GET", f"/channels/{channel.id}/messages/pins")
-    assert [int(i["message"]["id"]) for i in result["items"]] == [message.id]
-
-
-def test_http_request_records_defaults_and_coexists_with_legacy_tuples():
+def test_http_request_records_defaults_and_reason():
     backend = Backend()
     guild = backend.create_guild("g")
     path = f"/guilds/{guild.id}"
@@ -38,20 +30,30 @@ def test_http_request_records_defaults_and_coexists_with_legacy_tuples():
         None,
         None,
     )
-    assert backend.http_log[-1] == ("GET", path, None)
 
     payload = {"name": "g"}
-    router.dispatch(backend, "GET", path, json=payload)
-    assert backend.http_requests[-1].json is payload
-    assert backend.http_log[-1] == ("GET", path, payload)
+    router.dispatch(backend, "GET", path, json=payload, reason="cleanup needed")
+    entry = backend.http_requests[-1]
+    assert entry.json == payload and entry.json is not payload
+    assert entry.reason == "cleanup needed"
 
 
-def test_http_request_records_snapshot_transport_values_before_fault():
+def test_http_request_preserves_top_level_json_arrays():
+    backend = Backend()
+    guild = backend.create_guild("g")
+    payload = [{"name": "g"}, "raw", None]
+    router.dispatch(backend, "GET", f"/guilds/{guild.id}", json=payload)
+    entry = backend.http_requests[-1]
+    assert entry.json == payload
+    assert entry.json is not payload
+
+
+def test_http_request_records_detached_nested_values_before_fault():
     backend = Backend()
     guild = backend.create_guild("g")
     path = f"/guilds/{guild.id}"
-    params = {"limit": 3}
-    payload = ["raw", 1]
+    params = {"filters": {"limit": 3}}
+    payload = {"nested": {"items": [1, 2]}}
     backend.faults.append(
         {
             "method": "GET",
@@ -63,11 +65,26 @@ def test_http_request_records_snapshot_transport_values_before_fault():
         }
     )
     with pytest.raises(BackendError):
-        router.dispatch(backend, "GET", path, params=params, json=payload, reason="cleanup needed")
+        router.dispatch(backend, "GET", path, params=params, json=payload)
+
     entry = backend.http_requests[-1]
-    assert entry.params == params and entry.params is not params
-    assert entry.json is payload
-    assert entry.reason == "cleanup needed"
+    params["filters"]["limit"] = 99
+    payload["nested"]["items"].append(3)
+    assert entry.params == {"filters": {"limit": 3}}
+    assert entry.json == {"nested": {"items": [1, 2]}}
+    assert entry.params["filters"] is not params["filters"]
+    assert entry.json["nested"] is not payload["nested"]
+
+
+def test_literal_segments_beat_parameters():
+    backend = Backend()
+    guild = backend.create_guild("g")
+    channel = backend.create_channel(guild.id, "general")
+    message = backend.create_message(channel.id, backend.bot_user.id, "hi")
+    backend.set_pinned(channel.id, message.id, True)
+    # ".../messages/pins" must not be captured by ".../messages/{message_id}".
+    result = router.dispatch(backend, "GET", f"/channels/{channel.id}/messages/pins")
+    assert [int(i["message"]["id"]) for i in result["items"]] == [message.id]
 
 
 def test_snowflakes_are_monotonic_and_timestamped():

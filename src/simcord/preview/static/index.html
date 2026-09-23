@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SimCord Preview</title>
+    <link rel="stylesheet" href="/preview.css">
+  </head>
+  <body>
+    <header class="preview-toolbar" id="toolbar" role="toolbar" aria-label="Preview controls">
+      <label class="toolbar-field">Viewer <select id="viewer-picker" aria-label="Viewer"></select></label>
+      <label class="toolbar-field">Message <select id="message-picker" aria-label="Focused message"></select></label>
+      <label class="toolbar-field">Width <input id="viewport-width" type="number" min="240" max="32768" step="1"></label>
+      <label class="toolbar-field">Height <input id="viewport-height" type="number" min="180" max="32768" step="1"></label>
+      <button id="refresh" type="button">Refresh</button>
+      <button id="close" type="button">Close</button>
+      <span id="action-status" class="toolbar-status" role="status" aria-live="polite"></span>
+    </header>
+    <main id="preview-app" class="preview-app" aria-busy="true">
+      <section id="message-picker-empty" class="empty-state" hidden aria-live="polite">No visible messages.</section>
+      <article id="message-surface" class="message-surface" aria-label="Focused message" hidden></article>
+      <section id="modal-root" class="modal-root" aria-label="Dialog"></section>
+      <aside id="diagnostics" class="diagnostics" aria-label="Diagnostics"></aside>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

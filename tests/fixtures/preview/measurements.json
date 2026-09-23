@@ -1,0 +1,346 @@
+{
+  "schemaVersion": 1,
+  "revision": "catalog-commit-01",
+  "units": "CSS pixels",
+  "measurements": [
+    {
+      "id": "historical-message-crop",
+      "family": "message",
+      "profiles": [
+        "discord-dark-idle-1280x900",
+        "discord-dark-guided-1280x700"
+      ],
+      "regions": [
+        "message-column",
+        "surface"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "status": "observed-from-file-dimensions",
+      "notes": "tight crop; open-state message crops may be 889 px",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "historical-select-popup",
+      "family": "selects",
+      "profiles": [
+        "discord-dark-guided-1280x700"
+      ],
+      "regions": [
+        "popup"
+      ],
+      "sourceViewport": {
+        "width": 1280,
+        "height": 700
+      },
+      "messageColumnWidth": null,
+      "status": "observed-from-file-dimensions",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "historical-modal-window",
+      "family": "modals",
+      "profiles": [
+        "discord-dark-guided-1280x700"
+      ],
+      "regions": [
+        "backdrop",
+        "dialog"
+      ],
+      "sourceViewport": {
+        "width": 1280,
+        "height": 700
+      },
+      "messageColumnWidth": 905,
+      "status": "not-comparable-whole-window",
+      "notes": "Discord navigation outside the message-surface boundary remains in the original crop",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "responsive-channel-320",
+      "family": "profile",
+      "profiles": [
+        "simcord-local-default"
+      ],
+      "regions": [
+        "channel",
+        "message-column",
+        "composer"
+      ],
+      "sourceViewport": {
+        "width": 320,
+        "height": 900
+      },
+      "messageColumnWidth": null,
+      "status": "blocked",
+      "prerequisite": "authorized Discord reference on both sides of each wrapping/layout transition",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "responsive-channel-480",
+      "family": "profile",
+      "profiles": [
+        "simcord-local-default"
+      ],
+      "regions": [
+        "channel",
+        "message-column",
+        "composer"
+      ],
+      "sourceViewport": {
+        "width": 480,
+        "height": 900
+      },
+      "messageColumnWidth": null,
+      "status": "blocked",
+      "prerequisite": "authorized Discord reference on both sides of each wrapping/layout transition",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "responsive-channel-768",
+      "family": "profile",
+      "profiles": [
+        "simcord-local-default"
+      ],
+      "regions": [
+        "channel",
+        "message-column",
+        "composer"
+      ],
+      "sourceViewport": {
+        "width": 768,
+        "height": 900
+      },
+      "messageColumnWidth": null,
+      "status": "blocked",
+      "prerequisite": "authorized Discord reference on both sides of each wrapping/layout transition",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "responsive-channel-1280",
+      "family": "profile",
+      "profiles": [
+        "simcord-local-default"
+      ],
+      "regions": [
+        "channel",
+        "message-column",
+        "composer"
+      ],
+      "sourceViewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "messageColumnWidth": null,
+      "status": "blocked",
+      "prerequisite": "authorized Discord reference on both sides of each wrapping/layout transition",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "profile-height-900",
+      "family": "profile",
+      "profiles": [
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "viewport"
+      ],
+      "sourceViewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "messageColumnWidth": 905,
+      "status": "observed-from-manifest",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "profile-height-700",
+      "family": "profile",
+      "profiles": [
+        "discord-dark-guided-1280x700"
+      ],
+      "regions": [
+        "viewport"
+      ],
+      "sourceViewport": {
+        "width": 1280,
+        "height": 700
+      },
+      "messageColumnWidth": 905,
+      "status": "observed-from-manifest",
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": []
+    },
+    {
+      "id": "historical-family-attachments_media",
+      "family": "attachments_media",
+      "profiles": [
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "message-column"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    },
+    {
+      "id": "historical-family-buttons",
+      "family": "buttons",
+      "profiles": [
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "message-column"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    },
+    {
+      "id": "historical-family-embeds",
+      "family": "embeds",
+      "profiles": [
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "message-column"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    },
+    {
+      "id": "historical-family-modals",
+      "family": "modals",
+      "profiles": [
+        "discord-dark-guided-1280x700"
+      ],
+      "regions": [
+        "backdrop",
+        "dialog",
+        "message-column"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    },
+    {
+      "id": "historical-family-profile",
+      "family": "profile",
+      "profiles": [
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "message-column"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    },
+    {
+      "id": "historical-family-selects",
+      "family": "selects",
+      "profiles": [
+        "discord-dark-guided-1280x700",
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "message-column",
+        "popup"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    },
+    {
+      "id": "historical-family-v2",
+      "family": "v2",
+      "profiles": [
+        "discord-dark-guided-1280x700",
+        "discord-dark-idle-1280x900"
+      ],
+      "regions": [
+        "message-column"
+      ],
+      "sourceViewport": "per-row",
+      "messageColumnWidth": 905,
+      "regionBoxes": {},
+      "spacing": {},
+      "wrapPoints": [],
+      "layoutExamples": [
+        "file dimensions only; acquire region boxes and wrap points before calibration"
+      ],
+      "status": "blocked",
+      "prerequisite": "authorized interaction notes and measured crop coordinates"
+    }
+  ]
+}

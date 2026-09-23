@@ -33,8 +33,9 @@ input wait. Unknown waits remain active and produce a diagnostic timeout.
 
 `Env.http_requests` exposes these records for transport-level assertions. The `params` and
 `reason` fields contain discord.py transport arguments, not wire-normalized query strings or
-encoded headers; uploaded files are not captured. `Env.http_log` is a deprecated compatibility
-list of legacy tuples.
+encoded headers; uploaded files are not captured. The `json` field preserves the supplied
+JSON-compatible shape, including top-level arrays. `params` and `json` are detached deep
+snapshots, so later mutations to source containers do not alter a record.
 
 ## Builders
 
@@ -55,6 +56,30 @@ The simulated human that drives your bot. Created by `guild.add_member(...)`. Se
 [Core concepts → Actors](concepts.md#actors-act-as-a-real-user).
 
 ::: simcord.MemberActor
+
+## Local preview
+
+The optional [`Env.preview`](guides/preview.md#start-and-stop-a-session) context manager serves
+viewer-authorized messages and real component callbacks from a loopback browser. It is not a
+Discord connection. Install `simcord[preview]` for the bridge, or
+`simcord[screenshot]` and `playwright install --with-deps chromium` for managed PNG capture.
+`port=` pins the loopback origin so a pre-created forward can use the same origin on both ends;
+it never makes the capability-bearing URL stable or safe to log. Keep `preview.url` secret.
+
+::: simcord.preview.Preview
+
+::: simcord.preview.Preview.screenshot
+    options:
+      heading_level: 4
+
+::: simcord.preview.PreviewCapture
+
+`Preview.snapshot()` returns the detached JSON projection the bundled page renders — the structured
+read surface for non-visual checks and text-only tooling. `PreviewCapture` is an immutable report.
+Its `ready`, `complete`, and `calibrated` fields are independent; inspect `diagnostics`, `action`,
+`profile`, and `geometry` rather than inferring success from a PNG path. When `screenshot()` is
+called with `path=None`, `PreviewCapture.path` is `None` and `PreviewCapture.png` carries the PNG
+bytes in memory. Internal `/api/*` payloads and DOM/CSS names are not extension APIs.
 
 ## Results
 
