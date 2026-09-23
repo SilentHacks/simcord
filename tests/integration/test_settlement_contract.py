@@ -1192,3 +1192,76 @@ async def test_tasks_loop_interval_is_virtual_only():
         await env.advance_time(30)
         assert ran == ["tick", "tick"]
         ticker.cancel()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_entered_mid_settle_is_virtual_from_birth():
+    """A wait_for listener reached only after real work inside settle has its
+    timeout virtualized at schedule time — it cannot leak onto the wall clock
+    inside the settle window."""
+    bot = create_bot()
+    fired: list[str] = []
+
+    @bot.listen("on_message")
+    async def armed(message: discord.Message) -> None:
+        if message.content != "arm":
+            return
+        await asyncio.sleep(0.02)
+        try:
+            await bot.wait_for("message", check=lambda item: item.content == "fire", timeout=0.03)
+        except TimeoutError:
+            fired.append("timeout")
+
+    async with simcord.run(bot, settle_timeout=1.0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        await alice.send(channel, "arm")
+        assert time.monotonic() - started < 0.5
+        await asyncio.sleep(0.1)
+        assert fired == []
+        await env.advance_time(0.03)
+        assert fired == ["timeout"]
+
+
+@pytest.mark.asyncio
+async def test_external_wait_composed_survivor_runs_on_real_clock():
+    """Tasks awaited through a composed external_wait keep normal timer
+    semantics: a surviving child's sleep is real work joined on the wall
+    clock, not a timer virtualized by the declaration."""
+    bot = create_bot()
+    outcome: list[str] = []
+
+    @bot.listen("on_message")
+    async def orchestrate(message: discord.Message) -> None:
+        if message.content != "go":
+            return
+
+        async def quick() -> None:
+            await asyncio.sleep(0.02)
+            outcome.append("quick")
+
+        async def survivor() -> None:
+            await asyncio.sleep(0.06)
+            outcome.append("survivor")
+
+        await env.external_wait(
+            asyncio.wait(
+                {asyncio.ensure_future(quick()), asyncio.ensure_future(survivor())},
+                return_when=asyncio.FIRST_COMPLETED,
+            ),
+            reason="await the faster input",
+        )
+        await message.channel.send("resumed")
+
+    async with simcord.run(bot, settle_timeout=1.0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        await alice.send(channel, "go")
+        assert time.monotonic() - started < 0.5
+        assert set(outcome) == {"quick", "survivor"}
+        assert channel.last_message is not None
+        assert channel.last_message.content == "resumed"

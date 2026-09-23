@@ -67,6 +67,24 @@ def verify() -> None:
     client_probe = discord.Client(intents=discord.Intents.none())
     if not hasattr(client_probe, "_listeners"):
         problems.append("discord.Client no longer exposes _listeners")
+    store_probe = _view.ViewStore(client_probe._connection)
+    for attr in ("_views", "_modals"):
+        if not hasattr(store_probe, attr):
+            problems.append(f"ViewStore.{attr}")
+    if not hasattr(discord.ui.Button(label="x", custom_id="y"), "_view"):
+        problems.append("Item._view")
+    view_probe = discord.ui.View(timeout=5)
+    for suffix in ("__stopped", "__timeout_task"):
+        if not any(name.endswith(suffix) for name in vars(view_probe)):
+            problems.append(f"BaseView.{suffix}")
+    if not hasattr(asyncio.timeouts.Timeout(0.0), "_task"):
+        problems.append("Timeout._task")
+
+    async def _probe_loop_body() -> None:
+        pass
+
+    if not hasattr(_ext_tasks.loop(seconds=1)(_probe_loop_body), "_handle"):
+        problems.append("Loop._handle")
     if problems:  # pragma: no cover - only when discord.py changed an internal
         raise ImportError(
             "This discord.py version changed internals simcord depends on: "
@@ -97,10 +115,8 @@ def is_listener_future(client: discord.Client, waiter: Any) -> bool:
     return any(future is waiter and not future.done() for future in listener_futures(client))
 
 
-def is_wait_for_listener(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
-    """Recognize the CPython 3.11 ``wait_for`` wrapper around a listener future."""
-    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
-        return False
+def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) -> bool:
+    """True when the task's coroutine stack runs ``asyncio.wait_for`` on a listener."""
     wait_for_code = getattr(asyncio.wait_for, "__code__", None)
     if wait_for_code is None:
         return False
@@ -114,6 +130,13 @@ def is_wait_for_listener(client: discord.Client, task: asyncio.Task[Any]) -> boo
                 return True
         coroutine = getattr(coroutine, "cr_await", None)
     return False
+
+
+def is_wait_for_listener(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
+    """Recognize the CPython 3.11 ``wait_for`` wrapper around a listener future."""
+    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
+        return False
+    return _listener_wait_for_frame(client, task)
 
 
 def _stored_wait_futures(client: discord.Client) -> set[Any]:
@@ -142,9 +165,28 @@ def is_view_wait_future(client: discord.Client, waiter: Any) -> bool:
     return waiter in _stored_wait_futures(client) and not waiter.done()
 
 
+_WAKEUP_CALLBACK_NAMES = frozenset(
+    {
+        "_set_result_unless_cancelled",  # asyncio.sleep
+        "_release_waiter",  # asyncio.wait_for (Python 3.11)
+        "_wrapped_set_result",  # discord.ext.tasks SleepHandle
+        "_on_timeout",  # asyncio.timeouts.Timeout
+    }
+)
+
+
+def is_wakeup_shaped(callback: Any) -> bool:
+    """True when a callback has the shape of a timer that resumes a future/task."""
+    if getattr(callback, "__name__", "") in _WAKEUP_CALLBACK_NAMES:
+        return True
+    return isinstance(getattr(callback, "__self__", None), asyncio.Future)
+
+
 def is_wakeup_callback(callback: Any, args: tuple[Any, ...], waiter: Any, task: asyncio.Task[Any]) -> bool:
     """True when a timer callback exists only to resume this task's current wait."""
-    if waiter is not None and any(arg is waiter for arg in args):
+    if waiter is not None and (
+        any(arg is waiter for arg in args) or getattr(callback, "__self__", None) is waiter
+    ):
         return True
     owner = getattr(callback, "__self__", None)
     return (
@@ -154,10 +196,8 @@ def is_wakeup_callback(callback: Any, args: tuple[Any, ...], waiter: Any, task: 
     )
 
 
-def view_expiry_task(client: discord.Client, task: asyncio.Task[Any], waiter: Any) -> bool:
-    """True while task is a store-registered View/Modal expiry task suspended on its timer."""
-    if waiter is None or waiter.done():
-        return False
+def _view_timeout_task_identity(client: discord.Client, task: asyncio.Task[Any]) -> bool:
+    """True when task is some store-registered View/Modal's expiry task."""
     store = getattr(get_state(client), "_view_store", None)
     if store is None:
         return False
@@ -178,17 +218,52 @@ def view_expiry_task(client: discord.Client, task: asyncio.Task[Any], waiter: An
     return False
 
 
+def view_expiry_task(client: discord.Client, task: asyncio.Task[Any], waiter: Any) -> bool:
+    """True while task is a store-registered View/Modal expiry task suspended on its timer."""
+    if waiter is None or waiter.done():
+        return False
+    return _view_timeout_task_identity(client, task)
+
+
+def _tasks_loop_self(task: asyncio.Task[Any]) -> Any:
+    coro = task.get_coro()
+    frame = getattr(coro, "cr_frame", None)
+    return frame.f_locals.get("self") if frame is not None else None
+
+
+def is_tasks_loop_task(task: asyncio.Task[Any]) -> bool:
+    """True when task runs a discord.ext.tasks Loop's ``_loop`` coroutine."""
+    return isinstance(_tasks_loop_self(task), _ext_tasks.Loop)
+
+
 def tasks_loop_sleep(task: asyncio.Task[Any], waiter: Any) -> bool:
     """True while a discord.ext.tasks Loop is suspended on its between-iteration sleep."""
     if waiter is None or waiter.done():
         return False
-    coro = task.get_coro()
-    frame = getattr(coro, "cr_frame", None)
-    self_obj = frame.f_locals.get("self") if frame is not None else None
+    self_obj = _tasks_loop_self(task)
     if not isinstance(self_obj, _ext_tasks.Loop):
         return False
     handle = getattr(self_obj, "_handle", None)
     return getattr(handle, "future", None) is waiter
+
+
+def is_intentional_wait_wakeup(
+    client: discord.Client, callback: Any, args: tuple[Any, ...], task: asyncio.Task[Any]
+) -> bool:
+    """True when a timer scheduled right now exists only to resume a wait on this task.
+
+    Covers the shapes identifiable at schedule time, before the task suspends:
+    a registered View/Modal expiry task's sleep, an ext.tasks iteration
+    ``SleepHandle``, and a 3.11 ``wait_for`` listener's ``_release_waiter``.
+    Timer wake-ups not identifiable here are still caught at settle time and
+    gated at fire time by the env.
+    """
+    name = getattr(callback, "__name__", "")
+    if name == "_set_result_unless_cancelled":
+        return _view_timeout_task_identity(client, task)
+    if name == "_wrapped_set_result":
+        return is_tasks_loop_task(task)
+    return name == "_release_waiter" and any(is_listener_future(client, arg) for arg in args)
 
 
 def _original_callback(callback: Any) -> Any:

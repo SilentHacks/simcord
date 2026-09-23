@@ -63,11 +63,11 @@ there's no skew to trip over in assertions.
 Snowflake IDs and timestamps come from a fixed virtual epoch, so they're identical across
 runs. Combined with no network and no real sleeps, your time-based tests are fully
 reproducible — the same inputs always produce the same IDs, timestamps and ordering.
-Settlement joins runnable work before and after each timer step. Once recognized, View/Modal
-timeouts, `Client.wait_for`/`asyncio.wait_for` timeouts, `ext.tasks` loop intervals and
-timers inside `env.external_wait` never fire on the real clock — drive them with
-`advance_time()` (or the awaited input). A far-future sleep is recognized only when its live
-loop timer resolves the awaited future; unrelated or cancelled
+Settlement joins runnable work before and after each timer step. Deadline timers behind
+recognized waits — `wait_for` timeouts on listener waits, View/Modal expiry, `ext.tasks`
+loop intervals and wake-up timers scheduled inside `env.external_wait` — never fire on the
+real clock: drive them with `advance_time()` (or the awaited input). A far-future sleep is
+recognized only when its live loop timer resolves the awaited future; unrelated or cancelled
 timers do not make an unknown wait look parked. `advance_time()` is itself exclusive with
 other public operations and rejects invalid or negative durations.
 
