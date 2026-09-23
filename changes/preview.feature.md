@@ -1,1 +1,0 @@
-Add an optional local component preview with real callback interactions, authorized viewer contexts, offline media assets, and deterministic Playwright screenshot reports. The base package remains lazy and networkless; install `simcord[preview]` for the bridge or `simcord[screenshot]` plus Chromium for capture.
