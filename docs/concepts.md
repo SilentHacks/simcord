@@ -95,13 +95,16 @@ assert channel.last_message.content == "Pong!"   # the reply is already here
 
 Bot-owned work stays bot-owned across parking, timeout, cancellation, later actions, startup,
 and restart. Recognized waits — `Client.wait_for` (including its `timeout=`), View/Modal
-completion, store-registered View/Modal expiry timers, `discord.ext.tasks` loop intervals,
+completion, View/Modal expiry timers, `discord.ext.tasks` loop intervals,
 composed `gather`/`shield`/`wait`/`TaskGroup`, explicit `env.external_wait(...)`, and verified
 far-future sleeps — may remain. A timer whose only job is resuming a recognized wait — a
 `wait_for` deadline on a listener, a View/Modal expiry, a loop interval, a wake-up timer
 scheduled inside `external_wait` — is virtual: it fires only via `env.advance_time()` or the
 awaited input, never the wall clock. Verified far-future sleeps keep their real fallback, and
 a View sent with no dispatchable items never registers (its expiry keeps real-time behavior).
+Views whose dispatchable items are all `DynamicItem`s are covered too — expiry is identified
+from the task's coroutine, not the store's dispatch table; `view.wait()` on such a view is not
+recognized, so `await env.external_wait(view.wait(), reason="...")` if a bot awaits one.
 Unknown waits remain active and time out. Use a reasoned, scoped declaration for external
 input:
 

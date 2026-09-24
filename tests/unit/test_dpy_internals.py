@@ -143,6 +143,55 @@ async def test_view_timeout_task_identity_handles_missing_store() -> None:
     assert not _dpy_internals._view_timeout_task_identity(client, _fake_task())
 
 
+def _impl_coro_task(view: Any, waiter: Any = None) -> tuple[Any, Any]:
+    """A fake task running the view's real ``__timeout_task_impl`` coroutine."""
+    task = _fake_task(waiter)
+    coro = view._BaseView__timeout_task_impl()  # never awaited; caller closes it
+    task.get_coro = lambda: coro
+    return task, coro
+
+
+async def test_view_timeout_task_identity_matches_impl_coroutine() -> None:
+    """A fully-dynamic view lands in no store container; the coroutine itself
+    still identifies its expiry task."""
+    view = discord.ui.LayoutView(timeout=5)
+    task, coro = _impl_coro_task(view)
+    try:
+        assert _dpy_internals._view_timeout_task_identity(_store_client(), task)
+    finally:
+        coro.close()
+
+
+async def test_view_timeout_task_identity_rejects_stopped_impl_owner() -> None:
+    view = discord.ui.LayoutView(timeout=5)
+    task, coro = _impl_coro_task(view)
+    stopped: asyncio.Future[Any] = asyncio.Future()
+    stopped.set_result(None)
+    stopped_name = next(name for name in vars(view) if name.endswith("__stopped"))
+    vars(view)[stopped_name] = stopped
+    try:
+        assert not _dpy_internals._view_timeout_task_identity(_store_client(), task)
+    finally:
+        coro.close()
+
+
+async def test_view_timeout_task_identity_rejects_foreign_coroutine() -> None:
+    task = _fake_task()
+    task.get_coro = lambda: SimpleNamespace(cr_code=object(), cr_frame=None)
+    assert not _dpy_internals._view_timeout_task_identity(_store_client(), task)
+
+
+async def test_is_intentional_wait_wakeup_impl_coroutine() -> None:
+    view = discord.ui.LayoutView(timeout=5)
+    task, coro = _impl_coro_task(view)
+    try:
+        assert _dpy_internals.is_intentional_wait_wakeup(
+            _store_client(), _set_result_unless_cancelled, (), task
+        )
+    finally:
+        coro.close()
+
+
 async def test_view_expiry_task_requires_pending_waiter() -> None:
     view = discord.ui.View(timeout=5)
     task = _task_with_timeout(view)
@@ -452,6 +501,19 @@ async def test_park_reason_names_view_expiry_and_loop_interval(env: Any) -> None
     )
     _record(env, _wrapped_set_result, (waiter,), 10.0)
     assert env._park_reason(loop_task, 5.0) == "discord.ext.tasks loop interval"
+
+
+async def test_park_reason_names_unregistered_view_expiry(env: Any) -> None:
+    """A fully-dynamic view occupies no store container; its expiry task is
+    still a recognized wait, identified by the coroutine it runs."""
+    view = discord.ui.LayoutView(timeout=60)
+    waiter: asyncio.Future[Any] = asyncio.Future()
+    task, coro = _impl_coro_task(view, waiter)
+    try:
+        _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
+        assert env._park_reason(task, 5.0) == "discord View/Modal expiry timer"
+    finally:
+        coro.close()
 
 
 async def test_park_reason_composed_and_sleep_waits(env: Any) -> None:
