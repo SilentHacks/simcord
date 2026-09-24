@@ -181,6 +181,16 @@ async def test_view_timeout_task_identity_rejects_foreign_coroutine() -> None:
     assert not _dpy_internals._view_timeout_task_identity(_store_client(), task)
 
 
+async def test_view_timeout_task_identity_ignores_closed_impl_coroutine() -> None:
+    """A finished impl coroutine has no live frame, so no owner to match."""
+    view = discord.ui.LayoutView(timeout=5)
+    coro = view._BaseView__timeout_task_impl()
+    coro.close()
+    task = _fake_task()
+    task.get_coro = lambda: coro
+    assert not _dpy_internals._view_timeout_task_identity(_store_client(), task)
+
+
 async def test_is_intentional_wait_wakeup_impl_coroutine() -> None:
     view = discord.ui.LayoutView(timeout=5)
     task, coro = _impl_coro_task(view)
