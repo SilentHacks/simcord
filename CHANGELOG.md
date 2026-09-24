@@ -4,6 +4,13 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 2.2.1 (2026-09-24)
+
+### Bug fixes
+
+- Fixed View/Modal expiry recognition for views that never reach the store's dispatch tables — a view whose dispatchable items are all `DynamicItem`s (e.g. a `LayoutView` built only from patterned custom IDs) registered a live expiry task that settlement never recognized, so its `timeout=` blocked actor operations and fired on the wall clock. Expiry tasks are now identified by the coroutine they run (`BaseView.__timeout_task_impl`), which covers every registered view regardless of how the store indexes it.
+
+
 ## 2.2.0 (2026-09-23)
 
 ### Features
