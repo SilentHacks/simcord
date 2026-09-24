@@ -1075,6 +1075,53 @@ async def test_view_button_click_before_expiry_is_joined():
 
 
 @pytest.mark.asyncio
+async def test_fully_dynamic_view_expiry_is_virtual_only():
+    """A LayoutView whose only dispatchable item is a DynamicItem lands solely
+    in the store's pattern table — no ``_views`` entry — yet its expiry task is
+    still a recognized wait: the verb returns promptly, the real clock never
+    fires it, and advance_time() runs on_timeout exactly once."""
+    bot = create_bot()
+    timeouts = 0
+
+    class ApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=r"approve:\d+"):
+        def __init__(self) -> None:
+            super().__init__(discord.ui.Button(label="Approve", custom_id="approve:1"))
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            await interaction.response.send_message("approved")
+
+    class OfferView(discord.ui.LayoutView):
+        def __init__(self) -> None:
+            super().__init__(timeout=0.3)
+            row = discord.ui.ActionRow()
+            row.add_item(ApproveButton())
+            self.add_item(row)
+
+        async def on_timeout(self) -> None:
+            nonlocal timeouts
+            timeouts += 1
+
+    @bot.tree.command(name="dynamic-offer")
+    async def dynamic_offer(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(view=OfferView())
+
+    async with simcord.run(bot, settle_timeout=1.0) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        started = time.monotonic()
+        result = await alice.slash(channel, "dynamic-offer")
+        assert time.monotonic() - started < 0.25
+        assert result.response is not None
+        await asyncio.sleep(0.4)  # past the timeout on the real clock
+        assert timeouts == 0
+        await env.advance_time(0.3)
+        assert timeouts == 1
+        await env.advance_time(0.3)
+        assert timeouts == 1
+
+
+@pytest.mark.asyncio
 async def test_external_wait_covers_timed_awaitable():
     """A declared external_wait around a timed awaitable is fully virtual:
     the verb returns promptly and only advance_time() resumes the handler."""

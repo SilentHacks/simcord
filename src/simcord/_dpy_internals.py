@@ -77,6 +77,13 @@ def verify() -> None:
     for suffix in ("__stopped", "__timeout_task"):
         if not any(name.endswith(suffix) for name in vars(view_probe)):  # pragma: no cover
             problems.append(f"BaseView.{suffix}")
+    impl_probe = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
+    if (
+        impl_probe is None
+        or not asyncio.iscoroutinefunction(impl_probe)
+        or "self" not in impl_probe.__code__.co_varnames
+    ):  # pragma: no cover
+        problems.append("BaseView._BaseView__timeout_task_impl coroutine")
     if not hasattr(asyncio.timeouts.Timeout(0.0), "_task"):  # pragma: no cover
         problems.append("Timeout._task")
 
@@ -197,7 +204,16 @@ def is_wakeup_callback(callback: Any, args: tuple[Any, ...], waiter: Any, task: 
 
 
 def _view_timeout_task_identity(client: discord.Client, task: asyncio.Task[Any]) -> bool:
-    """True when task is some store-registered View/Modal's expiry task."""
+    """True when task is a registered View/Modal's expiry task."""
+    coro = task.get_coro()
+    impl = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
+    if impl is not None and getattr(coro, "cr_code", None) is getattr(impl, "__code__", None):
+        owner = getattr(getattr(coro, "cr_frame", None), "f_locals", {}).get("self")
+        if isinstance(owner, _view.BaseView):
+            for name, value in vars(owner).items():
+                if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
+                    return False
+            return True
     store = getattr(get_state(client), "_view_store", None)
     if store is None:
         return False
