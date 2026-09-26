@@ -9,7 +9,18 @@ from aiohttp import ClientSession
 from PIL import Image
 from preview_helpers import gif_bytes, png_bytes, preview_headers, target_message
 
+from simcord.backend.cdn import CDN_BASE
 from simcord.preview._markdown import markdown_tokens
+
+
+def _walk_tokens(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_tokens(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_tokens(child)
 
 
 @pytest.mark.asyncio
@@ -79,6 +90,86 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         assert v2_selected["components"][0]["markdown_tokens"]
 
 
+@pytest.mark.asyncio
+async def test_preview_projects_only_authorized_custom_emoji_across_surfaces(env, channel, alice):
+    emoji = env.guild.create_emoji("party")
+    private_role = env.guild.create_role("Emoji access")
+    private_emoji = env.guild.create_emoji("private")
+    env.backend.edit_emoji(env.guild.id, private_emoji.id, {"role_ids": [private_role.id]})
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Button(
+            label="party",
+            emoji=discord.PartialEmoji(name=emoji.name, id=emoji.id, animated=emoji.animated),
+        )
+    )
+    content = f"<:party:{emoji.id}> <:private:{private_emoji.id}>"
+    message = await env.bot.get_channel(channel.id).send(content=content, view=view)
+    await alice.react(message, f"party:{emoji.id}")
+    url = f"{CDN_BASE}/emojis/{emoji.id}.png"
+
+    async with env.preview(channel, viewers=[alice], assets={url: ("party.png", png_bytes())}) as preview:
+        await preview.show(message)
+        selected = target_message(preview._page_payload(preview._python))
+        content_emoji = next(
+            token["emoji"]
+            for token in _walk_tokens(selected["content_tokens"])
+            if token.get("type") == "emoji"
+        )
+        button_emoji = next(
+            token["emoji"]
+            for token in _walk_tokens(selected["components"])
+            if isinstance(token.get("emoji"), dict) and str(token["emoji"].get("id")) == str(emoji.id)
+        )
+        reaction_emoji = selected["reactions"][0]["emoji"]
+
+        assert content_emoji["available"] is True
+        assert button_emoji["available"] is True
+        assert reaction_emoji["available"] is True
+        assert content_emoji["asset_id"] == button_emoji["asset_id"] == reaction_emoji["asset_id"]
+        assert any(
+            token.get("type") == "text" and f"<:private:{private_emoji.id}>" in token.get("content", "")
+            for token in _walk_tokens(selected["content_tokens"])
+        )
+
+        async with ClientSession() as client:
+            response = await client.get(
+                preview._origin + f"/api/assets/{content_emoji['asset_id']}",
+                headers=preview_headers(preview, preview._python.id),
+            )
+            assert response.status == 200
+            assert await response.read() == png_bytes()
+
+
+@pytest.mark.asyncio
+async def test_preview_animated_emoji_serves_original_gif_for_animation(env, channel, alice):
+    emoji = env.guild.create_emoji("dancer", animated=True)
+    original = gif_bytes()
+    url = f"{CDN_BASE}/emojis/{emoji.id}.gif"
+    message = await alice.send(channel, f"<a:dancer:{emoji.id}>")
+
+    async with env.preview(channel, viewers=[alice], assets={url: ("dancer.gif", original)}) as preview:
+        await preview.show(message)
+        selected = target_message(preview._page_payload(preview._python))
+        projected = next(
+            token["emoji"]
+            for token in _walk_tokens(selected["content_tokens"])
+            if token.get("type") == "emoji"
+        )
+        assert projected["animated"] is True
+        assert projected["available"] is True
+
+        async with ClientSession() as client:
+            headers = preview_headers(preview, preview._python.id)
+            response = await client.get(
+                preview._origin + f"/api/assets/{projected['asset_id']}?download=1",
+                headers=headers,
+            )
+            assert response.status == 200
+            assert response.headers["Content-Type"].startswith("image/gif")
+            assert await response.read() == original
+
+
 @pytest.mark.parametrize(
     "profile", ["message", "text_display", "embed_title", "embed_description", "label", "unknown"]
 )
@@ -94,7 +185,7 @@ def test_preview_markdown_safe_profiles_and_tokens(profile):
     ]
     assert all(item["href"].startswith(("http://", "https://", "mailto:")) for item in links)
     assert "code" in flat
-    assert "timestamp" in flat
+    assert ("timestamp" in flat) == (profile != "label")
     assert "secret" in flat
 
 
@@ -108,6 +199,77 @@ def test_preview_markdown_timestamp_styles_are_preserved():
         if child.get("type") == "timestamp"
     ]
     assert styles == list("tTdDfFR")
+
+
+@pytest.mark.asyncio
+async def test_preview_renders_timestamps_highlight_and_inert_html_in_browser(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    styles = "tTdDfFR"
+    content = (
+        " ".join(f"<t:1700000000:{style}>" for style in styles)
+        + "\n```python\nprint('<script>')\n```\n<script>window.previewInjected = true</script>"
+    )
+    await env.bot.get_channel(channel.id).send(content)
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                assert await page.locator("time.discord-timestamp").count() == 7
+                assert await page.locator("time.discord-timestamp").evaluate_all(
+                    "elements => elements.every(element => Boolean(element.title))"
+                )
+                assert await page.locator(".code-block .hljs-built_in").count() > 0
+                assert not await page.evaluate("() => window.previewInjected")
+                assert await page.locator(".message-content script").count() == 0
+            finally:
+                await browser.close()
+
+
+def test_preview_markdown_field_policies_resolve_references_only_in_bodies():
+    context = {"users": {"42": "Alice"}, "commands": {"99": "launch"}}
+    source = "<@42> </launch:99> **bold** [link](https://example.test)"
+    message = list(_walk_tokens(markdown_tokens(source, "message", context=context)))
+    title = list(_walk_tokens(markdown_tokens(source, "embed_title", context=context)))
+    description = list(_walk_tokens(markdown_tokens(source, "embed_description", context=context)))
+
+    assert {"mention", "command", "link_open"} <= {token.get("type") for token in message}
+    assert not {"mention", "command", "link_open"} & {token.get("type") for token in title}
+    assert "link_open" in {token.get("type") for token in description}
+    assert not {"mention", "command"} & {token.get("type") for token in description}
+
+
+def test_preview_markdown_code_html_and_unsafe_links_remain_inert():
+    tokens = list(
+        _walk_tokens(
+            markdown_tokens(
+                "`<@42>` <script onload=alert(1)> [bad](javascript:alert(1))",
+                context={"users": {"42": "Alice"}},
+            )
+        )
+    )
+
+    assert any(token.get("type") == "code" and token.get("content") == "<@42>" for token in tokens)
+    assert not any(token.get("type") == "mention" for token in tokens)
+    assert not any(token.get("type") == "link_open" for token in tokens)
+    assert any(
+        token.get("type") == "text" and "<script onload=alert(1)>" in token.get("content", "")
+        for token in tokens
+    )
+
+
+def test_preview_discord_multiline_quote_preserves_fenced_code():
+    tokens = list(
+        _walk_tokens(markdown_tokens(">>> quoted line\ncontinued\n```py\n>>> literal code\n```\noutside"))
+    )
+
+    assert any(token.get("type") == "blockquote" for token in tokens)
+    assert any(
+        token.get("type") == "code_block" and token.get("content") == ">>> literal code\n" for token in tokens
+    )
 
 
 def test_preview_markdown_links_breaks_styles_and_spoilers():

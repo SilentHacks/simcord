@@ -1,4 +1,5 @@
-import { presenceDot, renderIdentityAvatar } from "./dom.js";
+import { node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { appendEmojiValue, appendMarkdownOrText } from "./text.js";
 const TYPE = Object.freeze({
   ROW: 1, BUTTON: 2, STRING_SELECT: 3, TEXT_INPUT: 4, USER_SELECT: 5, ROLE_SELECT: 6,
   MENTIONABLE_SELECT: 7, CHANNEL_SELECT: 8, SECTION: 9, TEXT_DISPLAY: 10, THUMBNAIL: 11,
@@ -10,52 +11,10 @@ const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADI
 const FILE_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
 const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"/></svg>';
 
-function node(tag, className, text) {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined && text !== null) element.textContent = String(text);
-  return element;
-}
 function appendEmojiText(parent, text) {
   parent.append(document.createTextNode(String(text ?? "")));
 }
 
-function appendEmojiValue(parent, emoji, options, label = "Custom emoji") {
-  if (!emoji || typeof emoji !== "object") {
-    appendEmojiText(parent, emoji);
-    return;
-  }
-  if (emoji.custom === true || emoji.id) {
-    const assetId = typeof emoji.asset_id === "string" ? emoji.asset_id : null;
-    const manifest = assetId ? options.assets?.[assetId] : null;
-    if (!assetId || emoji.available === false || manifest?.available === false || !options.loadAsset) {
-      parent.append(node("span", "emoji-unavailable", `${label} unavailable`));
-      options.onDiagnostic?.({
-        code: "custom-emoji-unavailable",
-        severity: "warning",
-        message: `${label} is unavailable from supplied offline assets`,
-        complete: false,
-      });
-      return;
-    }
-    const image = node("img", "custom-emoji");
-    image.alt = String(emoji.name || label || "Custom emoji");
-    const pending = Promise.resolve(options.loadAsset(assetId)).then((url) => {
-      if (options.isCurrent && !options.isCurrent()) return;
-      image.src = url;
-      return image.decode ? image.decode() : undefined;
-    }).catch((error) => {
-      if (!options.isCurrent || options.isCurrent()) {
-        image.replaceWith(node("span", "emoji-unavailable", `${label} unavailable`));
-        options.onDiagnostic?.({ code: "custom-emoji-unavailable", severity: "warning", message: `${label} failed to decode`, detail: String(error), complete: false });
-      }
-    });
-    options.pendingMedia?.push(pending);
-    parent.append(image);
-    return;
-  }
-  appendEmojiText(parent, emoji.name || "");
-}
 function keyFor(component, path, scope = "message") {
   if (typeof component.control_key === "string") return component.control_key;
   if (typeof component.id === "number" && component.id > 0) return `${scope}:component:${component.id}`;
@@ -94,118 +53,6 @@ function displaySelection(values, entries, placeholder) {
   return labels.length ? labels.join(", ") : (placeholder || "Select an option");
 }
 
-function appendTextWithMentions(parent, value, options) {
-  const text = String(value ?? "");
-  const names = options.mentions || {};
-  const pattern = /<@!?([0-9]+)>|<@&([0-9]+)>|<#([0-9]+)>/g;
-  let offset = 0;
-  for (const match of text.matchAll(pattern)) {
-    if (match.index > offset) appendEmojiText(parent, text.slice(offset, match.index));
-    const id = match[1] || match[2] || match[3];
-    const name = names[id];
-    if (name) {
-      const prefix = match[3] ? "#" : "@";
-      parent.append(node("span", "mention", `${prefix}${name}`));
-    } else appendEmojiText(parent, match[0]);
-    offset = match.index + match[0].length;
-  }
-  if (offset < text.length) appendEmojiText(parent, text.slice(offset));
-}
-
-function renderInlineTokens(parent, tokens, options) {
-  const stack = [parent];
-  (tokens || []).forEach((token) => {
-    if (!token || typeof token !== "object") return;
-    const type = token.type;
-    if (type === "text") { appendTextWithMentions(stack[stack.length - 1], token.content, options); return; }
-    if (type === "code") { stack[stack.length - 1].append(node("code", "inline-code", token.content || "")); return; }
-    if (type === "break") { stack[stack.length - 1].append(document.createElement("br")); return; }
-    if (type === "timestamp") {
-      const date = new Date(Number(token.unix) * 1000);
-      const valid = Number.isFinite(date.getTime());
-      const style = token.style || "f";
-      const locale = options.locale || "en-US";
-      const timezone = options.timezone || "UTC";
-      const dateOptions = { timeZone: timezone };
-      let rendered = `<t:${token.unix}${style ? `:${style}` : ""}>`;
-      if (valid && style !== "R") {
-        const formats = {
-          t: { hour: "numeric", minute: "2-digit" },
-          T: { hour: "numeric", minute: "2-digit", second: "2-digit" },
-          d: { year: "numeric", month: "2-digit", day: "2-digit" },
-          D: { year: "numeric", month: "long", day: "numeric" },
-          f: { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
-          F: { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" },
-        };
-        rendered = new Intl.DateTimeFormat(locale, { ...dateOptions, ...(formats[style] || formats.f) }).format(date);
-      } else if (valid) {
-        const basis = new Date(options.presentationTime || 0);
-        const seconds = (date.getTime() - basis.getTime()) / 1000;
-        const absolute = Math.abs(seconds);
-        const unit = absolute < 60 ? ["second", seconds] : absolute < 3600 ? ["minute", seconds / 60] : absolute < 86400 ? ["hour", seconds / 3600] : absolute < 604800 ? ["day", seconds / 86400] : ["week", seconds / 604800];
-        rendered = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(Math.round(unit[1]), unit[0]);
-      }
-      const time = node("time", "discord-timestamp", rendered);
-      if (valid) time.dateTime = date.toISOString();
-      stack[stack.length - 1].append(time);
-      return;
-    }
-    if (type === "link_open") {
-      const href = safeLink(token.href);
-      if (!href) return;
-      const link = node("a", "markdown-link"); link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer";
-      stack[stack.length - 1].append(link); stack.push(link); return;
-    }
-    if (type === "link_close") { if (stack.length > 1) stack.pop(); return; }
-    const marks = { strong: "strong", em: "em", s: "del", u: "u", spoiler: "span" };
-    const open = type.endsWith("_open");
-    const name = type.replace(/_(?:open|close)$/, "");
-    const mark = marks[name];
-    if (mark) {
-      if (open) {
-        const element = document.createElement(mark);
-        if (name === "spoiler") {
-          element.className = "markdown-spoiler";
-          element.tabIndex = 0;
-          element.setAttribute("role", "button");
-          element.setAttribute("aria-label", "Reveal spoiler");
-          const reveal = () => { element.classList.add("is-revealed"); element.removeAttribute("role"); element.removeAttribute("tabindex"); element.removeAttribute("aria-label"); };
-          element.addEventListener("click", reveal);
-          element.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); reveal(); } });
-        }
-        stack[stack.length - 1].append(element); stack.push(element);
-      } else if (stack.length > 1) stack.pop();
-    }
-  });
-}
-function renderMarkdown(parent, tokens, options = {}) {
-  const renderBlock = (block, target) => {
-    if (!block || typeof block !== "object") return;
-    const type = block.type;
-    if (type === "inline") {
-      const first = block.children?.[0];
-      if (options.subtext !== false && first?.type === "text" && String(first.content).startsWith("-# ")) {
-        const children = block.children.map((item, index) => index === 0 ? { ...item, content: String(item.content).slice(3) } : item);
-        const subtext = node("small", "markdown-subtext");
-        renderInlineTokens(subtext, children, options);
-        target.append(subtext);
-      } else {
-        renderInlineTokens(target, block.children, options);
-      }
-      return;
-    }
-    if (type === "code_block") { target.append(node("pre", "code-block", block.content || "")); return; }
-    const tags = { paragraph: "p", blockquote: "blockquote", bullet_list: "ul", ordered_list: "ol", list_item: "li", heading: /^h[1-6]$/.test(block.tag || "") ? block.tag : "h3" };
-    const element = node(tags[type] || "div", `markdown-${type || "block"}`);
-    (block.children || []).forEach((child) => renderBlock(child, element));
-    target.append(element);
-  };
-  (tokens || []).forEach((token) => renderBlock(token, parent));
-}
-function appendMarkdownOrText(parent, value, tokens, options) {
-  if (Array.isArray(tokens) && tokens.length) renderMarkdown(parent, tokens, options);
-  else appendTextWithMentions(parent, value, options);
-}
 
 function renderSelect(component, path, options) {
   const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel, onNavigate, onClear } = options;
@@ -749,4 +596,4 @@ export function renderModal(root, modal, options = {}) {
   root.append(backdrop);
   return { controls, focus: dialog.querySelector("input, textarea, button") || dialog };
 }
-export { appendEmojiValue, appendMarkdownOrText, node, renderEmbed, renderNode, renderSpoilerMedia };
+export { renderEmbed, renderNode, renderSpoilerMedia };

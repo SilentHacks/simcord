@@ -1,12 +1,6 @@
-import { applyRoleColor, presenceDot, renderIdentityAvatar } from "./dom.js";
-import {
-  appendEmojiValue,
-  appendMarkdownOrText,
-  node,
-  renderEmbed,
-  renderNode,
-  renderSpoilerMedia,
-} from "./components.js";
+import { applyRoleColor, node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { isEmojiOnly, appendEmojiValue, appendMarkdownOrText } from "./text.js";
+import { renderEmbed, renderNode, renderSpoilerMedia } from "./components.js";
 
 function referencedAssets(components, embeds) {
   const found = new Set();
@@ -71,10 +65,12 @@ function appendDiscordLink(parent, value, label) {
   }
 }
 
-function appendSystemMessage(root, system) {
+function appendSystemMessage(root, system, options) {
   const content = node("div", "message-system");
   content.append(node("span", "message-system-icon", system.icon || "system"));
-  content.append(node("span", "message-system-text", system.text || ""));
+  const text = node("span", "message-system-text");
+  appendMarkdownOrText(text, system.text || "", system.text_tokens, options);
+  content.append(text);
   const details = node("span", "message-system-details");
   if (system.recipient?.name) details.append(node("span", "", ` ${system.recipient.name}`));
   appendDiscordLink(details, system.channel, system.channel?.name || "channel");
@@ -133,11 +129,14 @@ function appendStickers(root, stickers, options, pendingMedia) {
 
 function appendMessageContent(root, message, options, v2) {
   if (message.system) {
-    appendSystemMessage(root, message.system);
+    appendSystemMessage(root, message.system, options);
   } else if (!v2 && message.content) {
     const content = node("div", "message-content");
     if (message.type_info?.kind === "unknown") content.textContent = message.content;
-    else appendMarkdownOrText(content, message.content, message.content_tokens, options);
+    else {
+      appendMarkdownOrText(content, message.content, message.content_tokens, options);
+      if (isEmojiOnly(message.content_tokens)) content.classList.add("emoji-only");
+    }
     root.append(content);
   }
 }

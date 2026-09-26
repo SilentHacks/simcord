@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..backend.access import can_access_channel, can_access_message
-from ..backend.cdn import sticker_url
+from ..backend.cdn import CDN_BASE, sticker_url
 from ..backend.errors import BackendError, SetupError
 from ._media import MediaError, MediaWorker
 
@@ -168,6 +168,37 @@ class _AssetOps:
                 raise SetupError("asset is unavailable") from exc
             if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("asset access denied")
+        elif owner == "emoji":
+            _, emoji_id = source
+            try:
+                identity = int(emoji_id)
+            except (TypeError, ValueError) as exc:
+                raise SetupError("asset is unavailable") from exc
+            backend = self.env.backend
+            emoji = backend.application_emojis.get(identity)
+            if emoji is None:
+                channel = backend.channels.get(page.channel_id)
+                guild = (
+                    backend.guilds.get(channel.guild_id)
+                    if channel is not None and channel.guild_id is not None
+                    else None
+                )
+                emoji = guild.emojis.get(identity) if guild is not None else None
+                if guild is not None and emoji is not None and emoji.role_ids:
+                    member = guild.members.get(page.viewer.id)
+                    if member is None or not set(emoji.role_ids).intersection(member.role_ids):
+                        raise SetupError("asset access denied")
+            if emoji is None or not emoji.available:
+                raise SetupError("asset is unavailable")
+            extension = "gif" if emoji.animated else "png"
+            url = f"{CDN_BASE}/emojis/{identity}.{extension}"
+            current = backend.cdn.get(url)
+            if current is None and (supplied := self._explicit_assets.get(url)) is not None:
+                current = supplied[1]
+            if current is None:
+                raise SetupError("asset is unavailable")
+            if hashlib.sha256(current).hexdigest() != record.digest:
+                raise SetupError("asset was replaced")
         elif owner == "sticker":
             _, guild_id, sticker_id = source
             guild = self.env.backend.guilds.get(guild_id)

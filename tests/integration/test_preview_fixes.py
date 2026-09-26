@@ -16,7 +16,6 @@ from preview_helpers import action_body, control_key, gif_bytes, png_bytes, prev
 import simcord
 from simcord.components import walk_components
 from simcord.preview import _media
-from simcord.preview._snapshot import _project_emoji
 
 
 class _ReleasableView(discord.ui.View):
@@ -624,15 +623,3 @@ async def test_media_release_during_decode_does_not_cache_orphan(monkeypatch):
     await asyncio.sleep(0)
     assert "orphan" not in worker._cache
     await worker.close()
-
-
-@pytest.mark.asyncio
-async def test_custom_emoji_projection_keeps_only_opaque_asset_reference(env, channel, alice):
-    async with env.preview(channel, viewers=[alice]) as preview:
-        projected = _project_emoji(
-            preview._python,
-            {"id": "123", "name": "party", "url": "https://secret.example/emoji.png"},
-        )
-        assert projected["asset_id"].startswith("a_")
-        assert projected["custom"] is True
-        assert "url" not in projected

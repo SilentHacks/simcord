@@ -88,6 +88,7 @@ class _Page:
             if owner in {
                 "attachment",
                 "sticker",
+                "emoji",
                 "user_avatar",
                 "member_avatar",
                 "default_avatar",

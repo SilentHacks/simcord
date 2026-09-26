@@ -168,6 +168,30 @@ deep and require an authorized referenced message. A successful send clears its 
 rejected or failed send leaves it available for correction. The bot receives the ordinary actor
 message event, and replies it creates appear after a new publication.
 
+## Text, code and emoji
+
+Preview parses message and Text Display bodies on the server into safe tokens. Message bodies and
+embed descriptions/field values support block Markdown; embed titles and field names stay inline,
+and embed footers, system text, labels and descriptions remain literal text. Mentions and command
+references resolve only against the selected viewer's authorized users, roles, channels and known
+chat-input commands. Code spans are literal, raw HTML is never inserted, and links are restricted
+to HTTP, HTTPS and mailto.
+
+Fenced code preserves its language label. Highlighting uses the pinned Highlight.js 11.11.1 ESM
+build from `@highlightjs/cdn-assets` with these explicit grammars: Bash, C++, C#, CSS, diff,
+Dockerfile, Go, INI, Java, JavaScript, JSON, Markdown, Python, Rust, SQL, TypeScript, XML and YAML.
+There is no auto-detection; unsupported languages remain escaped code. The vendored license and
+per-file SHA-256 values are in `static/vendor/highlight/LICENSE` and `SHA256SUMS`.
+
+Discord timestamps use the page's locale, timezone and published `presentationTime`; relative
+timestamps do not tick against the host clock, and the absolute time is available on hover.
+Unicode emoji use the bundled Noto Color Emoji face. Custom emoji render only when the emoji is
+available to the selected viewer and authorized bytes exist in SimCord's CDN or `preview.assets`.
+Animated emoji retain their supplied GIF bytes; unavailable emoji stay labeled and diagnostic.
+These behaviors are deterministic, but the bundled captures do not establish Discord's exact text,
+emoji-art or font-wrap parity for every field and script.
+
+
 ## Offline assets and media
 
 Uploaded bytes are served from SimCord's in-memory CDN, and only through the message attachment

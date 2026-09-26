@@ -326,25 +326,68 @@ def _asset_meta(
     return page.asset_id(key, metadata, source=source)
 
 
+def _known_emoji(page: _Page, emoji_id: str) -> Any | None:
+    try:
+        identity = int(emoji_id)
+    except ValueError:
+        return None
+    backend = page.preview.env.backend
+    emoji = backend.application_emojis.get(identity)
+    if emoji is not None:
+        return emoji if emoji.available else None
+    channel = backend.channels.get(page.channel_id)
+    guild = (
+        backend.guilds.get(channel.guild_id) if channel is not None and channel.guild_id is not None else None
+    )
+    emoji = guild.emojis.get(identity) if guild is not None else None
+    if emoji is None or not emoji.available:
+        return None
+    if guild is not None and emoji.role_ids:
+        member = guild.members.get(page.viewer.id)
+        if member is None or not set(emoji.role_ids).intersection(member.role_ids):
+            return None
+    return emoji
+
+
 def _project_emoji(page: _Page, emoji: Any) -> Any:
     if not isinstance(emoji, dict) or not emoji.get("id"):
         return _clean(emoji)
     value = _clean(emoji, drop_urls=True)
     emoji_id = str(emoji["id"])
-    url = emoji.get("url")
-    if not isinstance(url, str) or not url:
-        url = f"{CDN_BASE}/emojis/{emoji_id}.png"
+    record = _known_emoji(page, emoji_id)
+    if record is None:
+        value.update({"custom": True, "available": False, "asset_id": None})
+        return value
+    extension = "gif" if record.animated else "png"
+    content_type = "image/gif" if record.animated else "image/png"
+    url = f"{CDN_BASE}/emojis/{emoji_id}.{extension}"
     asset_id = page.asset_id(
         f"emoji:{emoji_id}",
-        {"url": url, "filename": f"{emoji_id}.png", "content_type": "image/png"},
+        {"url": url, "filename": f"{emoji_id}.{extension}", "content_type": content_type},
+        source=("emoji", emoji_id),
     )
     value.update(
         {
+            "name": record.name,
+            "animated": bool(record.animated),
             "custom": True,
             "asset_id": asset_id,
             "available": _asset_available(page, asset_id),
         }
     )
+    return value
+
+
+def _decorate_markdown_emoji(value: Any, page: _Page) -> Any:
+    if isinstance(value, dict):
+        if value.get("type") == "emoji":
+            value["emoji"] = _project_emoji(page, value["emoji"])
+        else:
+            for item in value.values():
+                _decorate_markdown_emoji(item, page)
+    elif isinstance(value, list):
+        for item in value:
+            _decorate_markdown_emoji(item, page)
     return value
 
 
@@ -420,6 +463,7 @@ def _decorate_components(
     message: Message,
     components: Any,
     attachments: list[dict[str, Any]],
+    context: Mapping[str, Any],
 ) -> Any:
     rows = deepcopy(components)
     _annotate_tree(rows, f"message:{message.id}")
@@ -459,12 +503,16 @@ def _decorate_components(
                 media["attachment_id"] = str(attachment.get("id", ""))
             media.pop("url", None)
         if typ == int(ComponentType.TEXT_DISPLAY):
-            node["markdown_tokens"] = markdown_tokens(node["content"], "text_display")
+            node["markdown_tokens"] = markdown_tokens(node["content"], "text_display", context=context)
     return _clean(_decorate_emoji(rows, page))
 
 
 def _embed_projection(
-    page: _Page, message: Message, embed: dict[str, Any], attachments: list[dict[str, Any]]
+    page: _Page,
+    message: Message,
+    embed: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    context: Mapping[str, Any],
 ) -> dict[str, Any]:
     value = _clean(_decorate_emoji(deepcopy(embed), page), drop_urls=True)
     link = _safe_link(embed.get("url"))
@@ -499,17 +547,18 @@ def _embed_projection(
             value[key]["available"] = _asset_available(page, asset_id)
             if item is not None:
                 value[key]["attachment_id"] = str(item.get("id", ""))
-    for key in ("title", "description"):
-        if isinstance(embed.get(key), str):
-            value[f"{key}_tokens"] = markdown_tokens(
-                embed[key], "embed_title" if key == "title" else "embed_description"
-            )
+    if isinstance(embed.get("title"), str):
+        value["title_tokens"] = markdown_tokens(embed["title"], "embed_title", context=context)
+    if isinstance(embed.get("description"), str):
+        value["description_tokens"] = markdown_tokens(
+            embed["description"], "embed_description", context=context
+        )
     if isinstance(embed.get("footer"), dict) and isinstance(embed["footer"].get("text"), str):
         value["footer_tokens"] = markdown_tokens(embed["footer"]["text"], "embed_footer")
     for index, field in enumerate(embed.get("fields", [])):
         target = value["fields"][index]
-        target["name_tokens"] = markdown_tokens(field["name"], "embed_field")
-        target["value_tokens"] = markdown_tokens(field["value"], "embed_field")
+        target["name_tokens"] = markdown_tokens(field["name"], "embed_field_name", context=context)
+        target["value_tokens"] = markdown_tokens(field["value"], "embed_field_value", context=context)
     return _clean(_decorate_emoji(value, page))
 
 
@@ -647,18 +696,22 @@ def _message_allowed_actions(preview: Preview, page: _Page, channel: Any, messag
 
 def _reaction_emoji_projection(page: _Page, emoji: str) -> dict[str, Any]:
     name, separator, emoji_id = emoji.partition(":")
-    if separator and emoji_id.isdigit():
-        return _project_emoji(
-            page,
-            {"name": name, "id": emoji_id, "url": f"{CDN_BASE}/emojis/{emoji_id}.png"},
-        )
-    return {"name": emoji}
+    if not separator or not emoji_id.isdigit():
+        return {"name": emoji}
+    record = _known_emoji(page, emoji_id)
+    if record is None:
+        return {"name": name, "id": emoji_id, "custom": True, "available": False, "asset_id": None}
+    return _project_emoji(
+        page,
+        {"name": record.name, "id": emoji_id, "animated": bool(record.animated)},
+    )
 
 
 def _message_projection(
     preview: Preview, page: _Page, message: Message, *, compact: bool, channel: Any
 ) -> dict[str, Any]:
     env = preview.env
+    context = _markdown_context(preview, page, message, channel)
     type_info = _message_type_info(int(message.type))
     attachments = list(message.attachments)
     can_add_reactions = channel.guild_id is None or _has_channel_permission(
@@ -680,12 +733,12 @@ def _message_projection(
         "tts": bool(message.tts),
         "content": message.content,
         "content_tokens": (
-            markdown_tokens(message.content, "message")
+            _decorate_markdown_emoji(markdown_tokens(message.content, "message", context=context), page)
             if type_info["kind"] not in {"system", "unknown"}
             else []
         ),
-        "embeds": [_embed_projection(page, message, item, attachments) for item in message.embeds],
-        "components": _decorate_components(page, message, message.components, attachments),
+        "embeds": [_embed_projection(page, message, item, attachments, context) for item in message.embeds],
+        "components": _decorate_components(page, message, message.components, attachments, context),
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
         "components_v2": bool(message.flags & COMPONENTS_V2_FLAG),
@@ -733,6 +786,7 @@ def _message_projection(
             "kind": type_info["name"],
             "icon": icon,
             "text": message.content or "",
+            "text_tokens": markdown_tokens(message.content or "", "system"),
             "author": author,
         }
         metadata = message.system_metadata
@@ -900,23 +954,9 @@ def _message_projection(
         identity = _identity_wire(resolve_identity(preview, page, int(uid)))
         data["mention_names"][uid] = identity["name"]
         data["mention_entities"][uid] = identity
-    data["mention_channel_ids"] = []
-    data["mention_channel_names"] = {}
-    preview_channel = env.backend.get_channel(page.channel_id)
-    for match in re.finditer(r"<#([0-9]+)>", message.content or ""):
-        channel_id = int(match.group(1))
-        try:
-            mentioned = env.backend.get_channel(channel_id)
-        except BackendError:
-            continue
-        if mentioned.guild_id == preview_channel.guild_id and can_access_channel(
-            env, channel_id, page.viewer
-        ):
-            key = str(channel_id)
-            if key not in data["mention_channel_names"]:
-                data["mention_channel_ids"].append(key)
-                data["mention_channel_names"][key] = mentioned.name or key
-                data["mentions"]["channels"].append(key)
+    data["mention_channel_ids"] = list(context["channel_ids"])
+    data["mention_channel_names"] = dict(context["channels"])
+    data["mentions"]["channels"] = list(context["channel_ids"])
     reference = message.reference
     if reference:
         try:
@@ -943,6 +983,8 @@ def _message_projection(
                     override=referenced.author_name,
                 )
             )
+            reply_channel = env.backend.get_channel(referenced.channel_id)
+            reply_context = _markdown_context(preview, page, referenced, reply_channel)
             data["reply"] = {
                 "state": "resolved",
                 "message_id": str(referenced.id),
@@ -953,7 +995,10 @@ def _message_projection(
                     else None
                 ),
                 "author": referenced_identity,
-                "excerpt_tokens": markdown_tokens(referenced.content[:100], "message"),
+                "excerpt_tokens": _decorate_markdown_emoji(
+                    markdown_tokens(referenced.content[:100], "message", context=reply_context),
+                    page,
+                ),
                 "preview_kind": "message",
             }
     return data
@@ -973,6 +1018,107 @@ def _role_allowed(preview: Preview, page: _Page, role_id: int) -> bool:
     channel = env.backend.get_channel(page.channel_id)
     guild = env.backend.guilds.get(channel.guild_id) if channel.guild_id is not None else None
     return guild is not None and role_id in guild.roles and role_id != guild.id
+
+
+def _markdown_context(
+    preview: Preview,
+    page: _Page,
+    message: Message | None,
+    channel: Any,
+    *,
+    content: str = "",
+) -> dict[str, Any]:
+    backend = preview.env.backend
+    texts = [message.content or ""] if message is not None else [content]
+    if message is not None:
+        for embed in message.embeds:
+            for key in ("title", "description"):
+                if isinstance(embed.get(key), str):
+                    texts.append(embed[key])
+            for owner, key in (("author", "name"), ("footer", "text")):
+                value = embed.get(owner)
+                if isinstance(value, dict) and isinstance(value.get(key), str):
+                    texts.append(value[key])
+            fields = embed.get("fields", [])
+            if isinstance(fields, list):
+                for field in fields:
+                    if isinstance(field, dict):
+                        for key in ("name", "value"):
+                            if isinstance(field.get(key), str):
+                                texts.append(field[key])
+        texts.extend(
+            component["content"]
+            for component in walk_components(message.components)
+            if int(component.get("type", -1)) == int(ComponentType.TEXT_DISPLAY)
+            and isinstance(component.get("content"), str)
+        )
+    users: dict[str, str] = {}
+    for text in texts:
+        for match in re.finditer(r"<@!?([0-9]{1,20})>", text):
+            user_id = int(match.group(1))
+            if _user_allowed(preview, page, user_id):
+                users[match.group(1)] = _identity_wire(resolve_identity(preview, page, user_id))["name"]
+
+    roles: dict[str, str] = {}
+    for text in texts:
+        for match in re.finditer(r"<@&([0-9]{1,20})>", text):
+            role_id = int(match.group(1))
+            if _role_allowed(preview, page, role_id):
+                guild = backend.guilds.get(channel.guild_id)
+                if guild is not None and (role := guild.roles.get(role_id)) is not None:
+                    roles[match.group(1)] = role.name
+
+    channels: dict[str, str] = {}
+    if channel.guild_id is not None:
+        for text in texts:
+            for match in re.finditer(r"<#([0-9]{1,20})>", text):
+                channel_id = int(match.group(1))
+                try:
+                    mentioned = backend.get_channel(channel_id)
+                except BackendError:
+                    continue
+                if mentioned.guild_id == channel.guild_id and can_access_channel(
+                    preview.env, channel_id, page.viewer
+                ):
+                    channels[match.group(1)] = mentioned.name or match.group(1)
+
+    emojis: dict[str, dict[str, Any]] = {}
+    for text in texts:
+        for match in re.finditer(r"<(a?):([A-Za-z0-9_]{2,32}):([0-9]{1,20})>", text):
+            record = _known_emoji(page, match.group(3))
+            if (
+                record is not None
+                and record.name == match.group(2)
+                and bool(record.animated) == bool(match.group(1))
+            ):
+                emojis[match.group(3)] = {
+                    "id": match.group(3),
+                    "name": record.name,
+                    "animated": bool(record.animated),
+                    "custom": True,
+                }
+
+    commands: dict[str, str] = {}
+    for scope in (channel.guild_id, None):
+        for command in backend.commands.get(scope, {}).values():
+            command_id = command.get("id")
+            name = command.get("name")
+            if (
+                command_id is not None
+                and isinstance(name, str)
+                and int(command.get("type", AppCommandType.CHAT_INPUT)) == int(AppCommandType.CHAT_INPUT)
+            ):
+                commands.setdefault(str(command_id), name)
+
+    return {
+        "users": users,
+        "roles": roles,
+        "channels": channels,
+        "channel_ids": list(channels),
+        "emojis": emojis,
+        "commands": commands,
+        "everyone": bool(message.mention_everyone) if message is not None else False,
+    }
 
 
 def _message_summary(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
@@ -1138,7 +1284,10 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         _annotate_tree(payload.get("components", []), f"modal:{handle}")
         for component in walk_components(payload.get("components", [])):
             if isinstance(component.get("content"), str):
-                component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
+                context = _markdown_context(preview, page, None, channel, content=component["content"])
+                component["markdown_tokens"] = _decorate_markdown_emoji(
+                    markdown_tokens(component["content"], "text_display", context=context), page
+                )
         payload["application_name"] = _identity_wire(
             resolve_identity(preview, page, preview.env.backend.bot_user.id)
         )["name"]

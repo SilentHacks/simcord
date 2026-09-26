@@ -465,7 +465,6 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     drafts: state.drafts,
     candidates: snapshot.candidates || {},
     assets: snapshot.assets || {},
-    mentions: { ...(message?.mention_names || {}), ...(message?.mention_channel_names || {}) },
     locale: state.profile.locale,
     timezone: state.profile.timezone,
     presentationTime: state.profile.presentationTime,

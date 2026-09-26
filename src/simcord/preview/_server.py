@@ -36,6 +36,28 @@ class PreviewServer:
         "/app.js": "app.js",
         "/components.js": "components.js",
         "/messages.js": "messages.js",
+        "/text.js": "text.js",
+        "/vendor/highlight/LICENSE": "vendor/highlight/LICENSE",
+        "/vendor/highlight/SHA256SUMS": "vendor/highlight/SHA256SUMS",
+        "/vendor/highlight/es/core.min.js": "vendor/highlight/es/core.min.js",
+        "/vendor/highlight/es/languages/bash.min.js": "vendor/highlight/es/languages/bash.min.js",
+        "/vendor/highlight/es/languages/cpp.min.js": "vendor/highlight/es/languages/cpp.min.js",
+        "/vendor/highlight/es/languages/csharp.min.js": "vendor/highlight/es/languages/csharp.min.js",
+        "/vendor/highlight/es/languages/css.min.js": "vendor/highlight/es/languages/css.min.js",
+        "/vendor/highlight/es/languages/diff.min.js": "vendor/highlight/es/languages/diff.min.js",
+        "/vendor/highlight/es/languages/dockerfile.min.js": "vendor/highlight/es/languages/dockerfile.min.js",
+        "/vendor/highlight/es/languages/go.min.js": "vendor/highlight/es/languages/go.min.js",
+        "/vendor/highlight/es/languages/ini.min.js": "vendor/highlight/es/languages/ini.min.js",
+        "/vendor/highlight/es/languages/java.min.js": "vendor/highlight/es/languages/java.min.js",
+        "/vendor/highlight/es/languages/javascript.min.js": "vendor/highlight/es/languages/javascript.min.js",
+        "/vendor/highlight/es/languages/json.min.js": "vendor/highlight/es/languages/json.min.js",
+        "/vendor/highlight/es/languages/markdown.min.js": "vendor/highlight/es/languages/markdown.min.js",
+        "/vendor/highlight/es/languages/python.min.js": "vendor/highlight/es/languages/python.min.js",
+        "/vendor/highlight/es/languages/rust.min.js": "vendor/highlight/es/languages/rust.min.js",
+        "/vendor/highlight/es/languages/sql.min.js": "vendor/highlight/es/languages/sql.min.js",
+        "/vendor/highlight/es/languages/typescript.min.js": "vendor/highlight/es/languages/typescript.min.js",
+        "/vendor/highlight/es/languages/xml.min.js": "vendor/highlight/es/languages/xml.min.js",
+        "/vendor/highlight/es/languages/yaml.min.js": "vendor/highlight/es/languages/yaml.min.js",
         "/dom.js": "dom.js",
         "/preview.css": "preview.css",
         "/protocol.schema.json": "protocol.schema.json",
@@ -57,6 +79,9 @@ class PreviewServer:
         "components.js": "application/javascript",
         "messages.js": "application/javascript",
         "dom.js": "application/javascript",
+        "text.js": "application/javascript",
+        "vendor/highlight/LICENSE": "text/plain",
+        "vendor/highlight/SHA256SUMS": "text/plain",
     }
     _SECURITY_HEADERS: ClassVar[dict[str, str]] = {
         "Cache-Control": "no-store",
@@ -157,7 +182,11 @@ class PreviewServer:
             else Path(__file__).with_name("static") / filename
         )
         content_type = (
-            "font/ttf" if filename in self._FONT_FILES else self._STATIC_CONTENT_TYPES.get(filename)
+            "font/ttf"
+            if filename in self._FONT_FILES
+            else self._STATIC_CONTENT_TYPES.get(
+                filename, "application/javascript" if filename.endswith(".js") else None
+            )
         )
         if content_type is None:  # pragma: no cover - static map is class-owned
             raise web.HTTPNotFound()

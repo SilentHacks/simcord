@@ -412,6 +412,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.375;
+  unicode-bidi: plaintext;
 }
 .message-content { margin-top: 0; margin-bottom: 0; }
 .message-content > :first-child, .text-display > :first-child { margin-top: 0; }
@@ -440,9 +441,27 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font-variant-ligatures: none;
 }
 .inline-code { padding: 1px 4px; font-size: .875em; }
-.code-block { display: block; margin: 6px 0; padding: 8px; overflow: auto; white-space: pre; }
+.code-language {
+  display: block;
+  margin: 6px 0 2px;
+  color: var(--discord-muted);
+  font: 11px var(--preview-font-mono);
+  text-transform: lowercase;
+}
+.code-block { display: block; max-width: 100%; margin: 0 0 6px; padding: 8px; overflow: auto; white-space: pre; }
+.code-block code { display: block; min-width: max-content; white-space: inherit; }
+.hljs-comment, .hljs-quote { color: #8b949e; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-name { color: #ff7b72; }
+.hljs-string, .hljs-doctag, .hljs-regexp { color: #a5d6ff; }
+.hljs-number, .hljs-boolean, .hljs-variable, .hljs-template-variable { color: #79c0ff; }
+.hljs-title, .hljs-title.function_, .hljs-title.class_ { color: #d2a8ff; }
+.hljs-built_in, .hljs-type, .hljs-attr, .hljs-attribute { color: #ffa657; }
+.hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-section { color: #d29922; }
 .markdown-link { color: var(--link-accent); }
 .mention { padding: 0 2px; color: #c9cdfb; background: rgba(88, 101, 242, .3); border-radius: 3px; font-weight: 500; }
+.command-mention { padding: 0 2px; color: #c9cdfb; background: rgba(88, 101, 242, .3); border-radius: 3px; font-weight: 500; }
+.message-content.emoji-only { font-size: 2em; line-height: 1.2; }
+.message-content.emoji-only .custom-emoji { width: 40px; height: 40px; }
 .discord-timestamp { color: var(--discord-muted); }
 .markdown-subtext { display: block; color: var(--discord-subtle); font-size: .875em; }
 .custom-emoji, .embed-author-icon, .embed-footer-icon { width: 20px; height: 20px; object-fit: contain; vertical-align: middle; }
