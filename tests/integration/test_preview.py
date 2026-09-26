@@ -518,8 +518,12 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
         asset = target_message(preview._page_payload(page))["embeds"][0]["image"]["asset_id"]
         with pytest.raises(simcord.SetupError, match="valid PNG"):
             await preview._prepare_asset("python", asset)
-        with pytest.raises(simcord.SetupError, match="asset is unavailable"):
-            preview._asset("python", "missing")
+        rejected = preview._page_payload(page)["assets"][asset]
+        assert rejected["available"] is True
+        assert rejected["displayReady"] is False
+        assert "displayWidth" not in rejected
+        content_type, original, filename = await preview._prepare_asset("python", asset, download=True)
+        assert (content_type, original, filename) == ("image/png", b"not-image", "bad.png")
     await unopened.close()
     with pytest.raises(simcord.SetupError, match="not active"):
         await unopened.screenshot(tmp_path / "closed.png")

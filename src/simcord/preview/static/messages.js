@@ -1,6 +1,12 @@
 import { applyRoleColor, node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { isEmojiOnly, appendEmojiValue, appendMarkdownOrText } from "./text.js";
-import { renderEmbed, renderNode, renderSpoilerMedia } from "./components.js";
+import { renderEmbed, renderNode } from "./components.js";
+import {
+  downloadButton,
+  fileTypeLabel,
+  formatFileSize,
+  renderSpoilerMedia,
+} from "./media.js";
 
 function referencedAssets(components, embeds) {
   const found = new Set();
@@ -120,6 +126,7 @@ function appendStickers(root, stickers, options, pendingMedia) {
       "message-sticker",
       options,
       sticker.name || "Sticker",
+      `sticker:${sticker.id || sticker.name}`,
     );
     list.append(result.element);
     pendingMedia.push(...result.pending);
@@ -140,12 +147,50 @@ function appendMessageContent(root, message, options, v2) {
     root.append(content);
   }
 }
+function appendFileAttachment(item, attachment, options) {
+  const filename = attachment.filename || "attachment";
+  const footer = node("div", "attachment-footer");
+  const badge = node("span", "file-icon file-type", fileTypeLabel(attachment));
+  badge.setAttribute("aria-hidden", "true");
+  const info = node("span", "attachment-info");
+  info.append(node("span", "attachment-name", filename));
+  const size = formatFileSize(attachment.size);
+  if (size) info.append(node("small", "attachment-size", size));
+  if (attachment.description) info.append(node("small", "file-description", attachment.description));
+  footer.append(badge, info);
+
+  const actions = node("span", "attachment-actions");
+  if (typeof attachment.preview === "string" && attachment.preview.length) {
+    const preview = node("pre", "attachment-preview", attachment.preview);
+    preview.hidden = true;
+    const toggle = node("button", "attachment-action attachment-preview-toggle", "Preview");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", () => {
+      preview.hidden = !preview.hidden;
+      toggle.setAttribute("aria-expanded", String(!preview.hidden));
+      toggle.textContent = preview.hidden ? "Preview" : "Hide preview";
+    });
+    item.append(preview);
+    actions.append(toggle);
+  }
+  const available = Boolean(attachment.asset_id) && attachment.available !== false
+    && options.assets?.[attachment.asset_id]?.available !== false && options.loadAsset;
+  if (!available) item.append(node("div", "media-unavailable", `${filename} unavailable`));
+  const download = downloadButton(attachment, options, filename);
+  download.classList.add("attachment-action");
+  actions.append(download);
+  footer.append(actions);
+  item.append(footer);
+}
 
 export function renderMessage(root, message, options = {}) {
   const pendingMedia = options.pendingMedia || [];
   options.pendingMedia = pendingMedia;
   root.replaceChildren();
   if (!message) return { pendingMedia };
+  options.messageId = String(message.id);
+  options.lightboxGroup ||= { items: [] };
   const shortTime = (value) => new Intl.DateTimeFormat(options.locale || "en-US", {
     timeZone: options.timezone || "UTC",
     hour: "2-digit",
@@ -213,61 +258,27 @@ export function renderMessage(root, message, options = {}) {
   const refs = referencedAssets(message.components, v2 ? [] : message.embeds);
   const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
   if (attachments.length) {
+    const images = attachments.filter((attachment) => attachment.inline && attachment.asset_id);
     const list = node("ul", "message-attachments");
-    attachments.forEach((attachment) => {
+    list.dataset.imageCount = String(Math.min(10, images.length));
+    list.dataset.attachmentCount = String(Math.min(10, attachments.length));
+    const imageGroup = { items: [] };
+    attachments.forEach((attachment, index) => {
       const inline = attachment.inline && attachment.asset_id;
       const item = node("li", inline ? "attachment attachment-inline" : "attachment");
       if (inline) {
-        const result = renderSpoilerMedia(attachment, "attachment-image", options, attachment.filename || "Attachment");
+        const result = renderSpoilerMedia(
+          attachment,
+          "attachment-image",
+          options,
+          attachment.filename || "Attachment",
+          `attachment:${attachment.id || index}:${attachment.asset_id}`,
+          imageGroup,
+        );
         item.append(result.element);
         pendingMedia.push(...result.pending);
       } else {
-        if (attachment.preview) item.append(node("pre", "attachment-preview", attachment.preview));
-        const available = Boolean(attachment.asset_id) && attachment.available !== false
-          && options.assets?.[attachment.asset_id]?.available !== false && options.loadAsset;
-        if (!available) {
-          item.append(node("div", "media-unavailable", `${attachment.filename || "Attachment"} unavailable`));
-          options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${attachment.filename || "Attachment"} is unavailable offline`, complete: false });
-        }
-        const footer = node("div", "attachment-footer");
-        const info = node("span", "attachment-info");
-        info.append(node("span", "attachment-name", attachment.filename || "attachment"));
-        if (attachment.size !== undefined) info.append(node("small", "attachment-size", `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`));
-        footer.append(info);
-        if (available) {
-          const openAsset = async (download = false) => {
-            try {
-              const url = await options.loadAsset?.(attachment.asset_id, { download: true });
-              if (!url) return;
-              const link = node("a");
-              link.href = url;
-              if (download) link.download = attachment.filename || "attachment";
-              else link.target = "_blank";
-              link.rel = "noopener noreferrer";
-              link.click();
-            } catch (error) {
-              options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${attachment.filename || "Attachment"} is unavailable offline`, detail: String(error), complete: false });
-            }
-          };
-          const icons = {
-            expand: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M9.6 5.6 4.5 12l5.1 6.4M14.4 5.6 19.5 12l-5.1 6.4"/></svg>',
-            open: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M7 17 17 7M8.5 6.5h9v9"/></svg>',
-            more: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>',
-          };
-          const actions = node("span", "attachment-actions");
-          const expand = node("button", "attachment-action");
-          expand.type = "button"; expand.setAttribute("aria-label", "Expand preview"); expand.innerHTML = icons.expand;
-          expand.addEventListener("click", () => item.classList.toggle("is-expanded"));
-          const open = node("button", "attachment-action");
-          open.type = "button"; open.setAttribute("aria-label", "Open attachment"); open.innerHTML = icons.open;
-          open.addEventListener("click", () => openAsset(false));
-          const more = node("button", "attachment-action");
-          more.type = "button"; more.setAttribute("aria-label", "Download attachment"); more.innerHTML = icons.more;
-          more.addEventListener("click", () => openAsset(true));
-          actions.append(expand, open, more);
-          footer.append(actions);
-        }
-        item.append(footer);
+        appendFileAttachment(item, attachment, options);
       }
       list.append(item);
     });

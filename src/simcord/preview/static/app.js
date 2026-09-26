@@ -1,5 +1,6 @@
 import { renderModal } from "./components.js";
 import { renderMessage } from "./messages.js";
+import { closeLightbox } from "./media.js";
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -65,6 +66,10 @@ const state = {
   assetFingerprint: "",
   targetId: null,
   objectUrls: new Map(),
+  assetLoads: new Map(),
+  assetEpoch: 0,
+  spoilerState: new Set(),
+  spoilerContext: null,
   messageNodes: new Map(),
   dayNodes: new Map(),
   replyToId: null,
@@ -165,11 +170,15 @@ function setModalIsolation(open) {
 }
 
 function revokeAssets() {
+  closeLightbox();
+  state.assetEpoch += 1;
+  state.assetLoads.clear();
   state.objectUrls.forEach((url) => URL.revokeObjectURL(url));
   state.objectUrls.clear();
 }
 
 function beginRender() {
+  closeLightbox();
   state.renderGeneration += 1;
   state.ready = false;
   ui.app.setAttribute("aria-busy", "true");
@@ -303,22 +312,38 @@ function applyProfile() {
 }
 
 function loadAsset(assetId, { download = false } = {}) {
-  // download=1 serves the original bytes for explicit save/open actions;
-  // display loads always take the normalized form under the plain key.
   const key = download ? `${assetId}:download` : assetId;
   const cached = state.objectUrls.get(key);
   if (cached) return Promise.resolve(cached);
+  const epoch = state.assetEpoch;
   const generation = state.contextGeneration;
-  return fetch(`/api/assets/${encodeURIComponent(assetId)}${download ? "?download=1" : ""}`, { headers: authHeaders() }).then(async (response) => {
+  const requestKey = `${epoch}:${key}`;
+  const pending = state.assetLoads.get(requestKey);
+  if (pending) return pending;
+  const request = fetch(`/api/assets/${encodeURIComponent(assetId)}${download ? "?download=1" : ""}`, { headers: authHeaders() }).then(async (response) => {
     if (!response.ok) throw new Error(`asset request failed (${response.status})`);
-    const url = URL.createObjectURL(await response.blob());
-    if (generation !== state.contextGeneration || state.closed) {
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    if (epoch !== state.assetEpoch || generation !== state.contextGeneration || state.closed) {
       URL.revokeObjectURL(url);
       throw new Error("stale asset generation");
     }
+    const width = Number(response.headers.get("X-Display-Width"));
+    const height = Number(response.headers.get("X-Display-Height"));
+    const manifest = state.snapshot?.assets?.[assetId];
+    if (!download && manifest && width > 0 && height > 0) {
+      manifest.displayReady = true;
+      manifest.displayWidth = width;
+      manifest.displayHeight = height;
+      state.assetFingerprint = fingerprint(state.snapshot.assets);
+    }
     state.objectUrls.set(key, url);
     return url;
+  }).finally(() => {
+    if (state.assetLoads.get(requestKey) === request) state.assetLoads.delete(requestKey);
   });
+  state.assetLoads.set(requestKey, request);
+  return request;
 }
 
 function authHeaders(context = state.contextId) {
@@ -465,6 +490,8 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     drafts: state.drafts,
     candidates: snapshot.candidates || {},
     assets: snapshot.assets || {},
+    contextId: state.contextId,
+    spoilerState: state.spoilerState,
     locale: state.profile.locale,
     timezone: state.profile.timezone,
     presentationTime: state.profile.presentationTime,
@@ -757,6 +784,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       message: "Preview access was revoked; refresh after authorization is restored.",
       complete: false,
     }];
+    state.spoilerState.clear();
     state.drafts.clear();
     state.modalDrafts.clear();
     state.modalTouched.clear();
@@ -772,10 +800,14 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.messageNodes.clear();
     state.dayNodes.clear();
   }
-  state.contextId = snapshot.context?.id || state.contextId;
+  const nextContextId = snapshot.context?.id || state.contextId;
   const nextGeneration = Number(snapshot.context?.generation || 0);
   const nextRevision = Number(snapshot.publishedRevision || 0);
   const nextViewer = snapshot.viewerId || null;
+  const spoilerContext = `${nextContextId || ""}:${nextViewer || ""}`;
+  if (state.spoilerContext && state.spoilerContext !== spoilerContext) state.spoilerState.clear();
+  state.spoilerContext = spoilerContext;
+  state.contextId = nextContextId;
   const nextAssets = fingerprint(snapshot.assets || {});
   const previousTargetId = state.targetId;
   if (state.assetFingerprint && nextAssets !== state.assetFingerprint) revokeAssets();
@@ -833,6 +865,8 @@ function renderSnapshot(snapshot, generation, force = false) {
       isTouched: (key) => state.modalTouched.has(key),
       loadAsset,
       assets: snapshot.assets || {},
+      contextId: state.contextId,
+      spoilerState: state.spoilerState,
       validationError: state.modalError,
       locale: state.profile.locale,
       presentationTime: state.profile.presentationTime,

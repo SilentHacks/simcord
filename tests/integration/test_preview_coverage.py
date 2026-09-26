@@ -50,6 +50,53 @@ async def test_preview_public_asset_and_lifecycle_contracts(env, channel, alice)
 
 
 @pytest.mark.asyncio
+async def test_preview_asset_manifest_publishes_oriented_size_and_shares_variants(env, channel, alice):
+    output = io.BytesIO()
+    Image.new("RGB", (5, 3), (20, 40, 60)).save(output, format="PNG")
+    body = output.getvalue()
+    urls = ("https://cdn.example.test/one.png", "https://cdn.example.test/two.png")
+    await env.bot.get_channel(channel.id).send(embeds=[discord.Embed().set_image(url=url) for url in urls])
+    async with env.preview(
+        channel,
+        viewers=[alice],
+        assets={url: ("image.png", body) for url in urls},
+    ) as preview:
+        selected = target_message(preview._page_payload(preview._python))
+        asset_ids = [embed["image"]["asset_id"] for embed in selected["embeds"]]
+        initial = preview._page_payload(preview._python)["assets"]
+        assert all(initial[asset_id]["available"] for asset_id in asset_ids)
+        assert all(initial[asset_id]["displayReady"] is False for asset_id in asset_ids)
+        assert all("displayWidth" not in initial[asset_id] for asset_id in asset_ids)
+        retained_before = preview._retained_media_bytes
+
+        await preview._prepare_asset("python", asset_ids[0])
+        ready = preview._page_payload(preview._python)["assets"]
+        assert ready[asset_ids[0]]["displayReady"] is True
+        assert (ready[asset_ids[0]]["displayWidth"], ready[asset_ids[0]]["displayHeight"]) == (5, 3)
+        assert ready[asset_ids[1]]["displayReady"] is False
+
+        await preview._prepare_asset("python", asset_ids[1])
+        records = [preview._python.assets[asset_id] for asset_id in asset_ids]
+        shared = preview._blobs[records[0].digest]
+        assert records[1].digest == records[0].digest
+        assert shared.normalized_refs == 2
+        assert preview._retained_media_bytes == retained_before + shared.normalized_size
+        assert len(preview._media_worker._cache) == 1
+        for asset_id in asset_ids:
+            assert preview._page_payload(preview._python)["assets"][asset_id]["displayReady"] is True
+
+        async with ClientSession() as client:
+            response = await client.get(
+                preview._origin + f"/api/assets/{asset_ids[0]}",
+                headers=preview_headers(preview, "python"),
+            )
+            assert response.status == 200
+            assert response.headers["X-Display-Width"] == "5"
+            assert response.headers["X-Display-Height"] == "3"
+            await response.read()
+
+
+@pytest.mark.asyncio
 async def test_preview_public_exports_and_media_cache(monkeypatch):
     assert simcord.Preview.__name__ == "Preview"
     assert simcord.PreviewCapture.__name__ == "PreviewCapture"

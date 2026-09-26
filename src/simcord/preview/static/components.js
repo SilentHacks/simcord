@@ -1,5 +1,13 @@
 import { node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { appendEmojiValue, appendMarkdownOrText } from "./text.js";
+import {
+  downloadButton,
+  fileTypeLabel,
+  formatFileSize,
+  renderMedia,
+  renderSpoiler,
+  renderSpoilerMedia,
+} from "./media.js";
 const TYPE = Object.freeze({
   ROW: 1, BUTTON: 2, STRING_SELECT: 3, TEXT_INPUT: 4, USER_SELECT: 5, ROLE_SELECT: 6,
   MENTIONABLE_SELECT: 7, CHANNEL_SELECT: 8, SECTION: 9, TEXT_DISPLAY: 10, THUMBNAIL: 11,
@@ -265,66 +273,6 @@ function renderButton(component, path, options) {
   } else if (typeof component.custom_id === "string") button.addEventListener("click", () => options.onClick?.(controlKey));
   return button;
 }
-function mediaElement(media, className, options, label) {
-  const assetId = media && typeof media.asset_id === "string" ? media.asset_id : null;
-  const manifest = assetId ? options.assets?.[assetId] : null;
-  if (typeof media?.content_type === "string" && !media.content_type.startsWith("image/")) {
-    options.onDiagnostic?.({ code: "unsupported-media-type", severity: "warning", message: `${label || "Media"} type ${media.content_type} cannot be rendered inline`, complete: false });
-    return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
-  }
-  if (!assetId || media.available === false || manifest?.available === false || !options.loadAsset) {
-    const diagnostic = manifest?.diagnostic;
-    options.onDiagnostic?.({ code: diagnostic ? "media-rejected" : "media-unavailable", severity: "warning", message: diagnostic || `${label || "Media"} is unavailable offline`, complete: false });
-    return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
-  }
-  const image = node("img", className); image.alt = String(media.description || label || "Preview media"); image.loading = "eager";
-  if (Number(media.width) > 0) image.width = Number(media.width);
-  if (Number(media.height) > 0) image.height = Number(media.height);
-  const pending = [Promise.resolve(options.loadAsset(assetId)).then((url) => { if (options.isCurrent && !options.isCurrent()) return; image.src = url; return image.decode ? image.decode() : undefined; }).catch((error) => { if (!options.isCurrent || options.isCurrent()) { options.onDiagnostic?.({ code: "media-unavailable", severity: "warning", message: `${label || "Media"} is unavailable offline`, detail: String(error), complete: false }); image.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`)); } })];
-  return { element: image, pending };
-}
-function revealSpoiler(element, spoiler, options, label) {
-  if (!spoiler) return element;
-  const wrapper = node("div", "spoiler-content");
-  const reveal = node("button", "spoiler-cover");
-  reveal.type = "button";
-  reveal.setAttribute("aria-label", `Reveal ${label} spoiler`);
-  reveal.addEventListener("click", () => { wrapper.classList.add("is-revealed"); reveal.remove(); });
-  wrapper.append(element, reveal);
-  return wrapper;
-}
-function downloadButton(file, options, label) {
-  const download = node("button", "attachment-download", "Download"); download.type = "button";
-  if (!file?.asset_id || file.available === false || !options.loadAsset) {
-    download.disabled = true;
-    options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${label} is unavailable offline`, complete: false });
-    return download;
-  }
-  download.addEventListener("click", async () => {
-    try {
-      const url = await options.loadAsset(file.asset_id, { download: true });
-      if (!url) return;
-      const link = node("a"); link.href = url; link.download = file.filename || label; link.click();
-    } catch (error) {
-      options.onDiagnostic?.({ code: "file-unavailable", severity: "warning", message: `${label} is unavailable offline`, detail: String(error), complete: false });
-    }
-  });
-  return download;
-}
-function renderSpoilerMedia(media, className, options, label) {
-  if (!media?.spoiler) return mediaElement(media, className, options, label);
-  const wrapper = node("button", "spoiler-media");
-  wrapper.type = "button";
-  wrapper.setAttribute("aria-label", `Reveal ${label} spoiler`);
-  const result = mediaElement(media, className, options, label);
-  const cover = node("span", "spoiler-cover");
-  wrapper.append(result.element, cover);
-  wrapper.addEventListener("click", () => {
-    wrapper.classList.add("is-revealed");
-    cover.remove();
-  });
-  return { element: wrapper, pending: result.pending };
-}
 function renderNode(component, path, options) {
   const type = Number(component?.type);
   if (type === TYPE.ROW) { const row = node("div", "component-row"); (component.components || []).forEach((child, index) => row.append(renderNode(child, `${path}.components.${index}`, options))); return row; }
@@ -332,10 +280,10 @@ function renderNode(component, path, options) {
   if (SELECT_TYPES.has(type)) return renderSelect(component, path, options).element;
   if (type === TYPE.TEXT_DISPLAY) { const text = node("div", "text-display"); appendMarkdownOrText(text, component.content, component.markdown_tokens, options); return text; }
   if (type === TYPE.SECTION) { const section = node("section", "component-section"); const text = node("div", "section-text"); (component.components || []).forEach((child, index) => text.append(renderNode(child, `${path}.components.${index}`, options))); section.append(text); if (component.accessory) { const accessory = node("div", "section-accessory"); accessory.append(renderNode(component.accessory, `${path}.accessory`, options)); section.append(accessory); } return section; }
-  if (type === TYPE.CONTAINER) { const container = node("section", "component-container"); if (component.accent_color !== undefined) { const color = Number(component.accent_color); if (Number.isFinite(color)) container.style.setProperty("--accent", `#${color.toString(16).padStart(6, "0").slice(-6)}`); } (component.components || []).forEach((child, index) => container.append(renderNode(child, `${path}.components.${index}`, options))); return revealSpoiler(container, component.spoiler, options, "container"); }
+  if (type === TYPE.CONTAINER) { const container = node("section", "component-container"); if (component.accent_color !== undefined) { const color = Number(component.accent_color); if (Number.isFinite(color)) container.style.setProperty("--accent", `#${color.toString(16).padStart(6, "0").slice(-6)}`); } (component.components || []).forEach((child, index) => container.append(renderNode(child, `${path}.components.${index}`, options))); return renderSpoiler(container, component.spoiler, options, "container", `container:${path}`); }
+  if (type === TYPE.THUMBNAIL) { const result = renderSpoilerMedia({ ...component.media, spoiler: component.spoiler, description: component.description }, "component-thumbnail", options, "Thumbnail", `thumbnail:${path}`); const figure = node("figure", "component-media"); figure.append(result.element); if (component.description) figure.append(node("figcaption", "media-description", component.description)); options.pendingMedia?.push(...result.pending); return figure; }
+  if (type === TYPE.MEDIA_GALLERY) { const gallery = node("div", "component-gallery"); (component.items || []).forEach((item, index) => { const result = renderSpoilerMedia({ ...item.media, spoiler: item.spoiler, description: item.description }, "gallery-image", options, `Gallery item ${index + 1}`, `gallery:${path}:${index}`); const figure = node("figure", "gallery-item"); figure.append(result.element); if (item.description) figure.append(node("figcaption", "media-description", item.description)); gallery.append(figure); options.pendingMedia?.push(...result.pending); }); return gallery; }
   if (type === TYPE.SEPARATOR) { const separator = node(component.divider === false ? "div" : "hr", `component-separator spacing-${Number(component.spacing || 1)}${component.divider === false ? " no-divider" : ""}`); separator.setAttribute("aria-hidden", "true"); return separator; }
-  if (type === TYPE.THUMBNAIL) { const result = renderSpoilerMedia({ ...component.media, spoiler: component.spoiler, description: component.description }, "component-thumbnail", options, "Thumbnail"); const figure = node("figure", "component-media"); figure.append(result.element); if (component.description) figure.append(node("figcaption", "media-description", component.description)); options.pendingMedia?.push(...result.pending); return figure; }
-  if (type === TYPE.MEDIA_GALLERY) { const gallery = node("div", "component-gallery"); (component.items || []).forEach((item, index) => { const result = renderSpoilerMedia({ ...item.media, spoiler: item.spoiler, description: item.description }, "gallery-image", options, `Gallery item ${index + 1}`); const figure = node("figure", "gallery-item"); figure.append(result.element); if (item.description) figure.append(node("figcaption", "media-description", item.description)); gallery.append(figure); options.pendingMedia?.push(...result.pending); }); return gallery; }
   if (type === TYPE.FILE) {
     const data = component.file || {};
     const label = component.name || data.filename || "Attached file";
@@ -343,14 +291,15 @@ function renderNode(component, path, options) {
     const info = node("span", "file-info");
     info.append(node("span", "file-name", label));
     const size = data.size ?? component.size;
-    if (size !== undefined) info.append(node("small", "file-size", `${size} bytes`));
+    const sizeText = formatFileSize(size);
+    if (sizeText) info.append(node("small", "file-size", sizeText));
     if (data.description) info.append(node("small", "file-description", data.description));
     const download = downloadButton(data, options, label);
     download.classList.add("file-download");
-    const icon = node("span", "file-icon");
-    icon.innerHTML = FILE_ICON_SVG;
+    const icon = node("span", "file-icon file-type", fileTypeLabel(data));
+    icon.setAttribute("aria-hidden", "true");
     file.append(icon, info, download);
-    return revealSpoiler(file, component.spoiler, options, "file");
+    return renderSpoiler(file, component.spoiler, options, "file", `file:${path}:${data.asset_id || data.filename || ""}`);
   }
   options.onDiagnostic?.({ code: "unsupported-component", severity: "warning", message: `Unsupported component type ${type} at ${path}`, complete: false }); return node("div", "component-unavailable", `Component type ${type} unavailable`);
 }
@@ -359,7 +308,7 @@ function renderEmbed(embed, index, options) {
   if (embed.author?.name) {
     const author = node("div", "embed-author");
     if (embed.author.icon_asset_id) {
-      const icon = mediaElement(
+      const icon = renderMedia(
         { asset_id: embed.author.icon_asset_id, available: embed.author.icon_available !== false },
         "embed-author-icon",
         options,
@@ -376,13 +325,13 @@ function renderEmbed(embed, index, options) {
   if (embed.title) { const href = safeLink(embed.url); const title = href ? node("a", "embed-title", "") : node("div", "embed-title"); if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener noreferrer"; } appendMarkdownOrText(title, embed.title, embed.title_tokens, options); card.append(title); }
   if (embed.description) { const description = node("div", "embed-description"); appendMarkdownOrText(description, embed.description, embed.description_tokens, options); card.append(description); }
   if (Array.isArray(embed.fields) && embed.fields.length) { const fields = node("div", "embed-fields"); embed.fields.forEach((field) => { const item = node("div", field.inline ? "embed-field inline" : "embed-field"); const name = node("strong", "embed-field-name"); appendMarkdownOrText(name, field.name || "", field.name_tokens, options); const value = node("span", "embed-field-value"); appendMarkdownOrText(value, field.value || "", field.value_tokens, options); item.append(name, value); fields.append(item); }); card.append(fields); }
-  for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
+  for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`, `embed:${index}:${kind}:${media.asset_id || ""}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
   if (embed.video) { card.append(node("div", "component-unavailable", "Embed video unavailable")); options.onDiagnostic?.({ code: "unsupported-embed-video", severity: "warning", message: `Embed ${index + 1} video playback is unavailable`, complete: false }); }
   if (embed.footer?.text || embed.timestamp || embed.footer?.icon_asset_id) {
     const timestamp = embed.timestamp ? new Intl.DateTimeFormat(options.locale || "en-US", { timeZone: options.timezone || "UTC", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(embed.timestamp)) : "";
     const footer = node("footer", "embed-footer");
     if (embed.footer?.icon_asset_id) {
-      const icon = mediaElement(
+      const icon = renderMedia(
         { asset_id: embed.footer.icon_asset_id, available: embed.footer.icon_available !== false },
         "embed-footer-icon",
         options,

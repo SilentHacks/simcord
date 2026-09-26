@@ -4,8 +4,9 @@ Projection contract (implemented jointly with the bundled client): every
 snapshot is a detached JSON-safe copy — no backend dicts, tokens, signed URLs,
 or internal asset bookkeeping escape. ``messageIndex`` carries authorized
 picker summaries; ``messages`` is the focused target or the authorized channel
-window (at most 50), and ``timeline`` identifies its visible order. ``assets``
-records expose only ``{id, filename, contentType, available, bytes?, diagnostic?}`` — internal
+window (at most 50), and ``timeline`` identifies their visible order. ``assets``
+records expose only public identity, file metadata, byte availability, display
+readiness, validated oriented dimensions, byte size, and diagnostics; internal
 keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 """
 
@@ -292,7 +293,9 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
         "preview": preview,
         "size": int(attachment.get("size", 0) or 0),
         "content_type": content_type,
-        "inline": content_type.startswith("image/"),
+        "inline": (
+            content_type.startswith("image/") and not filename.lower().endswith((".svg", ".html", ".htm"))
+        ),
         "spoiler": bool(attachment.get("spoiler", False)) or filename.startswith("SPOILER_"),
         "width": attachment.get("width"),
         "height": attachment.get("height"),

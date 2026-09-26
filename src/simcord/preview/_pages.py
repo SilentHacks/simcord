@@ -220,6 +220,8 @@ class _PageOps:
         # Reads never republish and never clear "stale": they serve the last
         # published projection with the live status overlaid, redacted on denial.
         payload = json.loads(json.dumps(page.snapshot))
+        if allowed:
+            payload["assets"] = {asset_id: record.to_wire() for asset_id, record in page.assets.items()}
         if not allowed:
             payload.update(
                 {

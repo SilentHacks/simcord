@@ -36,6 +36,7 @@ class PreviewServer:
         "/app.js": "app.js",
         "/components.js": "components.js",
         "/messages.js": "messages.js",
+        "/media.js": "media.js",
         "/text.js": "text.js",
         "/vendor/highlight/LICENSE": "vendor/highlight/LICENSE",
         "/vendor/highlight/SHA256SUMS": "vendor/highlight/SHA256SUMS",
@@ -77,6 +78,7 @@ class PreviewServer:
         "protocol.schema.json": "application/schema+json",
         "app.js": "application/javascript",
         "components.js": "application/javascript",
+        "media.js": "application/javascript",
         "messages.js": "application/javascript",
         "dom.js": "application/javascript",
         "text.js": "application/javascript",
@@ -310,11 +312,23 @@ class PreviewServer:
             raise web.HTTPNotFound(text=str(exc)) from exc
         safe_filename = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
         disposition = "attachment" if download else "inline"
+        headers = {
+            **self._SECURITY_HEADERS,
+            "Content-Disposition": f'{disposition}; filename="{safe_filename}"',
+        }
+        if not download:
+            record = self.preview._get_page(context_id).assets.get(request.match_info["asset_id"])
+            if (
+                record is not None
+                and record.available
+                and record.validated
+                and record.width
+                and record.height
+            ):
+                headers["X-Display-Width"] = str(record.width)
+                headers["X-Display-Height"] = str(record.height)
         return web.Response(
             body=body,
             content_type=content_type or "application/octet-stream",
-            headers={
-                **self._SECURITY_HEADERS,
-                "Content-Disposition": f'{disposition}; filename="{safe_filename}"',
-            },
+            headers=headers,
         )

@@ -208,13 +208,22 @@ labeled unavailable tile and make a capture incomplete unless `allow_incomplete=
 
 Inline validation uses Pillow for PNG, JPEG, WebP, and GIF; without the `preview` extra, image
 media fails validation with the `install simcord[preview]` diagnostic while original bytes remain
-downloadable. Audio/video playback, SVG/HTML, and unvalidated codecs are unsupported inline;
-authorized original bytes may remain downloadable and a validated poster can represent unsupported
-media without hiding its diagnostic. Display always serves a deterministic first frame re-encoded
-as PNG without source metadata, so animated media
-never stays animated in place. Non-image assets always serve the authorized original bytes; for
-images, the explicit `?download=1` asset request (the page's open/download actions) is the path
-that serves the original bytes rather than the normalized first frame.
+downloadable. `available` reports retained source bytes; `displayReady` remains false until a raster
+has been validated and normalized. The manifest then carries `displayWidth`/`displayHeight` after
+EXIF orientation, and the browser waits for that local image to decode before reporting ready.
+Audio/video playback, SVG/HTML, and unvalidated codecs are unsupported inline. SVG and HTML
+filenames are never embedded or opened inline; text previews use text nodes, and file cards expose
+an explicit download action for original bytes. Display always serves a deterministic first frame
+re-encoded as PNG without source metadata, so animated media never stays animated in place.
+The accessible image lightbox uses only already-loaded local blob URLs; Escape closes it, arrow
+keys navigate its loaded image group, and close restores focus to the opener. It makes no remote
+media request. File size labels round up to KB or MB.
+
+Attachment images keep their validated intrinsic ratio and are bounded to the message column and
+viewport. They currently remain a responsive vertical list rather than a guessed mosaic: the local
+`historical-family-attachments_media` measurement row is blocked, with only the single-image
+`ref-11-attachments-idle` capture and no measured count/ratio cases for 2–10 images. This fallback
+does not claim Discord multi-image layout parity; the measured mosaic remains evidence-dependent.
 
 All limits below are **Preview resource limits**, not Discord protocol limits. Requests are rejected
 before unbounded buffering; bytes are never silently truncated:
@@ -252,8 +261,8 @@ A browser exposes a deeply read-only `window.simcordPreview` object for agents a
 ```
 
 `ready` belongs to the current local `renderGeneration`. It becomes true only after the displayed
-settled projection, DOM, fonts, authorized media (or explicit diagnostics), and two animation frames
-are ready. It does not mean the callback succeeded, the output is complete, or the visual result is
+settled projection, DOM, fonts, authorized media, validated display dimensions (or explicit diagnostics),
+and two animation frames are ready. It does not mean the callback succeeded, the output is complete,
 calibrated. `publishedRevision` is a settled publication; `contextGeneration` changes on viewer or
 focus changes; `botGeneration` changes on restart; render generations also cover local changes such
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render

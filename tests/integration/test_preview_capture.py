@@ -115,6 +115,16 @@ async def test_preview_media_worker_validates_limits_and_lifecycle():
     assert (valid.format, valid.width, valid.height, valid.frames) == ("PNG", 2, 2, 1)
     assert valid.content_type == "image/png"
     assert valid.normalized.startswith(b"\x89PNG")
+    oriented_source = Image.new("RGB", (3, 2), (20, 40, 60))
+    exif = Image.Exif()
+    exif[274] = 6
+    oriented_bytes = io.BytesIO()
+    oriented_source.save(oriented_bytes, format="JPEG", exif=exif)
+    oriented = await worker.validate("oriented", oriented_bytes.getvalue())
+    assert (oriented.width, oriented.height) == (2, 3)
+    with Image.open(io.BytesIO(oriented.normalized)) as display:
+        assert display.size == (2, 3)
+        assert not display.getexif()
 
     too_wide = _image("PNG", (8193, 1))
     with pytest.raises(MediaError, match="dimensions exceed"):

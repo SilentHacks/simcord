@@ -33,7 +33,7 @@ class MediaError(ValueError):
 
 def _inspect(blob: bytes) -> MediaInfo:
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError as exc:  # pragma: no cover - optional extra
         raise MediaError("Preview media requires Pillow; install simcord[preview]") from exc
     if len(blob) > 10 * 1024 * 1024:
@@ -42,37 +42,34 @@ def _inspect(blob: bytes) -> MediaInfo:
         warnings.simplefilter("always")
         try:
             image = Image.open(io.BytesIO(blob))
-            image.verify()
-            image = Image.open(io.BytesIO(blob))
+            fmt = str(image.format or "").upper()
+            if fmt not in SUPPORTED_FORMATS:
+                raise MediaError(f"unsupported inline media format {fmt or 'unknown'}")
+            frames = int(getattr(image, "n_frames", 1))
+            if frames > MAX_FRAMES:
+                raise MediaError("media animation exceeds 100 frames")
+            raw_width, raw_height = image.size
+            if raw_width < 1 or raw_height < 1 or raw_width > MAX_DIMENSION or raw_height > MAX_DIMENSION:
+                raise MediaError("media dimensions exceed 8192 pixels per axis")
+            if raw_width * raw_height > MAX_PIXELS:
+                raise MediaError("media exceeds 16 megapixels per frame")
+            decoded = raw_width * raw_height * 4 * frames
+            if decoded > MAX_DECODED_BYTES:
+                raise MediaError("media animation exceeds 64 MiB decoded RGBA budget")
+            # Applying EXIF orientation after limit checks preserves actual
+            # display dimensions without letting metadata trigger a large decode.
+            image = ImageOps.exif_transpose(image)
+            width, height = image.size
+            rgba = image.convert("RGBA")
+            output = io.BytesIO()
+            rgba.save(output, format="PNG", optimize=False)
+        except MediaError:
+            raise
         except Exception as exc:
             # Every decoder failure mode produces the same cached rejection.
             raise MediaError("media is not a valid PNG, JPEG, WebP, or GIF") from exc
         if any("decompression bomb" in str(item.message).lower() for item in caught):
             raise MediaError("media rejected as a decompression bomb")
-        fmt = str(image.format or "").upper()
-        if fmt not in SUPPORTED_FORMATS:
-            raise MediaError(f"unsupported inline media format {fmt or 'unknown'}")
-        width, height = image.size
-        if width < 1 or height < 1 or width > MAX_DIMENSION or height > MAX_DIMENSION:
-            raise MediaError("media dimensions exceed 8192 pixels per axis")
-        if width * height > MAX_PIXELS:
-            raise MediaError("media exceeds 16 megapixels per frame")
-        try:
-            frames = int(getattr(image, "n_frames", 1))
-        except (TypeError, ValueError):  # pragma: no cover - Pillow exposes an integer
-            frames = 1
-        if frames > MAX_FRAMES:
-            raise MediaError("media animation exceeds 100 frames")
-        decoded = width * height * 4 * frames
-        if decoded > MAX_DECODED_BYTES:
-            raise MediaError("media animation exceeds 64 MiB decoded RGBA budget")
-        # Normalize once, without source metadata. Display always uses the
-        # deterministic first frame re-encoded as PNG; the browser fetches the
-        # original bytes only on the explicit download path.
-        image.seek(0)
-        rgba = image.convert("RGBA")
-        output = io.BytesIO()
-        rgba.save(output, format="PNG", optimize=False)
         return MediaInfo(fmt, width, height, frames, decoded, output.getvalue(), "image/png")
 
 

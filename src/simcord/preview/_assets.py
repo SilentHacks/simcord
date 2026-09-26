@@ -58,9 +58,13 @@ class _Asset:
             "filename": self.filename,
             "contentType": self.contentType,
             "available": bool(self.available),
+            "displayReady": bool(self.available and self.validated),
         }
         if self.bytes is not None:
             out["bytes"] = self.bytes
+        if self.available and self.validated and self.width and self.height:
+            out["displayWidth"] = self.width
+            out["displayHeight"] = self.height
         if self.diagnostic is not None:
             out["diagnostic"] = self.diagnostic
         return out
@@ -293,7 +297,8 @@ class _AssetOps:
         try:
             info = await self._media_worker.validate(digest if digest is not None else asset_id, body)
         except MediaError as exc:
-            record.available = False
+            # The original bytes remain available for explicit download even
+            # when they are unsafe or unsupported for inline display.
             record.diagnostic = str(exc)
             raise SetupError(str(exc)) from exc
         # Reauthorize after the awaited decode: access or membership may have
