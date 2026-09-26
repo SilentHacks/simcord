@@ -2,28 +2,31 @@
 
 Projection contract (implemented jointly with the bundled client): every
 snapshot is a detached JSON-safe copy — no backend dicts, tokens, signed URLs,
-or internal asset bookkeeping escape. ``messageIndex`` carries lightweight
-picker summaries; ``messages`` is a map of full authorized projections and
-``timeline`` identifies their visible order. ``assets`` records expose only
-``{id, filename, contentType, available, bytes?, diagnostic?}`` — internal
+or internal asset bookkeeping escape. ``messageIndex`` carries authorized
+picker summaries; ``messages`` is the focused target or the authorized channel
+window (at most 50), and ``timeline`` identifies its visible order. ``assets``
+records expose only ``{id, filename, contentType, available, bytes?, diagnostic?}`` — internal
 keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from ..backend.access import _viewer_id, can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE
-from ..backend.errors import BackendError
+from ..backend.errors import BackendError, SetupError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG, walk_components
-from ..enums import ComponentType
+from ..enums import ComponentType, InteractionType
 from ._markdown import markdown_tokens
 
 if TYPE_CHECKING:
@@ -510,25 +513,46 @@ def _embed_projection(
     return _clean(_decorate_emoji(value, page))
 
 
-def _is_compact_message(preview: Preview, page: _Page, message: Message) -> bool:
-    previous = max(
-        (
-            item
-            for item in preview.env.backend.messages.get(message.channel_id, {}).values()
-            if item.id < message.id
-            and can_access_message(preview.env, message.channel_id, item, page.viewer, history=True)
-        ),
-        key=lambda item: item.id,
-        default=None,
-    )
-    return (
-        previous is not None
-        and previous.author_id == message.author_id
-        and message.id - previous.id < 7 * 60 * 1000 * (1 << 22)
-    )
+def _message_day(timestamp: str, timezone: str) -> date | None:
+    try:
+        value = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(ZoneInfo(timezone)).date()
+    except (ValueError, OSError):
+        return None
 
 
-def _message_projection(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
+def _is_compact_message(previous: Message | None, message: Message, timezone: str, env: Env) -> bool:
+    if (
+        previous is None
+        or previous.author_id != message.author_id
+        or previous.type != 0
+        or message.type != 0
+        or previous.reference
+        or message.reference
+        or previous.interaction_metadata
+        or message.interaction_metadata
+        or previous.flags & EPHEMERAL_FLAG
+        or message.flags & EPHEMERAL_FLAG
+    ):
+        return False
+    for item in (previous, message):
+        thread = env.backend.channels.get(item.id)
+        if thread is not None and thread.is_thread and thread.parent_id == item.channel_id:
+            return False
+    previous_day = _message_day(previous.timestamp, timezone)
+    if previous_day is None or previous_day != _message_day(message.timestamp, timezone):
+        return False
+    try:
+        first = datetime.fromisoformat(previous.timestamp.replace("Z", "+00:00"))
+        second = datetime.fromisoformat(message.timestamp.replace("Z", "+00:00"))
+        return 0 <= (second - first).total_seconds() < 7 * 60
+    except ValueError:
+        return False
+
+
+def _message_projection(preview: Preview, page: _Page, message: Message, *, compact: bool) -> dict[str, Any]:
     env = preview.env
     attachments = list(message.attachments)
     author = _identity_wire(
@@ -551,7 +575,7 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
         "components_v2": bool(message.flags & COMPONENTS_V2_FLAG),
-        "compact": _is_compact_message(preview, page, message),
+        "compact": compact,
         "attachments": [_attachment(env, message, item, page) for item in attachments],
         "mention_user_ids": [
             str(uid) for uid in message.mention_user_ids if _user_allowed(preview, page, uid)
@@ -575,9 +599,42 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         "thread": None,
         "allowed_actions": [],
         "reply": {"state": "unavailable"},
+        "interaction_header": None,
     }
     data["mentions"]["users"] = list(data["mention_user_ids"])
     data["mentions"]["roles"] = list(data["mention_role_ids"])
+    thread = env.backend.channels.get(message.id)
+    if (
+        thread is not None
+        and thread.is_thread
+        and thread.parent_id == message.channel_id
+        and can_access_channel(env, thread.id, page.viewer, history=True)
+    ):
+        data["thread"] = {
+            "id": str(thread.id),
+            "name": thread.name or "",
+            "message_count": thread.message_count,
+            "archived": bool(thread.thread_metadata and thread.thread_metadata.archived),
+        }
+    metadata = message.interaction_metadata or {}
+    try:
+        if int(metadata.get("type", -1)) == int(InteractionType.APPLICATION_COMMAND):
+            interaction_header: dict[str, Any] = {"kind": "application_command"}
+            user = metadata.get("user")
+            if isinstance(user, Mapping):
+                user_id = user.get("id")
+                if isinstance(user_id, (int, str)) and not isinstance(user_id, bool):
+                    try:
+                        invoker_id = int(user_id)
+                    except ValueError:
+                        invoker_id = None
+                    if invoker_id is not None and _user_allowed(preview, page, invoker_id):
+                        interaction_header["user"] = _identity_wire(
+                            resolve_identity(preview, page, invoker_id)
+                        )
+            data["interaction_header"] = interaction_header
+    except (TypeError, ValueError):
+        pass
     if message.poll is not None:
         poll = message.poll
         data["poll"] = {
@@ -650,6 +707,11 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
                 "state": "resolved",
                 "message_id": str(referenced.id),
                 "channel_id": str(referenced.channel_id),
+                "channel_name": (
+                    env.backend.get_channel(referenced.channel_id).name
+                    if referenced.channel_id != message.channel_id
+                    else None
+                ),
                 "author": referenced_identity,
                 "excerpt_tokens": markdown_tokens(referenced.content[:100], "message"),
                 "preview_kind": "message",
@@ -795,14 +857,38 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             for item in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id)
             if can_access_message(env, channel.id, item, page.viewer, history=True)
         ]
-    target = next((item for item in visible if item.id == page.target_id), None)
+    ids = [item.id for item in visible]
+    target_index = next((index for index, item in enumerate(visible) if item.id == page.target_id), None)
+    target = visible[target_index] if target_index is not None else None
+    if preview.layout == "channel":
+        end = len(visible) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
+        start = max(0, end - 50)
+        if target_index is not None and not start <= target_index < end:
+            page.window_end_id = ids[target_index]
+            end = target_index + 1
+            start = max(0, end - 50)
+        if page.window_end_id is not None and page.window_end_id not in ids:
+            page.window_end_id = ids[end - 1] if end else None
+        window = visible[start:end]
+        history = {
+            "hasBefore": start > 0,
+            "hasAfter": end < len(visible),
+            "windowStartId": str(window[0].id) if window else None,
+            "windowEndId": str(window[-1].id) if window else None,
+        }
+    else:
+        window = [target] if target is not None else []
+        history = {"hasBefore": False, "hasAfter": False, "windowStartId": None, "windowEndId": None}
     target_id = str(target.id) if target is not None else None
     projected: dict[str, dict[str, Any]] = {}
     candidate_components: list[dict[str, Any]] = []
-    if target is not None:
-        value = _message_projection(preview, page, target)
-        projected[str(target.id)] = value
+    previous = None
+    for item in window:
+        compact = preview.layout == "channel" and _is_compact_message(previous, item, preview.timezone, env)
+        value = _message_projection(preview, page, item, compact=compact)
+        projected[str(item.id)] = value
         candidate_components.extend(value.get("components", []))
+        previous = item
 
     modal = None
     if allowed and page.modal is not None:
@@ -898,6 +984,18 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         value.setdefault("message", "")
         value.setdefault("complete", False)
         diagnostics.append(value)
+    can_send = False
+    if channel is not None and allowed:
+        if channel.guild_id is None:
+            can_send = page.viewer.id in channel.recipient_ids
+        else:
+            permission = "send_messages_in_threads" if channel.is_thread else "send_messages"
+            try:
+                page.viewer._check(preview.channel, permission)
+            except SetupError:
+                pass
+            else:
+                can_send = True
     snapshot = {
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,
@@ -908,16 +1006,24 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         ],
         "viewerId": str(_viewer_id(page.viewer)),
         "channelId": str(page.channel_id),
+        "layout": preview.layout,
         "channel": {
             "id": str(page.channel_id),
-            "name": channel.name if channel is not None else None,
-            "guildId": str(channel.guild_id) if channel is not None and channel.guild_id else None,
+            "name": channel.name if channel is not None and allowed else None,
+            "guildId": (
+                str(channel.guild_id)
+                if channel is not None and channel.guild_id is not None and allowed
+                else None
+            ),
+            "type": int(channel.type) if channel is not None and allowed else None,
+            "topic": channel.topic if channel is not None and allowed else None,
+            "canSendMessages": can_send,
         },
         "targetId": target_id,
         "messages": projected,
-        "timeline": [target_id] if target_id is not None else [],
+        "timeline": list(projected),
         "messageIndex": [_message_summary(preview, page, item) for item in visible],
-        "history": {"hasBefore": False, "hasAfter": False},
+        "history": history,
         "modal": modal,
         "entities": entities,
         "candidates": _candidates(preview, page, candidate_components) if allowed else {},

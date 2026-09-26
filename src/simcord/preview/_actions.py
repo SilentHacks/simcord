@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import secrets
+from bisect import bisect_right
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -88,6 +89,8 @@ class _ActionOps:
     """Ordered action admission: validate first, consume the sequence, settle."""
 
     env: Env
+    channel: ChannelHandle
+    layout: str
     _active_action: _Action | None
     _active_task: asyncio.Task[Any] | None
     _action_page: _Page | None
@@ -103,9 +106,11 @@ class _ActionOps:
     _publish: Callable[[_Page], None]
     _advance_presentation_time: Callable[[], None]
 
-    _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset({"click", "select", "modal_submit"})
+    _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset(
+        {"click", "select", "modal_submit", "history", "send"}
+    )
     _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {"click", "select", "modal_submit", "viewer", "focus", "refresh", "close"}
+        {"click", "select", "modal_submit", "viewer", "focus", "history", "send", "refresh", "close"}
     )
 
     def _on_dispatch(self, interaction: Interaction) -> None:
@@ -399,6 +404,107 @@ class _ActionOps:
                 return result
 
             return run_refresh
+        if kind == "history":
+            if self.layout != "channel":
+                raise SetupError("history navigation requires channel layout")
+            if page.status != "current" or not can_access_channel(
+                self.env, page.channel_id, page.viewer, history=True
+            ):
+                raise SetupError("viewer cannot access current channel history")
+            direction = body.get("direction")
+            if direction not in {"older", "newer", "latest"}:
+                raise SetupError("history direction is unavailable")
+            visible = [
+                item
+                for item in sorted(
+                    self.env.backend.messages.get(page.channel_id, {}).values(), key=lambda item: item.id
+                )
+                if can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
+            ]
+            ids = [item.id for item in visible]
+            end = len(ids) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
+            start = max(0, end - 50)
+            if direction == "older":
+                if start == 0:
+                    raise SetupError("there is no earlier authorized history")
+                next_end = min(end, start + 25)
+                next_anchor = ids[next_end - 1]
+            elif direction == "newer":
+                if end == len(ids):
+                    raise SetupError("there is no newer authorized history")
+                next_start = min(len(ids) - 1, start + 25)
+                next_end = min(len(ids), next_start + 50)
+                next_anchor = None if next_end == len(ids) else ids[next_end - 1]
+            else:
+                next_anchor = None
+
+            async def run_history(action: _Action, cursor: int) -> dict[str, Any]:
+                page.window_end_id = next_anchor
+                page.target_id = None
+                result = self._finish_action(page, action, "settled", cursor)
+                self._publish(page)
+                return result
+
+            return run_history
+        if kind == "send":
+            actor = page.viewer
+            if (
+                self.layout != "channel"
+                or page.status != "current"
+                or not can_access_channel(self.env, page.channel_id, actor, history=True)
+            ):
+                raise SetupError("sending requires current channel access and channel layout")
+            content = body.get("content")
+            if not isinstance(content, str) or not content.strip() or len(content) > 2000:
+                raise SetupError("message content must contain 1 to 2000 characters")
+            reply_to = None
+            reply_id = body.get("reply_to_id")
+            if reply_id is not None:
+                if isinstance(reply_id, bool) or not isinstance(reply_id, (str, int)):
+                    raise SetupError("reply target is unavailable")
+                reply_id = self._target_id(reply_id, page.viewer)
+                if reply_id is None:
+                    raise SetupError("reply target is unavailable")
+                reply_to = self._target_message(page, reply_id)
+            if isinstance(actor, MemberActor):
+                permission = (
+                    "send_messages_in_threads"
+                    if self.env.backend.get_channel(page.channel_id).is_thread
+                    else "send_messages"
+                )
+                actor._check(self.channel, permission)
+            elif not isinstance(actor, UserHandle) or actor.dm_channel.id != page.channel_id:
+                raise SetupError("viewer cannot send to this channel")
+
+            async def run_send(action: _Action, cursor: int) -> dict[str, Any]:
+                if isinstance(actor, MemberActor):
+                    response = await actor.send(
+                        self.channel,
+                        content,
+                        reply_to=ResponseMessage(self.env, reply_to) if reply_to is not None else None,
+                    )
+                else:
+                    reference = (
+                        {"channel_id": str(page.channel_id), "message_id": str(reply_to.id)}
+                        if reply_to is not None
+                        else None
+                    )
+                    response = (
+                        await actor.send_dm(content, reference=reference)
+                        if reference
+                        else await actor.send_dm(content)
+                    )
+                try:
+                    self.env.backend.get_message(page.channel_id, response.id)
+                except BackendError as exc:
+                    raise SetupError("message was not accepted by the channel") from exc
+                page.target_id = response.id
+                page.window_end_id = None
+                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                self._publish(page)
+                return result
+
+            return run_send
         actor = page.viewer
         if not can_access_channel(self.env, page.channel_id, actor, history=True):
             raise SetupError("viewer cannot access this channel")
@@ -638,6 +744,7 @@ class _ActionOps:
         error: BaseException | None = None,
         *,
         interaction: Interaction | None = None,
+        non_interaction: bool = False,
     ) -> dict[str, Any]:
         interaction = interaction or action.interaction
         diagnostics = [
@@ -645,8 +752,8 @@ class _ActionOps:
         ]
         if error is not None:
             diagnostics.append({"type": type(error).__name__, "message": str(error)})
-        dispatch = "dispatched" if interaction is not None else "not_dispatched"
-        ack = "pending"
+        dispatch = "dispatched" if interaction is not None or non_interaction else "not_dispatched"
+        ack = "not_applicable" if non_interaction and interaction is None else "pending"
         if interaction is not None:
             ack = "acknowledged" if interaction.responded else "unacknowledged"
             if interaction.deferred:

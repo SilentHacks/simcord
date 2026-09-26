@@ -69,6 +69,14 @@ environment shutdown, and cancellation. Closing a browser tab releases only that
 not stop Python or the Preview. The toolbar's **Close** action closes the whole session. No browser
 is launched automatically.
 
+`layout="message"` is the default and preserves the focused-message surface.
+`layout="channel"` opens a real channel viewport with an authorized 50-message history window,
+older/newer paging, and a composer. Focusing a message moves its window into view. The composer sends
+through the configured viewer's SimCord actor and may reply only to messages that viewer can access;
+rejected or failed sends retain the draft. It does not navigate to another channel or create a new
+Preview session. The inspector remains outside the emulated viewport, while a modal backdrop covers
+only that viewport.
+
 `port=` pins the loopback origin: `None` or `0` keeps the OS-assigned port, while an integer in
 1–65535 binds that exact origin so a pre-created SSH forward can use the same port on both ends.
 It does not make the capability-bearing URL stable or safe to log. An out-of-range value raises
@@ -127,10 +135,12 @@ await preview.refresh()
 ```
 
 `refresh()` settles bot work and republishes every page while preserving each page's viewer, target,
-modal, and drafts. Browser actions that settle also publish their resulting edits/followups. A
+channel-history anchor, modal, and drafts. Browser actions that settle also publish their resulting edits/followups. A
 publication is labeled by `publishedRevision` and simulated time; it is not a live synchronization
-promise. Each publication's `messageIndex` array carries detached picker summaries, while `messages`
-maps authorized message IDs to full projections and `timeline` gives their visible order. The focused
+promise. Each publication's `messageIndex` array carries detached authorized picker summaries.
+`messages` maps the current authorized window (at most 50 in channel layout, or the focused target
+in message layout) to full projections, and `timeline` gives their visible order. `history` reports
+the window boundaries and whether authorized earlier/later messages remain. The focused
 message is `messages[targetId]`; there is no `selected` alias. A failed or timed-out action may
 already have mutated the backend: its last settled projection is retained and marked stale, then a
 later successful refresh reconciles it without replaying the action.
@@ -151,6 +161,12 @@ permitted empty values, and genuine uploaded bytes. Python remains authoritative
 dispatch. Link buttons navigate only after an explicit click and never dispatch a callback; premium
 purchase buttons are shown as unavailable. Unsupported component or presentation fields stay visible
 as diagnostics rather than silently disappearing.
+
+In channel layout, history paging and message sends are admitted against the current publication.
+The composer is available only when the selected viewer has send permission; replies are one level
+deep and require an authorized referenced message. A successful send clears its draft, while a
+rejected or failed send leaves it available for correction. The bot receives the ordinary actor
+message event, and replies it creates appear after a new publication.
 
 ## Offline assets and media
 
@@ -219,7 +235,7 @@ focus changes; `botGeneration` changes on restart; render generations also cover
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render
 continuations cannot update a newer generation.
 
-Every callback action carries a positive integer `generation` and `bot_generation`, a context
+Every browser action carries a positive integer `generation` and `bot_generation`, a context
 generation, bot generation, request ID, published revision, and positive per-page sequence.
 Missing or malformed generation fields return structured `bad-envelope` before admission and do
 not consume the sequence; correctly typed but stale values return `stale-context` or
@@ -236,11 +252,11 @@ the page's current `expectedSequence`, the live `revision` and `presentation`, a
 diagnostic (`bad-envelope`, `stale-sequence`, `sequence-gap`, `conflicting-request`, `busy`,
 `stale-context`, `stale-generation`, `stale-revision`, `unknown-kind`, or `validation-failed`).
 Rejections never consume the sequence: the next admissible action may reuse it. Mutating actions
-(`click`, `select`, `modal_submit`) must echo the page's current `publishedRevision`; a mismatch is
-rejected as `stale-revision` so a stale render cannot dispatch into newer state.
+(`click`, `select`, `modal_submit`, `history`, `send`) must echo the page's current `publishedRevision`;
+a mismatch is rejected as `stale-revision` so a stale render cannot dispatch into newer state.
 
 `lastAction` reports dispatch (`dispatched`/`not_dispatched`), acknowledgement
-(`pending`/`acknowledged`/`deferred`/`unacknowledged`), settlement (`pending`/`settled`/`failed`/
+(`pending`/`acknowledged`/`deferred`/`unacknowledged`/`not_applicable`), settlement (`pending`/`settled`/`failed`/
 `timeout`/`cancelled`), and presentation (`current`/`stale`/`access_denied`) independently. Bot callback
 errors and mutations are both retained; errors are diagnostics, not rollback. An unacknowledged
 interaction is failure, not simulated success. Inspect this result and then refresh; never retry a
@@ -291,9 +307,9 @@ suits agents and diff tooling that never touch disk.
 The effective profile records theme, viewport width/height, locale, timezone, device scale, reduced
 motion, Playwright/browser versions, system font identity, emoji fallback, and animation policy.
 `mode="surface"` captures the focused message (or expanded modal) at its measured geometry;
-`mode="viewport"` captures the requested viewport after hiding toolbar/diagnostics. Surface output
-is useful for component diffs; viewport output preserves a reproducible page frame. Width and height
-are positive bounded integers and are checked against the screenshot raster limits above.
+`mode="viewport"` captures the emulated preview viewport, including an in-viewport modal overlay but
+excluding the outside inspector. Width and height are positive bounded integers and are checked
+against the screenshot raster limits above.
 
 The report includes path, viewer/channel/target/modal IDs, published and render generations, output
 geometry, profile, readiness, calibration, action status, and structured diagnostics. Captures reject
@@ -380,8 +396,8 @@ These are intentionally independent:
 
 The renderer covers legacy messages, embeds, action rows, buttons, string/entity selects, text
 inputs, V2 sections/text/media/files/separators/containers, labels, file uploads, radio groups,
-checkbox groups, and checkboxes. Polls, stickers, voice, purchasing, arbitrary remote media,
-server/channel navigation, login, a command composer, and native-mobile Discord are outside this
+checkbox groups, checkboxes, and channel history/composer/replies. Polls, stickers, voice, purchasing,
+arbitrary remote media, server/channel navigation, login, and native-mobile Discord are outside this
 surface or remain explicitly unavailable. Components and Markdown are rendered with controlled DOM
 nodes; their layout, typography, line wrapping, emoji fallback, responsive behavior, and browser
 font metrics can differ from Discord. No proprietary Discord font or asset is bundled: this package

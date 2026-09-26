@@ -1,4 +1,5 @@
-import { renderMessage, renderModal } from "./components.js";
+import { renderModal } from "./components.js";
+import { renderMessage } from "./messages.js";
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -8,6 +9,20 @@ const ui = {
   modal: $("modal-root"),
   diagnostics: $("diagnostics"),
   empty: $("message-picker-empty"),
+  channel: $("channel-layout"),
+  channelName: $("channel-name"),
+  channelTopic: $("channel-topic"),
+  timeline: $("channel-timeline"),
+  messageList: $("channel-message-list"),
+  channelEmpty: $("channel-empty"),
+  composerForm: $("channel-composer"),
+  composer: $("channel-composer-input"),
+  send: $("send-message"),
+  replyContext: $("reply-context"),
+  replyLabel: $("reply-label"),
+  replyCancel: $("reply-cancel"),
+  historyOlder: $("history-older"),
+  historyNewer: $("history-newer"),
   viewer: $("viewer-picker"),
   message: $("message-picker"),
   width: $("viewport-width"),
@@ -50,6 +65,9 @@ const state = {
   assetFingerprint: "",
   targetId: null,
   objectUrls: new Map(),
+  messageNodes: new Map(),
+  dayNodes: new Map(),
+  replyToId: null,
   closed: false,
   authorized: true,
   modalOpenerFocusKey: null,
@@ -138,7 +156,7 @@ function restoreFocus(key = state.focusKey) {
 }
 
 function setModalIsolation(open) {
-  [ui.toolbar, ui.empty, ui.surface, ui.diagnostics].forEach((element) => {
+  [ui.channel, ui.empty, ui.surface].forEach((element) => {
     if (element) element.inert = open;
   });
   ui.modal.setAttribute("aria-hidden", String(!open));
@@ -364,12 +382,189 @@ function updatePickers(snapshot) {
   });
   ui.message.value = snapshot.targetId || "";
   ui.message.disabled = !(snapshot.messageIndex || []).length;
+  const channelLayout = snapshot.layout === "channel";
   const target = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] : null;
-  ui.empty.hidden = Boolean(target);
-  ui.surface.hidden = !target;
+  ui.channel.hidden = !channelLayout;
+  ui.channelName.textContent = snapshot.channel?.name || "Unavailable channel";
+  ui.channelTopic.textContent = snapshot.channel?.topic || "";
+  ui.channelTopic.hidden = !snapshot.channel?.topic;
+  ui.composerForm.hidden = !channelLayout || !snapshot.channel?.canSendMessages;
+  ui.surface.classList.toggle("message-surface", !channelLayout);
+  ui.empty.hidden = channelLayout || Boolean(target);
+  ui.surface.hidden = channelLayout || !target;
+  if (channelLayout) {
+    const key = `composer:${state.contextId}`;
+    ui.composer.dataset.controlKey = key;
+    if (!state.drafts.has(key)) state.drafts.set(key, "");
+    if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
+    ui.send.disabled = Boolean(state.pendingAction);
+    if (state.replyToId && !(snapshot.messageIndex || []).some((item) => String(item.id) === state.replyToId)) {
+      state.replyToId = null;
+    }
+    const reply = state.replyToId
+      ? (snapshot.messageIndex || []).find((item) => String(item.id) === state.replyToId)
+      : null;
+    ui.replyContext.hidden = !reply;
+    ui.replyLabel.textContent = reply
+      ? `Replying to ${reply.author_name || "Unknown"}: ${String(reply.excerpt || "").slice(0, 100)}`
+      : "";
+  }
+}
+
+function setReplyTo(message) {
+  state.replyToId = String(message.id);
+  updatePickers(state.snapshot);
+  state.focusKey = `composer:${state.contextId}`;
+  ui.composer.focus();
+  ui.composer.setSelectionRange(ui.composer.value.length, ui.composer.value.length);
+}
+
+function localMessageDay(message) {
+  const date = new Date(message.timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: state.profile.timezone || "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    key: `${value.year}-${value.month}-${value.day}`,
+    label: new Intl.DateTimeFormat(state.profile.locale || "en-US", {
+      timeZone: state.profile.timezone || "UTC",
+      dateStyle: "full",
+    }).format(date),
+  };
+}
+
+function messageRenderOptions(snapshot, generation, pendingMedia, message, channelLayout) {
+  return {
+    drafts: state.drafts,
+    candidates: snapshot.candidates || {},
+    assets: snapshot.assets || {},
+    mentions: { ...(message?.mention_names || {}), ...(message?.mention_channel_names || {}) },
+    locale: state.profile.locale,
+    timezone: state.profile.timezone,
+    presentationTime: state.profile.presentationTime,
+    dropdown: state.dropdown,
+    onInit: initDraft,
+    onOpen: openDropdown,
+    onDraft: updateDraft,
+    onClick: (controlKey) => dispatch("click", { control_key: controlKey }),
+    onCommit: commitDropdown,
+    onCancel: cancelDropdown,
+    onNavigate: navigateDropdown,
+    onClear: clearSelection,
+    loadAsset,
+    isCurrent: () => generation === state.renderGeneration,
+    onDiagnostic: addDiagnostic,
+    onLocalRender: () => localRender(true),
+    pendingMedia,
+    channelLayout: channelLayout && Boolean(snapshot.channel?.canSendMessages),
+    onReply: channelLayout && snapshot.channel?.canSendMessages ? setReplyTo : null,
+  };
+}
+
+function setMessageOrder(nodes) {
+  let current = ui.messageList.firstElementChild;
+  for (const element of nodes) {
+    if (element === current) current = current.nextElementSibling;
+    else ui.messageList.insertBefore(element, current);
+  }
+  while (current) {
+    const next = current.nextElementSibling;
+    current.remove();
+    current = next;
+  }
+}
+
+function renderChannelTimeline(snapshot, generation, previousTargetId) {
+  const ids = (snapshot.timeline || []).map(String);
+  const active = new Set(ids);
+  const viewport = ui.timeline.getBoundingClientRect();
+  const previousVisible = [...ui.messageList.querySelectorAll("[data-message-id]")].find((item) => {
+    const rect = item.getBoundingClientRect();
+    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  const anchorId = previousVisible?.dataset.messageId || null;
+  const anchorTop = previousVisible ? previousVisible.getBoundingClientRect().top - viewport.top : 0;
+  const oldScrollTop = ui.timeline.scrollTop;
+  const desired = [];
+  const dayKeys = new Set();
+  const pendingMedia = [];
+  let previousDay = null;
+
+  for (const id of ids) {
+    const message = snapshot.messages?.[id];
+    if (!message) continue;
+    const day = localMessageDay(message);
+    if (day && day.key !== previousDay) {
+      dayKeys.add(day.key);
+      let divider = state.dayNodes.get(day.key);
+      if (!divider) {
+        divider = document.createElement("div");
+        divider.className = "timeline-day-divider";
+        divider.setAttribute("role", "separator");
+        state.dayNodes.set(day.key, divider);
+      }
+      divider.textContent = day.label;
+      desired.push(divider);
+    }
+    previousDay = day?.key || null;
+
+    let record = state.messageNodes.get(id);
+    if (!record) {
+      const element = document.createElement("article");
+      element.className = "channel-message";
+      element.dataset.messageId = id;
+      record = { element, fingerprint: "" };
+      state.messageNodes.set(id, record);
+    }
+    const value = fingerprint(message);
+    if (record.fingerprint !== value) {
+      record.fingerprint = value;
+      renderMessage(
+        record.element,
+        message,
+        messageRenderOptions(snapshot, generation, pendingMedia, message, true),
+      );
+    }
+    record.element.classList.toggle("message-surface", id === String(snapshot.targetId || ""));
+    desired.push(record.element);
+  }
+
+  for (const [id, record] of state.messageNodes) {
+    if (!active.has(id)) {
+      record.element.remove();
+      state.messageNodes.delete(id);
+    }
+  }
+  for (const [key, divider] of state.dayNodes) {
+    if (!dayKeys.has(key)) state.dayNodes.delete(key);
+    else if (!desired.includes(divider)) divider.remove();
+  }
+  setMessageOrder(desired);
+  ui.channelEmpty.hidden = ids.length > 0;
+  if (snapshot.targetId && String(snapshot.targetId) !== String(previousTargetId || "")) {
+    const target = state.messageNodes.get(String(snapshot.targetId))?.element;
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      ui.timeline.scrollTop += rect.top + rect.height / 2 - viewport.top - viewport.height / 2;
+    }
+  } else if (anchorId && state.messageNodes.has(anchorId)) {
+    const element = state.messageNodes.get(anchorId).element;
+    ui.timeline.scrollTop += element.getBoundingClientRect().top - viewport.top - anchorTop;
+  } else {
+    ui.timeline.scrollTop = oldScrollTop;
+  }
+  ui.historyOlder.hidden = !snapshot.history?.hasBefore;
+  ui.historyNewer.hidden = !snapshot.history?.hasAfter;
+  return pendingMedia;
 }
 
 function updateActionStatus() {
+  ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || ui.composerForm.hidden;
   if (state.pendingAction) {
     ui.action.textContent = `${state.pendingAction.kind}…`;
     return;
@@ -514,17 +709,22 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.drafts.clear();
     state.modalDrafts.clear();
     state.modalTouched.clear();
+    state.replyToId = null;
     state.dropdown = null;
     state.dismissedModal = null;
     state.modalHandle = null;
     state.modalOpenerFocusKey = null;
     ui.surface.replaceChildren();
+    ui.messageList.replaceChildren();
+    state.messageNodes.clear();
+    state.dayNodes.clear();
   }
   state.contextId = snapshot.context?.id || state.contextId;
   const nextGeneration = Number(snapshot.context?.generation || 0);
   const nextRevision = Number(snapshot.publishedRevision || 0);
   const nextViewer = snapshot.viewerId || null;
   const nextAssets = fingerprint(snapshot.assets || {});
+  const previousTargetId = state.targetId;
   if (state.assetFingerprint && nextAssets !== state.assetFingerprint) revokeAssets();
   state.assetFingerprint = nextAssets;
   if (state.authorized && (nextGeneration !== state.contextGeneration || nextRevision !== state.publishedRevision)) state.localDiagnostics = [];
@@ -537,40 +737,22 @@ function renderSnapshot(snapshot, generation, force = false) {
   state.profile = profileFromSnapshot(snapshot);
   applyProfile();
   updatePickers(snapshot);
-  const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
-  const selectedKey = selected ? String(selected.id) : null;
-  const selectedFingerprint = fingerprint(selected);
-  const shouldRenderMessage = force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
   const pendingMedia = [];
-  if (shouldRenderMessage) {
-    state.lastMessageKey = selectedKey;
-    state.lastMessageFingerprint = selectedFingerprint;
-    renderMessage(ui.surface, selected, {
-      drafts: state.drafts,
-      candidates: snapshot.candidates || {},
-      assets: snapshot.assets || {},
-      mentions: {
-        ...(selected?.mention_names || {}),
-        ...(selected?.mention_channel_names || {}),
-      },
-      locale: state.profile.locale,
-      timezone: state.profile.timezone,
-      presentationTime: state.profile.presentationTime,
-      dropdown: state.dropdown,
-      onInit: initDraft,
-      onOpen: openDropdown,
-      onDraft: updateDraft,
-      onClick: (controlKey) => dispatch("click", { control_key: controlKey }),
-      onCommit: commitDropdown,
-      onCancel: cancelDropdown,
-      onNavigate: navigateDropdown,
-      onClear: clearSelection,
-      loadAsset,
-      isCurrent: () => generation === state.renderGeneration,
-      onDiagnostic: addDiagnostic,
-      onLocalRender: () => localRender(true),
-      pendingMedia,
-    });
+  if (snapshot.layout === "channel") {
+    pendingMedia.push(...renderChannelTimeline(snapshot, generation, previousTargetId));
+  } else {
+    ui.messageList.replaceChildren();
+    state.messageNodes.clear();
+    state.dayNodes.clear();
+    const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
+    const selectedKey = selected ? String(selected.id) : null;
+    const selectedFingerprint = fingerprint(selected);
+    const shouldRenderMessage = force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
+    if (shouldRenderMessage) {
+      state.lastMessageKey = selectedKey;
+      state.lastMessageFingerprint = selectedFingerprint;
+      renderMessage(ui.surface, selected, messageRenderOptions(snapshot, generation, pendingMedia, selected, false));
+    }
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
   const modalKey = modal ? fingerprint(modal) : "";
@@ -746,7 +928,7 @@ async function dispatch(kind, extra = {}) {
     ...extra,
   };
   if (["click", "select"].includes(kind)) body.target_id = state.targetId;
-  state.pendingAction = { kind, requestId, sequence };
+  state.pendingAction = { kind, requestId, sequence, ...extra };
   localRender(false);
   try {
     const result = await requestAction(body);
@@ -755,16 +937,25 @@ async function dispatch(kind, extra = {}) {
     state.lastAction = result;
     if (Array.isArray(result.diagnostics)) result.diagnostics.forEach((item) => addDiagnostic(item));
     if (kind === "close") { state.closed = true; state.ready = false; revokeAssets(); updateActionStatus(); return; }
+    if (kind === "send" && !result.rejected && result.settlement === "settled") {
+      state.drafts.delete(`composer:${state.contextId}`);
+      state.replyToId = null;
+    }
     const snapshot = await request("/api/state");
     if (snapshot.context?.generation !== state.contextGeneration) {
       state.dropdown = null;
       state.drafts.clear();
       state.modalDrafts.clear();
       state.modalTouched.clear();
+      state.replyToId = null;
       state.dismissedModal = null;
     }
     state.dismissedModal = null;
     await installSnapshot(snapshot, true);
+    if (result?.rejected) {
+      state.lastAction = result;
+      updateActionStatus();
+    }
   } catch (error) {
     state.pendingAction = null;
     state.lastAction = { requestId, sequence, dispatched: false, settlement: "rejected", diagnostics: [{ type: "PreviewRequestError", message: String(error) }] };
@@ -865,6 +1056,29 @@ ui.width.addEventListener("change", () => updateViewport(ui.width, 240, 32768));
 ui.height.addEventListener("change", () => updateViewport(ui.height, 180, 32768));
 ui.refresh.addEventListener("click", () => dispatch("refresh"));
 ui.close.addEventListener("click", () => dispatch("close"));
+ui.historyOlder.addEventListener("click", () => dispatch("history", { direction: "older" }));
+ui.historyNewer.addEventListener("click", () => dispatch("history", { direction: "newer" }));
+ui.replyCancel.addEventListener("click", () => {
+  state.replyToId = null;
+  updatePickers(state.snapshot);
+  ui.composer.focus();
+});
+ui.composer.addEventListener("input", () => {
+  state.drafts.set(ui.composer.dataset.controlKey, ui.composer.value);
+  rememberFocus();
+});
+ui.composer.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    ui.composerForm.requestSubmit();
+  }
+});
+ui.composerForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const content = ui.composer.value;
+  if (!content.trim()) return;
+  dispatch("send", { content, reply_to_id: state.replyToId });
+});
 ui.modal.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (state.dropdown) { event.preventDefault(); cancelDropdown(state.dropdown.key); return; }

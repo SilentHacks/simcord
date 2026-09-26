@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "protocolVersion", "publishedRevision", "context", "botGeneration", "viewers",
-    "viewerId", "channelId", "channel", "targetId", "messageIndex", "messages",
+    "viewerId", "channelId", "channel", "layout", "targetId", "messageIndex", "messages",
     "timeline", "history", "modal", "entities", "candidates", "assets", "profile",
     "status", "diagnostics", "lastAction"
   ],
@@ -22,7 +22,16 @@
     "viewers": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
     "viewerId": { "type": "string" },
     "channelId": { "type": "string" },
-    "channel": { "type": ["object", "null"] },
+    "layout": { "enum": ["message", "channel"] },
+    "channel": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "guildId", "type", "topic", "canSendMessages"],
+      "properties": {
+        "id": { "type": "string" }, "name": { "type": ["string", "null"] },
+        "guildId": { "type": ["string", "null"] }, "type": { "type": ["integer", "null"] },
+        "topic": { "type": ["string", "null"] }, "canSendMessages": { "type": "boolean" }
+      }
+    },
     "targetId": { "type": ["string", "null"] },
     "messageIndex": {
       "type": "array", "items": {
@@ -31,12 +40,15 @@
         "properties": { "id": { "type": "string" }, "author_name": { "type": "string" }, "excerpt": { "type": "string" } }
       }
     },
-    "messages": { "type": "object", "description": "The authorized target message only; channel summaries belong in messageIndex.", "maxProperties": 1, "additionalProperties": { "$ref": "#/$defs/message" } },
-    "timeline": { "type": "array", "description": "The target message id only when targetId is authorized and present.", "maxItems": 1, "items": { "type": "string" } },
+    "messages": { "type": "object", "description": "Up to 50 full projections for the current authorized window in channel layout; the authorized target only in message layout.", "maxProperties": 50, "additionalProperties": { "$ref": "#/$defs/message" } },
+    "timeline": { "type": "array", "description": "Authorized message IDs in visible window order.", "maxItems": 50, "items": { "type": "string" } },
     "history": {
       "type": "object", "additionalProperties": false,
-      "required": ["hasBefore", "hasAfter"],
-      "properties": { "hasBefore": { "type": "boolean" }, "hasAfter": { "type": "boolean" } }
+      "required": ["hasBefore", "hasAfter", "windowStartId", "windowEndId"],
+      "properties": {
+        "hasBefore": { "type": "boolean" }, "hasAfter": { "type": "boolean" },
+        "windowStartId": { "type": ["string", "null"] }, "windowEndId": { "type": ["string", "null"] }
+      }
     },
     "modal": { "type": ["object", "null"] },
     "entities": { "type": "object", "additionalProperties": { "type": "object" } },
@@ -54,6 +66,6 @@
     "identity": { "type": "object", "required": ["id", "name"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "name": { "type": "string" } } },
     "asset": { "type": "object", "required": ["id", "filename", "contentType", "available"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "filename": { "type": "string" }, "contentType": { "type": "string" }, "available": { "type": "boolean" }, "bytes": { "type": "integer", "minimum": 0 }, "diagnostic": { "type": ["string", "null"] } } },
     "diagnostic": { "type": "object", "required": ["code", "severity", "message", "complete"], "additionalProperties": true, "properties": { "code": { "type": "string" }, "severity": { "type": "string" }, "message": { "type": "string" }, "complete": { "type": "boolean" }, "path": { "type": ["string", "null"] }, "feature": { "type": ["string", "null"] }, "fixtureId": { "type": ["string", "null"] }, "remediation": { "type": ["string", "null"] } } },
-    "message": { "type": "object", "required": ["id", "channel_id", "author", "timestamp", "edited_timestamp", "type", "pinned", "tts", "content", "content_tokens", "embeds", "components", "flags", "ephemeral", "components_v2", "compact", "attachments", "mention_user_ids", "mention_role_ids", "mention_everyone", "reactions", "poll", "stickers", "thread", "allowed_actions", "reply"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "channel_id": { "type": "string" }, "author": { "type": "object" }, "timestamp": { "type": "string" }, "edited_timestamp": { "type": ["string", "null"] }, "type": { "type": "integer" }, "pinned": { "type": "boolean" }, "tts": { "type": "boolean" }, "content": { "type": "string" }, "content_tokens": { "type": "array" }, "embeds": { "type": "array" }, "components": { "type": "array" }, "flags": { "type": "integer" }, "ephemeral": { "type": "boolean" }, "components_v2": { "type": "boolean" }, "compact": { "type": "boolean" }, "attachments": { "type": "array" }, "mention_user_ids": { "type": "array" }, "mention_role_ids": { "type": "array" }, "mention_everyone": { "type": "boolean" }, "reactions": { "type": "array" }, "poll": { "type": ["object", "null"] }, "stickers": { "type": "array" }, "thread": { "type": ["object", "null"] }, "allowed_actions": { "type": "array" }, "reply": { "type": "object" } } }
+    "message": { "type": "object", "required": ["id", "channel_id", "author", "timestamp", "edited_timestamp", "type", "pinned", "tts", "content", "content_tokens", "embeds", "components", "flags", "ephemeral", "components_v2", "compact", "attachments", "mention_user_ids", "mention_role_ids", "mention_everyone", "reactions", "poll", "stickers", "thread", "allowed_actions", "reply", "interaction_header"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "channel_id": { "type": "string" }, "author": { "type": "object" }, "timestamp": { "type": "string" }, "edited_timestamp": { "type": ["string", "null"] }, "type": { "type": "integer" }, "pinned": { "type": "boolean" }, "tts": { "type": "boolean" }, "content": { "type": "string" }, "content_tokens": { "type": "array" }, "embeds": { "type": "array" }, "components": { "type": "array" }, "flags": { "type": "integer" }, "ephemeral": { "type": "boolean" }, "components_v2": { "type": "boolean" }, "compact": { "type": "boolean" }, "attachments": { "type": "array" }, "mention_user_ids": { "type": "array" }, "mention_role_ids": { "type": "array" }, "mention_everyone": { "type": "boolean" }, "reactions": { "type": "array" }, "poll": { "type": ["object", "null"] }, "stickers": { "type": "array" }, "thread": { "type": ["object", "null"] }, "allowed_actions": { "type": "array" }, "reply": { "type": "object" }, "interaction_header": { "type": ["object", "null"] } } }
   }
 }

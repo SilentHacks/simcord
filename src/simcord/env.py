@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 import discord
 
@@ -1096,6 +1096,7 @@ class Env:
         channel: ChannelHandle,
         *,
         viewers: Sequence[MemberActor | UserHandle],
+        layout: Literal["message", "channel"] = "message",
         width: int = 960,
         height: int = 720,
         locale: str = "en-US",
@@ -1106,15 +1107,14 @@ class Env:
     ) -> Preview:
         """Create one eagerly validated local preview context manager.
 
-        ``channel`` is the channel the session presents. ``viewers`` is a
-        non-empty allowlist of same-Env handles — members for guild channels,
-        the owning ``UserHandle`` for DMs. ``width``/``height`` are
-        positive-int viewport sizes;
-        ``locale`` and ``timezone`` seed the rendered profile. ``assets`` maps
-        otherwise-remote media URLs to ``(filename, bytes)`` tuples so they
-        render offline. ``port`` pins the loopback port: ``None``/``0`` lets
-        the OS assign one, 1-65535 requests a specific port — the session is
-        still capability-gated either way.
+        ``layout="message"`` focuses one message; ``layout="channel"`` shows
+        authorized channel history and a real actor-backed composer. ``channel``
+        is the channel the session presents. ``viewers`` is a non-empty
+        allowlist of same-Env handles — members for guild channels, the owning
+        ``UserHandle`` for DMs. ``width``/``height`` are positive-int viewport
+        sizes; ``locale`` and ``timezone`` seed the rendered profile.
+        ``assets`` maps otherwise-remote media URLs to ``(filename, bytes)``
+        tuples so they render offline. ``port`` pins the loopback port.
 
         Returns an async context manager serving the authorized preview;
         ``preview.url`` is the capability-bearing address.
@@ -1131,6 +1131,7 @@ class Env:
                 self,
                 channel,
                 viewers=viewers,
+                layout=layout,
                 width=width,
                 height=height,
                 locale=locale,

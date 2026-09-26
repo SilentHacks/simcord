@@ -32,6 +32,7 @@ class _Page:
     viewer: Any
     channel_id: int
     target_id: int | None = None
+    window_end_id: int | None = None
     generation: int = 1
     revision: int = 0
     status: str = "current"
@@ -140,6 +141,7 @@ class _PageOps:
 
     env: Env
     channel: ChannelHandle
+    layout: str
     viewers: tuple[Any, ...]
     _pages: dict[str, _Page]
     _python: _Page | None
@@ -273,6 +275,8 @@ class _PageOps:
             self.channel.id,
             target,
         )
+        if self.layout == "channel":
+            page.window_end_id = target if target_id is not None else source.window_end_id
         if source.modal is not None and source.modal._interaction.user_id == viewer.id:
             page.modal = source.modal
             page.modal_handle = "m_" + secrets.token_urlsafe(12)

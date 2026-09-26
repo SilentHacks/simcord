@@ -35,6 +35,7 @@ class PreviewServer:
         "/": "index.html",
         "/app.js": "app.js",
         "/components.js": "components.js",
+        "/messages.js": "messages.js",
         "/dom.js": "dom.js",
         "/preview.css": "preview.css",
         "/protocol.schema.json": "protocol.schema.json",
@@ -54,6 +55,7 @@ class PreviewServer:
         "protocol.schema.json": "application/schema+json",
         "app.js": "application/javascript",
         "components.js": "application/javascript",
+        "messages.js": "application/javascript",
         "dom.js": "application/javascript",
     }
     _SECURITY_HEADERS: ClassVar[dict[str, str]] = {

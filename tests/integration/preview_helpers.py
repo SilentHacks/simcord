@@ -89,12 +89,10 @@ def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str,
     ``sequence``/``request_id``/``generation``/``bot_generation``/``kind`` are
     filled in: the generation defaults from ``page`` — a ``_Page`` (whose
     ``preview.env`` supplies ``bot_generation``) or a ``/api/pages`` JSON
-    ``context`` mapping (which needs ``env=`` or an explicit
-    ``bot_generation=``). Mutating actions also receive the page's
-    ``target_id`` and ``published_revision`` unless deliberately supplied.
-    Kind-specific fields (``control_key``, ``values``, ``modal_handle``,
-    ``target_id``, ``viewer_id``, ``published_revision``) and deliberate bad
-    values both work.
+    ``context`` mapping (which needs ``env=`` or explicit ``bot_generation=``).
+    Kind-specific fields, including deliberate invalid values, may also be
+    supplied. Mutating actions receive the current revision; click/select/modal
+    submit also receive the target ID.
     """
     env = fields.pop("env", None)
     if isinstance(page, Mapping):
@@ -115,6 +113,7 @@ def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str,
     body.update(fields)
     if kind in {"click", "select", "modal_submit"}:
         body.setdefault("target_id", _page_target_id(page))
+    if kind in {"click", "select", "modal_submit", "history", "send"}:
         body.setdefault(
             "published_revision",
             page.get("publishedRevision") if isinstance(page, Mapping) else page.revision,

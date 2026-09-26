@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
@@ -74,6 +74,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         channel: ChannelHandle,
         viewers: tuple[Any, ...],
         *,
+        layout: Literal["message", "channel"],
         width: int,
         height: int,
         locale: str,
@@ -82,6 +83,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         assets: Mapping[str, tuple[str, bytes]] | None,
         port: int,
     ) -> None:
+        self.layout = layout
         self.env = env
         self.channel = channel
         self.viewers = viewers
@@ -145,6 +147,8 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 raise SetupError("Preview was closed while starting")
             self._python = _Page(self, "python", self.viewers[0], self.channel.id)
             self._python.target_id = self._initial_target(self._python.viewer, self.channel.id)
+            if self.layout == "channel":
+                self._python.window_end_id = self._python.target_id
             self._pages[self._python.id] = self._python
             self._publish(self._python)
             self._unregister_shutdown = self.env._register_pre_shutdown(self.close)
@@ -212,7 +216,8 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
     async def show(self, target: Any) -> None:
         """Focus the Python presentation on a Message, ResponseMessage, or InteractionResult.
 
-        A modal-carrying InteractionResult shows its modal to the opener.
+        A modal-carrying InteractionResult shows its modal to the opener. In channel layout, focusing
+        a target moves the authorized history window to include it.
         """
         if not self._active or self._python is None:
             raise SetupError("Preview is not active")
@@ -221,6 +226,8 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             page = self._python
             target_id, modal = self._resolve_target(page.viewer, target)
             page.target_id = target_id
+            if self.layout == "channel":
+                page.window_end_id = target_id
             if modal is not None:
                 page.modal = modal
                 page.modal_handle = "m_" + secrets.token_urlsafe(12)
@@ -249,9 +256,9 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         """Settle bot work, republish, and return the detached JSON projection.
 
         This is the structured, agent-facing read surface: the same projection
-        the bundled page renders, covering ``messageIndex`` summaries, the
-        authorized target in ``messages``/``timeline``, ``targetId``, ``modal``,
-        ``candidates``, ``entities``, ``assets``, ``diagnostics``, and
+        the bundled page renders, covering ``messageIndex`` summaries, ``messages`` and ``timeline``
+        for the focused target or authorized 50-message channel window, ``history`` boundaries,
+        ``targetId``, ``modal``, ``candidates``, ``entities``, ``assets``, ``diagnostics``, and
         ``lastAction``. Fields evolve under ``protocolVersion``.
         """
         if not self._active or self._python is None:
@@ -327,7 +334,10 @@ def _validate_preview(
     presentation_time: Any = None,
     assets: Any = None,
     port: Any = None,
+    layout: Any = "message",
 ) -> tuple[ChannelHandle, tuple[Any, ...], Mapping[str, tuple[str, bytes]], int]:
+    if layout not in ("message", "channel"):
+        raise SetupError("layout must be 'message' or 'channel'")
     if not isinstance(channel, ChannelHandle) or channel._env is not env:
         raise SetupError("preview channel must belong to this Env")
     try:
@@ -389,7 +399,10 @@ def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
         env,
         channel,
         viewers,
-        **{key: kwargs[key] for key in ("width", "height", "locale", "timezone", "presentation_time")},
+        **{
+            key: kwargs[key]
+            for key in ("layout", "width", "height", "locale", "timezone", "presentation_time")
+        },
         assets=assets,
         port=port,
     )
