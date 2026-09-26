@@ -749,4 +749,4 @@ export function renderModal(root, modal, options = {}) {
   root.append(backdrop);
   return { controls, focus: dialog.querySelector("input, textarea, button") || dialog };
 }
-export { appendMarkdownOrText, node, renderEmbed, renderNode, renderSpoilerMedia };
+export { appendEmojiValue, appendMarkdownOrText, node, renderEmbed, renderNode, renderSpoilerMedia };

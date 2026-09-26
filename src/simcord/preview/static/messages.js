@@ -1,5 +1,6 @@
 import { applyRoleColor, presenceDot, renderIdentityAvatar } from "./dom.js";
 import {
+  appendEmojiValue,
   appendMarkdownOrText,
   node,
   renderEmbed,
@@ -192,15 +193,102 @@ export function renderMessage(root, message, options = {}) {
     root.append(list);
   }
   appendThread(root, message.thread);
-  if (options.channelLayout && typeof options.onReply === "function") {
-    const actions = node("div", "message-context-actions");
-    const reply = node("button", "reply-button", "Reply");
-    reply.type = "button";
-    reply.dataset.controlKey = `reply:${message.id}`;
-    reply.setAttribute("aria-label", `Reply to ${message.author?.name || "message"}`);
-    reply.addEventListener("click", () => options.onReply(message));
-    actions.append(reply);
-    root.append(actions);
+  const allowedActions = new Set(message.allowed_actions || []);
+  if (message.reactions?.length) {
+    const reactions = node("div", "message-reactions");
+    message.reactions.forEach((reaction, index) => {
+      const canReact = Boolean(reaction.can_toggle) && typeof options.onReaction === "function";
+      const chip = node(canReact ? "button" : "span", "reaction-chip", "");
+      if (canReact) {
+        chip.type = "button";
+        chip.dataset.controlKey = `message:${message.id}:reaction:${index}`;
+        chip.setAttribute("aria-pressed", String(Boolean(reaction.viewer_reacted)));
+        chip.addEventListener("click", () => options.onReaction(message, reaction));
+      }
+      if (reaction.viewer_reacted) chip.classList.add("is-selected");
+      const emoji = node("span", "reaction-emoji");
+      appendEmojiValue(emoji, reaction.emoji, options, "Reaction emoji");
+      chip.append(emoji, node("span", "reaction-count", reaction.count));
+      reactions.append(chip);
+    });
+    root.append(reactions);
+  }
+  if (message.poll) {
+    const poll = message.poll;
+    const card = node("section", "message-poll");
+    card.append(node("h3", "poll-question", poll.question));
+    const ended = Boolean(poll.finalized || poll.expired);
+    const expiry = new Date(poll.expiry);
+    const status = ended
+      ? "Poll ended"
+      : `Ends ${Number.isFinite(expiry.getTime()) ? absoluteTime(poll.expiry, options) : "later"}`;
+    card.append(node("div", "poll-status", `${status} · ${poll.total_votes} ${poll.total_votes === 1 ? "vote" : "votes"}`));
+    const canVote = allowedActions.has("set_poll_votes")
+      && !ended
+      && typeof options.onPollDraft === "function";
+    const drafted = options.pollAnswers?.(message);
+    const selected = new Set(
+      drafted || poll.answers.filter((answer) => answer.viewer_selected).map((answer) => String(answer.id)),
+    );
+    (poll.answers || []).forEach((answer) => {
+      const answerId = String(answer.id);
+      const row = node("div", "poll-answer-row");
+      const choice = node(canVote ? "button" : "span", "poll-answer");
+      if (answer.emoji) {
+        appendEmojiValue(choice, answer.emoji, options, "Poll emoji");
+        choice.append(document.createTextNode(" "));
+      }
+      if (canVote) {
+        choice.type = "button";
+        choice.dataset.controlKey = `message:${message.id}:poll:${answerId}`;
+        choice.setAttribute("aria-pressed", String(selected.has(answerId)));
+        choice.addEventListener("click", () => {
+          const next = new Set(selected);
+          if (next.has(answerId)) next.delete(answerId);
+          else {
+            if (!poll.multiselect) next.clear();
+            next.add(answerId);
+          }
+          options.onPollDraft(message, [...next]);
+        });
+      }
+      if (selected.has(answerId)) choice.classList.add("is-selected");
+      const result = node("div", "poll-result-track");
+      const fill = node("span", "poll-result-fill");
+      fill.style.width = `${Math.max(0, Math.min(100, Number(answer.percentage) || 0))}%`;
+      result.append(fill);
+      row.append(choice, node("span", "poll-answer-count", answer.count), result);
+      row.append(node("span", "poll-answer-percentage", `${answer.percentage}%`));
+      card.append(row);
+    });
+    if (canVote && typeof options.onPollSubmit === "function") {
+      const submit = node("button", "poll-submit", "Vote");
+      submit.type = "button";
+      submit.dataset.controlKey = `message:${message.id}:poll:submit`;
+      submit.addEventListener("click", () => options.onPollSubmit(message, [...selected]));
+      card.append(submit);
+    }
+    root.append(card);
+  }
+  if (options.channelLayout) {
+    const toolbar = node("div", "message-context-actions");
+    toolbar.setAttribute("role", "toolbar");
+    toolbar.setAttribute("aria-label", `Actions for ${message.author?.name || "message"}`);
+    const addAction = (key, label, callback) => {
+      if (typeof callback !== "function") return;
+      const button = node("button", "message-action-button", label);
+      button.type = "button";
+      button.dataset.controlKey = `message:${message.id}:action:${key}`;
+      button.addEventListener("click", () => callback(message));
+      toolbar.append(button);
+    };
+    if (allowedActions.has("reply")) addAction("reply", "Reply", options.onReply);
+    if (allowedActions.has("edit_message")) addAction("edit", "Edit", options.onEdit);
+    if (allowedActions.has("delete_message")) addAction("delete", "Delete", options.onDelete);
+    if (allowedActions.has("set_pinned")) {
+      addAction("pin", message.pinned ? "Unpin" : "Pin", options.onPin);
+    }
+    if (toolbar.childElementCount) root.append(toolbar);
   }
   return { pendingMedia };
 }

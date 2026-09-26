@@ -33,7 +33,8 @@ And the other text verbs mirror what a user can do to their own messages:
 
 ```python
 await alice.edit(message, "edited content")   # only your own messages (else 50005)
-await alice.delete(message)                    # your own, or with manage_messages
+await alice.delete(message)                   # your own, or with manage_messages
+await alice.set_pinned(message, True)          # requires manage_messages
 await alice.typing(channel)                    # triggers on_typing
 ```
 
@@ -69,7 +70,18 @@ fetched = channel.last_message
 assert any(str(r.emoji) == "👋" for r in fetched.reactions)
 ```
 
+`set_reaction(message, emoji, reacted=...)` sets desired membership idempotently; `react` and
+`unreact` remain the event-oriented add/remove helpers.
+
 More on reaction-driven flows in [Threads, reactions & DMs](threads-reactions-dms.md).
+
+## Polls
+
+Set the viewer's complete poll answer set with `await alice.set_poll_votes(message, answers=...)`.
+For a multiselect poll, `answers=[1, 2]` selects both choices; a single-select poll accepts one.
+Pass `answers=[]` to withdraw all choices. The backend validates the entire set before changing
+votes, enforces expiry, and publishes normal vote events. Preview poll projections show counts and
+percentages, not voter lists.
 
 ## Direct messages
 

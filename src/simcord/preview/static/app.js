@@ -68,6 +68,8 @@ const state = {
   messageNodes: new Map(),
   dayNodes: new Map(),
   replyToId: null,
+  editTargetId: null,
+  pollDrafts: new Map(),
   closed: false,
   authorized: true,
   modalOpenerFocusKey: null,
@@ -388,33 +390,52 @@ function updatePickers(snapshot) {
   ui.channelName.textContent = snapshot.channel?.name || "Unavailable channel";
   ui.channelTopic.textContent = snapshot.channel?.topic || "";
   ui.channelTopic.hidden = !snapshot.channel?.topic;
-  ui.composerForm.hidden = !channelLayout || !snapshot.channel?.canSendMessages;
+  ui.composerForm.hidden = !channelLayout || !(snapshot.channel?.canSendMessages || state.editTargetId);
   ui.surface.classList.toggle("message-surface", !channelLayout);
   ui.empty.hidden = channelLayout || Boolean(target);
   ui.surface.hidden = channelLayout || !target;
   if (channelLayout) {
-    const key = `composer:${state.contextId}`;
+    const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
+    const key = editKey || `composer:${state.contextId}`;
     ui.composer.dataset.controlKey = key;
-    if (!state.drafts.has(key)) state.drafts.set(key, "");
+    const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
+    if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
     if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
     ui.send.disabled = Boolean(state.pendingAction);
+    ui.send.textContent = state.editTargetId ? "Save" : "Send";
+    ui.composer.placeholder = state.editTargetId ? "Edit message" : "Message";
     if (state.replyToId && !(snapshot.messageIndex || []).some((item) => String(item.id) === state.replyToId)) {
       state.replyToId = null;
     }
     const reply = state.replyToId
       ? (snapshot.messageIndex || []).find((item) => String(item.id) === state.replyToId)
       : null;
-    ui.replyContext.hidden = !reply;
-    ui.replyLabel.textContent = reply
-      ? `Replying to ${reply.author_name || "Unknown"}: ${String(reply.excerpt || "").slice(0, 100)}`
-      : "";
+    ui.replyContext.hidden = !reply && !state.editTargetId;
+    ui.replyLabel.textContent = state.editTargetId
+      ? `Editing message ${state.editTargetId}`
+      : reply
+        ? `Replying to ${reply.author_name || "Unknown"}: ${String(reply.excerpt || "").slice(0, 100)}`
+        : "";
+    ui.replyCancel.setAttribute("aria-label", state.editTargetId ? "Cancel edit" : "Cancel reply");
   }
 }
 
 function setReplyTo(message) {
+  state.editTargetId = null;
   state.replyToId = String(message.id);
   updatePickers(state.snapshot);
   state.focusKey = `composer:${state.contextId}`;
+  ui.composer.focus();
+  ui.composer.setSelectionRange(ui.composer.value.length, ui.composer.value.length);
+}
+
+function setEditMessage(message) {
+  state.replyToId = null;
+  state.editTargetId = String(message.id);
+  const key = `edit:${state.contextId}:${state.editTargetId}`;
+  if (!state.drafts.has(key)) state.drafts.set(key, String(message.content || ""));
+  updatePickers(state.snapshot);
+  state.focusKey = key;
   ui.composer.focus();
   ui.composer.setSelectionRange(ui.composer.value.length, ui.composer.value.length);
 }
@@ -439,6 +460,7 @@ function localMessageDay(message) {
 }
 
 function messageRenderOptions(snapshot, generation, pendingMedia, message, channelLayout) {
+  const pollKey = (item) => `poll:${state.contextId}:${item.id}`;
   return {
     drafts: state.drafts,
     candidates: snapshot.candidates || {},
@@ -461,8 +483,36 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     onDiagnostic: addDiagnostic,
     onLocalRender: () => localRender(true),
     pendingMedia,
-    channelLayout: channelLayout && Boolean(snapshot.channel?.canSendMessages),
+    channelLayout,
     onReply: channelLayout && snapshot.channel?.canSendMessages ? setReplyTo : null,
+    onEdit: channelLayout ? setEditMessage : null,
+    onDelete: channelLayout ? (item) => {
+      if (window.confirm("Delete this message? This cannot be undone.")) {
+        dispatch("delete_message", { target_id: String(item.id), confirmed: true });
+      }
+    } : null,
+    onPin: channelLayout ? (item) => dispatch("set_pinned", {
+      target_id: String(item.id),
+      pinned: !item.pinned,
+    }) : null,
+    onReaction: (item, reaction) => {
+      const emoji = reaction.emoji || {};
+      const key = emoji.id ? `${emoji.name || ""}:${emoji.id}` : String(emoji.name || "");
+      dispatch("set_reaction", {
+        target_id: String(item.id),
+        emoji: key,
+        reacted: !reaction.viewer_reacted,
+      });
+    },
+    pollAnswers: (item) => state.pollDrafts.get(pollKey(item)),
+    onPollDraft: (item, answers) => {
+      state.pollDrafts.set(pollKey(item), answers.map(String));
+      localRender(true);
+    },
+    onPollSubmit: (item, answers) => dispatch("set_poll_votes", {
+      target_id: String(item.id),
+      answer_ids: answers.map(String),
+    }),
   };
 }
 
@@ -570,7 +620,9 @@ function updateActionStatus() {
     return;
   }
   const action = state.lastAction;
-  ui.action.textContent = action ? `${action.dispatch || "not dispatched"} · ${action.settlement || "pending"}` : "";
+  ui.action.textContent = action
+    ? `${action.dispatch || "not dispatched"} · ${action.settlement || "pending"} · ${action.acknowledgement || "pending"}`
+    : "";
 }
 
 function currentDrafts(key) {
@@ -709,6 +761,8 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.drafts.clear();
     state.modalDrafts.clear();
     state.modalTouched.clear();
+    state.pollDrafts.clear();
+    state.editTargetId = null;
     state.replyToId = null;
     state.dropdown = null;
     state.dismissedModal = null;
@@ -937,9 +991,18 @@ async function dispatch(kind, extra = {}) {
     state.lastAction = result;
     if (Array.isArray(result.diagnostics)) result.diagnostics.forEach((item) => addDiagnostic(item));
     if (kind === "close") { state.closed = true; state.ready = false; revokeAssets(); updateActionStatus(); return; }
-    if (kind === "send" && !result.rejected && result.settlement === "settled") {
+    if (kind === "send_message" && !result.rejected && result.settlement === "settled") {
       state.drafts.delete(`composer:${state.contextId}`);
       state.replyToId = null;
+    } else if (kind === "edit_message" && !result.rejected && result.settlement === "settled") {
+      state.drafts.delete(`edit:${state.contextId}:${extra.target_id}`);
+      if (state.editTargetId === String(extra.target_id)) state.editTargetId = null;
+    } else if (kind === "delete_message" && !result.rejected && result.settlement === "settled") {
+      state.drafts.delete(`edit:${state.contextId}:${extra.target_id}`);
+      if (state.editTargetId === String(extra.target_id)) state.editTargetId = null;
+      if (state.replyToId === String(extra.target_id)) state.replyToId = null;
+    } else if (kind === "set_poll_votes" && !result.rejected && result.settlement === "settled") {
+      state.pollDrafts.delete(`poll:${state.contextId}:${extra.target_id}`);
     }
     const snapshot = await request("/api/state");
     if (snapshot.context?.generation !== state.contextGeneration) {
@@ -947,6 +1010,8 @@ async function dispatch(kind, extra = {}) {
       state.drafts.clear();
       state.modalDrafts.clear();
       state.modalTouched.clear();
+      state.pollDrafts.clear();
+      state.editTargetId = null;
       state.replyToId = null;
       state.dismissedModal = null;
     }
@@ -1060,6 +1125,7 @@ ui.historyOlder.addEventListener("click", () => dispatch("history", { direction:
 ui.historyNewer.addEventListener("click", () => dispatch("history", { direction: "newer" }));
 ui.replyCancel.addEventListener("click", () => {
   state.replyToId = null;
+  state.editTargetId = null;
   updatePickers(state.snapshot);
   ui.composer.focus();
 });
@@ -1076,8 +1142,15 @@ ui.composer.addEventListener("keydown", (event) => {
 ui.composerForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const content = ui.composer.value;
-  if (!content.trim()) return;
-  dispatch("send", { content, reply_to_id: state.replyToId });
+  if (state.editTargetId) {
+    dispatch("edit_message", { target_id: state.editTargetId, content });
+  } else if (content.trim()) {
+    dispatch("send_message", {
+      target_id: state.targetId,
+      content,
+      reply_to_id: state.replyToId,
+    });
+  }
 });
 ui.modal.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {

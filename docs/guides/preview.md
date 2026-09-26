@@ -251,9 +251,11 @@ A pre-admission rejection is an ordinary result, not a transport error: the resp
 the page's current `expectedSequence`, the live `revision` and `presentation`, and one structured
 diagnostic (`bad-envelope`, `stale-sequence`, `sequence-gap`, `conflicting-request`, `busy`,
 `stale-context`, `stale-generation`, `stale-revision`, `unknown-kind`, or `validation-failed`).
-Rejections never consume the sequence: the next admissible action may reuse it. Mutating actions
-(`click`, `select`, `modal_submit`, `history`, `send`) must echo the page's current `publishedRevision`;
-a mismatch is rejected as `stale-revision` so a stale render cannot dispatch into newer state.
+Rejections never consume the sequence: the next admissible action may reuse it.
+Revision-bound actions (`click`, `select`, `modal_submit`, `history`, `send_message`, `edit_message`,
+`delete_message`, `set_reaction`, `set_poll_votes`, `set_pinned`) must echo the page's current
+`publishedRevision`; a mismatch is rejected as `stale-revision` so a stale render cannot dispatch
+into newer state. Per-message actions also carry the authorized message `target_id`.
 
 `lastAction` reports dispatch (`dispatched`/`not_dispatched`), acknowledgement
 (`pending`/`acknowledged`/`deferred`/`unacknowledged`/`not_applicable`), settlement (`pending`/`settled`/`failed`/
@@ -285,6 +287,22 @@ identifies the focused projection. `modal`, `candidates`, `assets`, `entities`, 
 `status`, `diagnostics`, and `lastAction` describe the same focused presentation. Field-level
 details may evolve under `protocolVersion`; assert on documented keys rather than exact payload
 layout.
+
+## Channel message actions
+
+In channel layout, messages show only actions authorized for the selected viewer: reply, own-message
+edit, permitted delete, manage-messages pin/unpin, reaction changes, and open polls. The toolbar
+does not expose unsupported account or service actions. Sends include `content` and optionally
+`reply_to_id`; message mutations use `target_id`. Reaction actions send an emoji and desired
+`reacted` membership. Poll actions send the full desired `answer_ids` set, including an empty list
+to remove all of the viewer's votes. Delete actions require `confirmed: true`; the browser asks
+before sending them.
+
+These operations use guarded actor APIs and report `acknowledgement: "not_applicable"`. Successful
+message mutations republish every open authorized page. Reaction projections expose emoji, count,
+and the viewer's own reaction state; poll projections expose answer counts, percentages, expiry,
+and the viewer's selections, never voter lists. Failed actions retain recoverable drafts; refresh
+the page after a stale or failed result rather than replaying the consumed request.
 
 ## Screenshot profiles, modes, and reports
 

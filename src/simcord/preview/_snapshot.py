@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from ..backend.access import _viewer_id, can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE
-from ..backend.errors import BackendError, SetupError
+from ..backend.errors import BackendError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG, walk_components
 from ..enums import ComponentType, InteractionType
@@ -552,9 +552,71 @@ def _is_compact_message(previous: Message | None, message: Message, timezone: st
         return False
 
 
-def _message_projection(preview: Preview, page: _Page, message: Message, *, compact: bool) -> dict[str, Any]:
+def _has_channel_permission(preview: Preview, page: _Page, channel: Any, permission: str) -> bool:
+    if channel.guild_id is None:
+        return False
+    try:
+        preview.env.backend.require_permissions(channel.guild_id, page.viewer.id, channel.id, permission)
+    except BackendError:
+        return False
+    return True
+
+
+def _can_send_message(preview: Preview, page: _Page, channel: Any) -> bool:
+    if channel.guild_id is None:
+        return page.viewer.id in channel.recipient_ids
+    permission = "send_messages_in_threads" if channel.is_thread else "send_messages"
+    return _has_channel_permission(preview, page, channel, permission)
+
+
+def _poll_expired(preview: Preview, poll: Any) -> bool:
+    try:
+        expiry = datetime.fromisoformat(poll.expiry.replace("Z", "+00:00"))
+        now = datetime.fromisoformat(preview.env.backend.now_iso())
+    except (AttributeError, TypeError, ValueError):
+        return True
+    return expiry <= now
+
+
+def _message_allowed_actions(preview: Preview, page: _Page, channel: Any, message: Message) -> list[str]:
+    actions: list[str] = []
+    if preview.layout == "channel":
+        if _can_send_message(preview, page, channel):
+            actions.append("reply")
+        if message.author_id == page.viewer.id:
+            actions.extend(("edit_message", "delete_message"))
+        elif _has_channel_permission(preview, page, channel, "manage_messages"):
+            actions.append("delete_message")
+        if channel.guild_id is not None and _has_channel_permission(
+            preview, page, channel, "manage_messages"
+        ):
+            actions.append("set_pinned")
+    if channel.guild_id is None or _has_channel_permission(preview, page, channel, "add_reactions"):
+        actions.append("set_reaction")
+    poll = message.poll
+    if poll is not None and not poll.finalized and not _poll_expired(preview, poll):
+        actions.append("set_poll_votes")
+    return actions
+
+
+def _reaction_emoji_projection(page: _Page, emoji: str) -> dict[str, Any]:
+    name, separator, emoji_id = emoji.partition(":")
+    if separator and emoji_id.isdigit():
+        return _project_emoji(
+            page,
+            {"name": name, "id": emoji_id, "url": f"{CDN_BASE}/emojis/{emoji_id}.png"},
+        )
+    return {"name": emoji}
+
+
+def _message_projection(
+    preview: Preview, page: _Page, message: Message, *, compact: bool, channel: Any
+) -> dict[str, Any]:
     env = preview.env
     attachments = list(message.attachments)
+    can_add_reactions = channel.guild_id is None or _has_channel_permission(
+        preview, page, channel, "add_reactions"
+    )
     author = _identity_wire(
         resolve_identity(preview, page, message.author_id, message=message, override=message.author_name)
     )
@@ -587,17 +649,17 @@ def _message_projection(preview: Preview, page: _Page, message: Message, *, comp
         "mentions": {"users": [], "roles": [], "channels": [], "everyone": bool(message.mention_everyone)},
         "reactions": [
             {
-                "emoji": reaction.emoji,
+                "emoji": _reaction_emoji_projection(page, reaction.emoji),
                 "count": len(reaction.user_ids),
                 "viewer_reacted": page.viewer.id in reaction.user_ids,
-                "burst": False,
+                "can_toggle": can_add_reactions or page.viewer.id in reaction.user_ids,
             }
             for reaction in message.reactions
         ],
         "poll": None,
         "stickers": [],
         "thread": None,
-        "allowed_actions": [],
+        "allowed_actions": _message_allowed_actions(preview, page, channel, message),
         "reply": {"state": "unavailable"},
         "interaction_header": None,
     }
@@ -637,19 +699,27 @@ def _message_projection(preview: Preview, page: _Page, message: Message, *, comp
         pass
     if message.poll is not None:
         poll = message.poll
+        total_votes = sum(len(voters) for voters in poll.votes.values())
         data["poll"] = {
             "question": poll.question,
             "answers": [
                 {
                     "id": str(answer.answer_id),
                     "text": answer.text,
-                    "emoji": answer.emoji,
+                    "emoji": _reaction_emoji_projection(page, answer.emoji) if answer.emoji else None,
                     "count": len(poll.votes.get(answer.answer_id, set())),
+                    "percentage": (
+                        round(len(poll.votes.get(answer.answer_id, set())) * 100 / total_votes)
+                        if total_votes
+                        else 0
+                    ),
                     "viewer_selected": page.viewer.id in poll.votes.get(answer.answer_id, set()),
                 }
                 for answer in poll.answers
             ],
+            "total_votes": total_votes,
             "expiry": poll.expiry,
+            "expired": _poll_expired(preview, poll),
             "finalized": bool(poll.finalized),
             "multiselect": bool(poll.allow_multiselect),
             "layout_type": int(poll.layout_type),
@@ -885,7 +955,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     previous = None
     for item in window:
         compact = preview.layout == "channel" and _is_compact_message(previous, item, preview.timezone, env)
-        value = _message_projection(preview, page, item, compact=compact)
+        value = _message_projection(preview, page, item, compact=compact, channel=channel)
         projected[str(item.id)] = value
         candidate_components.extend(value.get("components", []))
         previous = item
@@ -984,18 +1054,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         value.setdefault("message", "")
         value.setdefault("complete", False)
         diagnostics.append(value)
-    can_send = False
-    if channel is not None and allowed:
-        if channel.guild_id is None:
-            can_send = page.viewer.id in channel.recipient_ids
-        else:
-            permission = "send_messages_in_threads" if channel.is_thread else "send_messages"
-            try:
-                page.viewer._check(preview.channel, permission)
-            except SetupError:
-                pass
-            else:
-                can_send = True
+    can_send = channel is not None and allowed and _can_send_message(preview, page, channel)
     snapshot = {
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,

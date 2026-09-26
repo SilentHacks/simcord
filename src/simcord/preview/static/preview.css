@@ -262,10 +262,42 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .reply-channel { flex: 0 0 auto; }
 .message-interaction-header, .message-ephemeral-note { margin: 2px 0 2px 72px; color: var(--discord-muted); font-size: 13px; }
 .message-edited, .message-edited-compact { color: var(--discord-muted); font-size: 11px; font-weight: 400; }
-.message-context-actions { margin: 4px 16px 2px 72px; opacity: 0; }
+.message-context-actions {
+  position: absolute;
+  z-index: 2;
+  top: -14px;
+  right: 16px;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--discord-control);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px #0006;
+  opacity: 0;
+}
 .channel-message:hover .message-context-actions, .channel-message:focus-within .message-context-actions { opacity: 1; }
-.reply-button { padding: 2px 8px; color: var(--discord-subtle); background: var(--discord-hover); font-size: 12px; }
-.reply-button:focus-visible, #reply-cancel:focus-visible { outline: 2px solid var(--discord-focus); outline-offset: 2px; }
+.message-action-button, .reply-button { min-height: 28px; padding: 2px 8px; color: var(--discord-subtle); background: transparent; font-size: 12px; }
+.message-action-button:hover:not(:disabled), .reply-button:hover:not(:disabled) { color: var(--discord-text); background: var(--discord-hover); }
+.message-action-button:focus-visible, .reply-button:focus-visible, #reply-cancel:focus-visible { outline: 2px solid var(--discord-focus); outline-offset: 2px; }
+.message-reactions, .message-poll { width: calc(100% - 72px - 24px); margin: 6px 0 4px 72px; }
+.message-reactions { display: flex; flex-wrap: wrap; gap: 4px; }
+.reaction-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 1px 7px; color: var(--discord-subtle); background: var(--discord-control); border: 1px solid transparent; border-radius: 8px; font-size: 13px; }
+.reaction-chip[aria-pressed="true"], .reaction-chip.is-selected { color: var(--link-text); background: #5865f233; border-color: #5865f2; }
+.reaction-chip:hover:not(:disabled) { background: var(--discord-hover); }
+.reaction-emoji { font-family: var(--preview-font-emoji); font-variant-emoji: emoji; }
+.reaction-count { font-size: 12px; }
+.message-poll { max-width: 460px; padding: 12px; background: var(--discord-control); border-radius: 8px; }
+.poll-question { margin: 0 0 2px; color: var(--discord-text); font-size: 16px; line-height: 22px; }
+.poll-status { margin-bottom: 8px; color: var(--discord-muted); font-size: 12px; }
+.poll-answer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 8px; align-items: center; margin: 4px 0; }
+.poll-answer { min-width: 0; padding: 3px 6px; color: var(--discord-text); background: transparent; text-align: left; overflow-wrap: anywhere; }
+.poll-answer.is-selected { color: var(--link-text); font-weight: 600; }
+.poll-answer:hover:not(:disabled) { background: var(--discord-hover); }
+.poll-answer-count, .poll-answer-percentage { color: var(--discord-subtle); font-size: 12px; }
+.poll-answer-percentage { grid-column: 3; grid-row: 1; }
+.poll-result-track { grid-column: 1 / -1; height: 4px; overflow: hidden; background: #1e1f22; border-radius: 2px; }
+.poll-result-fill { display: block; height: 100%; background: var(--discord-brand); border-radius: inherit; }
+.poll-submit { margin-top: 8px; padding: 3px 12px; color: #fff; background: var(--discord-brand); }
 .thread-summary { display: inline-flex; align-items: center; gap: 8px; margin: 4px 0 4px 72px; padding: 5px 8px; color: var(--link-text); background: #5865f21a; border-radius: 4px; font-size: 13px; }
 .thread-archived { color: var(--discord-muted); font-size: 11px; }
 @media (max-width: 1220px) {

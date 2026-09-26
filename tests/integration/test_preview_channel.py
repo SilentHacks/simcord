@@ -132,12 +132,9 @@ async def test_channel_composer_sends_replies_and_preserves_live_dom_state(env, 
                 await composer.fill("retain after denial")
                 member = env.bot.get_guild(env.guild.id).get_member(alice.id)
                 await bot_channel.set_permissions(member, send_messages=False)
-                await page.get_by_role("button", name="Send").click()
-                await page.wait_for_function("() => window.simcordPreview?.lastAction?.rejected === true")
-                await page.wait_for_function(
-                    "() => !window.simcordPreview?.pendingAction && window.simcordPreview?.ready"
-                )
-                assert await composer.input_value() == "retain after denial"
+                await preview.refresh()
+                await page.wait_for_function("() => document.getElementById('channel-composer').hidden")
+                assert await page.locator("#channel-composer-input").input_value() == "retain after denial"
                 denied_revision = await page.evaluate("() => window.simcordPreview?.publishedRevision")
                 await bot_channel.set_permissions(member, send_messages=True)
                 await preview.refresh()
@@ -159,7 +156,7 @@ async def test_channel_composer_sends_replies_and_preserves_live_dom_state(env, 
                 await page.get_by_text("bot answer", exact=True).wait_for()
                 assert received
                 bot_message = page.locator(".channel-message").filter(has_text="bot answer").last
-                await bot_message.locator(".reply-button").click()
+                await bot_message.get_by_role("button", name="Reply").click()
                 assert await page.locator("#reply-context").is_visible()
                 await composer.fill("follow-up")
                 await page.get_by_role("button", name="Send").click()

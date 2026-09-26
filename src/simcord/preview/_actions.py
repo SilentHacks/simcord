@@ -81,6 +81,7 @@ class _Action:
     sequence: int
     request_id: str
     fingerprint: str
+    kind: str
     response: dict[str, Any] | None = None
     interaction: Interaction | None = None
 
@@ -105,18 +106,50 @@ class _ActionOps:
     _clear_page_assets: Callable[[_Page], None]
     _publish: Callable[[_Page], None]
     _advance_presentation_time: Callable[[], None]
+    _pages: dict[str, _Page]
 
     _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {"click", "select", "modal_submit", "history", "send"}
+        {
+            "click",
+            "select",
+            "modal_submit",
+            "history",
+            "send_message",
+            "edit_message",
+            "delete_message",
+            "set_reaction",
+            "set_poll_votes",
+            "set_pinned",
+        }
     )
     _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {"click", "select", "modal_submit", "viewer", "focus", "history", "send", "refresh", "close"}
+        {
+            "click",
+            "select",
+            "modal_submit",
+            "viewer",
+            "focus",
+            "history",
+            "send_message",
+            "edit_message",
+            "delete_message",
+            "set_reaction",
+            "set_poll_votes",
+            "set_pinned",
+            "refresh",
+            "close",
+        }
     )
 
     def _on_dispatch(self, interaction: Interaction) -> None:
         task = asyncio.current_task()
         if self._active_action is not None and task is self._active_task:
             self._active_action.interaction = interaction
+
+    def _publish_message_pages(self) -> None:
+        for page in tuple(self._pages.values()):
+            if page.id in self._pages:
+                self._publish(page)
 
     @staticmethod
     def _result(
@@ -275,17 +308,29 @@ class _ActionOps:
                 request_id=request_id,
                 sequence=sequence,
             )
-        if kind in self._MUTATING_KINDS and body.get("published_revision") != page.revision:
-            return self._reject(
-                page,
-                "stale-revision",
-                "published revision is stale",
-                request_id=request_id,
-                sequence=sequence,
-            )
-        if kind in {"click", "select"} and (
-            isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))
-        ):
+        if kind in self._MUTATING_KINDS:
+            published_revision = body.get("published_revision")
+            if (
+                isinstance(published_revision, bool)
+                or not isinstance(published_revision, int)
+                or published_revision != page.revision
+            ):
+                return self._reject(
+                    page,
+                    "stale-revision",
+                    "published revision is stale",
+                    request_id=request_id,
+                    sequence=sequence,
+                )
+        if kind in {
+            "click",
+            "select",
+            "edit_message",
+            "delete_message",
+            "set_reaction",
+            "set_poll_votes",
+            "set_pinned",
+        } and (isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))):
             return self._reject(
                 page,
                 "missing-target",
@@ -307,7 +352,7 @@ class _ActionOps:
                     request_id=request_id,
                     sequence=sequence,
                 )
-            action = _Action(sequence, request_id, fingerprint)
+            action = _Action(sequence, request_id, fingerprint, kind)
             page.last_sequence = sequence  # consumed only after full admission
             page.latest_action = action
             self._active_action = action
@@ -446,7 +491,7 @@ class _ActionOps:
                 return result
 
             return run_history
-        if kind == "send":
+        if kind == "send_message":
             actor = page.viewer
             if (
                 self.layout != "channel"
@@ -466,14 +511,9 @@ class _ActionOps:
                 if reply_id is None:
                     raise SetupError("reply target is unavailable")
                 reply_to = self._target_message(page, reply_id)
-            if isinstance(actor, MemberActor):
-                permission = (
-                    "send_messages_in_threads"
-                    if self.env.backend.get_channel(page.channel_id).is_thread
-                    else "send_messages"
-                )
-                actor._check(self.channel, permission)
-            elif not isinstance(actor, UserHandle) or actor.dm_channel.id != page.channel_id:
+            if not isinstance(actor, (MemberActor, UserHandle)) or (
+                isinstance(actor, UserHandle) and actor.dm_channel.id != page.channel_id
+            ):
                 raise SetupError("viewer cannot send to this channel")
 
             async def run_send(action: _Action, cursor: int) -> dict[str, Any]:
@@ -501,13 +541,13 @@ class _ActionOps:
                 page.target_id = response.id
                 page.window_end_id = None
                 result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
-                self._publish(page)
+                self._publish_message_pages()
                 return result
 
             return run_send
         actor = page.viewer
-        if not can_access_channel(self.env, page.channel_id, actor, history=True):
-            raise SetupError("viewer cannot access this channel")
+        if page.status != "current" or not can_access_channel(self.env, page.channel_id, actor, history=True):
+            raise SetupError("viewer cannot access current channel history")
         if kind == "modal_submit":
             modal = page.modal
             if modal is None or body.get("modal_handle") != page.modal_handle:
@@ -531,6 +571,81 @@ class _ActionOps:
         if target_id is None:
             raise SetupError("authorized target is unavailable")
         message = self._target_message(page, target_id)
+        if kind == "edit_message":
+            content = body.get("content")
+            if not isinstance(content, str) or len(content) > 2000:
+                raise SetupError("message content must be a string of at most 2000 characters")
+
+            async def run_edit(action: _Action, cursor: int) -> dict[str, Any]:
+                await actor.edit(ResponseMessage(self.env, message), content)
+                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                self._publish_message_pages()
+                return result
+
+            return run_edit
+        if kind == "delete_message":
+            if body.get("confirmed") is not True:
+                raise SetupError("message deletion requires confirmation")
+
+            async def run_delete(action: _Action, cursor: int) -> dict[str, Any]:
+                await actor.delete(ResponseMessage(self.env, message))
+                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                self._publish_message_pages()
+                return result
+
+            return run_delete
+        if kind == "set_reaction":
+            emoji = body.get("emoji")
+            reacted = body.get("reacted")
+            if not isinstance(emoji, str) or not emoji or not isinstance(reacted, bool):
+                raise SetupError("reaction requires an emoji and desired membership")
+            if message.reaction_for(emoji) is None:
+                raise SetupError("reaction is unavailable")
+
+            async def run_reaction(action: _Action, cursor: int) -> dict[str, Any]:
+                await actor.set_reaction(ResponseMessage(self.env, message), emoji, reacted=reacted)
+                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                self._publish_message_pages()
+                return result
+
+            return run_reaction
+        if kind == "set_poll_votes":
+            raw_answers = body.get("answer_ids")
+            if not isinstance(raw_answers, list):
+                raise SetupError("poll answer ids must be a list")
+            answers: list[int] = []
+            for answer_id in raw_answers:
+                if isinstance(answer_id, bool) or not isinstance(answer_id, (str, int)):
+                    raise SetupError("poll answer ids must be integers")
+                if isinstance(answer_id, str):
+                    if not answer_id.isascii() or not answer_id.isdecimal():
+                        raise SetupError("poll answer ids must be integers")
+                    answer = int(answer_id)
+                else:
+                    answer = answer_id
+                if answer in answers:
+                    raise SetupError("poll answer ids must be unique")
+                answers.append(answer)
+
+            async def run_poll(action: _Action, cursor: int) -> dict[str, Any]:
+                await actor.set_poll_votes(ResponseMessage(self.env, message), answers=answers)
+                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                self._publish_message_pages()
+                return result
+
+            return run_poll
+        if kind == "set_pinned":
+            pinned = body.get("pinned")
+            if not isinstance(pinned, bool) or not isinstance(actor, MemberActor):
+                raise SetupError("pinning is unavailable")
+
+            async def run_pin(action: _Action, cursor: int) -> dict[str, Any]:
+                await actor.set_pinned(ResponseMessage(self.env, message), pinned)
+                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                self._publish_message_pages()
+                return result
+
+            return run_pin
         if kind == "click":
             control_key = body.get("control_key")
             component = _find_scoped_component(
@@ -753,7 +868,11 @@ class _ActionOps:
         if error is not None:
             diagnostics.append({"type": type(error).__name__, "message": str(error)})
         dispatch = "dispatched" if interaction is not None or non_interaction else "not_dispatched"
-        ack = "not_applicable" if non_interaction and interaction is None else "pending"
+        ack = (
+            "not_applicable"
+            if action.kind not in {"click", "select", "modal_submit"} and interaction is None
+            else "pending"
+        )
         if interaction is not None:
             ack = "acknowledged" if interaction.responded else "unacknowledged"
             if interaction.deferred:

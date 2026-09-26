@@ -94,6 +94,38 @@ class UserHandle:
         await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
 
+    async def edit(self, message: Any, content: str) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        if stored.author_id != self.id:
+            raise SetupError("Users can only edit their own messages")
+        self._env.backend.edit_message(stored.channel_id, stored.id, {"content": content})
+        await self._env._settle_internal(dispatch="USER.edit")
+
+    async def delete(self, message: Any) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        if stored.author_id != self.id:
+            raise SetupError("Users can only delete their own DM messages")
+        self._env.backend.delete_message(stored.channel_id, stored.id)
+        await self._env._settle_internal(dispatch="USER.delete")
+
+    async def set_reaction(self, message: Any, emoji: str, *, reacted: bool) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
+        await self._env._settle_internal(dispatch="USER.set_reaction")
+
+    async def set_poll_votes(self, message: Any, *, answers: Sequence[int]) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        self._env.backend.set_poll_votes(stored.channel_id, stored.id, answers, self.id)
+        await self._env._settle_internal(dispatch="USER.set_poll_votes")
+
     async def click(
         self,
         message: Any,
@@ -543,7 +575,16 @@ def _guard_builder_operation(method: Any) -> Any:
     return guarded_sync
 
 
-for _operation_name in ("send_dm", "click", "select", "submit_modal"):
+for _operation_name in (
+    "send_dm",
+    "edit",
+    "delete",
+    "set_reaction",
+    "set_poll_votes",
+    "click",
+    "select",
+    "submit_modal",
+):
     setattr(UserHandle, _operation_name, _guard_builder_operation(getattr(UserHandle, _operation_name)))
 WebhookHandle.send = _guard_builder_operation(WebhookHandle.send)
 for _operation_name in (
