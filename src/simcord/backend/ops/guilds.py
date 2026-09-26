@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import discord
 
+from ...enums import MessageType
 from .. import errors, serializers
 from ..models import Guild, Member, Role
 from .base import BackendBase
+
+if TYPE_CHECKING:
+    from ..state import Backend
 
 #: Default permissions for a fresh guild's @everyone role.
 DEFAULT_EVERYONE_PERMISSIONS = discord.Permissions(
@@ -118,6 +122,9 @@ class GuildMixin(BackendBase):
             payload = dict(serializers.member_payload(self, guild, member))
             payload["guild_id"] = str(guild_id)
             self.emit("GUILD_MEMBER_ADD", payload)
+            channel = self.channels.get(guild.system_channel_id) if guild.system_channel_id else None
+            if channel is not None and channel.guild_id == guild_id and not channel.is_thread:
+                cast("Backend", self).create_system_message(channel.id, MessageType.NEW_MEMBER, user_id)
         return member
 
     def remove_member(self, guild_id: int, user_id: int) -> None:

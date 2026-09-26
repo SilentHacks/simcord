@@ -87,6 +87,7 @@ class _Page:
             owner = source[0] if source else None
             if owner in {
                 "attachment",
+                "sticker",
                 "user_avatar",
                 "member_avatar",
                 "default_avatar",

@@ -9,6 +9,7 @@ from preview_helpers import action_body, control_key, preview_headers, target_me
 import simcord
 from fixtures.sample_bot import create_bot
 from fixtures.sample_bot.interactions import AssignView
+from simcord.enums import MessageType
 
 
 @pytest.mark.asyncio
@@ -618,3 +619,38 @@ async def test_preview_dm_entity_candidates_and_select(env, alice):
         )
         assert result["dispatched"] is True
         assert dm.last_message.content == "Picked alice"
+
+
+@pytest.mark.asyncio
+async def test_preview_projects_system_references_and_unknown_message_types(env, channel, alice):
+    referenced = env.backend.create_message(channel.id, alice.id, "original")
+    system = env.backend.create_system_message(
+        channel.id,
+        MessageType.PINS_ADD,
+        alice.id,
+        referenced_message_id=referenced.id,
+    )
+    unknown = env.backend.create_message(channel.id, alice.id, "plain fallback", message_type=999)
+
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        payload = preview._page_payload(preview._open_page(alice.id, target_id=system.id))
+        system_view = payload["messages"][str(system.id)]
+        assert system_view["type_info"]["kind"] == "system"
+        assert system_view["system"]["text"] == "pinned a message to this channel."
+        assert system_view["system"]["reference"]["id"] == str(referenced.id)
+        unknown_payload = preview._page_payload(preview._open_page(alice.id, target_id=unknown.id))
+        unknown_view = unknown_payload["messages"][str(unknown.id)]
+        assert unknown_view["type_info"] == {"kind": "unknown", "known": False}
+        assert any(item["code"] == "message_type_unknown" for item in unknown_payload["diagnostics"])
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.get_by_text("pinned a message to this channel.", exact=True).wait_for()
+                assert await page.get_by_text("plain fallback", exact=True).is_visible()
+                assert await page.locator("#diagnostics").get_by_text("message_type_unknown").count()
+            finally:
+                await browser.close()

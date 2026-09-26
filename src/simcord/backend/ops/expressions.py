@@ -81,16 +81,34 @@ class ExpressionsMixin(BackendBase):
     # ------------------------------------------------------------- stickers
 
     def create_sticker(
-        self, guild_id: int, name: str, user_id: int, *, description: str | None = None, tags: str = ""
+        self,
+        guild_id: int,
+        name: str,
+        user_id: int,
+        *,
+        description: str | None = None,
+        tags: str = "",
+        format_type: int = 1,
+        file_data: bytes | None = None,
+        filename: str | None = None,
+        content_type: str | None = None,
     ) -> Sticker:
+        if isinstance(format_type, bool) or format_type not in {1, 2, 3, 4}:
+            raise errors.invalid_form_body("format_type must be a supported sticker format")
         guild = self.get_guild(guild_id)
+        sticker_id = self.snowflake()
         sticker = Sticker(
-            id=self.snowflake(),
+            id=sticker_id,
             name=name,
             guild_id=guild_id,
             user_id=user_id,
             description=description,
             tags=tags,
+            format_type=format_type,
+            url=self.cdn.store_sticker(sticker_id, format_type, file_data) if file_data is not None else None,
+            filename=filename,
+            content_type=content_type,
+            size=len(file_data) if file_data is not None else 0,
         )
         guild.stickers[sticker.id] = sticker
         self._emit_stickers_update(guild_id)

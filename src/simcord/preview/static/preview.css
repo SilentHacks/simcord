@@ -261,6 +261,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .reply-excerpt .markdown-paragraph { display: inline; margin: 0; }
 .reply-channel { flex: 0 0 auto; }
 .message-interaction-header, .message-ephemeral-note { margin: 2px 0 2px 72px; color: var(--discord-muted); font-size: 13px; }
+.message-system, .message-stickers { width: calc(100% - 72px - 24px); margin-left: 72px; }
+.message-system { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; color: var(--discord-muted); font-size: 13px; }
+.message-system-icon { flex: 0 0 auto; color: var(--discord-subtle); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.message-system-text { color: var(--discord-subtle); white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-system-details { display: flex; flex-wrap: wrap; gap: 6px; }
+.message-system-link { color: var(--discord-link); text-decoration: none; }
+.message-system-link:hover { text-decoration: underline; }
+.message-stickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.message-sticker { max-width: 220px; max-height: 220px; object-fit: contain; border-radius: 4px; }
+.message-sticker-unavailable { color: var(--discord-muted); font-size: 13px; }
 .message-edited, .message-edited-compact { color: var(--discord-muted); font-size: 11px; font-weight: 400; }
 .message-context-actions {
   position: absolute;
@@ -1131,10 +1141,12 @@ textarea.modal-input { min-height: 90px; resize: none; }
   .preview-toolbar { align-items: stretch; }
   .toolbar-field { flex: 1 1 8rem; }
   .message-surface { width: 100%; }
-  .message-header, .message-content, .message-components, .message-attachments { width: calc(100% - 24px); margin-left: 24px; }
+.message-header, .message-content, .message-components, .message-attachments,
+.message-system, .message-stickers { width: calc(100% - 24px); margin-left: 24px; }
   .embed-card { width: calc(100% - 24px); margin-left: 24px; }
-  .channel-message .message-header, .channel-message .message-content,
-  .channel-message .message-components, .channel-message .message-attachments {
+.channel-message .message-header, .channel-message .message-content,
+.channel-message .message-components, .channel-message .message-attachments,
+.channel-message .message-system, .channel-message .message-stickers {
     width: calc(100% - 88px);
     margin-left: 72px;
   }

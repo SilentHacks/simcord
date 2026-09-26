@@ -26,5 +26,9 @@ class Sticker:
     user_id: int
     description: str | None = None
     tags: str = ""
-    format_type: int = 1  # PNG
+    format_type: int = 1  # PNG, APNG, Lottie, or GIF
     available: bool = True
+    url: str | None = None
+    filename: str | None = None
+    content_type: str | None = None
+    size: int = 0

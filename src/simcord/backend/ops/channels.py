@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-from ...enums import ChannelType
+from ...enums import ChannelType, MessageType
 from .. import errors, serializers
 from ..models import Channel, Overwrite, StageInstance, ThreadMetadata
 from .base import BackendBase
+
+if TYPE_CHECKING:
+    from ..state import Backend
 
 
 class ChannelMixin(BackendBase):
@@ -77,6 +80,7 @@ class ChannelMixin(BackendBase):
     ) -> Channel:
         """Apply field/overwrite changes to a channel and announce the update."""
         channel = self.get_channel(channel_id)
+        old_name = channel.name
         for attr, value in changes.items():
             setattr(channel, attr, value)
         if overwrites is not None:
@@ -85,6 +89,18 @@ class ChannelMixin(BackendBase):
             for attr, value in thread_metadata.items():
                 setattr(channel.thread_metadata, attr, value)
         self.announce_channel_update(channel.id)
+        if (
+            "name" in changes
+            and old_name != channel.name
+            and channel.guild_id is not None
+            and not channel.is_thread
+        ):
+            cast("Backend", self).create_system_message(
+                channel.id,
+                MessageType.CHANNEL_NAME_CHANGE,
+                self.bot_user.id,
+                target_channel_id=channel.id,
+            )
         return channel
 
     def reorder_channels(self, guild_id: int, updates: Iterable[Mapping[str, Any]]) -> None:
@@ -214,9 +230,15 @@ class ChannelMixin(BackendBase):
         self.channels[thread.id] = thread
         self.messages.setdefault(thread.id, {})
         guild.thread_ids.append(thread.id)
-        payload = dict(serializers.thread_payload(self, thread))
-        payload["newly_created"] = True
+        payload = serializers.channel_payload(self, thread)
         self.emit("THREAD_CREATE", payload)
+        cast("Backend", self).create_system_message(
+            parent_id,
+            MessageType.THREAD_CREATED,
+            owner_id,
+            target_channel_id=thread.id,
+            referenced_message_id=message_id,
+        )
         return thread
 
     # ------------------------------------------------------- stage instances

@@ -145,6 +145,26 @@ async def test_rejects_oversized(simcord_env):
     assert exc.value.code == 50035
 ```
 
+## 3.0 message behavior
+
+Bot messages now retain `tts` and apply `allowed_mentions` to notification state. Mention
+text remains visible when notifications are disabled; assert `Message.mentions` or backend
+ping state separately when that distinction matters.
+
+Guild sticker sends support up to three available stickers. External stickers require the
+bot's `use_external_stickers` permission. Static PNG stickers render in preview; APNG, GIF,
+and Lottie stickers are identified but their animation is not rendered, and preview marks
+that surface incomplete. Sticker reference captures remain blocked until permitted Discord
+evidence is available.
+
+Pinning a message, creating a message thread, and adding a member to a configured system
+channel can create typed service messages in channel history. Channel-name changes do too.
+These messages update `channel.last_message` and may arrive after the operation's primary
+event, so keep the returned message/ID or filter history by `Message.type` instead of
+assuming the final history item is always the bot's reply. `GuildHandle.create_system_message`
+seeds a typed service message for offline setup; its text and identity references are
+backend-generated. It does not model call or payment transport.
+
 ## Next
 
 - [Slash commands](interactions.md) — app commands, context menus and the interaction

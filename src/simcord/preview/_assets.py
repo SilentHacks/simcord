@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..backend.access import can_access_channel, can_access_message
+from ..backend.cdn import sticker_url
 from ..backend.errors import BackendError, SetupError
 from ._media import MediaError, MediaWorker
 
@@ -167,6 +168,16 @@ class _AssetOps:
                 raise SetupError("asset is unavailable") from exc
             if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("asset access denied")
+        elif owner == "sticker":
+            _, guild_id, sticker_id = source
+            guild = self.env.backend.guilds.get(guild_id)
+            sticker = guild.stickers.get(sticker_id) if guild is not None else None
+            if sticker is None or not sticker.available:
+                raise SetupError("asset is unavailable")
+            url = sticker.url or sticker_url(sticker.id, sticker.format_type)
+            current = self.env.backend.cdn.get(url)
+            if current is not None and hashlib.sha256(current).hexdigest() != record.digest:
+                raise SetupError("asset was replaced")
         elif owner in {"user_avatar", "default_avatar"}:
             _, user_id, avatar_key = source
             try:

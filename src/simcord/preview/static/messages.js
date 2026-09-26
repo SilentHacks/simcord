@@ -56,6 +56,92 @@ function appendThread(root, thread) {
   root.append(summary);
 }
 
+function appendDiscordLink(parent, value, label) {
+  if (typeof value?.url !== "string") return;
+  try {
+    const url = new URL(value.url);
+    if (url.protocol !== "https:" || url.hostname !== "discord.com") return;
+    const link = node("a", "message-system-link", label);
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    parent.append(link);
+  } catch {
+    // Invalid projected links are omitted rather than rendered as active links.
+  }
+}
+
+function appendSystemMessage(root, system) {
+  const content = node("div", "message-system");
+  content.append(node("span", "message-system-icon", system.icon || "system"));
+  content.append(node("span", "message-system-text", system.text || ""));
+  const details = node("span", "message-system-details");
+  if (system.recipient?.name) details.append(node("span", "", ` ${system.recipient.name}`));
+  appendDiscordLink(details, system.channel, system.channel?.name || "channel");
+  appendDiscordLink(
+    details,
+    system.reference,
+    system.reference?.author?.name ? ` ${system.reference.author.name}'s message` : " message",
+  );
+  if (details.childNodes.length) content.append(details);
+  root.append(content);
+}
+
+function appendInteractionHeader(root, interaction) {
+  const header = node("div", "message-interaction-header");
+  const invoker = interaction.user?.name;
+  header.append(document.createTextNode(invoker ? `${invoker} used ` : "Used "));
+  const name = interaction.name || "an application command";
+  const command = interaction.command_type === "chat_input" ? `/${name}` : name;
+  header.append(node("strong", "", command));
+  if (interaction.target_user?.name) {
+    header.append(document.createTextNode(` · ${interaction.target_user.name}`));
+  }
+  appendDiscordLink(header, interaction.target_message, " · View target message");
+  root.append(header);
+}
+
+function appendStickers(root, stickers, options, pendingMedia) {
+  if (!stickers?.length) return;
+  const list = node("div", "message-stickers");
+  for (const sticker of stickers) {
+    if (sticker.format_type !== 1) {
+      list.append(node("div", "message-sticker-unavailable", `${sticker.name} · animated sticker preview unavailable`));
+      options.onDiagnostic?.({
+        code: "sticker-animation-unavailable",
+        severity: "warning",
+        message: `Sticker ${sticker.name} uses an animated format not rendered in this preview`,
+        complete: false,
+      });
+      continue;
+    }
+    if (sticker.available === false) {
+      list.append(node("div", "message-sticker-unavailable", `${sticker.name} unavailable`));
+      continue;
+    }
+    const result = renderSpoilerMedia(
+      { ...sticker, content_type: "image/png", description: sticker.name },
+      "message-sticker",
+      options,
+      sticker.name || "Sticker",
+    );
+    list.append(result.element);
+    pendingMedia.push(...result.pending);
+  }
+  if (list.childNodes.length) root.append(list);
+}
+
+function appendMessageContent(root, message, options, v2) {
+  if (message.system) {
+    appendSystemMessage(root, message.system);
+  } else if (!v2 && message.content) {
+    const content = node("div", "message-content");
+    if (message.type_info?.kind === "unknown") content.textContent = message.content;
+    else appendMarkdownOrText(content, message.content, message.content_tokens, options);
+    root.append(content);
+  }
+}
+
 export function renderMessage(root, message, options = {}) {
   const pendingMedia = options.pendingMedia || [];
   options.pendingMedia = pendingMedia;
@@ -69,9 +155,8 @@ export function renderMessage(root, message, options = {}) {
   }).format(new Date(value));
 
   appendReply(root, message.reply, options);
-  if (message.interaction_header?.kind === "application_command") {
-    const invoker = message.interaction_header.user?.name;
-    root.append(node("div", "message-interaction-header", invoker ? `${invoker} used an application command` : "Application command"));
+  if (["application_command", "context_menu_command"].includes(message.interaction_header?.kind)) {
+    appendInteractionHeader(root, message.interaction_header);
   }
   if (!message.compact) {
     const header = node("header", "message-header");
@@ -116,11 +201,8 @@ export function renderMessage(root, message, options = {}) {
     root.append(node("div", "message-ephemeral-note", "Only you can see this"));
   }
   const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
-  if (!v2 && message.content) {
-    const content = node("div", "message-content");
-    appendMarkdownOrText(content, message.content, message.content_tokens, options);
-    root.append(content);
-  }
+  appendMessageContent(root, message, options, v2);
+  appendStickers(root, message.stickers, options, pendingMedia);
   if (!v2 && (Number(message.flags) & 4) === 0) {
     (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
   }

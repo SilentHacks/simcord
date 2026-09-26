@@ -22,11 +22,11 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from ..backend.access import _viewer_id, can_access_channel, can_access_message
-from ..backend.cdn import CDN_BASE
+from ..backend.cdn import CDN_BASE, sticker_url
 from ..backend.errors import BackendError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG, walk_components
-from ..enums import ComponentType, InteractionType
+from ..enums import AppCommandType, ComponentType, InteractionType, MessageType
 from ._markdown import markdown_tokens
 
 if TYPE_CHECKING:
@@ -552,6 +552,52 @@ def _is_compact_message(previous: Message | None, message: Message, timezone: st
         return False
 
 
+def _message_type_info(value: int) -> dict[str, Any]:
+    try:
+        kind = MessageType(value)
+    except ValueError:
+        return {"kind": "unknown", "known": False}
+    if kind == MessageType.DEFAULT:
+        return {"kind": "default", "known": True}
+    if kind == MessageType.REPLY:
+        return {"kind": "reply", "known": True}
+    if kind == MessageType.CHAT_INPUT_COMMAND:
+        return {"kind": "application_command", "known": True}
+    if kind == MessageType.CONTEXT_MENU_COMMAND:
+        return {"kind": "context_menu_command", "known": True}
+    return {"kind": "system", "known": True, "name": kind.name.lower()}
+
+
+def _sticker_projection(page: _Page, sticker: Any) -> dict[str, Any]:
+    suffix, content_type = {
+        1: ("png", "image/png"),
+        2: ("png", "image/png"),
+        3: ("json", "application/json"),
+        4: ("gif", "image/gif"),
+    }[sticker.format_type]
+    asset_id = page.asset_id(
+        f"sticker:{sticker.guild_id}:{sticker.id}",
+        {
+            "url": sticker.url or sticker_url(sticker.id, sticker.format_type),
+            "filename": sticker.filename or f"{sticker.id}.{suffix}",
+            "content_type": sticker.content_type or content_type,
+        },
+        source=("sticker", sticker.guild_id, sticker.id),
+    )
+    return {
+        "id": str(sticker.id),
+        "name": sticker.name,
+        "format_type": sticker.format_type,
+        "asset_id": asset_id,
+        "available": _asset_available(page, asset_id),
+    }
+
+
+def _discord_message_link(guild_id: int, channel_id: int, message_id: int | None = None) -> str:
+    path = f"https://discord.com/channels/{guild_id}/{channel_id}"
+    return f"{path}/{message_id}" if message_id is not None else path
+
+
 def _has_channel_permission(preview: Preview, page: _Page, channel: Any, permission: str) -> bool:
     if channel.guild_id is None:
         return False
@@ -613,6 +659,7 @@ def _message_projection(
     preview: Preview, page: _Page, message: Message, *, compact: bool, channel: Any
 ) -> dict[str, Any]:
     env = preview.env
+    type_info = _message_type_info(int(message.type))
     attachments = list(message.attachments)
     can_add_reactions = channel.guild_id is None or _has_channel_permission(
         preview, page, channel, "add_reactions"
@@ -628,10 +675,15 @@ def _message_projection(
         "timestamp": message.timestamp,
         "edited_timestamp": message.edited_timestamp,
         "type": int(message.type),
+        "type_info": type_info,
         "pinned": bool(message.pinned),
         "tts": bool(message.tts),
         "content": message.content,
-        "content_tokens": markdown_tokens(message.content, "message"),
+        "content_tokens": (
+            markdown_tokens(message.content, "message")
+            if type_info["kind"] not in {"system", "unknown"}
+            else []
+        ),
         "embeds": [_embed_projection(page, message, item, attachments) for item in message.embeds],
         "components": _decorate_components(page, message, message.components, attachments),
         "flags": int(message.flags),
@@ -657,13 +709,86 @@ def _message_projection(
             for reaction in message.reactions
         ],
         "poll": None,
-        "stickers": [],
+        "stickers": [_sticker_projection(page, sticker) for sticker in message.stickers],
         "thread": None,
+        "system": None,
         "allowed_actions": _message_allowed_actions(preview, page, channel, message),
         "reply": {"state": "unavailable"},
         "interaction_header": None,
     }
     data["mentions"]["users"] = list(data["mention_user_ids"])
+    if type_info["kind"] == "system":
+        message_kind = MessageType(int(message.type))
+        icon = {
+            MessageType.CHANNEL_NAME_CHANGE: "channel",
+            MessageType.CHANNEL_ICON_CHANGE: "channel",
+            MessageType.PINS_ADD: "pin",
+            MessageType.NEW_MEMBER: "member",
+            MessageType.RECIPIENT_ADD: "member",
+            MessageType.RECIPIENT_REMOVE: "member",
+            MessageType.THREAD_CREATED: "thread",
+            MessageType.THREAD_STARTER_MESSAGE: "thread",
+        }.get(message_kind, "system")
+        system: dict[str, Any] = {
+            "kind": type_info["name"],
+            "icon": icon,
+            "text": message.content or "",
+            "author": author,
+        }
+        metadata = message.system_metadata
+        if metadata is not None:
+            if metadata.recipient_id is not None and _user_allowed(preview, page, metadata.recipient_id):
+                system["recipient"] = _identity_wire(resolve_identity(preview, page, metadata.recipient_id))
+            if metadata.channel_id is not None:
+                try:
+                    target_channel = env.backend.get_channel(metadata.channel_id)
+                except BackendError:
+                    target_channel = None
+                if (
+                    target_channel is not None
+                    and target_channel.guild_id == channel.guild_id
+                    and target_channel.guild_id is not None
+                    and can_access_channel(env, target_channel.id, page.viewer, history=True)
+                ):
+                    system["channel"] = {
+                        "id": str(target_channel.id),
+                        "name": target_channel.name or str(target_channel.id),
+                        "url": _discord_message_link(target_channel.guild_id, target_channel.id),
+                    }
+            if metadata.referenced_message_id is not None:
+                reference_channel_id = metadata.referenced_channel_id or message.channel_id
+                try:
+                    referenced = env.backend.get_message(reference_channel_id, metadata.referenced_message_id)
+                except BackendError:
+                    referenced = None
+                if referenced is not None and can_access_message(
+                    env, reference_channel_id, referenced, page.viewer, history=True
+                ):
+                    try:
+                        reference_channel = env.backend.get_channel(reference_channel_id)
+                    except BackendError:
+                        reference_channel = None
+                    if (
+                        reference_channel is not None
+                        and reference_channel.guild_id is not None
+                        and reference_channel.guild_id == channel.guild_id
+                    ):
+                        system["reference"] = {
+                            "id": str(referenced.id),
+                            "author": _identity_wire(
+                                resolve_identity(
+                                    preview,
+                                    page,
+                                    referenced.author_id,
+                                    message=referenced,
+                                    override=referenced.author_name,
+                                )
+                            ),
+                            "url": _discord_message_link(
+                                reference_channel.guild_id, reference_channel_id, referenced.id
+                            ),
+                        }
+        data["system"] = system
     data["mentions"]["roles"] = list(data["mention_role_ids"])
     thread = env.backend.channels.get(message.id)
     if (
@@ -680,23 +805,68 @@ def _message_projection(
         }
     metadata = message.interaction_metadata or {}
     try:
-        if int(metadata.get("type", -1)) == int(InteractionType.APPLICATION_COMMAND):
-            interaction_header: dict[str, Any] = {"kind": "application_command"}
-            user = metadata.get("user")
-            if isinstance(user, Mapping):
-                user_id = user.get("id")
-                if isinstance(user_id, (int, str)) and not isinstance(user_id, bool):
-                    try:
-                        invoker_id = int(user_id)
-                    except ValueError:
-                        invoker_id = None
-                    if invoker_id is not None and _user_allowed(preview, page, invoker_id):
-                        interaction_header["user"] = _identity_wire(
-                            resolve_identity(preview, page, invoker_id)
-                        )
-            data["interaction_header"] = interaction_header
+        is_application_command = int(metadata.get("type", -1)) == int(InteractionType.APPLICATION_COMMAND)
     except (TypeError, ValueError):
-        pass
+        is_application_command = False
+    if is_application_command:
+        try:
+            command_type = AppCommandType(int(metadata["command_type"]))
+        except (KeyError, TypeError, ValueError):
+            command_type = None
+        interaction_header: dict[str, Any] = {
+            "kind": (
+                "context_menu_command"
+                if type_info["kind"] == "context_menu_command"
+                else "application_command"
+            )
+        }
+        if isinstance(metadata.get("name"), str):
+            interaction_header["name"] = metadata["name"]
+        if command_type is not None:
+            interaction_header["command_type"] = command_type.name.lower()
+        user = metadata.get("user")
+        if isinstance(user, Mapping):
+            user_id = user.get("id")
+            if isinstance(user_id, (int, str)) and not isinstance(user_id, bool):
+                try:
+                    invoker_id = int(user_id)
+                except ValueError:
+                    invoker_id = None
+                if invoker_id is not None and _user_allowed(preview, page, invoker_id):
+                    interaction_header["user"] = _identity_wire(resolve_identity(preview, page, invoker_id))
+        target_id_value = metadata.get("target_id")
+        target_type_value = metadata.get("target_type")
+        try:
+            target_id = int(target_id_value) if target_id_value is not None else None
+            target_type = AppCommandType(int(target_type_value)) if target_type_value is not None else None
+        except (TypeError, ValueError):
+            target_id = None
+            target_type = None
+        if target_id is not None and target_type == AppCommandType.USER:
+            if _user_allowed(preview, page, target_id):
+                interaction_header["target_user"] = _identity_wire(resolve_identity(preview, page, target_id))
+        elif target_id is not None and target_type == AppCommandType.MESSAGE:
+            try:
+                target_channel_id = int(metadata["target_channel_id"])
+                target_message = env.backend.get_message(target_channel_id, target_id)
+            except (BackendError, KeyError, TypeError, ValueError):
+                target_message = None
+                target_channel_id = 0
+            if target_message is not None and can_access_message(
+                env, target_channel_id, target_message, page.viewer, history=True
+            ):
+                try:
+                    target_channel = env.backend.get_channel(target_channel_id)
+                except BackendError:
+                    target_channel = None
+                if target_channel is not None and target_channel.guild_id is not None:
+                    interaction_header["target_message"] = {
+                        "id": str(target_message.id),
+                        "url": _discord_message_link(
+                            target_channel.guild_id, target_channel_id, target_message.id
+                        ),
+                    }
+        data["interaction_header"] = interaction_header
     if message.poll is not None:
         poll = message.poll
         total_votes = sum(len(voters) for voters in poll.votes.values())
@@ -1054,6 +1224,38 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         value.setdefault("message", "")
         value.setdefault("complete", False)
         diagnostics.append(value)
+    for value in projected.values():
+        if value["type_info"]["kind"] == "unknown":
+            diagnostics.append(
+                {
+                    "code": "message_type_unknown",
+                    "severity": "warning",
+                    "message": f"Message type {value['type']} is not classified in this preview.",
+                    "message_id": value["id"],
+                    "complete": False,
+                }
+            )
+        for sticker in value["stickers"]:
+            if sticker["format_type"] != 1:
+                diagnostics.append(
+                    {
+                        "code": "sticker_animation_unavailable",
+                        "severity": "warning",
+                        "message": f"Sticker {sticker['name']} uses an animated format not rendered in this preview.",
+                        "message_id": value["id"],
+                        "complete": False,
+                    }
+                )
+            elif not sticker["available"]:
+                diagnostics.append(
+                    {
+                        "code": "sticker_asset_unavailable",
+                        "severity": "warning",
+                        "message": f"Sticker {sticker['name']} has no available image asset.",
+                        "message_id": value["id"],
+                        "complete": False,
+                    }
+                )
     can_send = channel is not None and allowed and _can_send_message(preview, page, channel)
     snapshot = {
         "protocolVersion": _PROTOCOL_VERSION,

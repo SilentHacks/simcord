@@ -17,6 +17,7 @@ not reach (e.g. forum thread create).
 
 from __future__ import annotations
 
+import base64
 import io
 
 import discord
@@ -185,14 +186,16 @@ async def test_create_role_colour_applies(env):
 
 
 async def test_create_sticker_multipart_fields_apply(env):
-    """Sticker creation is multipart: name/description/tags arrive as scalar form
-    parts (reconstructed by ``parse_form``) and must reach backend state."""
+    """Sticker multipart metadata and image bytes reach the stored expression."""
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j9doAAAAASUVORK5CYII="
+    )
     guild = env.bot.get_guild(env.guild.id)
     sticker = await guild.create_sticker(
         name="wave",
         description="a wave",
         emoji="👋",
-        file=discord.File(io.BytesIO(b"not-a-real-png"), filename="wave.png"),
+        file=discord.File(io.BytesIO(png), filename="wave.png"),
     )
     await env.settle()
 
@@ -200,6 +203,11 @@ async def test_create_sticker_multipart_fields_apply(env):
     assert backend_sticker.name == "wave"
     assert backend_sticker.description == "a wave"
     assert backend_sticker.tags == "👋"
+    assert backend_sticker.format_type == 1
+    assert backend_sticker.content_type == "image/png"
+    assert backend_sticker.size == len(png)
+    assert backend_sticker.url is not None
+    assert env.backend.cdn.get(backend_sticker.url) == png
 
 
 # --- behaviour beyond loudness (loudness itself is swept by the fuzzer) -------

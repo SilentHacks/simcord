@@ -111,7 +111,7 @@ class MemberActor:
         if not isinstance(pinned, bool):
             raise SetupError("pinned must be a boolean")
         self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "manage_messages")
-        self._env.backend.set_pinned(stored.channel_id, stored.id, pinned)
+        self._env.backend.set_pinned(stored.channel_id, stored.id, pinned, actor_id=self.id)
         await self._env._settle_internal(dispatch="MEMBER.set_pinned")
 
     async def typing(self, channel: ChannelHandle) -> None:

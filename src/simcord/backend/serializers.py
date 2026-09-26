@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from ..enums import VOICE_CHANNEL_TYPES, ChannelType
+from .cdn import sticker_url
 from .models import (
     AuditLogEntry,
     AutoModRule,
@@ -266,6 +267,10 @@ def message_payload(
         "embeds": list(message.embeds),
         "components": list(message.components),
         "pinned": message.pinned,
+        "sticker_items": [
+            {"id": str(item.id), "name": item.name, "format_type": item.format_type}
+            for item in message.stickers
+        ],
         "type": message.type,
         "flags": message.flags,
         "nonce": None,
@@ -541,6 +546,7 @@ def sticker_payload(backend: BackendBase, sticker: Sticker) -> dict[str, Any]:
         "format_type": sticker.format_type,
         "guild_id": str(sticker.guild_id),
         "available": sticker.available,
+        "url": sticker.url or sticker_url(sticker.id, sticker.format_type),
         "user": user_payload(backend.users[sticker.user_id]) if sticker.user_id in backend.users else None,
     }
 

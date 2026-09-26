@@ -30,8 +30,8 @@ from .backend.models import (
     VoiceState,
     Webhook,
 )
-from .enums import ChannelType, OverwriteType
-from .results import to_discord_message
+from .enums import ChannelType, MessageType, OverwriteType
+from .results import ResponseMessage, to_discord_message
 
 if TYPE_CHECKING:
     from .actors import MemberActor
@@ -390,10 +390,69 @@ class GuildHandle:
     def create_emoji(self, name: str, *, animated: bool = False) -> GuildEmoji:
         return self._env.backend.create_emoji(self.id, name, self._env.backend.bot_user.id, animated=animated)
 
-    def create_sticker(self, name: str, *, description: str | None = None, tags: str = "") -> Sticker:
+    def create_sticker(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        tags: str = "",
+        format_type: int = 1,
+    ) -> Sticker:
         return self._env.backend.create_sticker(
-            self.id, name, self._env.backend.bot_user.id, description=description, tags=tags
+            self.id,
+            name,
+            self._env.backend.bot_user.id,
+            description=description,
+            tags=tags,
+            format_type=format_type,
         )
+
+    def create_system_message(
+        self,
+        channel: ChannelHandle,
+        message_type: MessageType,
+        *,
+        author: UserHandle | MemberActor,
+        recipient: UserHandle | MemberActor | None = None,
+        target_channel: ChannelHandle | None = None,
+        referenced_message: discord.Message | ResponseMessage | None = None,
+    ) -> discord.Message:
+        """Seed a typed service message with real identities, not arbitrary content."""
+        if channel._env is not self._env or channel.guild is None or channel.guild.id != self.id:
+            raise SetupError("system message channel must belong to this guild and environment")
+        if getattr(author, "_env", None) is not self._env:
+            raise SetupError("system message author must belong to this environment")
+        if recipient is not None and getattr(recipient, "_env", None) is not self._env:
+            raise SetupError("system message recipient must belong to this environment")
+        if target_channel is not None and (
+            target_channel._env is not self._env
+            or target_channel.guild is None
+            or target_channel.guild.id != self.id
+        ):
+            raise SetupError("system message target channel must belong to this guild and environment")
+        referenced_channel_id = None
+        referenced_message_id = None
+        if referenced_message is not None:
+            referenced_message_id = referenced_message.id
+            if isinstance(referenced_message, ResponseMessage):
+                if referenced_message._env is not self._env:
+                    raise SetupError("referenced message must belong to this environment")
+                referenced_channel_id = referenced_message.channel_id
+            else:
+                message_channel = referenced_message.channel
+                referenced_channel_id = getattr(message_channel, "id", None)
+                if getattr(message_channel, "guild", None) is None:
+                    raise SetupError("referenced message must be in this guild")
+        stored = self._env.backend.create_system_message(
+            channel.id,
+            message_type,
+            author.id,
+            recipient_id=recipient.id if recipient is not None else None,
+            target_channel_id=target_channel.id if target_channel is not None else None,
+            referenced_channel_id=referenced_channel_id,
+            referenced_message_id=referenced_message_id,
+        )
+        return to_discord_message(self._env, stored)
 
     def set_command_permissions(
         self, command: Any, permissions: dict[RoleHandle | ChannelHandle | UserHandle | MemberActor, bool]
@@ -598,6 +657,7 @@ for _operation_name in (
     "create_webhook",
     "create_emoji",
     "create_sticker",
+    "create_system_message",
     "set_command_permissions",
     "set_vanity_url",
     "create_role",

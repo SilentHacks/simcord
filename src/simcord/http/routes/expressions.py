@@ -1,10 +1,9 @@
 """Guild expression routes: custom emojis and stickers (CRUD)."""
 
-from __future__ import annotations
-
+import json
 from typing import Any
 
-from ...backend import serializers
+from ...backend import errors, serializers
 from ..router import RequestContext, route
 
 _EXPRESSION_PERM = "manage_expressions"
@@ -73,16 +72,48 @@ def create_sticker(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, _EXPRESSION_PERM)
-    # Sticker creation is multipart: the image rides as a file (discarded — no
-    # image storage offline) while name/description/tags arrive as scalar parts,
-    # reconstructed into the body by ``parse_form``.
     body = ctx.fields("name", "description", "tags")
+    if len(ctx.files) != 1:
+        raise errors.invalid_form_body("sticker creation requires exactly one uploaded file")
+    file = ctx.files[0]
+    data = file.fp.read()
+    if not data or len(data) > 512 * 1024:
+        raise errors.invalid_form_body("sticker upload must be between 1 byte and 512 KiB")
+    filename = str(file.filename)
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        format_type = 1
+        offset = 8
+        while offset + 12 <= len(data):
+            size = int.from_bytes(data[offset : offset + 4], "big")
+            if data[offset + 4 : offset + 8] == b"acTL":
+                format_type = 2
+                break
+            offset += size + 12
+            if offset > len(data):
+                break
+        content_type = "image/png"
+    elif data.startswith((b"GIF87a", b"GIF89a")):
+        format_type, content_type = 4, "image/gif"
+    elif filename.casefold().endswith(".json"):
+        try:
+            lottie = json.loads(data)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise errors.invalid_form_body("Lottie sticker upload must be valid JSON") from exc
+        if not isinstance(lottie, dict) or not isinstance(lottie.get("layers"), list):
+            raise errors.invalid_form_body("Lottie sticker upload must contain a layers array")
+        format_type, content_type = 3, "application/json"
+    else:
+        raise errors.invalid_form_body("sticker upload must be PNG, APNG, GIF, or Lottie JSON")
     sticker = backend.create_sticker(
         guild_id,
         body["name"],
         backend.bot_user.id,
         description=body.get("description"),
         tags=body.get("tags") or "",
+        format_type=format_type,
+        file_data=data,
+        filename=filename,
+        content_type=content_type,
     )
     return serializers.sticker_payload(backend, sticker)
 

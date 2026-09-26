@@ -5759,8 +5759,8 @@
         }
       ],
       "expected": {
-        "backend": "blocked; no claim made",
-        "visible": "blocked ledger entry with deterministic prerequisite"
+        "backend": "sticker sends preserve identifier, name, and format; message types are typed; system metadata resolves only viewer-accessible identities and references",
+        "visible": "static PNG stickers render; animated sticker formats and unknown message types are marked incomplete; system text stays plain and links are limited to accessible targets"
       },
       "crop": {
         "scope": "family-specific",
@@ -5778,7 +5778,7 @@
       "referenceStatus": "blocked",
       "referenceReason": "authorized Discord client access, private test server/application, permitted fixture assets, and interaction trace",
       "owner": "preview maintainers",
-      "implementationStatus": "missing",
+      "implementationStatus": "partial",
       "comparisonStatus": "unrun",
       "approvedDeviationIds": [],
       "evidenceEquivalentStateLinks": [],

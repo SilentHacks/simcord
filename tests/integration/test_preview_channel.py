@@ -63,7 +63,7 @@ async def test_channel_layout_authorizes_window_and_reanchors_targets(env, chann
         bob_snapshot = preview._page_payload(bob_page)
         ephemeral_projection = bob_snapshot["messages"][str(ephemeral.response.id)]
         assert ephemeral_projection["ephemeral"] is True
-        assert ephemeral_projection["interaction_header"]["kind"] == "application_command"
+        assert ephemeral_projection["interaction_header"]["kind"] == "context_menu_command"
         assert ephemeral_projection["interaction_header"]["user"]["id"] == str(bob.id)
 
 

@@ -3,6 +3,7 @@ import pytest
 from discord.ext import commands
 
 import simcord
+from simcord.enums import MessageType
 
 
 async def test_prefix_command_round_trip(env, channel, alice):
@@ -159,3 +160,48 @@ async def test_bulk_delete_requires_manage_messages(env):
     with pytest.raises(discord.Forbidden) as exc_info:
         await ch.delete_messages(messages)
     assert exc_info.value.code == 50013
+
+
+async def test_tts_and_allowed_mentions_are_retained_without_claiming_pings(env, channel, alice):
+    ch = env.bot.get_channel(channel.id)
+    message = await ch.send(
+        f"@everyone {alice.mention}",
+        tts=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+    stored = env.backend.get_message(channel.id, message.id)
+    assert message.tts is True
+    assert stored.tts is True
+    assert stored.mention_everyone is False
+    assert stored.ping_user_ids == []
+    assert stored.ping_role_ids == []
+
+
+async def test_guild_sticker_send_round_trips_message_metadata(env, channel):
+    sticker = env.guild.create_sticker("wave", format_type=1)
+    guild_sticker = await env.bot.get_guild(env.guild.id).fetch_sticker(sticker.id)
+    message = await env.bot.get_channel(channel.id).send("wave", stickers=[guild_sticker])
+
+    stored = env.backend.get_message(channel.id, message.id)
+    assert [(item.id, item.name) for item in message.stickers] == [(sticker.id, "wave")]
+    assert [(item.id, item.format_type) for item in stored.stickers] == [(sticker.id, 1)]
+
+
+async def test_pin_and_thread_system_messages_are_typed_and_single(env, channel):
+    ch = env.bot.get_channel(channel.id)
+    message = await ch.send("start here")
+
+    await message.pin()
+    await message.pin()
+    await message.unpin()
+    pin_notices = [item for item in channel.history() if item.type.value == MessageType.PINS_ADD]
+    assert len(pin_notices) == 1
+    pin_model = env.backend.get_message(channel.id, pin_notices[0].id)
+    assert pin_model.system_metadata.referenced_message_id == message.id
+
+    await message.create_thread(name="discussion")
+    thread_notices = [item for item in channel.history() if item.type.value == MessageType.THREAD_CREATED]
+    assert len(thread_notices) == 1
+    thread_model = env.backend.get_message(channel.id, thread_notices[0].id)
+    assert thread_model.system_metadata.channel_id == message.id
