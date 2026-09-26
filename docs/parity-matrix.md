@@ -43,6 +43,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Components V2 / `LayoutView` | ✅ | Legal wire-tree nesting, 40-component limit, stable IDs, V2 flag/content invariants, media attachments and webhook `with_components`; arbitrary remote media is metadata-only offline |
 | Local component preview | ✅ | Optional loopback page, real actor callbacks, page-local authorized viewers, explicit refresh/staleness, packaged offline assets; not a Discord client or network connection |
 | Preview screenshots | ✅ | Optional Playwright capture returns immutable `PreviewCapture` reports with surface/viewport modes, readiness, diagnostics, completeness, and calibration metadata; no pixel-perfect claim |
+| Preview embed presentation | ✅ | Safe title/author/provider links and offline-authorized media; adaptive field runs, thumbnail/image composition, author/footer icons and timestamps. External-only media stays unavailable; embed reference geometry remains blocked. |
 | Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
 | Preview fidelity boundary | ⚠️ | System font/emoji fallback, platform-dependent media codec support, premium/mobile behavior, and uncalibrated references remain reported differences; browser playback is interactive while managed capture uses deterministic `media_time` |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |

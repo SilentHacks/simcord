@@ -523,6 +523,11 @@ def _embed_projection(
     link = _safe_link(embed.get("url"))
     if link:
         value["url"] = link
+    provider = embed.get("provider")
+    if isinstance(provider, dict):
+        provider_link = _safe_link(provider.get("url"))
+        if provider_link:
+            value.setdefault("provider", {})["url"] = provider_link
     for owner_key in ("author", "footer"):
         owner = embed.get(owner_key)
         if not isinstance(owner, dict):
@@ -540,18 +545,22 @@ def _embed_projection(
     by_url, by_name = _attachment_index(attachments)
     for key in ("image", "thumbnail", "video"):
         media = embed.get(key)
-        if not isinstance(media, dict):
+        target = value.get(key)
+        if not isinstance(media, dict) or not isinstance(target, dict):
             continue
-        url = media["url"]
+        url = media.get("url")
+        if not isinstance(url, str) or not url:
+            target["available"] = False
+            continue
         item = by_url.get(url)
         if item is None and url.startswith("attachment://"):
             item = by_name.get(url.removeprefix("attachment://"))
         asset_id = _asset_meta(page, url, item, message)
         if asset_id:
-            value.setdefault(key, {})["asset_id"] = asset_id
-            value[key]["available"] = _asset_available(page, asset_id)
+            target["asset_id"] = asset_id
+            target["available"] = _asset_available(page, asset_id)
             if item is not None:
-                value[key]["attachment_id"] = str(item.get("id", ""))
+                target["attachment_id"] = str(item.get("id", ""))
     if isinstance(embed.get("title"), str):
         value["title_tokens"] = markdown_tokens(embed["title"], "embed_title", context=context)
     if isinstance(embed.get("description"), str):
@@ -560,10 +569,23 @@ def _embed_projection(
         )
     if isinstance(embed.get("footer"), dict) and isinstance(embed["footer"].get("text"), str):
         value["footer_tokens"] = markdown_tokens(embed["footer"]["text"], "embed_footer")
-    for index, field in enumerate(embed.get("fields", [])):
-        target = value["fields"][index]
-        target["name_tokens"] = markdown_tokens(field["name"], "embed_field_name", context=context)
-        target["value_tokens"] = markdown_tokens(field["value"], "embed_field_value", context=context)
+    fields = embed.get("fields")
+    projected_fields = value.get("fields")
+    if isinstance(fields, list) and isinstance(projected_fields, list):
+        for index, field in enumerate(fields):
+            if not isinstance(field, dict) or index >= len(projected_fields):
+                continue
+            target = projected_fields[index]
+            if not isinstance(target, dict):
+                continue
+            if isinstance(field.get("name"), str):
+                target["name_tokens"] = markdown_tokens(
+                    field["name"], "embed_field_name", context=context
+                )
+            if isinstance(field.get("value"), str):
+                target["value_tokens"] = markdown_tokens(
+                    field["value"], "embed_field_value", context=context
+                )
     return _clean(_decorate_emoji(value, page))
 
 

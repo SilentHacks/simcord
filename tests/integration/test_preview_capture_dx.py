@@ -3,7 +3,7 @@ from pathlib import Path
 
 import discord
 import pytest
-from preview_helpers import png_bytes
+from preview_helpers import png_bytes, target_message
 
 import simcord
 
@@ -146,6 +146,168 @@ async def test_browser_decode_failure_marks_visible_media_incomplete(env, channe
                 await browser.close()
         finally:
             await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_adaptive_embed_composition_and_offline_provider_media(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    from fixtures.preview.catalog import close_payload, gallery_payload
+
+    payload = gallery_payload("REF-10-LEGACY-EMBED")
+    embed = payload.pop("embed")
+    assert isinstance(embed, discord.Embed)
+    embed.set_author(
+        name="Reference Bot",
+        url="https://profiles.example.test/reference",
+        icon_url="https://assets.example.test/author.png",
+    )
+    embed.set_footer(
+        text="Deterministic footer",
+        icon_url="https://assets.example.test/footer.png",
+    )
+    for index in range(4):
+        embed.add_field(name=f"Follow-up {index + 1}", value="Inline field", inline=True)
+
+    external_url = "https://video.example.test/external.mp4"
+    local_url = "https://video.example.test/offline.mp4"
+    external = discord.Embed.from_dict(
+        {
+            "type": "video",
+            "title": "External-only video",
+            "provider": {"name": "External provider", "url": "https://provider.example.test/watch"},
+            "video": {"url": external_url},
+        }
+    )
+    offline = discord.Embed.from_dict(
+        {
+            "type": "video",
+            "title": "Offline video",
+            "provider": {"name": "Offline provider", "url": "https://provider.example.test/offline"},
+            "video": {"url": local_url},
+        }
+    )
+    payload["embeds"] = [embed, external, offline]
+    message = await env.bot.get_channel(channel.id).send(**payload)
+    media_path = Path(__file__).parents[1] / "fixtures" / "preview" / "video.mp4"
+    supplied = {
+        local_url: ("video.mp4", media_path.read_bytes()),
+        "https://assets.example.test/author.png": ("author.png", png_bytes()),
+        "https://assets.example.test/footer.png": ("footer.png", png_bytes()),
+    }
+
+    try:
+        async with env.preview(channel, viewers=[alice], assets=supplied) as preview:
+            await preview.show(message)
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch()
+                try:
+                    page = await browser.new_page()
+                    await page.goto(preview.url)
+                    await page.wait_for_function("() => window.simcordPreview?.ready === true")
+
+                    cards = page.locator(".embed-card")
+                    assert await cards.count() == 3
+                    first = cards.nth(0)
+                    rows = await first.locator(".embed-field-row").evaluate_all(
+                        "rows => rows.map(row => [...row.children].map(field => {"
+                        "const rect = field.getBoundingClientRect();"
+                        "return {left: rect.left, top: rect.top, width: rect.width};"
+                        "}))"
+                    )
+                    assert [len(row) for row in rows] == [3, 3, 1]
+                    assert max(item["width"] for item in rows[0]) - min(item["width"] for item in rows[0]) < 1
+                    block_width = await first.locator(".embed-fields > .embed-field").evaluate(
+                        "field => field.getBoundingClientRect().width"
+                    )
+                    assert block_width > rows[0][0]["width"] * 2
+                    assert await first.locator("img.embed-thumbnail").count() == 1
+                    assert await first.locator("img.embed-image").count() == 1
+                    assert await first.locator("img.embed-author-icon").count() == 1
+                    assert await first.locator("img.embed-footer-icon").count() == 1
+                    footer = first.locator(".embed-footer")
+                    assert "Deterministic footer" in await footer.inner_text()
+                    assert await footer.locator("time").get_attribute("datetime")
+
+                    external_card = cards.nth(1)
+                    assert await external_card.locator(".media-unavailable").count() == 1
+                    assert (
+                        await external_card.get_by_role("link", name="External provider").get_attribute(
+                            "href"
+                        )
+                        == "https://provider.example.test/watch"
+                    )
+                    offline_card = cards.nth(2)
+                    video = offline_card.locator("video.media-player-native")
+                    assert await video.count() == 1
+                    await offline_card.get_by_role("button", name="Play Embed 3 video").click()
+                    await page.wait_for_function(
+                        "() => !document.querySelector('.video-player video').paused"
+                    )
+
+                    status = await page.evaluate("() => window.simcordPreview")
+                    assert any(item["code"] == "media-unavailable" for item in status["diagnostics"])
+                    projected = target_message(preview._page_payload(preview._python))
+                    assert projected is not None
+                    assert projected["embeds"][0]["image"]["available"] is True
+                    assert projected["embeds"][0]["thumbnail"]["available"] is True
+                    assert projected["embeds"][0]["author"]["icon_available"] is True
+                    assert projected["embeds"][0]["footer"]["icon_available"] is True
+                    assert projected["embeds"][1]["type"] == "video"
+                    assert projected["embeds"][1]["provider"]["url"] == "https://provider.example.test/watch"
+                    assert projected["embeds"][1]["video"]["available"] is False
+                    assert external_url not in str(projected["embeds"])
+                    assert projected["embeds"][2]["video"]["available"] is True
+
+                    await page.set_viewport_size({"width": 390, "height": 900})
+                    narrow = await first.evaluate(
+                        "card => ({right: card.getBoundingClientRect().right, "
+                        "rows: [...card.querySelectorAll('.embed-field-row')].map(row => "
+                        "[...row.children].map(field => {const rect = field.getBoundingClientRect(); "
+                        "return {left: rect.left, top: rect.top, width: rect.width};}))})"
+                    )
+                    assert narrow["right"] <= 390
+                    for row in narrow["rows"]:
+                        assert all(abs(field["left"] - row[0]["left"]) < 1 for field in row)
+                        assert all(row[index]["top"] < row[index + 1]["top"] for index in range(len(row) - 1))
+                finally:
+                    await browser.close()
+    finally:
+        close_payload(payload)
+
+
+@pytest.mark.asyncio
+async def test_browser_suppressed_embed_keeps_message_and_its_attachment(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    embed = discord.Embed().set_image(url="attachment://suppressed.png")
+    message = await env.bot.get_channel(channel.id).send(
+        content="Visible while the embed is suppressed",
+        embed=embed,
+        file=discord.File(io.BytesIO(png_bytes()), filename="suppressed.png"),
+    )
+    env.backend.get_message(channel.id, message.id).flags |= 4
+
+    async with env.preview(channel, viewers=[alice]) as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                projected = target_message(preview._page_payload(preview._python))
+                assert projected is not None and projected["flags"] & 4
+                assert await page.locator(".embed-card").count() == 0
+                assert await page.locator(".message-content").inner_text() == (
+                    "Visible while the embed is suppressed"
+                )
+                image = page.locator("img.attachment-image")
+                assert await image.count() == 1
+                assert await image.evaluate("(element) => element.complete && element.naturalWidth > 0")
+            finally:
+                await browser.close()
 
 
 @pytest.mark.asyncio

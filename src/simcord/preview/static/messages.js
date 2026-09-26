@@ -241,9 +241,10 @@ export function renderMessage(root, message, options = {}) {
     root.append(node("div", "message-ephemeral-note", "Only you can see this"));
   }
   const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
+  const suppressEmbeds = (Number(message.flags) & 4) !== 0;
   appendMessageContent(root, message, options, v2);
   appendStickers(root, message.stickers, options, pendingMedia);
-  if (!v2 && (Number(message.flags) & 4) === 0) {
+  if (!v2 && !suppressEmbeds) {
     (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
   }
   if (message.components?.length) {
@@ -251,7 +252,8 @@ export function renderMessage(root, message, options = {}) {
     message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options)));
     root.append(components);
   }
-  const refs = referencedAssets(message.components, v2 ? [] : message.embeds);
+  const visibleEmbeds = v2 || suppressEmbeds ? [] : message.embeds || [];
+  const refs = referencedAssets(message.components, visibleEmbeds);
   const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
   if (attachments.length) {
     const images = attachments.filter((attachment) => attachment.inline && attachment.asset_id);

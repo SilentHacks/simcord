@@ -304,7 +304,29 @@ function renderNode(component, path, options) {
   options.onDiagnostic?.({ code: "unsupported-component", severity: "warning", message: `Unsupported component type ${type} at ${path}`, complete: false }); return node("div", "component-unavailable", `Component type ${type} unavailable`);
 }
 function renderEmbed(embed, index, options) {
-  const card = node("article", "embed-card"); const color = Number(embed.color ?? embed.color_value); if (Number.isFinite(color)) card.style.setProperty("--embed-color", `#${color.toString(16).padStart(6, "0").slice(-6)}`);
+  const card = node("article", "embed-card");
+  card.dataset.embedType = typeof embed.type === "string" ? embed.type : "rich";
+  const color = Number(embed.color ?? embed.color_value);
+  if (Number.isFinite(color)) {
+    card.style.setProperty("--embed-color", `#${color.toString(16).padStart(6, "0").slice(-6)}`);
+  }
+
+  const main = node("div", "embed-main");
+  const text = node("div", "embed-main-text");
+  const providerLink = safeLink(embed.provider?.url);
+  if (embed.provider?.name || providerLink) {
+    const provider = node(
+      providerLink ? "a" : "span",
+      "embed-provider",
+      typeof embed.provider?.name === "string" ? embed.provider.name : "Open provider",
+    );
+    if (providerLink) {
+      provider.href = providerLink;
+      provider.target = "_blank";
+      provider.rel = "noopener noreferrer";
+    }
+    text.append(provider);
+  }
   if (embed.author?.name) {
     const author = node("div", "embed-author");
     if (embed.author.icon_asset_id) {
@@ -317,18 +339,112 @@ function renderEmbed(embed, index, options) {
       author.append(icon.element);
       options.pendingMedia?.push(...icon.pending);
     }
-    const name = embed.author.url ? node("a", "embed-author-link", embed.author.name) : node("span", "", embed.author.name);
-    if (embed.author.url) { name.href = safeLink(embed.author.url) || "#"; name.target = "_blank"; name.rel = "noopener noreferrer"; }
+    const authorLink = safeLink(embed.author.url);
+    const name = authorLink ? node("a", "embed-author-link", embed.author.name) : node("span", "", embed.author.name);
+    if (authorLink) {
+      name.href = authorLink;
+      name.target = "_blank";
+      name.rel = "noopener noreferrer";
+    }
     author.append(name);
-    card.append(author);
+    text.append(author);
   }
-  if (embed.title) { const href = safeLink(embed.url); const title = href ? node("a", "embed-title", "") : node("div", "embed-title"); if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener noreferrer"; } appendMarkdownOrText(title, embed.title, embed.title_tokens, options); card.append(title); }
-  if (embed.description) { const description = node("div", "embed-description"); appendMarkdownOrText(description, embed.description, embed.description_tokens, options); card.append(description); }
-  if (Array.isArray(embed.fields) && embed.fields.length) { const fields = node("div", "embed-fields"); embed.fields.forEach((field) => { const item = node("div", field.inline ? "embed-field inline" : "embed-field"); const name = node("strong", "embed-field-name"); appendMarkdownOrText(name, field.name || "", field.name_tokens, options); const value = node("span", "embed-field-value"); appendMarkdownOrText(value, field.value || "", field.value_tokens, options); item.append(name, value); fields.append(item); }); card.append(fields); }
-  for (const [kind, media] of [["thumbnail", embed.thumbnail], ["image", embed.image]]) { if (!media) continue; const result = renderSpoilerMedia(media, `embed-${kind}`, options, `Embed ${index + 1} ${kind}`, `embed:${index}:${kind}:${media.asset_id || ""}`); const figure = node("figure", `embed-media embed-${kind}`); figure.append(result.element); card.append(figure); options.pendingMedia?.push(...result.pending); }
-  if (embed.video) { card.append(node("div", "component-unavailable", "Embed video unavailable")); options.onDiagnostic?.({ code: "unsupported-embed-video", severity: "warning", message: `Embed ${index + 1} video playback is unavailable`, complete: false }); }
-  if (embed.footer?.text || embed.timestamp || embed.footer?.icon_asset_id) {
-    const timestamp = embed.timestamp ? new Intl.DateTimeFormat(options.locale || "en-US", { timeZone: options.timezone || "UTC", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(embed.timestamp)) : "";
+  if (embed.title) {
+    const href = safeLink(embed.url);
+    const title = href ? node("a", "embed-title") : node("div", "embed-title");
+    if (href) {
+      title.href = href;
+      title.target = "_blank";
+      title.rel = "noopener noreferrer";
+    }
+    appendMarkdownOrText(title, embed.title, embed.title_tokens, options);
+    text.append(title);
+  }
+  if (embed.description) {
+    const description = node("div", "embed-description");
+    appendMarkdownOrText(description, embed.description, embed.description_tokens, options);
+    text.append(description);
+  }
+  main.append(text);
+  if (embed.thumbnail) {
+    const result = renderSpoilerMedia(
+      embed.thumbnail,
+      "embed-thumbnail",
+      options,
+      `Embed ${index + 1} thumbnail`,
+      `embed:${index}:thumbnail:${embed.thumbnail.asset_id || ""}`,
+    );
+    const figure = node("figure", "embed-media embed-thumbnail");
+    figure.append(result.element);
+    main.classList.add("embed-main-with-thumbnail");
+    main.append(figure);
+    options.pendingMedia?.push(...result.pending);
+  }
+  card.append(main);
+
+  if (Array.isArray(embed.fields) && embed.fields.length) {
+    const fields = node("div", "embed-fields");
+    let inlineRun = [];
+    const appendField = (field) => {
+      const item = node("div", "embed-field");
+      const name = node("strong", "embed-field-name");
+      appendMarkdownOrText(name, field.name || "", field.name_tokens, options);
+      const value = node("span", "embed-field-value");
+      appendMarkdownOrText(value, field.value || "", field.value_tokens, options);
+      item.append(name, value);
+      return item;
+    };
+    const flushInline = () => {
+      for (let start = 0; start < inlineRun.length; start += 3) {
+        const rowFields = inlineRun.slice(start, start + 3);
+        const row = node("div", "embed-field-row");
+        row.style.setProperty("--embed-field-columns", String(rowFields.length));
+        rowFields.forEach((field) => row.append(appendField(field)));
+        fields.append(row);
+      }
+      inlineRun = [];
+    };
+    embed.fields.forEach((field) => {
+      if (field.inline) inlineRun.push(field);
+      else {
+        flushInline();
+        fields.append(appendField(field));
+      }
+    });
+    flushInline();
+    card.append(fields);
+  }
+
+  for (const [kind, media] of [["image", embed.image], ["video", embed.video]]) {
+    if (!media) continue;
+    const label = `Embed ${index + 1} ${kind}`;
+    const result = renderSpoilerMedia(
+      media,
+      `embed-${kind}`,
+      options,
+      label,
+      `embed:${index}:${kind}:${media.asset_id || ""}`,
+    );
+    const figure = node("figure", `embed-media embed-${kind}`);
+    figure.append(result.element);
+    card.append(figure);
+    options.pendingMedia?.push(...result.pending);
+  }
+
+  const rawTimestamp = typeof embed.timestamp === "string" ? embed.timestamp : "";
+  const date = rawTimestamp ? new Date(rawTimestamp) : null;
+  const timestamp = date && Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat(options.locale || "en-US", {
+      timeZone: options.timezone || "UTC",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(date)
+    : "";
+  if (embed.footer?.text || timestamp || embed.footer?.icon_asset_id) {
     const footer = node("footer", "embed-footer");
     if (embed.footer?.icon_asset_id) {
       const icon = renderMedia(
@@ -340,7 +456,15 @@ function renderEmbed(embed, index, options) {
       footer.append(icon.element);
       options.pendingMedia?.push(...icon.pending);
     }
-    appendTextWithMentions(footer, [embed.footer?.text, timestamp].filter(Boolean).join(" • "), options);
+    if (embed.footer?.text) {
+      footer.append(document.createTextNode(String(embed.footer.text)));
+    }
+    if (timestamp) {
+      if (embed.footer?.text) footer.append(document.createTextNode(" • "));
+      const time = node("time", "embed-timestamp", timestamp);
+      time.dateTime = rawTimestamp;
+      footer.append(time);
+    }
     card.append(footer);
   }
   return card;
