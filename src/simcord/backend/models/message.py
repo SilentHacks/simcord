@@ -57,6 +57,8 @@ class Message:
     reference: dict[str, Any] | None = None
     interaction_metadata: dict[str, Any] | None = None
     webhook_id: int | None = None
+    #: Incoming webhook per-message avatar URL override, when supplied.
+    author_avatar: str | None = None
     #: A per-message display-name override (an incoming webhook's ``username=``).
     #: When set, the serialized author reports this name instead of the authoring
     #: user's; ``None`` means "use the author user's own name" (the common case).

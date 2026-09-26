@@ -35,6 +35,7 @@ class PreviewServer:
         "/": "index.html",
         "/app.js": "app.js",
         "/components.js": "components.js",
+        "/dom.js": "dom.js",
         "/preview.css": "preview.css",
         "/protocol.schema.json": "protocol.schema.json",
         "/fonts/noto-sans-latin-v2.015.ttf": "fonts/noto-sans-latin-v2.015.ttf",
@@ -49,10 +50,11 @@ class PreviewServer:
     _FONT_FILES = frozenset(value for value in _STATIC_FILES.values() if value.startswith("fonts/"))
     _STATIC_CONTENT_TYPES: ClassVar[dict[str, str]] = {
         "index.html": "text/html",
-        "app.js": "application/javascript",
-        "components.js": "application/javascript",
         "preview.css": "text/css",
         "protocol.schema.json": "application/schema+json",
+        "app.js": "application/javascript",
+        "components.js": "application/javascript",
+        "dom.js": "application/javascript",
     }
     _SECURITY_HEADERS: ClassVar[dict[str, str]] = {
         "Cache-Control": "no-store",

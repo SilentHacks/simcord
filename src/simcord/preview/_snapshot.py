@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -132,10 +133,140 @@ def _safe_link(value: Any) -> str | None:
     return value
 
 
-def _author(env: Env, user_id: int, *, override: str | None = None) -> dict[str, Any]:
+def _asset_available(page: _Page, asset_id: str | None) -> bool:
+    return bool(asset_id and (record := page.assets.get(asset_id)) is not None and record.available)
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityRecord:
+    id: int
+    kind: str
+    name: str
+    username: str
+    global_name: str | None
+    nickname: str | None
+    bot: bool
+    system: bool
+    application: bool
+    webhook: bool
+    avatar: str | None
+    avatar_kind: str
+    avatar_available: bool
+    role_color: int | None
+    role_id: int | None
+    presence: str | None
+
+
+def _identity_wire(identity: IdentityRecord) -> dict[str, Any]:
+    return {
+        "id": str(identity.id),
+        "kind": identity.kind,
+        "name": identity.name,
+        "username": identity.username,
+        "global_name": identity.global_name,
+        "nickname": identity.nickname,
+        "bot": identity.bot,
+        "system": identity.system,
+        "application": identity.application,
+        "webhook": identity.webhook,
+        "avatar": identity.avatar,
+        "avatar_kind": identity.avatar_kind,
+        "avatar_available": identity.avatar_available,
+        "role_color": identity.role_color,
+        "role_id": str(identity.role_id) if identity.role_id is not None else None,
+        "presence": identity.presence,
+    }
+
+
+def resolve_identity(
+    preview: Preview,
+    page: _Page,
+    user_id: int,
+    *,
+    message: Message | None = None,
+    override: str | None = None,
+) -> IdentityRecord:
+    """Resolve one authorized user/member identity for every preview surface."""
+    env = preview.env
     user = env.backend.get_user(user_id)
-    name = override if override is not None else user.global_name or user.name
-    return {"id": str(user.id), "name": name, "username": user.name, "bot": bool(user.bot)}
+    try:
+        channel = env.backend.get_channel(message.channel_id if message is not None else page.channel_id)
+    except BackendError:
+        channel = None
+    guild = (
+        env.backend.guilds.get(channel.guild_id)
+        if channel is not None and channel.guild_id is not None
+        else None
+    )
+    member = guild.members.get(user_id) if guild is not None else None
+    nickname = member.nick if member is not None else None
+    display = override if override is not None else nickname or user.global_name or user.name
+    role_id: int | None = None
+    role_color: int | None = None
+    if guild is not None and member is not None:
+        colored = [
+            role
+            for rid in member.role_ids
+            if (role := guild.roles.get(rid)) is not None and int(role.color or 0) != 0
+        ]
+        if colored:
+            role = max(colored, key=lambda item: (int(item.position), int(item.id)))
+            role_id = role.id
+            role_color = int(role.color)
+    asset_id: str | None = None
+    record = None
+    if channel is None:
+        avatar_kind = "custom" if user.avatar else "default"
+    else:
+        if message is not None and message.author_avatar:
+            avatar_kind = "webhook"
+            avatar_url = message.author_avatar
+            source = ("message", message.channel_id, message.id)
+            asset_key = f"webhook-avatar:{message.channel_id}:{message.id}:{avatar_url}"
+        elif member is not None and member.avatar:
+            avatar_kind = "guild"
+            avatar_url = f"{CDN_BASE}/guilds/{channel.guild_id}/users/{user.id}/avatars/{member.avatar}.png"
+            source = ("member_avatar", channel.guild_id, user.id, member.avatar)
+            asset_key = f"member-avatar:{channel.guild_id}:{user.id}:{member.avatar}"
+        elif user.avatar:
+            avatar_kind = "custom"
+            avatar_url = f"{CDN_BASE}/avatars/{user.id}/{user.avatar}.png"
+            source = ("user_avatar", user.id, user.avatar)
+            asset_key = f"avatar:{user.id}:{user.avatar}"
+        else:
+            avatar_kind = "default"
+            avatar_index = (user.id >> 22) % 6
+            avatar_url = f"{CDN_BASE}/embed/avatars/{avatar_index}.png"
+            source = ("default_avatar", user.id, avatar_index)
+            asset_key = f"default-avatar:{user.id}:{avatar_index}"
+        asset_id = page.asset_id(
+            asset_key,
+            {"url": avatar_url, "filename": f"avatar-{user.id}.png", "content_type": "image/png"},
+            source=source,
+        )
+        record = page.assets.get(asset_id)
+    return IdentityRecord(
+        id=user.id,
+        kind="webhook"
+        if message is not None and message.webhook_id is not None
+        else "application"
+        if user.bot and user.id == env.backend.bot_user.id
+        else "user",
+        name=display,
+        username=user.name,
+        global_name=user.global_name,
+        nickname=nickname,
+        bot=bool(user.bot),
+        system=bool(user.system),
+        application=bool(user.bot),
+        webhook=bool(message is not None and message.webhook_id is not None),
+        avatar=asset_id,
+        avatar_kind=avatar_kind,
+        avatar_available=bool(record is not None and record.available),
+        role_color=role_color,
+        role_id=role_id,
+        presence=getattr(member, "presence", None),
+    )
 
 
 def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _Page) -> dict[str, Any]:
@@ -143,11 +274,7 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
     url = attachment.get("url")
     content_type = str(attachment.get("content_type") or "application/octet-stream")
     filename = str(attachment.get("filename", "attachment"))
-    key = (
-        f"url:{url}"
-        if isinstance(url, str)
-        else f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
-    )
+    key = f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
     source = ("attachment", message.channel_id, message.id, attachment_id)
     asset_id = page.asset_id(key, attachment, source=source)
     preview = None
@@ -184,12 +311,15 @@ def _asset_meta(
     metadata.setdefault("url", url)
     source = None
     if fallback is not None and message is not None:
+        key = f"attachment:{message.channel_id}:{message.id}:{fallback.get('id', '')}"
         source = ("attachment", message.channel_id, message.id, str(fallback.get("id", "")))
-    key = f"url:{url}"
-    if fallback is None and message is not None:
-        # A bare embed URL must not inherit a same-URL attachment owned by
-        # another message already projected on this page.
-        key = f"{key}:message:{message.channel_id}:{message.id}"
+    elif message is not None:
+        # A copied CDN URL is only usable when the owning message remains
+        # authorized; bytes with the same URL never transfer ownership.
+        key = f"url:{url}:message:{message.channel_id}:{message.id}"
+        source = ("message", message.channel_id, message.id)
+    else:
+        key = f"url:{url}"
     return page.asset_id(key, metadata, source=source)
 
 
@@ -401,11 +531,14 @@ def _is_compact_message(preview: Preview, page: _Page, message: Message) -> bool
 def _message_projection(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
     env = preview.env
     attachments = list(message.attachments)
+    author = _identity_wire(
+        resolve_identity(preview, page, message.author_id, message=message, override=message.author_name)
+    )
     data = {
         "id": str(message.id),
         "channel_id": str(message.channel_id),
-        "author": _author(env, message.author_id, override=message.author_name),
-        "author_ref": {"kind": "user", "id": str(message.author_id)},
+        "author": author,
+        "author_ref": {"kind": author["kind"], "id": str(message.author_id)},
         "timestamp": message.timestamp,
         "edited_timestamp": message.edited_timestamp,
         "type": int(message.type),
@@ -465,8 +598,11 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
             "layout_type": int(poll.layout_type),
         }
     data["mention_names"] = {}
+    data["mention_entities"] = {}
     for uid in data["mention_user_ids"]:
-        data["mention_names"][uid] = _author(env, int(uid))["name"]
+        identity = _identity_wire(resolve_identity(preview, page, int(uid)))
+        data["mention_names"][uid] = identity["name"]
+        data["mention_entities"][uid] = identity
     data["mention_channel_ids"] = []
     data["mention_channel_names"] = {}
     preview_channel = env.backend.get_channel(page.channel_id)
@@ -501,11 +637,20 @@ def _message_projection(preview: Preview, page: _Page, message: Message) -> dict
         if referenced is not None and can_access_message(
             env, reference_channel_id, referenced, page.viewer, history=True
         ):
+            referenced_identity = _identity_wire(
+                resolve_identity(
+                    preview,
+                    page,
+                    referenced.author_id,
+                    message=referenced,
+                    override=referenced.author_name,
+                )
+            )
             data["reply"] = {
                 "state": "resolved",
                 "message_id": str(referenced.id),
                 "channel_id": str(referenced.channel_id),
-                "author": _author(env, referenced.author_id, override=referenced.author_name),
+                "author": referenced_identity,
                 "excerpt_tokens": markdown_tokens(referenced.content[:100], "message"),
                 "preview_kind": "message",
             }
@@ -528,28 +673,15 @@ def _role_allowed(preview: Preview, page: _Page, role_id: int) -> bool:
     return guild is not None and role_id in guild.roles and role_id != guild.id
 
 
-def _user_avatar(page: _Page, user: Any) -> str | None:
-    if not user.avatar:
-        return None
-    url = f"{CDN_BASE}/avatars/{user.id}/{user.avatar}.png"
-    return page.asset_id(
-        f"avatar:{user.id}",
-        {"url": url, "filename": f"{user.avatar}.png", "content_type": "image/png"},
-        source=None,
+def _message_summary(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
+    identity = _identity_wire(
+        resolve_identity(preview, page, message.author_id, message=message, override=message.author_name)
     )
-
-
-def _message_summary(env: Env, message: Message) -> dict[str, Any]:
     return {
         "id": str(message.id),
-        "author_name": _author(env, message.author_id, override=message.author_name)["name"],
+        "author_name": identity["name"],
         "excerpt": message.content[:100],
     }
-
-
-def _asset_available(page: _Page, asset_id: str | None) -> bool:
-    record = page.assets.get(asset_id) if asset_id is not None else None
-    return bool(record is not None and record.available)
 
 
 def _candidates(
@@ -565,42 +697,46 @@ def _candidates(
             continue
         entries: list[dict[str, Any]] = []
         if channel.guild_id is None:
-            if kind in {"users", "mentionables"}:
-                for uid in channel.recipient_ids:  # pragma: no branch - bounded fixture collection
-                    if _user_allowed(preview, page, uid):
-                        user = env.backend.get_user(uid)
-                        entries.append(
-                            {
-                                "id": str(uid),
-                                "label": user.global_name or user.name,
-                                "kind": "user",
-                                "username": f"{user.name}#{user.discriminator}"
-                                if user.discriminator not in ("0", "")
-                                else user.name,
-                                "bot": user.bot,
-                                "avatar": _user_avatar(page, user),
-                                "avatar_available": _asset_available(page, _user_avatar(page, user)),
-                            }
-                        )
+            user_ids = channel.recipient_ids if kind in {"users", "mentionables"} else ()
+            for uid in user_ids:
+                if not _user_allowed(preview, page, uid):
+                    continue
+                identity = _identity_wire(resolve_identity(preview, page, uid))
+                user = env.backend.get_user(uid)
+                entries.append(
+                    {
+                        **identity,
+                        "id": str(uid),
+                        "label": identity["name"],
+                        "username": (
+                            f"{user.name}#{user.discriminator}"
+                            if user.discriminator not in ("0", "")
+                            else user.name
+                        ),
+                        "kind": "user",
+                    }
+                )
         else:
             guild = env.backend.guilds[channel.guild_id]
             if kind in {"users", "mentionables"}:
-                for uid, member in guild.members.items():  # pragma: no branch - bounded fixture collection
-                    if _user_allowed(preview, page, uid):
-                        user = env.backend.get_user(uid)
-                        entries.append(
-                            {
-                                "id": str(uid),
-                                "label": member.nick or user.global_name or user.name,
-                                "kind": "user",
-                                "username": f"{user.name}#{user.discriminator}"
+                for uid in guild.members:
+                    if not _user_allowed(preview, page, uid):
+                        continue
+                    identity = _identity_wire(resolve_identity(preview, page, uid))
+                    user = env.backend.get_user(uid)
+                    entries.append(
+                        {
+                            **identity,
+                            "id": str(uid),
+                            "label": identity["name"],
+                            "username": (
+                                f"{user.name}#{user.discriminator}"
                                 if user.discriminator not in ("0", "")
-                                else user.name,
-                                "bot": user.bot,
-                                "avatar": _user_avatar(page, user),
-                                "avatar_available": _asset_available(page, _user_avatar(page, user)),
-                            }
-                        )
+                                else user.name
+                            ),
+                            "kind": "user",
+                        }
+                    )
             if kind in {"roles", "mentionables"}:
                 for rid, role in guild.roles.items():
                     if rid != guild.id:
@@ -677,7 +813,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         for component in walk_components(payload.get("components", [])):
             if isinstance(component.get("content"), str):
                 component["markdown_tokens"] = markdown_tokens(component["content"], "text_display")
-        payload["application_name"] = _author(preview.env, preview.env.backend.bot_user.id)["name"]
+        payload["application_name"] = _identity_wire(
+            resolve_identity(preview, page, preview.env.backend.bot_user.id)
+        )["name"]
         modal = {"handle": page.modal_handle, "payload": payload}
     entities: dict[str, dict[str, dict[str, Any]]] = {
         "users": {},
@@ -693,10 +831,65 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "type": int(channel.type),
             "guild_id": str(channel.guild_id) if channel.guild_id is not None else None,
         }
+        bot_identity = _identity_wire(resolve_identity(preview, page, env.backend.bot_user.id))
+        entities["applications"][str(env.backend.application_id)] = {
+            **bot_identity,
+            "id": str(env.backend.application_id),
+            "kind": "application",
+            "name": bot_identity["name"],
+        }
         if target is not None:
-            entities["users"][str(target.author_id)] = _author(
-                env, target.author_id, override=target.author_name
+            identity = _identity_wire(
+                resolve_identity(
+                    preview,
+                    page,
+                    target.author_id,
+                    message=target,
+                    override=target.author_name,
+                )
             )
+            if channel.guild_id is not None:
+                guild = env.backend.guilds.get(channel.guild_id)
+                if guild is not None:
+                    member = guild.members.get(target.author_id)
+                    if member is not None:
+                        entities["members"][str(target.author_id)] = identity
+                    for rid in target.mention_role_ids:
+                        role = guild.roles.get(rid)
+                        if role is not None and rid != guild.id:
+                            entities["roles"][str(rid)] = {
+                                "id": str(rid),
+                                "name": role.name,
+                                "color": int(role.color or 0),
+                                "position": int(role.position),
+                            }
+            entities["users"][str(target.author_id)] = identity
+            for uid in target.mention_user_ids:
+                if _user_allowed(preview, page, uid):
+                    entities["users"][str(uid)] = _identity_wire(resolve_identity(preview, page, uid))
+            if target.reference:
+                reference_id = target.reference.get("message_id")
+                reference_channel_id = target.reference.get("channel_id", target.channel_id)
+                reference_channel = target.channel_id
+                try:
+                    if reference_id is None:
+                        raise ValueError
+                    reference_channel = int(reference_channel_id)
+                    referenced = env.backend.get_message(reference_channel, int(reference_id))
+                except (BackendError, TypeError, ValueError):
+                    referenced = None
+                if referenced is not None and can_access_message(
+                    env, reference_channel, referenced, page.viewer, history=True
+                ):
+                    entities["users"][str(referenced.author_id)] = _identity_wire(
+                        resolve_identity(
+                            preview,
+                            page,
+                            referenced.author_id,
+                            message=referenced,
+                            override=referenced.author_name,
+                        )
+                    )
     diagnostics: list[dict[str, Any]] = []
     for item in page.diagnostics:
         value = dict(item)
@@ -710,7 +903,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "publishedRevision": page.revision,
         "context": {"id": page.id, "generation": page.generation},
         "botGeneration": env._generation,
-        "viewers": [_author(env, _viewer_id(viewer)) for viewer in preview.viewers],
+        "viewers": [
+            _identity_wire(resolve_identity(preview, page, _viewer_id(viewer))) for viewer in preview.viewers
+        ],
         "viewerId": str(_viewer_id(page.viewer)),
         "channelId": str(page.channel_id),
         "channel": {
@@ -719,9 +914,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "guildId": str(channel.guild_id) if channel is not None and channel.guild_id else None,
         },
         "targetId": target_id,
-        "messageIndex": [_message_summary(env, item) for item in visible],
         "messages": projected,
         "timeline": [target_id] if target_id is not None else [],
+        "messageIndex": [_message_summary(preview, page, item) for item in visible],
         "history": {"hasBefore": False, "hasAfter": False},
         "modal": modal,
         "entities": entities,
@@ -747,4 +942,4 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     return snapshot
 
 
-__all__ = ["build_snapshot"]
+__all__ = ["IdentityRecord", "build_snapshot", "resolve_identity"]

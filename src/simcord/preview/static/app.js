@@ -47,6 +47,7 @@ const state = {
   dropdown: null,
   lastMessageKey: null,
   lastMessageFingerprint: "",
+  assetFingerprint: "",
   targetId: null,
   objectUrls: new Map(),
   closed: false,
@@ -523,6 +524,9 @@ function renderSnapshot(snapshot, generation, force = false) {
   const nextGeneration = Number(snapshot.context?.generation || 0);
   const nextRevision = Number(snapshot.publishedRevision || 0);
   const nextViewer = snapshot.viewerId || null;
+  const nextAssets = fingerprint(snapshot.assets || {});
+  if (state.assetFingerprint && nextAssets !== state.assetFingerprint) revokeAssets();
+  state.assetFingerprint = nextAssets;
   if (state.authorized && (nextGeneration !== state.contextGeneration || nextRevision !== state.publishedRevision)) state.localDiagnostics = [];
   if (nextGeneration !== state.contextGeneration || nextViewer !== state.viewerId) revokeAssets();
   state.contextGeneration = nextGeneration;

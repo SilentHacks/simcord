@@ -70,6 +70,7 @@ class _AssetOps:
 
     env: Env
     _blobs: dict[str, _Blob]
+    _explicit_assets: dict[str, tuple[str, bytes]]
     _retained_media_bytes: int
     _media_worker: MediaWorker | None
     _MAX_MEDIA_BYTES: ClassVar[int]
@@ -134,7 +135,10 @@ class _AssetOps:
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("asset access denied")
         source = record.source
-        if isinstance(source, tuple) and source[0] == "attachment":
+        if not isinstance(source, tuple) or not source:
+            return record
+        owner = source[0]
+        if owner == "attachment":
             _, channel_id, message_id, attachment_id = source
             try:
                 message = self.env.backend.get_message(channel_id, message_id)
@@ -142,7 +146,76 @@ class _AssetOps:
                 raise SetupError("asset is unavailable") from exc
             if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("asset access denied")
-            if not any(str(item.get("id", "")) == attachment_id for item in message.attachments):
+            item = next(
+                (item for item in message.attachments if str(item.get("id", "")) == attachment_id),
+                None,
+            )
+            if item is None:
+                raise SetupError("asset is unavailable")
+            url = item.get("url")
+            current = self.env.backend.cdn.get(url) if isinstance(url, str) else None
+            if current is None and isinstance(url, str):
+                supplied = self._explicit_assets.get(url)
+                current = supplied[1] if supplied is not None else None
+            if current is not None and hashlib.sha256(current).hexdigest() != record.digest:
+                raise SetupError("asset was replaced")
+        elif owner == "message":
+            _, channel_id, message_id = source
+            try:
+                message = self.env.backend.get_message(channel_id, message_id)
+            except BackendError as exc:
+                raise SetupError("asset is unavailable") from exc
+            if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
+                raise SetupError("asset access denied")
+        elif owner in {"user_avatar", "default_avatar"}:
+            _, user_id, avatar_key = source
+            try:
+                user = self.env.backend.get_user(user_id)
+                channel = self.env.backend.get_channel(page.channel_id)
+            except BackendError as exc:
+                raise SetupError("asset is unavailable") from exc
+            if channel.guild_id is None:
+                member_allowed = user_id in channel.recipient_ids
+            else:
+                guild = self.env.backend.guilds.get(channel.guild_id)
+                member_allowed = guild is not None and user_id in guild.members
+            if not member_allowed and user.bot:
+                member_allowed = any(
+                    item.author_id == user_id
+                    and can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
+                    for item in self.env.backend.messages.get(page.channel_id, {}).values()
+                )
+            if not member_allowed:
+                raise SetupError("asset access denied")
+            if owner == "user_avatar":
+                if user.avatar != avatar_key:
+                    raise SetupError("asset is unavailable")
+            elif user.avatar is not None:
+                raise SetupError("asset is unavailable")
+        elif owner == "member_avatar":
+            _, guild_id, user_id, avatar_key = source
+            try:
+                channel = self.env.backend.get_channel(page.channel_id)
+            except BackendError as exc:
+                raise SetupError("asset is unavailable") from exc
+            if channel.guild_id != guild_id:
+                raise SetupError("asset access denied")
+            guild = self.env.backend.guilds.get(guild_id)
+            member = guild.members.get(user_id) if guild is not None else None
+            if member is None or member.avatar != avatar_key:
+                raise SetupError("asset is unavailable")
+        elif owner == "explicit":
+            _, url = source
+            supplied = self._explicit_assets.get(url)
+            if supplied is None or hashlib.sha256(supplied[1]).hexdigest() != record.digest:
+                raise SetupError("asset is unavailable")
+        elif owner == "application_avatar":
+            _, user_id, avatar_key = source
+            try:
+                user = self.env.backend.get_user(user_id)
+            except BackendError as exc:
+                raise SetupError("asset is unavailable") from exc
+            if not user.bot or user.avatar != avatar_key:
                 raise SetupError("asset is unavailable")
         return record
 
@@ -183,7 +256,9 @@ class _AssetOps:
             raise SetupError(str(exc)) from exc
         # Reauthorize after the awaited decode: access or membership may have
         # changed while validation was in flight.
-        _, record, _ = self._authorized_asset(context_id, asset_id)
+        _, record, current_body = self._authorized_asset(context_id, asset_id)
+        if record.digest != digest or current_body != body:
+            raise SetupError("asset was replaced while decoding")
         entry = self._blobs.get(digest) if digest is not None else None
         if entry is None:
             raise SetupError("asset is unavailable")

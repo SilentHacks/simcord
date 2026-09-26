@@ -1,3 +1,4 @@
+import { applyRoleColor, presenceDot, renderIdentityAvatar } from "./dom.js";
 const TYPE = Object.freeze({
   ROW: 1, BUTTON: 2, STRING_SELECT: 3, TEXT_INPUT: 4, USER_SELECT: 5, ROLE_SELECT: 6,
   MENTIONABLE_SELECT: 7, CHANNEL_SELECT: 8, SECTION: 9, TEXT_DISPLAY: 10, THUMBNAIL: 11,
@@ -215,25 +216,11 @@ function renderSelect(component, path, options) {
   const entityIcon = (entry, kind) => {
     const icon = node("span", "entity-icon");
     if (kind === "user") {
-      const avatar = node("span", `entity-avatar${entry.bot ? " avatar-bot" : " avatar-user"}`);
-      if (entry.avatar && options.loadAsset) {
-        const img = node("img", "entity-avatar-img");
-        img.alt = "";
-        const manifest = options.assets?.[entry.avatar];
-        const pending = Promise.resolve(options.loadAsset(entry.avatar)).then((url) => {
-          if (options.isCurrent && !options.isCurrent()) return;
-          img.src = url;
-          return img.decode ? img.decode() : undefined;
-        }).catch((error) => {
-          if (!options.isCurrent || options.isCurrent()) {
-            options.onDiagnostic?.({ code: "avatar-unavailable", severity: "warning", message: "Supplied avatar failed to load or decode", detail: String(error), complete: false });
-          }
-        });
-        options.pendingMedia?.push(pending);
-        if (manifest?.available !== false) avatar.append(img);
-        else options.onDiagnostic?.({ code: "avatar-unavailable", severity: "warning", message: "Supplied avatar is unavailable offline", complete: false });
-      }
-      icon.append(avatar, node("span", "entity-presence"));
+      const rendered = renderIdentityAvatar(entry, options);
+      icon.append(rendered.element);
+      options.pendingMedia?.push(...rendered.pending);
+      const dot = presenceDot(entry);
+      if (dot) icon.append(dot);
       return icon;
     }
     if (kind === "role") {
@@ -573,9 +560,15 @@ export function renderMessage(root, message, options = {}) {
     header.tabIndex = -1;
     header.dataset.controlKey = `message:${message.id}`;
     const avatar = node("span", "message-avatar");
+    const renderedAvatar = renderIdentityAvatar(message.author, options, "message-avatar-image");
+    avatar.append(renderedAvatar.element);
+    options.pendingMedia?.push(...renderedAvatar.pending);
+    const avatarPresence = presenceDot(message.author);
+    if (avatarPresence) avatar.append(avatarPresence);
     header.append(avatar);
-    header.append(node("strong", "message-author", message.author?.name || "Unknown author"));
-    if (message.author?.bot) header.append(node("span", "message-app-badge", "APP"));
+    const author = node("strong", "message-author", message.author?.name || "Unknown author");
+    applyRoleColor(author, message.author);
+    header.append(author);
     if (message.timestamp) {
       const time = node("time", "message-time", shortTime(message.timestamp));
       time.dateTime = message.timestamp;

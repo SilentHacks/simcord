@@ -37,6 +37,7 @@ class MessageMixin(BackendBase):
         interaction_metadata: dict[str, Any] | None = None,
         webhook_id: int | None = None,
         author_name: str | None = None,
+        author_avatar: str | None = None,
         poll: Poll | None = None,
         broadcast: bool = True,
     ) -> Message:
@@ -79,6 +80,7 @@ class MessageMixin(BackendBase):
             interaction_metadata=interaction_metadata,
             webhook_id=webhook_id,
             author_name=author_name,
+            author_avatar=author_avatar,
             poll=poll,
             mention_user_ids=[int(m) for m in _USER_MENTION.findall(mention_content)],
             mention_role_ids=[int(m) for m in _ROLE_MENTION.findall(mention_content)],

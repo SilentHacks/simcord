@@ -208,10 +208,36 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   place-items: center;
   width: 40px;
   height: 40px;
-  background: #ed4245;
   border-radius: 50%;
   font-size: 0;
 }
+.message-avatar-image {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  color: #d9dcff;
+  background: #5865f2;
+  border-radius: 50%;
+}
+.message-avatar-image.avatar-bot { background: #5865f2; }
+.message-avatar-image.avatar-default { background: #4f5660; }
+.message-avatar-image svg { width: 26px; height: 26px; }
+.message-avatar-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.message-avatar .entity-presence {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  background: #45a366;
+  border: 3px solid var(--discord-bg);
+  border-radius: 50%;
+}
+.entity-presence.presence-idle { background: #f0b232; }
+.entity-presence.presence-dnd { background: #ed4245; }
+.entity-presence.presence-offline { background: #747f8d; }
 .message-gutter-time {
   position: absolute;
   top: 5px;

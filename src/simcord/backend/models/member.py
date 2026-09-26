@@ -8,6 +8,8 @@ class Member:
     user_id: int
     role_ids: list[int] = field(default_factory=list)
     nick: str | None = None
+    #: Guild-specific avatar hash. ``None`` means use the user's avatar/default.
+    avatar: str | None = None
     joined_at: str = ""
     timed_out_until: str | None = None  # ISO timestamp while timed out
     deaf: bool = False

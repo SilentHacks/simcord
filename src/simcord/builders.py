@@ -158,6 +158,7 @@ class WebhookHandle:
         content: str = "",
         *,
         username: str | None = None,
+        avatar_url: str | None = None,
         embed: discord.Embed | None = None,
         embeds: Sequence[discord.Embed] = (),
         attachments: Sequence[tuple[str, bytes]] = (),
@@ -183,6 +184,7 @@ class WebhookHandle:
             attachments=attachment_payloads,
             webhook_id=self._webhook.id,
             author_name=username,
+            author_avatar=avatar_url,
         )
         await self._env._settle_internal(dispatch="WEBHOOK.send")
         return to_discord_message(self._env, message)
@@ -430,10 +432,18 @@ class GuildHandle:
         *,
         roles: Sequence[RoleHandle] = (),
         nick: str | None = None,
+        avatar: str | None = None,
     ) -> MemberActor:
         from .actors import MemberActor
 
-        self._env.backend.add_member(self.id, user.id, roles=[r.id for r in roles], nick=nick, announce=True)
+        self._env.backend.add_member(
+            self.id,
+            user.id,
+            roles=[r.id for r in roles],
+            nick=nick,
+            avatar=avatar,
+            announce=True,
+        )
         return MemberActor(self._env, self, user)
 
     def remove_member(self, member: MemberActor | UserHandle) -> None:

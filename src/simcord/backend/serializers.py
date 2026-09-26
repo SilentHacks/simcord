@@ -122,7 +122,7 @@ def member_payload(
         "pending": member.pending,
         "flags": 0,
         "communication_disabled_until": member.timed_out_until,
-        "avatar": None,
+        "avatar": member.avatar,
     }
     if with_user:
         payload["user"] = user_payload(backend.users[member.user_id])

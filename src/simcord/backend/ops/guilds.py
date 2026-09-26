@@ -102,10 +102,17 @@ class GuildMixin(BackendBase):
         *,
         roles: Iterable[int] = (),
         nick: str | None = None,
+        avatar: str | None = None,
         announce: bool = False,
     ) -> Member:
         guild = self.get_guild(guild_id)
-        member = Member(user_id=user_id, role_ids=list(roles), nick=nick, joined_at=self.now_iso())
+        member = Member(
+            user_id=user_id,
+            role_ids=list(roles),
+            nick=nick,
+            avatar=avatar,
+            joined_at=self.now_iso(),
+        )
         guild.members[user_id] = member
         if announce:
             payload = dict(serializers.member_payload(self, guild, member))

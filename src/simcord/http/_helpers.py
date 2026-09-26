@@ -46,15 +46,9 @@ _MESSAGE_REJECTED = {"sticker_ids": "simcord does not model stickers on messages
 # ``Webhook.send`` adds fields that a plain channel send never carries, so the
 # webhook-execute route classifies them explicitly rather than letting them fall
 # through to the bare "unmodelled key" path:
-#   * ``username``   — an *incoming* webhook's per-message display-name override is
-#                      modelled (applied as ``author_name``); an *application*
-#                      webhook (interaction followup) is keyed differently — Discord
-#                      ignores username/avatar there — so it is accepted-and-ignored.
-#   * ``avatar_url`` — accepted-and-ignored: simcord models no avatars for any user,
-#                      so there is nothing to apply (and nothing silently faked).
-#   * forum-via-webhook (``thread_name``/``applied_tags``) is a real feature simcord
-#     does not model, so it is rejected loudly with a reason.
-_WEBHOOK_IGNORED = ("avatar_url",)
+#   * ``avatar_url`` — an incoming webhook's per-message avatar override is
+#     modelled when supplied through the incoming-webhook execute route.
+_WEBHOOK_IGNORED: tuple[str, ...] = ()
 _WEBHOOK_REJECTED = {
     "thread_name": "simcord does not model creating a forum thread via webhook offline.",
     "applied_tags": "simcord does not model creating a forum thread via webhook offline.",
@@ -76,18 +70,21 @@ def bot_message(
     handled = _MESSAGE_HANDLED
     ignore = _MESSAGE_IGNORED
     reject = _MESSAGE_REJECTED
-    apply_username = webhook_execute and webhook_id is not None
+    apply_identity = webhook_execute and webhook_id is not None
     if webhook_execute:
         reject = {**_MESSAGE_REJECTED, **_WEBHOOK_REJECTED}
-        handled = (*_MESSAGE_HANDLED, "username") if apply_username else _MESSAGE_HANDLED
-        ignore = (*_MESSAGE_IGNORED, *_WEBHOOK_IGNORED) + (() if apply_username else ("username",))
+        handled = (*_MESSAGE_HANDLED, "username", "avatar_url") if apply_identity else _MESSAGE_HANDLED
+        ignore = (*_MESSAGE_IGNORED, *_WEBHOOK_IGNORED) + (
+            () if apply_identity else ("username", "avatar_url")
+        )
     body = ctx.fields(
         *handled,
         ignore=ignore,
         reject=reject,
         body=ctx.body() if body is None else body,
     )
-    author_name = body.get("username") if apply_username else None
+    author_name = body.get("username") if apply_identity else None
+    author_avatar = body.get("avatar_url") if apply_identity else None
     flags = int(body.get("flags") or 0)
     interaction_metadata = None
     if interaction is not None:
@@ -124,6 +121,7 @@ def bot_message(
         interaction_metadata=interaction_metadata,
         webhook_id=webhook_id,
         author_name=author_name,
+        author_avatar=author_avatar,
         poll=poll,
         broadcast=not flags & EPHEMERAL_FLAG,
     )

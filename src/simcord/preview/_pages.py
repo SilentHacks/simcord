@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import time
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import discord
 
 from ..backend.access import can_access_channel, can_access_message
+from ..backend.cdn import CDN_BASE
 from ..backend.errors import BackendError, SetupError
 from ..results import InteractionResult, ResponseMessage
 from ._assets import _Asset, _content_type
@@ -56,10 +58,7 @@ class _Page:
         if existing is not None:
             record = self.assets[existing]
             self.referenced_assets.add(existing)
-            # A placeholder created by a foreign reference gains real ownership
-            # when the attachment that owns the bytes is projected later.
-            if record.digest is None and source is not None and source[0] == "attachment":
-                self._resolve_blob(record, metadata, source)
+            self._resolve_blob(record, metadata, source)
             return existing
         asset = "a_" + secrets.token_urlsafe(12)
         filename = str(metadata.get("filename", "asset"))
@@ -84,22 +83,48 @@ class _Page:
         blob: bytes | None = None
         url = metadata.get("url")
         if isinstance(url, str):
-            if source is not None and source[0] == "attachment":
-                # Only the owning message's own attachments may resolve CDN
-                # bytes; foreign attachment URLs never reach this branch.
+            owner = source[0] if source else None
+            if owner in {
+                "attachment",
+                "user_avatar",
+                "member_avatar",
+                "default_avatar",
+                "application_avatar",
+            }:
                 blob = self.preview.env.backend.cdn.get(url)
-                if blob is not None:
-                    record.source = source
-            if blob is None and (supplied := self.preview._explicit_assets.get(url)) is not None:
+            if (
+                blob is None
+                and (supplied := self.preview._explicit_assets.get(url)) is not None
+                and not (owner == "message" and url.startswith(f"{CDN_BASE}/"))
+            ):
                 filename, blob = supplied
                 record.filename = filename
-                if source is None:
-                    record.source = ("explicit", url)
+                if source is not None:
+                    record.source = source
         if blob is None:
+            if record.digest is not None:
+                self.preview._release_blob(record.digest, normalized=record.normalizedRetained)
+                record.digest = None
+                record.normalizedRetained = False
+            record.available = False
+            record.bytes = None
+            record.validated = False
             return
+        digest = hashlib.sha256(blob).hexdigest()
+        if digest == record.digest:
+            record.available = True
+            record.bytes = len(blob)
+            record.diagnostic = None
+            return
+        if record.digest is not None:
+            self.preview._release_blob(record.digest, normalized=record.normalizedRetained)
+            record.normalizedRetained = False
         digest = self.preview._retain_blob(blob)
         if digest is None:
             record.diagnostic = "session media budget exceeded"
+            record.available = False
+            record.bytes = None
+            record.digest = None
             return
         if record.contentType == "application/octet-stream":
             record.contentType = _content_type(record.filename)
@@ -107,6 +132,7 @@ class _Page:
         record.digest = digest
         record.available = True
         record.bytes = len(blob)
+        record.validated = False
 
 
 class _PageOps:

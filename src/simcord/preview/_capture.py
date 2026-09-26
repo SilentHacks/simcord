@@ -269,6 +269,7 @@ class ManagedCapture:
         temporary: Path | None = None
         context: Any = None
         page: Any = None
+        page_errors: list[str] = []
         deadline = time.monotonic() + _CAPTURE_DEADLINE
         try:
             async with asyncio.timeout(_CAPTURE_DEADLINE):
@@ -281,6 +282,8 @@ class ManagedCapture:
                     extra_http_headers={"X-Simcord-Capability": self.preview.capability},
                 )
                 page = await context.new_page()
+                if callable(on := getattr(page, "on", None)):
+                    on("pageerror", lambda error: page_errors.append(str(error)))
                 await page.route("**/*", lambda route: self._route(route, pin, origin))
                 await page.goto(
                     f"{origin}/#{self.preview.capability}", wait_until="domcontentloaded", timeout=30000
@@ -289,10 +292,22 @@ class ManagedCapture:
                 try:
                     await page.wait_for_function(
                         "() => window.simcordPreview && window.simcordPreview.ready === true",
-                        timeout=remaining,
+                        timeout=max(1, remaining - 1000),
                     )
                 except Exception as exc:
-                    raise SetupError("managed capture readiness deadline exceeded") from exc
+                    status = (
+                        await cast(Any, page).evaluate("() => window.simcordPreview || null")
+                        if hasattr(page, "evaluate")
+                        else None
+                    )
+                    diagnostics = status.get("diagnostics", []) if isinstance(status, Mapping) else []
+                    details = page_errors + [
+                        str(item.get("message"))
+                        for item in diagnostics
+                        if isinstance(item, Mapping) and item.get("message")
+                    ]
+                    detail = f": {'; '.join(details)}" if details else ""
+                    raise SetupError(f"managed capture readiness deadline exceeded{detail}") from exc
 
                 self.preview._assert_capture_live(pin.page)
                 status = await self._status(page)
@@ -325,7 +340,8 @@ class ManagedCapture:
                     )
                 complete = bool(status.get("complete", True)) and bool(platform_fonts.get("available"))
                 if not complete and not allow_incomplete:
-                    raise SetupError("managed capture is incomplete; pass allow_incomplete=True")
+                    detail = "; ".join(str(item.get("message", "")) for item in diagnostics)
+                    raise SetupError(f"managed capture is incomplete ({detail}); pass allow_incomplete=True")
 
                 await self._freeze(page, expand_modal=pin.modal_id is not None and mode == "surface")
                 await self._raf(page)
