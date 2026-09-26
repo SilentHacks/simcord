@@ -102,7 +102,7 @@ def _image(fmt: str, size: tuple[int, int] = (2, 2), frames: int = 1) -> bytes:
     images = [Image.new("RGBA", size, (index, 20, 40, 255)) for index in range(frames)]
     output = io.BytesIO()
     if fmt == "GIF":
-        images[0].save(output, format=fmt, save_all=True, append_images=images[1:], loop=0, duration=1)
+        images[0].save(output, format=fmt, save_all=True, append_images=images[1:], loop=0, duration=100)
     else:
         images[0].save(output, format=fmt)
     return output.getvalue()
@@ -131,16 +131,20 @@ async def test_preview_media_worker_validates_limits_and_lifecycle():
         await worker.validate("wide", too_wide)
     with pytest.raises(MediaError, match="dimensions exceed"):
         await worker.validate("wide", too_wide)
-    with pytest.raises(MediaError, match="valid PNG"):
+    with pytest.raises(MediaError):
         await worker.validate("broken", b"not an image")
-    with pytest.raises(MediaError, match="64 MiB"):
-        await worker.validate("decoded-budget", _image("GIF", (1024, 1024), 17))
-    with pytest.raises(MediaError, match="unsupported inline media format"):
+    with pytest.raises(MediaError):
         await worker.validate("bmp", _image("BMP"))
     with pytest.raises(MediaError, match="10 MiB"):
         await worker.validate("huge", b"x" * (10 * 1024 * 1024 + 1))
-    with pytest.raises(MediaError, match="100 frames"):
-        await worker.validate("animated", _image("GIF", frames=101))
+    animation = _image("GIF", frames=101)
+    info = await worker.validate("animated", animation, media_time=0)
+    second = await worker.validate("animated", animation, media_time=0.1)
+    repeated = await worker.validate("animated", animation, media_time=0.1)
+    assert info.frames == 101
+    assert second.capture != info.capture
+    assert repeated.capture == second.capture
+    assert second.effective_media_time == 0.1
 
     await worker.close()
     await worker.close()

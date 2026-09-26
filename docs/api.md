@@ -80,6 +80,8 @@ Its `ready`, `complete`, and `calibrated` fields are independent; inspect `diagn
 `profile`, and `geometry` rather than inferring success from a PNG path. When `screenshot()` is
 called with `path=None`, `PreviewCapture.path` is `None` and `PreviewCapture.png` carries the PNG
 bytes in memory. Internal `/api/*` payloads and DOM/CSS names are not extension APIs.
+`Preview.screenshot(..., media_time=...)` selects a deterministic capture time; `PreviewCapture.media_metadata`
+reports each validated asset's effective time, codecs, and transformation.
 
 ## Results
 

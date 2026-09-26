@@ -427,7 +427,7 @@ async def test_preview_missing_assets_and_restored_private_access(env, channel, 
         asset_id = target["embeds"][0]["image"]["asset_id"]
         assert target["embeds"][0]["image"]["available"] is False
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
-            preview._asset("python", asset_id)
+            await preview._prepare_asset("python", asset_id)
 
     private_parent = env.bot.get_channel(channel.id)
     private_thread = await private_parent.create_thread(

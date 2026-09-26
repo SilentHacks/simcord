@@ -290,18 +290,20 @@ def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _P
         "id": attachment_id,
         "filename": filename,
         "description": attachment.get("description"),
+        "content_type": content_type,
         "preview": preview,
         "size": int(attachment.get("size", 0) or 0),
-        "content_type": content_type,
         "inline": (
-            content_type.startswith("image/") and not filename.lower().endswith((".svg", ".html", ".htm"))
+            content_type.lower().startswith(("image/", "audio/", "video/"))
+            and not filename.lower().endswith((".svg", ".html", ".htm", ".xhtml"))
+            and content_type.lower() not in {"image/svg+xml", "text/html", "application/xhtml+xml"}
         ),
-        "spoiler": bool(attachment.get("spoiler", False)) or filename.startswith("SPOILER_"),
         "width": attachment.get("width"),
         "height": attachment.get("height"),
         "duration_secs": attachment.get("duration_secs"),
         "asset_id": asset_id,
         "available": _asset_available(page, asset_id),
+        "spoiler": bool(attachment.get("spoiler", False)) or filename.startswith("SPOILER_"),
     }
 
 
@@ -631,8 +633,8 @@ def _sticker_projection(page: _Page, sticker: Any) -> dict[str, Any]:
         f"sticker:{sticker.guild_id}:{sticker.id}",
         {
             "url": sticker.url or sticker_url(sticker.id, sticker.format_type),
-            "filename": sticker.filename or f"{sticker.id}.{suffix}",
-            "content_type": sticker.content_type or content_type,
+            "filename": f"{sticker.id}.{suffix}",
+            "content_type": content_type,
         },
         source=("sticker", sticker.guild_id, sticker.id),
     )
@@ -1388,22 +1390,12 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
                 }
             )
         for sticker in value["stickers"]:
-            if sticker["format_type"] != 1:
-                diagnostics.append(
-                    {
-                        "code": "sticker_animation_unavailable",
-                        "severity": "warning",
-                        "message": f"Sticker {sticker['name']} uses an animated format not rendered in this preview.",
-                        "message_id": value["id"],
-                        "complete": False,
-                    }
-                )
-            elif not sticker["available"]:
+            if not sticker["available"]:
                 diagnostics.append(
                     {
                         "code": "sticker_asset_unavailable",
                         "severity": "warning",
-                        "message": f"Sticker {sticker['name']} has no available image asset.",
+                        "message": f"Sticker {sticker['name']} has no available media asset.",
                         "message_id": value["id"],
                         "complete": False,
                     }

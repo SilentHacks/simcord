@@ -206,18 +206,26 @@ so deleting a message or removing an attachment immediately invalidates its asse
 stable across publications while the underlying asset remains referenced. Missing bytes show a
 labeled unavailable tile and make a capture incomplete unless `allow_incomplete=True`.
 
-Inline validation uses Pillow for PNG, JPEG, WebP, and GIF; without the `preview` extra, image
-media fails validation with the `install simcord[preview]` diagnostic while original bytes remain
-downloadable. `available` reports retained source bytes; `displayReady` remains false until a raster
-has been validated and normalized. The manifest then carries `displayWidth`/`displayHeight` after
-EXIF orientation, and the browser waits for that local image to decode before reporting ready.
-Audio/video playback, SVG/HTML, and unvalidated codecs are unsupported inline. SVG and HTML
-filenames are never embedded or opened inline; text previews use text nodes, and file cards expose
-an explicit download action for original bytes. Display always serves a deterministic first frame
-re-encoded as PNG without source metadata, so animated media never stays animated in place.
-The accessible image lightbox uses only already-loaded local blob URLs; Escape closes it, arrow
-keys navigate its loaded image group, and close restores focus to the opener. It makes no remote
-media request. File size labels round up to KB or MB.
+Inline raster validation uses Pillow for PNG, JPEG, WebP, GIF, and APNG. PyAV validates audio and
+video streams. Media over 10 MiB remains downloadable but is not decoded inline. `available` reports
+retained source bytes; `displayReady` remains false until validation succeeds. Valid still images are
+EXIF-oriented, metadata-stripped PNGs. Animated raster originals stay animated for interactive browser
+playback; captures select a deterministic frame at `media_time` and serve a static PNG.
+
+Audio/video sources remain downloadable separately from display transcodes and static video captures.
+The validator preserves WebM with VP8/VP9 video and optional Opus/Vorbis audio, and Ogg Opus audio;
+other supported tracks are transcoded to WebM VP9/Opus or Ogg Opus. The manifest reports actual
+`sourceCodecs`, `displayCodecs`, transformation, and quality differences. PyAV/FFmpeg decoder and
+encoder availability depends on the installed platform build; if required codecs are absent, media is
+unavailable inline rather than silently faked. Interactive audio/video uses native browser playback;
+managed screenshots pause at a deterministic `media_time`.
+
+Lottie stickers use the pinned, MIT-licensed, expression-free light Canvas runtime shipped locally.
+Expressions, fonts/glyphs, and external or data-URL assets are rejected. SVG and HTML files remain
+download-only; text previews use text nodes, and file cards expose an explicit original-byte download.
+The accessible image lightbox uses only already-loaded local blob URLs; Escape closes it, arrow keys
+navigate its loaded image group, and close restores focus to the opener. It makes no remote media
+request. File size labels round up to KB or MB.
 
 Attachment images keep their validated intrinsic ratio and are bounded to the message column and
 viewport. They currently remain a responsive vertical list rather than a guessed mosaic: the local
@@ -235,17 +243,20 @@ before unbounded buffering; bytes are never silently truncated:
 | One uploaded file / aggregate uploaded bytes per action | 10 MiB / 25 MiB |
 | Multipart files / total parts | 10 files / 11 parts |
 | Retained session media (source, normalized, pinned; shared blobs count once) | 128 MiB |
-| Raster width or height / pixels per frame | 8,192 / 16 megapixels |
-| Animated frames / decoded RGBA bytes per asset | 100 / 64 MiB |
-| Media processing | One bounded decode job; no unbounded queue |
+| Media decoder source / normalized display / still capture | 10 MiB / 10 MiB / 64 MiB |
+| Raster/video dimensions / pixels per frame | 8,192 per axis / 16 megapixels |
+| Animation/video frames / media duration | 18,000 / 10 minutes |
+| Media jobs / worker / deadline / Linux address space | 8 queued / 1 child / 30 seconds / 512 MiB |
 | Interactive pages / managed captures | 16 pages / one capture |
 | Inactive page context lifetime | 10 minutes after the last request, unless an action is active; expired pages are reaped and their assets released |
 | Screenshot raster axis / total pixels | 32,768 / 32 megapixels |
 | Managed capture deadline | 30 seconds |
 
-Pillow also rejects malformed streams and decompression-bomb warnings. The media worker is lazy,
-serial, and external to Env's event loop; cancelling it is awaited before its buffers are released.
-These limits bound accepted work but are not an operating-system sandbox for malicious bot code.
+Pillow rejects malformed streams and decompression-bomb warnings. Media decoding runs lazily in one
+serial, killable subprocess, outside Env's event loop. Linux enforces a 512 MiB address-space ceiling;
+other platforms retain queue, process, and deadline limits but cannot enforce that memory ceiling, so
+adversarial-media memory safety is not certified there. These limits are not an operating-system
+sandbox for malicious bot code.
 
 ## Readiness, generations, and action reconciliation
 
@@ -345,10 +356,10 @@ Env operation guard. It returns an immutable `PreviewCapture`, not just a path:
 ```python
 capture = await preview.screenshot(
     "panel.png", viewer=alice, target=panel, mode="surface",
-    allow_incomplete=False,
+    media_time=2.5, allow_incomplete=False,
 )
 assert capture.ready
-print(capture.complete, capture.diagnostics)
+print(capture.complete, capture.media_metadata)
 ```
 
 `path` is `str | os.PathLike | None`. Pass `None` to render entirely in memory: `capture.path` is then `None` and
@@ -362,9 +373,10 @@ motion, Playwright/browser versions, system font identity, emoji fallback, and a
 excluding the outside inspector. Width and height are positive bounded integers and are checked
 against the screenshot raster limits above.
 
-The report includes path, viewer/channel/target/modal IDs, published and render generations, output
-geometry, profile, readiness, calibration, action status, and structured diagnostics. Captures reject
-unsettled actions, unavailable authorization, incomplete output (unless explicitly opted in),
+The report includes viewer, channel, target, and modal IDs, published and render generations, output
+geometry, media metadata (effective frame times, codec selection, transformations), readiness,
+calibration, action status, and diagnostics. Captures reject unsettled actions, unavailable authorization,
+incomplete output (unless explicitly opted in),
 concurrent capture, a bot restart during capture, and invalid destinations. Output is written
 atomically, so cancellation or a failed capture does not leave a partial PNG. A pinned capture
 cannot follow later focus, viewer, or backend changes; access and attachment membership are

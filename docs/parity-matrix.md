@@ -44,7 +44,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Local component preview | ✅ | Optional loopback page, real actor callbacks, page-local authorized viewers, explicit refresh/staleness, packaged offline assets; not a Discord client or network connection |
 | Preview screenshots | ✅ | Optional Playwright capture returns immutable `PreviewCapture` reports with surface/viewport modes, readiness, diagnostics, completeness, and calibration metadata; no pixel-perfect claim |
 | Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
-| Preview fidelity boundary | ⚠️ | System font/emoji fallback, first-frame animation capture, unsupported audio/video/premium/mobile behavior, and uncalibrated references are reported differences, not backend parity claims |
+| Preview fidelity boundary | ⚠️ | System font/emoji fallback, platform-dependent media codec support, premium/mobile behavior, and uncalibrated references remain reported differences; browser playback is interactive while managed capture uses deterministic `media_time` |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |

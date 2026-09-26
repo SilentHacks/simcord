@@ -50,7 +50,7 @@ const state = {
   lastAction: null,
   pendingAction: null,
   sequence: 0,
-  profile: { theme: "dark", width: 960, height: 720, locale: "en-US", timezone: "UTC", deviceScale: 1, reducedMotion: true },
+  profile: { theme: "dark", width: 960, height: 720, locale: "en-US", timezone: "UTC", deviceScale: 1, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches, mediaTime: null },
   profileCustomized: { width: false, height: false },
   calibration: { status: "uncalibrated", reason: "No legitimate Discord reference fixture is bundled for this slice" },
   drafts: new Map(),
@@ -84,6 +84,8 @@ const state = {
   contextReleased: false,
   statusFingerprint: "",
   fontStatus: { loaded: [], missing: [], faces: [] },
+  mediaCaptureTimes: {},
+  mediaMetadata: {},
 };
 function freeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -96,7 +98,8 @@ function statusObject() {
     openPopupKey: state.dropdown?.key || null,
     modalHandle: state.modalHandle,
     validationPaths: state.modalError ? [state.modalErrorHandle] : [],
-    mediaCaptureTimes: {},
+    mediaCaptureTimes: { ...state.mediaCaptureTimes },
+    mediaMetadata: { ...state.mediaMetadata },
   };
   const value = {
     schemaVersion: state.snapshot?.protocolVersion ?? 2,
@@ -175,6 +178,8 @@ function revokeAssets() {
   state.assetLoads.clear();
   state.objectUrls.forEach((url) => URL.revokeObjectURL(url));
   state.objectUrls.clear();
+  state.mediaCaptureTimes = {};
+  state.mediaMetadata = {};
 }
 
 function beginRender() {
@@ -297,10 +302,11 @@ function profileFromSnapshot(snapshot) {
   return {
     ...state.profile,
     width: state.profileCustomized.width ? state.profile.width : Number(configured.width || 960),
-    height: state.profileCustomized.height ? state.profile.height : Number(configured.height || 720),
     locale: configured.locale || state.profile.locale || "en-US",
     timezone: configured.timezone || state.profile.timezone || "UTC",
     presentationTime: configured.presentationTime || state.profile.presentationTime || null,
+    reducedMotion: configured.reducedMotion ?? state.profile.reducedMotion,
+    mediaTime: Number.isFinite(configured.mediaTime) ? configured.mediaTime : null,
   };
 }
 
@@ -311,8 +317,15 @@ function applyProfile() {
   ui.height.value = String(state.profile.height);
 }
 
-function loadAsset(assetId, { download = false } = {}) {
-  const key = download ? `${assetId}:download` : assetId;
+function loadAsset(assetId, options = {}) {
+  const { download = false, capture = false, poster = false, mediaTime = null } = options;
+  const params = new URLSearchParams();
+  if (download) params.set("download", "1");
+  if (capture) params.set("capture", "1");
+  if (poster) params.set("poster", "1");
+  if (mediaTime !== null && mediaTime !== undefined) params.set("media_time", String(mediaTime));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const key = `${assetId}:${suffix}`;
   const cached = state.objectUrls.get(key);
   if (cached) return Promise.resolve(cached);
   const epoch = state.assetEpoch;
@@ -320,7 +333,7 @@ function loadAsset(assetId, { download = false } = {}) {
   const requestKey = `${epoch}:${key}`;
   const pending = state.assetLoads.get(requestKey);
   if (pending) return pending;
-  const request = fetch(`/api/assets/${encodeURIComponent(assetId)}${download ? "?download=1" : ""}`, { headers: authHeaders() }).then(async (response) => {
+  const request = fetch(`/api/assets/${encodeURIComponent(assetId)}${suffix}`, { headers: authHeaders() }).then(async (response) => {
     if (!response.ok) throw new Error(`asset request failed (${response.status})`);
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -328,13 +341,30 @@ function loadAsset(assetId, { download = false } = {}) {
       URL.revokeObjectURL(url);
       throw new Error("stale asset generation");
     }
-    const width = Number(response.headers.get("X-Display-Width"));
-    const height = Number(response.headers.get("X-Display-Height"));
     const manifest = state.snapshot?.assets?.[assetId];
-    if (!download && manifest && width > 0 && height > 0) {
-      manifest.displayReady = true;
-      manifest.displayWidth = width;
-      manifest.displayHeight = height;
+    if (!download && manifest) {
+      const metadata = response.headers.get("X-Simcord-Media-Metadata");
+      if (metadata) Object.assign(manifest, JSON.parse(metadata));
+      const width = Number(response.headers.get("X-Display-Width"));
+      const height = Number(response.headers.get("X-Display-Height"));
+      if (width > 0 && height > 0) {
+        manifest.displayReady = true;
+        manifest.displayWidth = width;
+        manifest.displayHeight = height;
+      }
+      if (capture && mediaTime !== null && mediaTime !== undefined) {
+        state.mediaCaptureTimes[assetId] = Number(response.headers.get("X-Media-Time") || mediaTime);
+      }
+      state.mediaMetadata[assetId] = {
+        kind: manifest.mediaKind,
+        duration: manifest.duration,
+        sourceCodecs: manifest.sourceCodecs,
+        displayCodecs: manifest.displayCodecs,
+        transformation: manifest.transformation,
+        qualityDifferences: manifest.qualityDifferences,
+        effectiveMediaTime: manifest.effectiveMediaTime,
+        workerMemoryLimited: manifest.workerMemoryLimited,
+      };
       state.assetFingerprint = fingerprint(state.snapshot.assets);
     }
     state.objectUrls.set(key, url);
@@ -495,6 +525,25 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     locale: state.profile.locale,
     timezone: state.profile.timezone,
     presentationTime: state.profile.presentationTime,
+    mediaTime: state.profile.mediaTime,
+    reducedMotion: state.profile.reducedMotion,
+    onMediaCaptureTime: (assetId, mediaTime) => {
+      state.mediaCaptureTimes[assetId] = mediaTime;
+      const manifest = snapshot.assets?.[assetId];
+      if (manifest) {
+        manifest.effectiveMediaTime = mediaTime;
+        state.mediaMetadata[assetId] = {
+          kind: manifest.mediaKind,
+          duration: manifest.duration,
+          sourceCodecs: manifest.sourceCodecs,
+          displayCodecs: manifest.displayCodecs,
+          transformation: manifest.transformation,
+          qualityDifferences: manifest.qualityDifferences,
+          effectiveMediaTime: mediaTime,
+          workerMemoryLimited: manifest.workerMemoryLimited,
+        };
+      }
+    },
     dropdown: state.dropdown,
     onInit: initDraft,
     onOpen: openDropdown,
@@ -597,7 +646,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId) {
       record = { element, fingerprint: "" };
       state.messageNodes.set(id, record);
     }
-    const value = fingerprint(message);
+    const value = `${fingerprint(message)}:${state.profile.mediaTime ?? ""}`;
     if (record.fingerprint !== value) {
       record.fingerprint = value;
       renderMessage(
@@ -819,7 +868,12 @@ function renderSnapshot(snapshot, generation, force = false) {
   state.publishedRevision = nextRevision;
   state.viewerId = nextViewer;
   state.targetId = snapshot.targetId ?? null;
+  const previousMediaTime = state.profile.mediaTime;
   state.profile = profileFromSnapshot(snapshot);
+  if (previousMediaTime !== state.profile.mediaTime) {
+    state.mediaCaptureTimes = {};
+    state.mediaMetadata = {};
+  }
   applyProfile();
   updatePickers(snapshot);
   const pendingMedia = [];
@@ -831,8 +885,9 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.dayNodes.clear();
     const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
     const selectedKey = selected ? String(selected.id) : null;
-    const selectedFingerprint = fingerprint(selected);
-    const shouldRenderMessage = force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
+    const selectedFingerprint = `${fingerprint(selected)}:${state.profile.mediaTime ?? ""}`;
+    const shouldRenderMessage =
+      force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
     if (shouldRenderMessage) {
       state.lastMessageKey = selectedKey;
       state.lastMessageFingerprint = selectedFingerprint;

@@ -344,7 +344,7 @@ async def test_deleted_channel_snapshot_reports_access_denied(env, channel, alic
 
 @pytest.mark.asyncio
 async def test_asset_download_serves_original_bytes(env, channel, alice):
-    """?download=1 returns the original bytes as an attachment; the default normalizes."""
+    """The animated inline display and original download preserve the GIF."""
     original = gif_bytes()
     message = await env.bot.get_channel(channel.id).send(
         file=discord.File(io.BytesIO(original), filename="anim.gif")
@@ -358,8 +358,8 @@ async def test_asset_download_serves_original_bytes(env, channel, alice):
         assert display.status == 200
         assert "inline" in display.headers["Content-Disposition"]
         with Image.open(io.BytesIO(await display.read())) as image:
-            assert image.format == "PNG"
-            assert getattr(image, "n_frames", 1) == 1
+            assert image.format == "GIF"
+            assert image.n_frames == 2
         download = await client.get(
             preview._origin + f"/api/assets/{asset_id}?download=1",
             headers=preview_headers(preview, "python"),

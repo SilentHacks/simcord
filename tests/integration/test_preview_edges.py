@@ -349,7 +349,7 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert selected["embeds"][0]["image"]["available"] is True
         assert selected["embeds"][0]["thumbnail"]["available"] is True
         asset = selected["attachments"][0]["asset_id"]
-        assert preview._asset("python", asset)[1] == image.getvalue()
+        assert (await preview._prepare_asset("python", asset, download=True))[1] == image.getvalue()
         assert await preview._prepare_asset("python", asset)
         assert await preview._prepare_asset("python", asset)
         await preview.show(v2_message)

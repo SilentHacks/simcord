@@ -107,22 +107,18 @@ function appendStickers(root, stickers, options, pendingMedia) {
   if (!stickers?.length) return;
   const list = node("div", "message-stickers");
   for (const sticker of stickers) {
-    if (sticker.format_type !== 1) {
-      list.append(node("div", "message-sticker-unavailable", `${sticker.name} · animated sticker preview unavailable`));
+    if (sticker.available === false) {
+      list.append(node("div", "message-sticker-unavailable", `${sticker.name} unavailable`));
       options.onDiagnostic?.({
-        code: "sticker-animation-unavailable",
+        code: "sticker-asset-unavailable",
         severity: "warning",
-        message: `Sticker ${sticker.name} uses an animated format not rendered in this preview`,
+        message: `Sticker ${sticker.name} has no available media asset`,
         complete: false,
       });
       continue;
     }
-    if (sticker.available === false) {
-      list.append(node("div", "message-sticker-unavailable", `${sticker.name} unavailable`));
-      continue;
-    }
     const result = renderSpoilerMedia(
-      { ...sticker, content_type: "image/png", description: sticker.name },
+      { ...sticker, description: sticker.name },
       "message-sticker",
       options,
       sticker.name || "Sticker",

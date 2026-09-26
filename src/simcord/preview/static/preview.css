@@ -690,6 +690,56 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   border: 1px dashed #faa61a;
   border-radius: 4px;
 }
+.media-player {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  width: min(100%, 520px);
+  padding: 10px;
+  color: var(--discord-text);
+  background: var(--discord-control);
+  border: 1px solid var(--component-border);
+  border-radius: 8px;
+}
+.media-player-native { display: block; width: 100%; max-height: min(55vh, 420px); background: #111214; }
+.audio-player .media-player-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.media-player-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.media-player-button {
+  min-height: 32px;
+  padding: 4px 10px;
+  color: var(--discord-text);
+  background: var(--discord-bg);
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.media-player-button:focus-visible, .media-player-seek:focus-visible, .media-player-volume:focus-visible {
+  outline: 2px solid var(--discord-focus);
+  outline-offset: 2px;
+}
+.media-player-seek { flex: 1 1 auto; min-width: 48px; accent-color: var(--discord-brand); }
+.media-player-volume { width: 76px; accent-color: var(--discord-brand); }
+.media-player-time { flex: 0 0 auto; color: var(--discord-subtle); font-size: 12px; font-variant-numeric: tabular-nums; }
+.media-player-status { color: var(--discord-subtle); font-size: 12px; }
+.media-player-status:empty { display: none; }
+.media-waveform {
+  display: grid;
+  grid-template-columns: repeat(64, minmax(1px, 1fr));
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  overflow: hidden;
+}
+.voice-wave-bar {
+  display: block;
+  width: 100%;
+  height: var(--wave-height);
+  min-height: 2px;
+  background: linear-gradient(to right, var(--discord-brand) var(--media-progress), var(--discord-subtle) var(--media-progress));
+  border-radius: 2px;
+}
+.media-lottie { display: inline-grid; place-items: center; max-width: min(100%, 220px); max-height: 220px; }
+.media-lottie-canvas, .media-lottie-canvas canvas { display: block; max-width: min(100%, 220px); max-height: 220px; }
 .media-lightbox {
   width: min(1100px, 100vw);
   height: min(900px, 100vh);

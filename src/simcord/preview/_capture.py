@@ -79,6 +79,7 @@ class PreviewCapture:
     diagnostics: tuple[Mapping[str, Any], ...] = ()
     modal_id: str | None = None
     profile: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    media_metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     geometry: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     output_width: int = 0
     output_height: int = 0
@@ -338,6 +339,15 @@ class ManagedCapture:
                             "complete": False,
                         }
                     )
+                render_state = status.get("renderState")
+                media_metadata = {
+                    "captureTimes": dict(render_state.get("mediaCaptureTimes", {}))
+                    if isinstance(render_state, Mapping)
+                    else {},
+                    "assets": dict(render_state.get("mediaMetadata", {}))
+                    if isinstance(render_state, Mapping)
+                    else {},
+                }
                 complete = bool(status.get("complete", True)) and bool(platform_fonts.get("available"))
                 if not complete and not allow_incomplete:
                     detail = "; ".join(str(item.get("message", "")) for item in diagnostics)
@@ -345,7 +355,6 @@ class ManagedCapture:
 
                 await self._freeze(page, expand_modal=pin.modal_id is not None and mode == "surface")
                 await self._raf(page)
-                self.preview._assert_capture_live(pin.page)
                 if mode == "surface":
                     selector = ".modal-dialog" if pin.modal_id is not None else ".message-surface"
                     surface = page.locator(selector)
@@ -404,6 +413,7 @@ class ManagedCapture:
                         "surfaceExpanded": bool(pin.modal_id is not None and mode == "surface"),
                     },
                     "action": dict(last_action) if isinstance(last_action, Mapping) else None,
+                    "media_metadata": media_metadata,
                     "diagnostics": diagnostics,
                 }
         except TimeoutError as exc:
@@ -499,7 +509,7 @@ class _CaptureOps:
         visit(snapshot.get("messages", {}).get(str(snapshot.get("targetId"))))
         return {key: value for key, value in found.items() if value}
 
-    def _pin_capture(self, viewer: Any, target: Any) -> CapturePin:
+    def _pin_capture(self, viewer: Any, target: Any, media_time: float) -> CapturePin:
         if not can_access_channel(self.env, self.channel.id, viewer, history=True):
             raise SetupError("capture viewer cannot access this channel")
         source = cast(_Page, self._python)
@@ -524,6 +534,7 @@ class _CaptureOps:
         capture_page.last_action = deepcopy(source.last_action)
         try:
             snapshot = build_snapshot(cast("Preview", self), capture_page)
+            snapshot.setdefault("profile", {})["mediaTime"] = media_time
             if target_id is None and modal is None:
                 snapshot["diagnostics"] = [
                     *snapshot.get("diagnostics", []),
@@ -566,6 +577,7 @@ class _CaptureOps:
         viewer: Any = None,
         target: Any = None,
         mode: str = "surface",
+        media_time: float = 0.0,
         allow_incomplete: bool = False,
     ) -> PreviewCapture:
         """Capture one deterministic PNG of the preview, returning a report.
@@ -577,8 +589,10 @@ class _CaptureOps:
         be a Message, ResponseMessage, InteractionResult, or snowflake; the
         default is the focused message, falling back to the latest visible
         message. ``mode`` is ``"surface"`` (just the message surface) or
-        ``"viewport"`` (the full preview viewport). ``allow_incomplete``
-        permits a capture whose channel has no focusable target.
+        ``"viewport"`` (the full preview viewport). ``allow_incomplete`` permits
+        captures whose channel has no focusable target. ``media_time`` selects a
+        bounded deterministic frame time, defaulting to zero. Returned
+        ``media_metadata`` reports effective capture times and validated codecs.
 
         Returns an immutable ``PreviewCapture`` report; ``ready``,
         ``complete`` and ``calibrated`` are independent signals, and ``png``
@@ -588,6 +602,14 @@ class _CaptureOps:
             raise SetupError("capture mode must be 'surface' or 'viewport'")
         if not isinstance(allow_incomplete, bool):
             raise SetupError("allow_incomplete must be a boolean")
+        if (
+            isinstance(media_time, bool)
+            or not isinstance(media_time, (int, float))
+            or not math.isfinite(media_time)
+            or media_time < 0
+        ):
+            raise SetupError("media_time must be a finite non-negative number")
+        media_time = float(media_time)
         if not self._active or self._closed:
             raise SetupError("Preview is not active")
         destination = _capture_destination(path) if path is not None else None
@@ -605,7 +627,7 @@ class _CaptureOps:
                     # Earlier publishes may have pruned this page already.
                     if page.id in self._pages and page.pinned_snapshot is None:
                         self._publish(page)
-                pin = self._pin_capture(self._capture_viewer(viewer), target)
+                pin = self._pin_capture(self._capture_viewer(viewer), target, media_time)
             finally:
                 self.env._end_operation(token)
             self._capture_page = pin.page
@@ -639,6 +661,7 @@ class _CaptureOps:
                 diagnostics=_freeze_capture(data["diagnostics"]),
                 modal_id=data["modal_id"],
                 profile=_freeze_capture(data["profile"]),
+                media_metadata=_freeze_capture(data["media_metadata"]),
                 geometry=_freeze_capture(data["geometry"]),
                 output_width=data["output_width"],
                 output_height=data["output_height"],

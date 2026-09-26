@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 
 import discord
 import pytest
@@ -285,6 +286,88 @@ async def test_browser_attachment_count_one_and_ten_remains_intrinsic(env, chann
                 await browser.close()
         finally:
             await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_video_seek_audio_pause_and_capture_time(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    fixtures = Path(__file__).parents[1] / "fixtures" / "preview"
+    message = await alice.send(
+        channel,
+        "local media",
+        attachments=[
+            ("video.mp4", (fixtures / "video.mp4").read_bytes()),
+            ("voice.ogg", (fixtures / "voice.ogg").read_bytes()),
+        ],
+    )
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                video = page.locator("video.media-player-native")
+                audio = page.locator("audio.media-player-native")
+                assert await video.count() == await audio.count() == 1
+                await page.get_by_role("button", name="Play video.mp4").click()
+                await page.wait_for_function(
+                    "() => !document.querySelector('video.media-player-native').paused"
+                )
+                await page.locator(".video-player .media-player-seek").evaluate(
+                    "input => { input.value = '0.5'; input.dispatchEvent(new Event('input', { bubbles: true })); }"
+                )
+                await page.wait_for_function(
+                    "() => document.querySelector('video.media-player-native').currentTime >= 0.4"
+                )
+                await page.get_by_role("button", name="Play voice.ogg").click()
+                await page.wait_for_function(
+                    "() => !document.querySelector('audio.media-player-native').paused"
+                )
+                await page.get_by_role("button", name="Pause voice.ogg").click()
+                assert await audio.evaluate("element => element.paused")
+            finally:
+                await browser.close()
+
+        first = await preview.screenshot(media_time=0)
+        second = await preview.screenshot(media_time=0.5)
+        assert first.png != second.png
+        assert first.media_metadata["captureTimes"] != second.media_metadata["captureTimes"]
+
+
+@pytest.mark.asyncio
+async def test_browser_lottie_sticker_renders_offline_frames(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    from simcord.backend.cdn import sticker_url
+
+    sticker = env.guild.create_sticker("moving square", format_type=3)
+    guild_sticker = await env.bot.get_guild(env.guild.id).fetch_sticker(sticker.id)
+    message = await env.bot.get_channel(channel.id).send("sticker", stickers=[guild_sticker])
+    source = (Path(__file__).parents[1] / "fixtures" / "preview" / "moving-square.json").read_bytes()
+    url = sticker_url(sticker.id, 3)
+    async with env.preview(channel, viewers=[alice], assets={url: ("moving-square.json", source)}) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.locator(".media-lottie canvas").wait_for()
+                assert await page.locator(".media-lottie canvas").evaluate(
+                    "canvas => [...canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data].some((value, index) => index % 4 === 3 && value > 0)"
+                )
+                assert not await page.locator(".media-unavailable").count()
+            finally:
+                await browser.close()
+
+        first = await preview.screenshot(media_time=0)
+        second = await preview.screenshot(media_time=1)
+        assert first.png != second.png
+        assert first.media_metadata["captureTimes"] != second.media_metadata["captureTimes"]
 
 
 @pytest.mark.asyncio

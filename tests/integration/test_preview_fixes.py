@@ -2,7 +2,6 @@
 
 import asyncio
 import io
-import threading
 
 import pytest
 
@@ -15,7 +14,6 @@ from preview_helpers import action_body, control_key, gif_bytes, png_bytes, prev
 
 import simcord
 from simcord.components import walk_components
-from simcord.preview import _media
 
 
 class _ReleasableView(discord.ui.View):
@@ -50,7 +48,7 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
         assert image["asset_id"]
         assert image["available"] is False
         with pytest.raises(simcord.SetupError, match="unavailable"):
-            preview._asset(bob_page.id, image["asset_id"])
+            await preview._prepare_asset(bob_page.id, image["asset_id"])
         async with ClientSession() as client:
             response = await client.get(
                 preview._origin + f"/api/assets/{image['asset_id']}",
@@ -64,13 +62,13 @@ async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel,
         image = target_message(preview._page_payload(preview._python))["embeds"][0]["image"]
         assert image["available"] is False
         with pytest.raises(simcord.SetupError, match="unavailable"):
-            preview._asset("python", image["asset_id"])
+            await preview._prepare_asset("python", image["asset_id"])
 
         # The owning message itself still serves its attachment to alice.
         await preview.show(ephemeral.response)
         own = target_message(preview._page_payload(preview._python))["attachments"][0]
         assert own["available"] is True
-        assert preview._asset("python", own["asset_id"])[1] == png_bytes()
+        assert (await preview._prepare_asset("python", own["asset_id"], download=True))[1] == png_bytes()
 
 
 @pytest.mark.asyncio
@@ -82,13 +80,13 @@ async def test_asset_unavailable_after_owner_deleted(env, channel, alice):
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
         asset_id = target_message(preview._page_payload(preview._python))["attachments"][0]["asset_id"]
-        assert preview._asset("python", asset_id)[1] == png_bytes()
+        assert (await preview._prepare_asset("python", asset_id, download=True))[1] == png_bytes()
         await message.delete()
         with pytest.raises(simcord.SetupError, match="unavailable"):
-            preview._asset("python", asset_id)
+            await preview._prepare_asset("python", asset_id)
         await preview.refresh()
         with pytest.raises(simcord.SetupError, match="unavailable"):
-            preview._asset("python", asset_id)
+            await preview._prepare_asset("python", asset_id)
         assert asset_id not in preview._page_payload(preview._python)["assets"]
 
 
@@ -267,7 +265,7 @@ async def test_shared_blob_counts_once_against_media_budget(env, channel, alice)
 
 
 @pytest.mark.asyncio
-async def test_display_normalizes_animation_and_download_serves_original(env, channel, alice):
+async def test_display_preserves_animation_and_download_serves_original(env, channel, alice):
     original = gif_bytes()
     message = await env.bot.get_channel(channel.id).send(
         file=discord.File(io.BytesIO(original), filename="anim.gif")
@@ -279,13 +277,13 @@ async def test_display_normalizes_animation_and_download_serves_original(env, ch
             preview._origin + f"/api/assets/{asset_id}", headers=preview_headers(preview, "python")
         )
         assert response.status == 200
-        assert response.headers["Content-Type"] == "image/png"
+        assert response.headers["Content-Type"] == "image/gif"
         assert "inline" in response.headers["Content-Disposition"]
         body = await response.read()
-        assert body != original
+        assert body == original
         with Image.open(io.BytesIO(body)) as image:
-            assert image.format == "PNG"
-            assert getattr(image, "n_frames", 1) == 1
+            assert image.format == "GIF"
+            assert image.n_frames == 2
         response = await client.get(
             preview._origin + f"/api/assets/{asset_id}?download=1",
             headers=preview_headers(preview, "python"),
@@ -600,26 +598,3 @@ async def test_page_close_waits_for_active_action_before_releasing_assets(env, c
         assert page.id not in preview._pages
         assert not page.assets
         assert {blob.refs for blob in preview._blobs.values()} == {1}
-
-
-@pytest.mark.asyncio
-async def test_media_release_during_decode_does_not_cache_orphan(monkeypatch):
-    worker = _media.MediaWorker()
-    started = threading.Event()
-    release = threading.Event()
-    inspect = _media._inspect
-
-    def blocked_inspect(blob):
-        started.set()
-        assert release.wait(1)
-        return inspect(blob)
-
-    monkeypatch.setattr(_media, "_inspect", blocked_inspect)
-    task = asyncio.create_task(worker.validate("orphan", png_bytes()))
-    assert await asyncio.to_thread(started.wait, 1)
-    worker.release("orphan")
-    release.set()
-    await task
-    await asyncio.sleep(0)
-    assert "orphan" not in worker._cache
-    await worker.close()

@@ -3,8 +3,8 @@ import { node } from "./dom.js";
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 let lightbox;
 
-function current(options) {
-  return !options.isCurrent || options.isCurrent();
+function current(options, element) {
+  return Boolean(element?.isConnected) || !options.isCurrent || options.isCurrent();
 }
 
 function diagnostic(options, code, label, error) {
@@ -13,6 +13,15 @@ function diagnostic(options, code, label, error) {
     severity: "warning",
     message: `${label || "Media"} is unavailable offline`,
     ...(error ? { detail: String(error) } : {}),
+    complete: false,
+  });
+}
+function diagnoseMemoryLimit(options, assetId) {
+  if (options.assets?.[assetId]?.workerMemoryLimited !== false) return;
+  options.onDiagnostic?.({
+    code: "media-process-memory-limit-unavailable",
+    severity: "warning",
+    message: "This platform cannot enforce the 512 MiB media-process memory ceiling; adversarial-media safety is not certified.",
     complete: false,
   });
 }
@@ -89,10 +98,10 @@ function getLightbox() {
   });
   lightbox = {
     open(group, selected, trigger) {
-      items = group.items.filter(({ image: candidate }) => (
+      items = group.items.filter(({ image: candidate, hidden }) => (
         candidate.isConnected
         && candidate.src.startsWith("blob:")
-        && !candidate.closest(".spoiler-content:not(.is-revealed)")
+        && !hidden
       ));
       index = items.indexOf(selected);
       if (index < 0) return;
@@ -112,25 +121,281 @@ export function closeLightbox() {
   lightbox?.close();
 }
 
+function mediaTimeLabel(value) {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function renderWaveform(host, values) {
+  const samples = Array.isArray(values) ? values : [];
+  host.replaceChildren();
+  if (!samples.length) {
+    host.hidden = true;
+    host.removeAttribute("role");
+    return;
+  }
+  host.hidden = false;
+  host.setAttribute("role", "img");
+  host.setAttribute("aria-label", "Voice message waveform");
+  samples.forEach((value) => {
+    const bar = node("span", "voice-wave-bar");
+    bar.setAttribute("aria-hidden", "true");
+    bar.style.setProperty("--wave-height", `${Math.max(1, Math.min(100, Number(value) || 1))}%`);
+    host.append(bar);
+  });
+}
+
+function renderPlayer(media, className, options, label, assetId, kind) {
+  const wrapper = node("section", `media-player ${kind}-player ${className || ""}`);
+  wrapper.setAttribute("role", "group");
+  wrapper.setAttribute("aria-label", `${label || kind} player`);
+  const element = node(kind, "media-player-native");
+  element.preload = "metadata";
+  element.controls = false;
+  if (kind === "video") {
+    element.playsInline = true;
+    element.setAttribute("aria-label", label || "Video");
+  } else {
+    element.setAttribute("aria-label", label || "Audio");
+  }
+  const waveform = node("div", "media-waveform");
+  if (kind === "audio") renderWaveform(waveform, options.assets?.[assetId]?.waveform);
+  const controls = node("div", "media-player-controls");
+  const play = node("button", "media-player-button", "Play");
+  play.type = "button";
+  play.setAttribute("aria-label", `Play ${label || kind}`);
+  const seek = node("input", "media-player-seek");
+  seek.type = "range";
+  seek.min = "0";
+  seek.max = "0";
+  seek.step = "0.01";
+  seek.value = "0";
+  seek.setAttribute("aria-label", `Seek ${label || kind}`);
+  const time = node("span", "media-player-time", "0:00 / 0:00");
+  time.setAttribute("aria-live", "off");
+  const mute = node("button", "media-player-button", "Mute");
+  mute.type = "button";
+  mute.setAttribute("aria-label", `Mute ${label || kind}`);
+  const volume = node("input", "media-player-volume");
+  volume.type = "range";
+  volume.min = "0";
+  volume.max = "1";
+  volume.step = "0.05";
+  volume.value = "1";
+  volume.setAttribute("aria-label", `Volume ${label || kind}`);
+  controls.append(play, seek, time, mute, volume);
+  if (kind === "video" && document.fullscreenEnabled) {
+    const fullscreen = node("button", "media-player-button", "Fullscreen");
+    fullscreen.type = "button";
+    fullscreen.setAttribute("aria-label", `Fullscreen ${label || kind}`);
+    fullscreen.addEventListener("click", () => {
+      wrapper.requestFullscreen?.().catch((error) => diagnostic(options, "media-fullscreen", label, error));
+    });
+    controls.append(fullscreen);
+  }
+  const status = node("span", "media-player-status", "Loading media…");
+  status.setAttribute("role", "status");
+  wrapper.append(element);
+  if (kind === "audio") wrapper.append(waveform);
+  wrapper.append(controls, status);
+
+  const updateTime = () => {
+    const duration = Number.isFinite(element.duration) ? element.duration : 0;
+    const position = Number.isFinite(element.currentTime) ? element.currentTime : 0;
+    seek.max = String(duration);
+    seek.value = String(Math.min(position, duration));
+    time.textContent = `${mediaTimeLabel(position)} / ${mediaTimeLabel(duration)}`;
+    wrapper.style.setProperty("--media-progress", duration ? `${position / duration * 100}%` : "0%");
+  };
+  const updatePlay = () => {
+    const playing = !element.paused && !element.ended;
+    play.textContent = element.ended ? "Replay" : playing ? "Pause" : "Play";
+    play.setAttribute("aria-label", `${element.ended ? "Replay" : playing ? "Pause" : "Play"} ${label || kind}`);
+  };
+  play.addEventListener("click", () => {
+    if (element.ended) element.currentTime = 0;
+    if (element.paused) {
+      element.play().catch((error) => {
+        status.textContent = "Playback is unavailable";
+        diagnostic(options, "media-playback", label, error);
+      });
+    } else element.pause();
+  });
+  seek.addEventListener("input", () => {
+    if (Number.isFinite(element.duration)) element.currentTime = Number(seek.value);
+  });
+  mute.addEventListener("click", () => {
+    element.muted = !element.muted;
+    mute.textContent = element.muted ? "Unmute" : "Mute";
+    mute.setAttribute("aria-label", `${element.muted ? "Unmute" : "Mute"} ${label || kind}`);
+  });
+  volume.addEventListener("input", () => {
+    element.volume = Number(volume.value);
+    if (element.volume > 0) element.muted = false;
+    mute.textContent = element.muted ? "Unmute" : "Mute";
+  });
+  ["durationchange", "timeupdate", "seeked"].forEach((name) => element.addEventListener(name, updateTime));
+  ["play", "pause", "ended"].forEach((name) => element.addEventListener(name, updatePlay));
+
+  const pending = [
+    Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
+      if (!current(options, wrapper)) return;
+      if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("asset is not a local blob URL");
+      const metadata = new Promise((resolve, reject) => {
+        element.addEventListener("loadedmetadata", resolve, { once: true });
+        element.addEventListener("error", () => reject(new Error("browser cannot decode this validated media")), { once: true });
+      });
+      element.src = url;
+      element.load();
+      await metadata;
+      if (!current(options, wrapper)) return;
+      if (options.mediaTime !== null && options.mediaTime !== undefined) {
+        const duration = Number.isFinite(element.duration) ? element.duration : 0;
+        const selected = Math.min(Math.max(0, Number(options.mediaTime) || 0), duration);
+        if (Math.abs(element.currentTime - selected) > 0.01) {
+          const seeked = new Promise((resolve, reject) => {
+            element.addEventListener("seeked", resolve, { once: true });
+            element.addEventListener("error", () => reject(new Error("media seek failed")), { once: true });
+          });
+          element.currentTime = selected;
+          await seeked;
+        }
+        element.pause();
+        options.onMediaCaptureTime?.(assetId, Number(element.currentTime) || 0);
+      }
+      const manifest = options.assets?.[assetId];
+      diagnoseMemoryLimit(options, assetId);
+      if (kind === "audio") renderWaveform(waveform, manifest?.waveform);
+      status.textContent = "";
+      updateTime();
+      updatePlay();
+    }).catch((error) => {
+      if (!current(options, wrapper)) return;
+      diagnostic(options, "media-unavailable", label, error);
+      wrapper.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`));
+    }),
+  ];
+  if (kind === "video") {
+    pending.push(
+      Promise.resolve(options.loadAsset(assetId, { poster: true })).then((url) => {
+        if (current(options, wrapper) && typeof url === "string" && url.startsWith("blob:")) element.poster = url;
+      }).catch(() => {}),
+    );
+  }
+  return { element: wrapper, pending };
+}
+
+let lottieRuntime;
+
+function ensureLottieRuntime() {
+  if (window.bodymovin?.loadAnimation) return Promise.resolve();
+  if (!lottieRuntime) {
+    lottieRuntime = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "/vendor/lottie/5.12.2/lottie_light_canvas.min.js";
+      script.onload = () => window.bodymovin?.loadAnimation
+        ? resolve()
+        : reject(new Error("bundled Lottie canvas runtime did not initialize"));
+      script.onerror = () => reject(new Error("bundled Lottie canvas runtime could not be loaded"));
+      document.head.append(script);
+    });
+  }
+  return lottieRuntime;
+}
+
+function renderLottie(media, options, label, assetId) {
+  const stage = node("div", "media-lottie");
+  stage.setAttribute("role", "img");
+  stage.setAttribute("aria-label", label || "Animated sticker");
+  const canvasHost = node("div", "media-lottie-canvas");
+  stage.append(canvasHost);
+  let animation = null;
+  let observer = null;
+  const dispose = () => {
+    observer?.disconnect();
+    observer = null;
+    animation?.destroy();
+    animation = null;
+  };
+  const pending = [Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
+    if (!current(options, stage)) return;
+    await ensureLottieRuntime();
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("validated Lottie data is unavailable");
+    const data = await response.json();
+    animation = window.bodymovin.loadAnimation({
+      container: canvasHost,
+      renderer: "canvas",
+      loop: !options.reducedMotion,
+      autoplay: false,
+      animationData: data,
+    });
+    animation.setSubframe(false);
+    await new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error("Lottie canvas render timed out")), 10_000);
+      animation.addEventListener("DOMLoaded", () => {
+        window.clearTimeout(timeout);
+        resolve();
+      });
+      animation.addEventListener("data_failed", () => {
+        window.clearTimeout(timeout);
+        reject(new Error("Lottie canvas could not render this composition"));
+      });
+    });
+    if (!current(options, stage)) {
+      dispose();
+      return;
+    }
+    const fps = Number(data.fr) || 1;
+    const first = Number(data.ip) || 0;
+    const end = Number(data.op) || first + 1;
+    const duration = Math.max(0, (end - first) / fps);
+    const capturing = Number.isFinite(options.mediaTime);
+    const requested = capturing ? Math.max(0, Number(options.mediaTime) || 0) : 0;
+    const frame = Math.max(first, Math.min(Math.ceil(end) - 1, first + Math.floor(Math.min(requested, duration) * fps)));
+    animation.goToAndStop(frame, true);
+    options.onMediaCaptureTime?.(assetId, Math.max(0, (frame - first) / fps));
+    diagnoseMemoryLimit(options, assetId);
+    if (!options.reducedMotion && !capturing) animation.play();
+    observer = new MutationObserver(() => {
+      if (!stage.isConnected) dispose();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }).catch((error) => {
+    dispose();
+    if (!current(options, stage)) return;
+    diagnostic(options, "lottie-unavailable", label, error);
+    stage.replaceWith(node("div", "media-unavailable", `${label || "Sticker"} unavailable`));
+  })];
+  return { element: stage, pending };
+}
+
+
 export function renderMedia(media, className, options, label, group = options.lightboxGroup) {
   const assetId = typeof media?.asset_id === "string" ? media.asset_id : null;
   const manifest = assetId ? options.assets?.[assetId] : null;
   const mediaType = String(media?.content_type || manifest?.contentType || "").toLowerCase();
-  if (mediaType && !IMAGE_TYPES.has(mediaType)) {
-    options.onDiagnostic?.({
-      code: "unsupported-media-type",
-      severity: "warning",
-      message: `${label || "Media"} type ${mediaType} cannot be rendered inline`,
-      complete: false,
-    });
-    return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
-  }
   if (!assetId || media.available === false || manifest?.available === false || !options.loadAsset) {
     const message = manifest?.diagnostic || `${label || "Media"} is unavailable offline`;
     options.onDiagnostic?.({
       code: manifest?.diagnostic ? "media-rejected" : "media-unavailable",
       severity: "warning",
       message,
+      complete: false,
+    });
+    return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
+  }
+  if (mediaType.startsWith("audio/") || mediaType.startsWith("video/")) {
+    return renderPlayer(media, className, options, label, assetId, mediaType.startsWith("audio/") ? "audio" : "video");
+  }
+  if (mediaType === "application/json" || manifest?.mediaKind === "lottie") {
+    return renderLottie(media, options, label, assetId);
+  }
+  if (mediaType && !IMAGE_TYPES.has(mediaType)) {
+    options.onDiagnostic?.({
+      code: "unsupported-media-type",
+      severity: "warning",
+      message: `${label || "Media"} type ${mediaType} cannot be rendered inline`,
       complete: false,
     });
     return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
@@ -149,16 +414,20 @@ export function renderMedia(media, className, options, label, group = options.li
     image.height = height;
   }
   trigger.append(image);
-  const entry = { image, label: image.alt };
+  const entry = { image, label: image.alt, hidden: false };
   const lightboxGroup = group || { items: [] };
   lightboxGroup.items.push(entry);
   trigger.addEventListener("click", () => {
-    if (image.src.startsWith("blob:") && current(options)) {
+    if (image.src.startsWith("blob:") && current(options, trigger)) {
       getLightbox().open(lightboxGroup, entry, trigger);
     }
   });
-  const pending = [Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
-    if (!current(options)) return;
+  const capture = options.mediaTime !== null && options.mediaTime !== undefined;
+  const pending = [Promise.resolve(options.loadAsset(
+    assetId,
+    capture ? { capture: true, mediaTime: options.mediaTime } : {},
+  )).then(async (url) => {
+    if (!current(options, trigger)) return;
     if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("asset is not a local blob URL");
     image.src = url;
     if (image.decode) await image.decode();
@@ -168,7 +437,7 @@ export function renderMedia(media, className, options, label, group = options.li
         image.addEventListener("error", reject, { once: true });
       });
     }
-    if (!current(options)) return;
+    if (!current(options, trigger)) return;
     const displayWidth = image.naturalWidth;
     const displayHeight = image.naturalHeight;
     if (displayWidth < 1 || displayHeight < 1) throw new Error("decoded image has no intrinsic dimensions");
@@ -180,30 +449,32 @@ export function renderMedia(media, className, options, label, group = options.li
       manifest.displayReady = true;
       manifest.displayWidth = displayWidth;
       manifest.displayHeight = displayHeight;
+      diagnoseMemoryLimit(options, assetId);
     }
     image.height = displayHeight;
     trigger.disabled = false;
   }).catch((error) => {
-    if (!current(options)) return;
+    if (!current(options, trigger)) return;
     diagnostic(options, "media-unavailable", label, error);
     const unavailable = node("div", "media-unavailable", `${label || "Media"} unavailable`);
     unavailable.inert = trigger.inert;
     if (trigger.hasAttribute("aria-hidden")) unavailable.setAttribute("aria-hidden", "true");
     trigger.replaceWith(unavailable);
   })];
-  return { element: trigger, pending };
+  return { element: trigger, pending, lightboxItem: entry };
 }
 
 function spoilerKey(media, options, label, stateKey) {
   return [options.contextId || "", options.messageId || options.scope || "", stateKey || label, media.asset_id || ""].join(":");
 }
 
-function reveal(element, spoiler, options, label, key) {
+function reveal(element, spoiler, options, label, key, lightboxItem) {
   if (!spoiler) return element;
   const wrapper = node("div", "spoiler-content");
   wrapper.append(element);
   const state = options.spoilerState;
   const revealed = Boolean(state?.has(key));
+  if (lightboxItem) lightboxItem.hidden = !revealed;
   if (!revealed) {
     element.inert = true;
     element.setAttribute("aria-hidden", "true");
@@ -211,6 +482,7 @@ function reveal(element, spoiler, options, label, key) {
     cover.type = "button";
     cover.setAttribute("aria-label", `Reveal ${label} spoiler`);
     cover.addEventListener("click", () => {
+      if (lightboxItem) lightboxItem.hidden = false;
       state?.add(key);
       element.inert = false;
       element.removeAttribute("aria-hidden");
@@ -231,7 +503,7 @@ export function renderSpoiler(element, spoiler, options, label, key) {
 export function renderSpoilerMedia(media, className, options, label, stateKey, group = options.lightboxGroup) {
   const result = renderMedia(media, className, options, label, group);
   const key = spoilerKey(media, options, label, stateKey);
-  result.element = reveal(result.element, media?.spoiler, options, label, key);
+  result.element = reveal(result.element, media?.spoiler, options, label, key, result.lightboxItem);
   if (media?.spoiler) result.element.classList.add("spoiler-media");
   return result;
 }

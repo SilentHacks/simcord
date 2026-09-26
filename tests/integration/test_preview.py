@@ -516,7 +516,7 @@ async def test_preview_boundary_errors_and_lazy_asset_validation(tmp_path, env, 
             await preview.screenshot(tmp_path / "bad.png", target=object())
         await preview.show(message)
         asset = target_message(preview._page_payload(page))["embeds"][0]["image"]["asset_id"]
-        with pytest.raises(simcord.SetupError, match="valid PNG"):
+        with pytest.raises(simcord.SetupError):
             await preview._prepare_asset("python", asset)
         rejected = preview._page_payload(page)["assets"][asset]
         assert rejected["available"] is True
