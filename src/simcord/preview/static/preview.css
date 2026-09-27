@@ -316,7 +316,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 @media (max-width: 1220px) {
   .preview-workspace { flex-direction: column; align-items: flex-start; }
   .preview-app { flex: 0 1 auto; }
-  .diagnostics { width: 100%; max-width: 960px; }
+  .diagnostics { width: calc(100% - 16px); max-width: 960px; }
 }
 .message-surface {
   position: relative;

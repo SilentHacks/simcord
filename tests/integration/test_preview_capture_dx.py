@@ -1079,3 +1079,50 @@ async def test_browser_button_focus_and_responsive_row_wrapping(env, channel, al
                 assert len(set(rows)) > 1
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_responsive_message_column_reflows_long_bidi_text(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    text = "unbroken" * 26 + " العربية עברית mixed direction"
+    message = await env.bot.get_channel(channel.id).send(text)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 1360, "height": 1000})
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                for width in (320, 360, 420, 640, 960, 1280):
+                    for height in (700, 900):
+                        await page.set_viewport_size({"width": width + 80, "height": height + 100})
+                        await page.locator("#viewport-width").fill(str(width))
+                        await page.locator("#viewport-width").dispatch_event("change")
+                        await page.locator("#viewport-height").fill(str(height))
+                        await page.locator("#viewport-height").dispatch_event("change")
+                        await page.wait_for_function(
+                            "([w, h]) => window.simcordPreview?.ready && "
+                            "window.simcordPreview.profile.width === w && window.simcordPreview.profile.height === h",
+                            arg=[width, height],
+                        )
+                        geometry = await page.evaluate(
+                            """() => {
+                              const app = document.querySelector('#preview-app').getBoundingClientRect();
+                              const surface = document.querySelector('#message-surface').getBoundingClientRect();
+                              const content = document.querySelector('.message-content').getBoundingClientRect();
+                              return { app: app.width, surface: surface.width, text: content.width,
+                                textRight: content.right, surfaceRight: surface.right,
+                                overflow: document.documentElement.scrollWidth > innerWidth };
+                            }"""
+                        )
+                        assert not geometry["overflow"], (width, height, geometry)
+                        assert geometry["textRight"] <= geometry["surfaceRight"] + 1
+                        assert geometry["text"] < geometry["surface"] <= geometry["app"] <= width
+                await page.evaluate("() => { document.body.style.zoom = '200%'; }")
+                assert await page.locator(".message-content").evaluate(
+                    "element => element.scrollWidth <= element.clientWidth"
+                )
+            finally:
+                await browser.close()

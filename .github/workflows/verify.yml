@@ -14,7 +14,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       # screenshot extra pulls in playwright/PIL/markdown-it so pyright resolves
       # the lazy optional imports in simcord.preview with real type info.
-      - run: uv sync --extra dev --extra screenshot
+      - run: uv sync --locked --extra dev --extra screenshot
       - run: uv run ruff check src tests examples benchmarks scripts
       - run: uv run ruff format --check src tests examples benchmarks scripts
       - run: uv run pyright src
@@ -32,7 +32,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # preview extra adds markdown-it + Pillow so non-browser preview tests run;
       # playwright stays absent so capture tests skip via importorskip.
-      - run: uv sync --extra dev --extra preview
+      - run: uv sync --locked --extra dev --extra preview
       - run: uv run coverage run -m pytest tests examples -q
       - run: uv run coverage report
 
@@ -41,47 +41,80 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --extra docs
+      - run: uv sync --locked --extra docs
       - run: uv run mkdocs build --strict
       - run: uv run python scripts/check_discoverability.py site
 
   preview-package:
-    name: Preview package + pinned Linux Chromium
+    name: Preview package + locked Linux Chromium
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
-      - run: uv sync --extra screenshot --extra pytest
+      - run: uv sync --locked --extra screenshot --extra pytest
       - run: uv run python -m playwright install --with-deps chromium
+      - run: uv run python scripts/compare_visual_reference.py --check-manifest tests/fixtures/preview/coverage.json
+      - run: uv run python scripts/compare_visual_reference.py --check
+      - run: uv run python scripts/capture_visual_reference.py --check
       - run: uv run pytest tests/integration/test_preview*.py -q
       - run: uv build
       - run: uv run python scripts/check_package.py dist
-      - name: Install the wheel outside the checkout
+      - name: Smoke-test installed wheel with a sparse system-font set
         shell: bash
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          mkdir -p package-smoke-artifacts
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/sparse-fonts" "$tmp/font-cache"
+          # Chromium's Skia font manager requires one fallback even when the
+          # bundled Preview fonts supply every tested face.
+          cp "$(fc-match -f '%{file}' sans-serif)" "$tmp/sparse-fonts/fallback.ttf"
+          cat > "$tmp/fonts.conf" <<EOF
+          <?xml version="1.0"?>
+          <fontconfig>
+            <dir>$tmp/sparse-fonts</dir>
+            <cachedir>$tmp/font-cache</cachedir>
+          </fontconfig>
+          EOF
+          uv export --locked --no-dev --extra screenshot --no-emit-project \
+            --format requirements-txt --output-file "$tmp/requirements.txt"
           uv venv --python 3.12 "$tmp/venv"
+          uv pip install --python "$tmp/venv/bin/python" -r "$tmp/requirements.txt"
           wheel="$(printf '%s\n' "$GITHUB_WORKSPACE"/dist/*.whl)"
-          uv pip install --python "$tmp/venv/bin/python" \
+          uv pip install --python "$tmp/venv/bin/python" --no-deps \
             "simcord[screenshot] @ file://$wheel"
+          uv pip check --python "$tmp/venv/bin/python"
           "$tmp/venv/bin/python" -m playwright install --with-deps chromium
           cp examples/bot.py examples/preview_example.py "$tmp/"
           (
             cd "$tmp"
-            "$tmp/venv/bin/python" preview_example.py > "$GITHUB_WORKSPACE/package-smoke-artifacts/preview-report.json"
+            FONTCONFIG_FILE="$tmp/fonts.conf" \
+              "$tmp/venv/bin/python" preview_example.py > "$tmp/preview-report.json"
           )
-          cp "$tmp/preview-example.png" package-smoke-artifacts/
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: preview-package-failure
-          path: package-smoke-artifacts/
-          if-no-files-found: ignore
+          "$tmp/venv/bin/python" - "$tmp/preview-report.json" <<'PY'
+          import json
+          import sys
+
+          report = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          capture = report["capture"]
+          assert capture["complete"], capture["diagnostics"]
+          loaded = {face["family"] for face in capture["profile"]["fontResolution"]["loaded"]}
+          required = {
+              "Noto Sans",
+              "Noto Sans Mono",
+              "Noto Color Emoji",
+              "Noto Sans Arabic",
+              "Noto Sans Hebrew",
+              "Noto Sans Devanagari",
+              "Noto Sans SC",
+          }
+          assert required <= loaded, f"wheel missed packaged font faces: {sorted(required - loaded)}"
+          PY
 
   benchmark:
     runs-on: ubuntu-latest
@@ -90,7 +123,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       # The perf guards (absolute budget + same-run scaling ratio) fail the build
       # on a catastrophic regression; the JSON is uploaded as a non-gating trend.
-      - run: uv sync --extra bench
+      - run: uv sync --locked --extra bench
       - run: uv run pytest benchmarks --benchmark-json=benchmark.json
       - uses: actions/upload-artifact@v7
         if: always()

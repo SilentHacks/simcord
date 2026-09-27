@@ -1,3 +1,4 @@
+import asyncio
 import io
 
 import discord
@@ -105,3 +106,57 @@ async def test_preview_two_viewers_see_only_authorized_identity_assets(env, chan
         assert denied["status"] == "access_denied"
         assert denied["entities"] == {}
         assert denied["assets"] == {}
+
+
+@pytest.mark.asyncio
+async def test_browser_revocation_during_asset_fetch_cannot_publish_old_pixels(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    bob = env.guild.add_member(env.create_user("bob"))
+    message = await env.bot.get_channel(channel.id).send(
+        "authorized image", file=discord.File(io.BytesIO(png_bytes()), filename="image.png")
+    )
+    async with env.preview(channel, viewers=[alice, bob]) as preview:
+        await preview.show(message)
+        blocked = asyncio.Event()
+        release = asyncio.Event()
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                alice_page = await browser.new_page()
+
+                async def delay_asset(route):
+                    blocked.set()
+                    await release.wait()
+                    await route.continue_()
+
+                await alice_page.route("**/api/assets/**", delay_asset)
+                await alice_page.goto(preview.url)
+                await asyncio.wait_for(blocked.wait(), 10)
+                bob_page = await browser.new_page()
+                await bob_page.goto(preview.url)
+                await bob_page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await bob_page.locator("#viewer-picker").select_option(str(bob.id))
+                await bob_page.wait_for_function(
+                    "(id) => window.simcordPreview?.viewerId === id && window.simcordPreview?.ready",
+                    arg=str(bob.id),
+                )
+                assert await bob_page.locator(".attachment-image").evaluate(
+                    "image => image.complete && image.naturalWidth > 0"
+                )
+
+                member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+                await env.bot.get_channel(channel.id).set_permissions(member, view_channel=False)
+                await env.settle()
+                await preview.refresh()
+                await alice_page.wait_for_function("() => window.simcordPreview?.authorized === false")
+                release.set()
+                await alice_page.wait_for_function("() => !document.querySelector('img[src^=\"blob:\"]')")
+                assert await alice_page.locator("#message-surface").inner_text() == ""
+                assert await bob_page.evaluate("() => window.simcordPreview?.authorized") is True
+                assert await bob_page.locator(".attachment-image").evaluate(
+                    "image => image.complete && image.naturalWidth > 0"
+                )
+            finally:
+                release.set()
+                await browser.close()
