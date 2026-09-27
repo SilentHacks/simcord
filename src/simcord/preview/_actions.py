@@ -812,6 +812,7 @@ class _ActionOps:
             custom_id: ComponentType(control["type"])
             for custom_id, control in _modal_control_map(spec).items()
         }
+        total_upload_bytes = 0
         converted: dict[str, Any] = {}
         entity_types = {
             ComponentType.USER_SELECT,
@@ -839,6 +840,12 @@ class _ActionOps:
                     for item in value
                 ):
                     raise SetupError(f"modal file upload {key!r} is invalid")
+                for _, blob in value:
+                    if len(blob) > 10 * 1024 * 1024:
+                        raise SetupError(f"modal upload {key!r} exceeds the 10 MiB per-file limit")
+                    total_upload_bytes += len(blob)
+                    if total_upload_bytes > 25 * 1024 * 1024:
+                        raise SetupError("modal uploads exceed the 25 MiB aggregate limit")
                 converted[key] = [(item[0], item[1]) for item in value]
             else:
                 converted[key] = value

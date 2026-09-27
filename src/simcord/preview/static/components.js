@@ -170,7 +170,7 @@ function renderSelect(component, path, options) {
   else trigger.setAttribute("aria-label", label);
   trigger.setAttribute("aria-valuetext", displaySelection(selected, entries, label));
   if (scope.startsWith("modal:") && component.required !== false) trigger.setAttribute("aria-required", "true");
-  if (typeof component.custom_id === "string" && component.custom_id && options.validationError?.includes(component.custom_id)) {
+  if (typeof component.custom_id === "string" && component.custom_id && options.validationError?.controlId === component.custom_id) {
     trigger.setAttribute("aria-invalid", "true");
   }
   trigger.setAttribute("aria-controls", `listbox-${safeId(key)}`);
@@ -627,8 +627,45 @@ function renderEmbed(embed, index, options) {
   return card;
 }
 
+function addDescribedBy(control, id) {
+  if (!control) return;
+  const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+  ids.add(id);
+  control.setAttribute("aria-describedby", [...ids].join(" "));
+}
+
+function attachModalError(field, control, error) {
+  if (!error) return;
+  const message = node("span", "field-error", error.message);
+  message.id = `modal-error-${safeId(error.controlId)}`;
+  message.setAttribute("role", "alert");
+  message.setAttribute("aria-live", "assertive");
+  field.append(message);
+  [control, control?.querySelector?.("input")].filter(Boolean).forEach((target) => {
+    target.setAttribute("aria-invalid", "true");
+    addDescribedBy(target, message.id);
+  });
+}
+
+function addModalDescription(field, control, text, path) {
+  const description = node("small", "field-description", text);
+  description.id = `modal-description-${safeId(path)}`;
+  field.insertBefore(description, field.children[1] || null);
+  [control, control?.querySelector?.("input")].filter(Boolean).forEach((target) => addDescribedBy(target, description.id));
+}
+
+function modalError(options, customId) {
+  return options.validationError?.controlId === customId ? options.validationError : null;
+}
+
 function modalDefault(component, entries) {
-  const type = Number(component.type); if (type === TYPE.TEXT_INPUT) return String(component.value ?? component.default ?? ""); if (SELECT_TYPES.has(type)) return optionDefaults(component, entries); if (type === TYPE.RADIO_GROUP) return (component.options || []).find((item) => item.default)?.value ?? null; if (type === TYPE.CHECKBOX_GROUP) return optionDefaults(component, component.options || []); if (type === TYPE.CHECKBOX) return component.default === true; return [];
+  const type = Number(component.type);
+  if (type === TYPE.TEXT_INPUT) return String(component.value ?? component.default ?? "");
+  if (SELECT_TYPES.has(type)) return optionDefaults(component, entries);
+  if (type === TYPE.RADIO_GROUP) return (component.options || []).find((item) => item.default)?.value ?? null;
+  if (type === TYPE.CHECKBOX_GROUP) return optionDefaults(component, component.options || []);
+  if (type === TYPE.CHECKBOX) return component.default === true;
+  return [];
 }
 function checkboxGlyph(isCheckbox) {
   if (!isCheckbox) return null;
@@ -644,37 +681,126 @@ function modalControl(component, path, labelText, options) {
     : `modal:${options.modalHandle ?? ""}:component:${path}`;
   const field = node("div", "modal-field");
   field.dataset.controlKey = key;
+  field.dataset.customId = customId;
   const type = Number(component.type);
-  const required = component.required === true || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type)));
-  const include = (hasDefault) => () => component.required !== false || options.isTouched?.(key) === true || hasDefault;
-  // Optional controls the user never touched submit nothing unless a real
-  // default/effective value exists; touched controls always submit their value.
+  const required = component.required === true
+    || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type)));
+  const include = (hasDefault) => () => required || options.isTouched?.(key) === true || hasDefault;
   let labelId;
   if (labelText && type !== TYPE.CHECKBOX) {
     const label = appendLabel(field, labelText, required);
     label.id = `control-label-${safeId(key)}`;
     labelId = label.id;
-    if (options.validationError?.includes(customId)) label.append(node("em", "field-error", " - This field is required."));
   }
-  if (type === TYPE.TEXT_INPUT) { const input = node(component.style === 2 ? "textarea" : "input", "modal-input"); input.id = `modal-input-${safeId(path)}`; input.name = customId; input.setAttribute("aria-label", labelText || customId); input.placeholder = String(component.placeholder || ""); input.required = required; if (component.min_length !== undefined) input.minLength = Number(component.min_length); if (component.max_length !== undefined) input.maxLength = Number(component.max_length); if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); input.value = String(options.drafts.get(key) ?? ""); input.addEventListener("input", () => options.onDraft?.(key, input.value)); field.append(input); return { field, get: () => String(options.drafts.get(key) ?? ""), include: include(Boolean(component.value ?? component.default)) }; }
-  if (SELECT_TYPES.has(type)) { const entries = optionEntries(component, options.candidates?.[component.control_key || key]); const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const select = renderSelect(component, path, { ...options, labelledBy: labelId, scope: `modal:${options.modalHandle ?? ""}`, onOpen: options.onSelectOpen, onDraft: options.onSelectDraft, onCommit: options.onSelectCommit, onCancel: options.onSelectCancel }); field.append(select.element); return { field, get: select.value, include: include(defaults.length > 0) }; }
-  if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) { const entries = component.options || []; const defaults = modalDefault(component, entries); if (!options.drafts.has(key)) options.drafts.set(key, defaults); const group = node("div", "modal-choice-group"); group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group"); entries.forEach((entry) => { const value = String(entry.value ?? ""), choice = node("label", "modal-choice"), input = node("input"); input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox"; input.name = customId; input.value = value; const current = options.drafts.get(key); input.checked = type === TYPE.RADIO_GROUP ? current === value : Array.isArray(current) && current.includes(value); input.addEventListener("change", () => { if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value); else { const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []); input.checked ? next.add(value) : next.delete(value); options.onDraft?.(key, [...next]); } }); choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean)); if (entry.description) choice.append(node("small", "choice-description", entry.description)); group.append(choice); }); field.append(group); const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : defaults.length > 0; return { field, get: () => options.drafts.get(key), include: include(hasDefault) }; }
-  if (type === TYPE.CHECKBOX) { if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, [])); const choice = node("label", "modal-choice"), input = node("input"); input.type = "checkbox"; input.name = customId; input.checked = options.drafts.get(key) === true; input.addEventListener("change", () => options.onDraft?.(key, input.checked)); choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId)); field.append(choice); return { field, get: () => options.drafts.get(key) === true, include: include(component.default === true) }; }
+  const finish = (control, focus, get, hasDefault = false) => {
+    const error = modalError(options, customId);
+    attachModalError(field, control, error);
+    return { field, control, focus, get, include: include(hasDefault) };
+  };
+  if (type === TYPE.TEXT_INPUT) {
+    const input = node(component.style === 2 ? "textarea" : "input", "modal-input");
+    input.id = `modal-input-${safeId(path)}`;
+    input.name = customId;
+    if (labelId) input.setAttribute("aria-labelledby", labelId);
+    else input.setAttribute("aria-label", customId);
+    input.placeholder = String(component.placeholder || "");
+    input.required = required;
+    if (component.max_length !== undefined) input.maxLength = Number(component.max_length) * 2;
+    if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, []));
+    input.value = String(options.drafts.get(key) ?? "");
+    input.addEventListener("input", () => options.onDraft?.(key, input.value));
+    field.append(input);
+    const hasDefault = component.value != null || component.default != null;
+    return finish(input, input, () => String(options.drafts.get(key) ?? ""), hasDefault);
+  }
+  if (SELECT_TYPES.has(type)) {
+    const entries = optionEntries(component, options.candidates?.[component.control_key || key]);
+    const defaults = modalDefault(component, entries);
+    if (!options.drafts.has(key)) options.drafts.set(key, defaults);
+    const select = renderSelect(component, path, {
+      ...options,
+      labelledBy: labelId,
+      scope: `modal:${options.modalHandle ?? ""}`,
+      onOpen: options.onSelectOpen,
+      onDraft: options.onSelectDraft,
+      onCommit: options.onSelectCommit,
+      onCancel: options.onSelectCancel,
+    });
+    field.append(select.element);
+    return finish(
+      select.element.querySelector(".select-trigger"),
+      select.element.querySelector(".select-trigger"),
+      select.value,
+      defaults.length > 0,
+    );
+  }
+  if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) {
+    const entries = component.options || [];
+    const defaults = modalDefault(component, entries);
+    if (!options.drafts.has(key)) options.drafts.set(key, defaults);
+    const group = node("div", "modal-choice-group");
+    group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group");
+    if (labelId) group.setAttribute("aria-labelledby", labelId);
+    if (required) group.setAttribute("aria-required", "true");
+    entries.forEach((entry) => {
+      const value = String(entry.value ?? "");
+      const choice = node("label", "modal-choice");
+      const input = node("input");
+      input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox";
+      input.name = customId;
+      input.value = value;
+      const current = options.drafts.get(key);
+      input.checked = type === TYPE.RADIO_GROUP
+        ? current === value
+        : Array.isArray(current) && current.includes(value);
+      input.addEventListener("change", () => {
+        if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value);
+        else {
+          const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []);
+          input.checked ? next.add(value) : next.delete(value);
+          options.onDraft?.(key, [...next]);
+        }
+      });
+      choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean));
+      if (entry.description) choice.append(node("small", "choice-description", entry.description));
+      group.append(choice);
+    });
+    field.append(group);
+    const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : defaults.length > 0;
+    return finish(group, group.querySelector("input"), () => options.drafts.get(key), hasDefault);
+  }
+  if (type === TYPE.CHECKBOX) {
+    if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, []));
+    const choice = node("label", "modal-choice");
+    const input = node("input");
+    input.type = "checkbox";
+    input.name = customId;
+    input.checked = options.drafts.get(key) === true;
+    input.addEventListener("change", () => options.onDraft?.(key, input.checked));
+    choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId));
+    field.append(choice);
+    return finish(
+      input,
+      input,
+      () => options.drafts.get(key) === true,
+      typeof component.default === "boolean",
+    );
+  }
   if (type === TYPE.FILE_UPLOAD) {
     if (!options.drafts.has(key)) options.drafts.set(key, []);
     const input = node("input", "upload-input");
     input.type = "file";
     input.multiple = Number(component.max_values ?? 1) > 1;
-    input.required = component.required === true;
+    input.required = required;
     input.setAttribute("aria-label", labelText || customId);
     const list = node("ul", "upload-list");
     const redraw = () => {
       list.replaceChildren();
       (options.drafts.get(key) || []).forEach((file, index) => {
         const row = node("li", "upload-item");
-        const ficon = node("span", "upload-file-icon");
-        ficon.innerHTML = FILE_ICON_SVG;
-        row.append(ficon, node("span", "upload-file-name", file.name));
+        const icon = node("span", "upload-file-icon");
+        icon.innerHTML = FILE_ICON_SVG;
+        row.append(icon, node("span", "upload-file-name", file.name));
         const remove = node("button", "upload-remove", "×");
         remove.type = "button";
         remove.setAttribute("aria-label", `Remove ${file.name}`);
@@ -688,28 +814,39 @@ function modalControl(component, path, labelText, options) {
         list.append(row);
       });
     };
+    const addFiles = (files) => {
+      if (files.length) options.onFiles?.(key, [...(options.drafts.get(key) || []), ...files]);
+      redraw();
+    };
     const dropzone = node("label", "upload-dropzone");
     const prompt = node("span", "upload-prompt", "Drop files here or ");
     prompt.append(node("span", "upload-browse", "browse"));
+    const icon = node("span", "upload-icon");
+    icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M3 2h9l5 5v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 0-1z"/><path fill="#35353c" d="M12 2l5 5h-5z"/><path fill="#fff" stroke="#35353c" stroke-width="1.6" d="M17.5 10.8l4.2 4.2h-2.2v6h-4v-6h-2.2z"/></svg>';
     dropzone.append(
-      (() => { const icon = node("span", "upload-icon"); icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M3 2h9l5 5v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 0-1z"/><path fill="#35353c" d="M12 2l5 5h-5z"/><path fill="#fff" stroke="#35353c" stroke-width="1.6" d="M17.5 10.8l4.2 4.2h-2.2v6h-4v-6h-2.2z"/></svg>'; return icon; })(),
+      icon,
       prompt,
-      node("small", "upload-limit", `Upload up to ${component.max_values ?? 1} files under 10 MiB each.`),
+      node("small", "upload-limit", `Upload up to ${component.max_values ?? 1} files, 10 MiB per file.`),
       input,
-      list,
     );
     input.addEventListener("change", () => {
-      const next = [...(options.drafts.get(key) || []), ...[...(input.files || [])]];
-      options.onFiles?.(key, next);
+      const files = [...(input.files || [])];
       input.value = "";
-      redraw();
+      addFiles(files);
     });
-    field.append(dropzone);
+    dropzone.addEventListener("dragover", (event) => event.preventDefault());
+    dropzone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      addFiles([...(event.dataTransfer?.files || [])]);
+    });
+    field.append(dropzone, list);
     redraw();
-    return { field, get: () => options.drafts.get(key) || [], include: include(false) };
+    return finish(input, input, () => options.drafts.get(key) || []);
   }
-  options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false }); return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "", include: include(false) };
+  options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false });
+  return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "", include: include(false) };
 }
+
 export function renderModal(root, modal, options = {}) {
   root.replaceChildren();
   if (!modal) return { controls: {}, focus: null };
@@ -721,8 +858,9 @@ export function renderModal(root, modal, options = {}) {
   dialog.setAttribute("aria-labelledby", "modal-title");
   dialog.setAttribute("tabindex", "-1");
   const heading = node("header", "modal-header");
-  const identity = node("span", "modal-identity", "●");
-  identity.setAttribute("aria-hidden", "true");
+  const identity = renderIdentityAvatar(modal.application_identity, options, "modal-identity");
+  identity.element.setAttribute("aria-hidden", "true");
+  options.pendingMedia?.push(...identity.pending);
   const title = node("h2", "modal-title", modal.title || "Dialog");
   title.id = "modal-title";
   const close = node("button", "modal-close");
@@ -730,7 +868,7 @@ export function renderModal(root, modal, options = {}) {
   close.type = "button";
   close.setAttribute("aria-label", "Close modal");
   close.addEventListener("click", () => options.onCancel?.());
-  heading.append(identity, title, close);
+  heading.append(identity.element, title, close);
   dialog.append(heading);
   const body = node("div", "modal-body");
   const disclaimer = node(
@@ -758,8 +896,7 @@ export function renderModal(root, modal, options = {}) {
     if (type === TYPE.LABEL) {
       const rendered = modalControl(component.component, `${path}.component`, component.label || "", options);
       if (component.description) {
-        const description = node("small", "field-description", component.description);
-        rendered.field.insertBefore(description, rendered.field.children[1] || null);
+        addModalDescription(rendered.field, rendered.control, component.description, path);
       }
       fields.append(rendered.field);
       controls[String(component.component?.custom_id || path)] = rendered;
@@ -793,29 +930,6 @@ export function renderModal(root, modal, options = {}) {
   submit.type = "submit";
   actions.append(cancel, submit);
   dialog.append(actions);
-  const scrollbar = node("div", "modal-scrollbar");
-  scrollbar.setAttribute("aria-hidden", "true");
-  const scrollThumb = node("div", "modal-scrollbar-thumb");
-  scrollbar.append(scrollThumb);
-  dialog.append(scrollbar);
-  const updateScrollbar = () => {
-    const overflow = body.scrollHeight - body.clientHeight;
-    scrollbar.style.display = overflow > 1 ? "" : "none";
-    dialog.classList.toggle("is-overflowing", overflow > 1);
-    if (overflow <= 1) return;
-    scrollbar.style.top = `${body.offsetTop + 3}px`;
-    scrollbar.style.height = `${body.clientHeight - 6}px`;
-    const track = body.clientHeight - 6;
-    const thumbH = Math.max(24, (body.clientHeight * body.clientHeight) / body.scrollHeight);
-    scrollThumb.style.height = `${thumbH}px`;
-    scrollThumb.style.transform = `translateY(${(body.scrollTop / overflow) * (track - thumbH)}px)`;
-  };
-  body.addEventListener("scroll", updateScrollbar);
-  if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(updateScrollbar).observe(body);
-    new ResizeObserver(updateScrollbar).observe(fields);
-  }
-  requestAnimationFrame(updateScrollbar);
   dialog.addEventListener("submit", (event) => {
     event.preventDefault();
     const values = {};
@@ -827,6 +941,14 @@ export function renderModal(root, modal, options = {}) {
   });
   backdrop.append(dialog);
   root.append(backdrop);
-  return { controls, focus: dialog.querySelector("input, textarea, button") || dialog };
+  body.scrollTop = Number(options.scrollTop || 0);
+  const invalid = options.validationError
+    ? Object.values(controls).find((control) => control.field.dataset.customId === options.validationError.controlId)
+    : null;
+  return {
+    controls,
+    focus: dialog.querySelector("input, textarea, button") || dialog,
+    errorTarget: invalid?.focus || null,
+  };
 }
 export { renderEmbed, renderNode, renderSpoilerMedia };

@@ -171,6 +171,19 @@ dispatch. Link buttons navigate only after an explicit click and never dispatch 
 purchase buttons are shown as unavailable. Unsupported component or presentation fields stay visible
 as diagnostics rather than silently disappearing.
 
+Modal fields retain required/optional semantics, defaults, and local drafts. Validation points to
+the affected control and leaves drafts recoverable; Python validates every submitted value again
+before the real callback runs. Optional untouched fields without defaults may be omitted, while
+effective defaults, false checkbox values, and allowed empty text values remain represented.
+Uploads are the selected browser files and bytes, never names synthesized by the preview. SimCord
+enforces 10 MiB per file and 25 MiB total uploaded bytes per action; this local resource policy may
+be lower than Discord's current upload allowance.
+
+The modal dialog stays within its preview viewport and scrolls its body; changing capture mode never
+expands it. The modal family's exact geometry and validation/select transition traces remain
+uncertified because the available reference window has no comparable crop measurements and no
+authorized interaction trace. See the [parity matrix](../parity-matrix.md).
+
 In channel layout, history paging and message sends are admitted against the current publication.
 The composer is available only when the selected viewer has send permission; replies are one level
 deep and require an authorized referenced message. A successful send clears its draft, while a
@@ -395,10 +408,11 @@ suits agents and diff tooling that never touch disk.
 
 The effective profile records theme, viewport width/height, locale, timezone, device scale, reduced
 motion, Playwright/browser versions, system font identity, emoji fallback, and animation policy.
-`mode="surface"` captures the focused message (or expanded modal) at its measured geometry;
-`mode="viewport"` captures the emulated preview viewport, including an in-viewport modal overlay but
-excluding the outside inspector. Width and height are positive bounded integers and are checked
-against the screenshot raster limits above.
+`mode="surface"` captures the focused message or modal dialog at its actual viewport-constrained
+geometry; it never expands modal content for a screenshot. `mode="viewport"` captures the emulated
+preview viewport, including its modal backdrop and dialog but excluding the outside inspector. Use an
+interactive browser session to inspect modal content at both scroll extremes. Width and height are
+positive bounded integers and are checked against the screenshot raster limits above.
 
 The report includes viewer, channel, target, and modal IDs, published and render generations, output
 geometry, media metadata (effective frame times, codec selection, transformations), readiness,

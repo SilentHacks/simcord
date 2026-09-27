@@ -100,7 +100,7 @@ function statusObject() {
   const renderState = {
     openPopupKey: state.dropdown?.key || null,
     modalHandle: state.modalHandle,
-    validationPaths: state.modalError ? [state.modalErrorHandle] : [],
+    validationPaths: state.modalError ? [state.modalError.controlId] : [],
     mediaCaptureTimes: { ...state.mediaCaptureTimes },
     mediaMetadata: { ...state.mediaMetadata },
   };
@@ -157,7 +157,7 @@ function focusTarget(key) {
 function restoreFocus(key = state.focusKey) {
   const target = focusTarget(key);
   if (!(target instanceof HTMLElement) || target.inert || target.matches(":disabled")) return false;
-  target.focus();
+  target.focus({ preventScroll: true });
   if (state.focusSelection && typeof target.setSelectionRange === "function") {
     try { target.setSelectionRange(state.focusSelection.start, state.focusSelection.end); } catch (_) {}
   }
@@ -169,7 +169,7 @@ function restoreFocus(key = state.focusKey) {
 }
 
 function setModalIsolation(open) {
-  [ui.channel, ui.empty, ui.surface].forEach((element) => {
+  [ui.channel, ui.empty, ui.surface, ui.toolbar, ui.diagnostics].forEach((element) => {
     if (element) element.inert = open;
   });
   ui.modal.setAttribute("aria-hidden", String(!open));
@@ -305,6 +305,7 @@ function profileFromSnapshot(snapshot) {
   return {
     ...state.profile,
     width: state.profileCustomized.width ? state.profile.width : Number(configured.width || 960),
+    height: state.profileCustomized.height ? state.profile.height : Number(configured.height || 720),
     locale: configured.locale || state.profile.locale || "en-US",
     timezone: configured.timezone || state.profile.timezone || "UTC",
     presentationTime: configured.presentationTime || state.profile.presentationTime || null,
@@ -781,7 +782,10 @@ function navigateDropdown(key, highlight) {
 
 function clearSelection(key, minimum = 1) {
   const modal = key.startsWith("modal:");
-  if (modal) state.modalTouched.add(key);
+  if (modal) {
+    clearModalValidation();
+    state.modalTouched.add(key);
+  }
   currentDrafts(key).set(key, []);
   if (state.dropdown?.key === key) state.dropdown = null;
   localRender(true);
@@ -820,6 +824,25 @@ function cancelDropdown(key) {
   localRender(true);
 }
 
+function clearModalValidation() {
+  const error = state.modalError;
+  if (error) {
+    const field = [...ui.modal.querySelectorAll(".modal-field")]
+      .find((item) => item.dataset.customId === error.controlId);
+    const message = field?.querySelector(".field-error");
+    if (message) {
+      field.querySelectorAll("[aria-invalid='true']").forEach((target) => {
+        target.removeAttribute("aria-invalid");
+        const ids = (target.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== message.id);
+        if (ids.length) target.setAttribute("aria-describedby", ids.join(" "));
+        else target.removeAttribute("aria-describedby");
+      });
+      message.remove();
+    }
+  }
+  state.modalError = null;
+  state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "modal-validation");
+}
 document.addEventListener("pointerdown", (event) => {
   const activeWrap = event.target instanceof Element ? event.target.closest(".preview-select") : null;
   if (!state.dropdown || activeWrap?.dataset.controlKey === state.dropdown.key) return;
@@ -835,15 +858,19 @@ function submitModal(values) {
   if (error) {
     state.modalError = error;
     state.modalErrorHandle = modal.handle;
-    addDiagnostic({ code: "modal-validation", severity: "error", message: error, complete: false });
+    state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "modal-validation");
+    addDiagnostic({
+      code: "modal-validation",
+      severity: "error",
+      message: `${error.controlId}: ${error.message}`,
+      complete: false,
+    });
     state.lastModalFingerprint = "";
     localRender(true);
     return;
   }
-  state.modalError = null;
+  clearModalValidation();
   state.modalErrorHandle = null;
-  state.modalDrafts.clear();
-  state.modalTouched.clear();
   dispatch("modal_submit", { modal_handle: modal.handle, values });
 }
 
@@ -932,10 +959,10 @@ function renderSnapshot(snapshot, generation, force = false) {
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
   const modalKey = snapshot.modal ? `${fingerprint(snapshot.modal)}:${state.candidateFingerprint}` : "";
   if (modal && state.modalErrorHandle !== modal.handle) {
-    state.modalError = null;
+    clearModalValidation();
     state.modalErrorHandle = modal.handle;
   } else if (!modal) {
-    state.modalError = null;
+    clearModalValidation();
     state.modalErrorHandle = null;
   }
   const nextHandle = modal?.handle || null;
@@ -947,6 +974,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   }
   setModalIsolation(Boolean(nextHandle));
   if (force || modalKey !== state.lastModalFingerprint) {
+    const scrollTop = ui.modal.querySelector(".modal-body")?.scrollTop || 0;
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
       dropdown: state.dropdown,
@@ -958,6 +986,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       contextId: state.contextId,
       spoilerState: state.spoilerState,
       validationError: state.modalError,
+      scrollTop,
       locale: state.profile.locale,
       presentationTime: state.profile.presentationTime,
       pendingMedia,
@@ -965,6 +994,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       onInit: initDraft,
       onSelectOpen: openDropdown,
       onSelectDraft: (key, value, multi, minimum, maximum, selected) => {
+        clearModalValidation();
         state.modalTouched.add(key);
         updateDraft(key, value, multi, minimum, maximum, selected);
       },
@@ -973,36 +1003,33 @@ function renderSnapshot(snapshot, generation, force = false) {
       onNavigate: navigateDropdown,
       onClear: clearSelection,
       onDraft: (key, value) => {
+        clearModalValidation();
         state.modalDrafts.set(key, value);
         state.modalTouched.add(key);
-        if (state.modalError) {
-          state.modalError = null;
-          state.lastModalFingerprint = `${fingerprint(state.snapshot?.modal)}:${state.candidateFingerprint}`;
-          document.querySelectorAll(".field-error").forEach((error) => error.remove());
-        }
         localRender(false);
       },
       onFiles: (key, files) => {
+        clearModalValidation();
         state.modalDrafts.set(key, files);
         state.modalTouched.add(key);
-        state.modalError = null;
-        state.lastModalFingerprint = `${fingerprint(state.snapshot?.modal)}:${state.candidateFingerprint}`;
-        document.querySelectorAll(".field-error").forEach((error) => error.remove());
         localRender(false);
       },
       onCancel: () => {
-        if (state.dropdown) { cancelDropdown(state.dropdown.key); return; }
+        state.dropdown = null;
+        clearModalValidation();
         state.dismissedModal = state.modalHandle;
         state.modalDrafts.clear();
         state.modalTouched.clear();
-        state.modalError = null;
         state.modalErrorHandle = null;
         localRender(true);
       },
       onSubmit: submitModal,
       onDiagnostic: addDiagnostic,
     });
-    if (nextHandle && !previousHandle) requestAnimationFrame(() => rendered.focus?.focus());
+    if (nextHandle && state.modalError && rendered.errorTarget) {
+      rendered.errorTarget.scrollIntoView({ block: "nearest" });
+      rendered.errorTarget.focus({ preventScroll: true });
+    } else if (nextHandle && !previousHandle) requestAnimationFrame(() => rendered.focus?.focus());
     else if (nextHandle) restoreFocus();
     else if (previousHandle) restoreFocus(state.modalOpenerFocusKey) || (ui.message.disabled ? ui.viewer : ui.message).focus();
   }
@@ -1093,6 +1120,8 @@ async function installSnapshot(snapshot, force = false) {
 
 function validateModalValues(modal, values) {
   const controls = {};
+  const uploadLimit = 10 * 1024 * 1024;
+  let totalUploadBytes = 0;
   const walk = (node) => {
     if (!node || typeof node !== "object") return;
     if (typeof node.custom_id === "string") controls[node.custom_id] = node;
@@ -1101,19 +1130,48 @@ function validateModalValues(modal, values) {
   (modal.components || []).forEach(walk);
   for (const [id, component] of Object.entries(controls)) {
     const type = Number(component.type);
+    const supplied = Object.prototype.hasOwnProperty.call(values, id);
     const value = values[id];
+    const required = component.required === true
+      || (component.required === undefined && (type === 4 || [3, 5, 6, 7, 8].includes(type)));
+    const invalid = (message) => ({ controlId: id, message });
     if (type === 4) {
-      const text = String(value ?? "");
-      if (component.required !== false && !text) return `Required modal control '${id}' cannot be empty`;
-      if (component.min_length !== undefined && text.length < Number(component.min_length)) return `${id} is shorter than its minimum length`;
-      if (component.max_length !== undefined && text.length > Number(component.max_length)) return `${id} exceeds its maximum length`;
+      const text = String(value ?? component.value ?? component.default ?? "");
+      const length = Array.from(text).length;
+      if (required && !text) return invalid("This field is required.");
+      if (component.min_length !== undefined && length < Number(component.min_length)) {
+        return invalid(`Enter at least ${component.min_length} characters.`);
+      }
+      if (component.max_length !== undefined && length > Number(component.max_length)) {
+        return invalid(`Enter no more than ${component.max_length} characters.`);
+      }
     } else if ([3, 5, 6, 7, 8, 19, 22].includes(type)) {
-      const count = Array.isArray(value) ? value.length : 0;
+      const selected = Array.isArray(value) ? value : [];
       const minimum = Number(component.min_values ?? 1);
       const maximum = Number(component.max_values ?? (type === 22 ? component.options?.length || 1 : 1));
-      if (component.required !== false && count < minimum) return `${id} requires at least ${minimum} value(s)`;
-      if (count > maximum) return `${id} accepts at most ${maximum} value(s)`;
-    } else if (type === 21 && component.required !== false && !value) return `${id} requires one choice`;
+      if (required && selected.length === 0) return invalid("Choose at least one value.");
+      if ((supplied || required) && selected.length < minimum) {
+        return invalid(`Choose at least ${minimum} value(s).`);
+      }
+      if (selected.length > maximum) return invalid(`Choose no more than ${maximum} value(s).`);
+      if (type === 19) {
+        for (const file of selected) {
+          if (!file || typeof file.size !== "number") return invalid("Choose a valid file.");
+          if (file.size > uploadLimit) return invalid(`${file.name} exceeds the 10 MiB per-file limit.`);
+          totalUploadBytes += file.size;
+          if (totalUploadBytes > 25 * 1024 * 1024) {
+            return invalid("Uploads exceed the 25 MiB aggregate limit.");
+          }
+        }
+      }
+    } else if (type === 21) {
+      if (required && !value) return invalid("Choose one option.");
+      if (value != null && !(component.options || []).some((item) => String(item.value) === String(value))) {
+        return invalid("Choose an available option.");
+      }
+    } else if (type === 23 && supplied && typeof value !== "boolean") {
+      return invalid("Choose a valid checkbox value.");
+    }
   }
   return null;
 }
@@ -1311,18 +1369,27 @@ ui.modal.addEventListener("keydown", (event) => {
     if (state.dropdown) { event.preventDefault(); cancelDropdown(state.dropdown.key); return; }
     if (state.modalHandle) {
       event.preventDefault();
+      clearModalValidation();
       state.dismissedModal = state.modalHandle;
       state.modalDrafts.clear();
       state.modalTouched.clear();
+      state.modalErrorHandle = null;
       localRender(true);
     }
     return;
   }
   if (event.key !== "Tab") return;
-  const focusable = [...ui.modal.querySelectorAll("button, input, textarea, [tabindex]:not([tabindex='-1'])")].filter((item) => !item.disabled && item.offsetParent !== null);
-  if (focusable.length < 2) return;
+  const focusable = [...ui.modal.querySelectorAll("button, input, textarea, [tabindex]:not([tabindex='-1'])")]
+    .filter((item) => !item.disabled && item.offsetParent !== null);
+  if (!focusable.length) {
+    event.preventDefault();
+    ui.modal.querySelector(".modal-dialog")?.focus();
+    return;
+  }
   const index = focusable.indexOf(document.activeElement);
-  const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index === focusable.length - 1 ? 0 : index + 1);
+  const next = event.shiftKey
+    ? (index <= 0 ? focusable.length - 1 : index - 1)
+    : (index < 0 || index === focusable.length - 1 ? 0 : index + 1);
   event.preventDefault();
   focusable[next].focus();
 });

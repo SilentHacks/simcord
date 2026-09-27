@@ -1330,9 +1330,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
                 component["markdown_tokens"] = _decorate_markdown_emoji(
                     markdown_tokens(component["content"], "text_display", context=context), page
                 )
-        payload["application_name"] = _identity_wire(
-            resolve_identity(preview, page, preview.env.backend.bot_user.id)
-        )["name"]
+        application = _identity_wire(resolve_identity(preview, page, preview.env.backend.bot_user.id))
+        payload["application_identity"] = application
+        payload["application_name"] = application["name"]
         modal = {"handle": page.modal_handle, "payload": payload}
     entities: dict[str, dict[str, dict[str, Any]]] = {
         "users": {},

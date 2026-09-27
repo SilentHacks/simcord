@@ -1072,20 +1072,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   box-shadow: 0 8px 24px #0008;
   font-size: 14px;
 }
-.modal-scrollbar {
-  position: absolute;
-  right: 2px;
-  width: 10px;
-  pointer-events: none;
-}
-.modal-scrollbar-thumb {
-  width: 8px;
-  margin: 0 auto;
-  background: var(--scrollbar-thumb);
-  border-radius: 4px;
-}
 .modal-header { display: flex; align-items: center; gap: 10px; padding: 24px 25px 12px; }
-.modal-dialog.is-overflowing .modal-header { padding-bottom: 23px; border-bottom: 1px solid var(--modal-separator); }
 .modal-identity {
   display: grid;
   flex: 0 0 24px;
@@ -1098,6 +1085,8 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   border-radius: 50%;
   font-size: 0;
 }
+.modal-identity img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.modal-identity svg { width: 16px; height: 16px; }
 .modal-title { flex: 1; margin: 0; color: var(--discord-text); font-size: 24px; font-weight: 700; line-height: 30px; }
 .modal-close {
   display: grid;
@@ -1158,6 +1147,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .control-label { color: var(--discord-text); font-weight: 600; font-size: 16px; }
 .required-marker { color: #f23f42; }
 .field-error { color: #f38688; font-style: italic; font-weight: 600; }
+.modal-input[aria-invalid="true"], .select-trigger[aria-invalid="true"] { border-color: #f38688; }
 .field-description { color: var(--discord-subtle); font-size: 14px; line-height: 20px; }
 .modal-input {
   width: 100%;
@@ -1209,6 +1199,7 @@ textarea.modal-input { min-height: 90px; resize: none; }
 .choice-label { line-height: 22px; font-weight: 500; }
 .choice-description { grid-column: 2; color: var(--discord-subtle); line-height: 22px; }
 .upload-dropzone {
+  position: relative;
   display: grid;
   gap: 8px;
   min-height: 120px;
@@ -1240,8 +1231,7 @@ textarea.modal-input { min-height: 90px; resize: none; }
 .upload-file-icon { display: block; width: 22px; height: 29px; }
 .upload-file-icon svg { display: block; width: 100%; height: 100%; }
 .upload-file-name { flex: 1; overflow-wrap: anywhere; font-size: 13px; }
-.upload-remove { flex: 0 0 auto; min-height: 24px; padding: 0 4px; color: var(--discord-subtle); background: transparent; font-size: 18px; opacity: 0; }
-.upload-item:hover .upload-remove, .upload-item:focus-within .upload-remove { opacity: 1; }
+.upload-remove { flex: 0 0 auto; min-height: 24px; padding: 0 4px; color: var(--discord-subtle); background: transparent; font-size: 18px; opacity: 1; }
 .modal-actions {
   display: grid;
   flex: 0 0 auto;
@@ -1251,7 +1241,6 @@ textarea.modal-input { min-height: 90px; resize: none; }
   padding: 24px 25px 24px;
   background: transparent;
 }
-.modal-dialog.is-overflowing .modal-actions { padding: 24px 25px 25px; border-top: 1px solid var(--modal-separator); }
 .modal-actions button { width: 100%; min-height: 40px; }
 .modal-actions .button-secondary { background: var(--button-alt); }
 .modal-actions .button-secondary:hover:not(:disabled) { background: var(--button-alt-hover); }

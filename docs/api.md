@@ -90,6 +90,9 @@ bytes in memory. Internal `/api/*` payloads and DOM/CSS names are not extension 
 `Preview.screenshot(..., media_time=...)` selects a deterministic capture time; `PreviewCapture.media_metadata`
 reports each validated asset's effective time, codecs, and transformation.
 
+Modal `mode="surface"` captures keep the dialog within the configured preview viewport; they do
+not expand scrollable content. Use a browser session to inspect both scroll positions.
+
 ## Results
 
 Returned by the interaction verbs (`slash`, `context_menu`, `click`, `select`,

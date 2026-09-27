@@ -160,24 +160,16 @@ class ManagedCapture:
         )
 
     @staticmethod
-    async def _freeze(page: Any, *, expand_modal: bool = False) -> None:
+    async def _freeze(page: Any) -> None:
         await page.evaluate(
-            """(expand) => {
+            """() => {
                 document.querySelectorAll('*').forEach((element) => {
                     element.style.setProperty('animation-play-state', 'paused', 'important');
                     element.style.setProperty('transition', 'none', 'important');
                     element.style.setProperty('caret-color', 'transparent', 'important');
                 });
                 document.getAnimations?.().forEach((animation) => animation.cancel());
-                if (expand) {
-                    const modal = document.querySelector('.modal-dialog');
-                    if (modal) {
-                        modal.style.setProperty('max-height', 'none', 'important');
-                        modal.style.setProperty('overflow', 'visible', 'important');
-                    }
-                }
-            }""",
-            expand_modal,
+            }"""
         )
 
     @staticmethod
@@ -353,7 +345,7 @@ class ManagedCapture:
                     detail = "; ".join(str(item.get("message", "")) for item in diagnostics)
                     raise SetupError(f"managed capture is incomplete ({detail}); pass allow_incomplete=True")
 
-                await self._freeze(page, expand_modal=pin.modal_id is not None and mode == "surface")
+                await self._freeze(page)
                 await self._raf(page)
                 if mode == "surface":
                     selector = ".modal-dialog" if pin.modal_id is not None else ".message-surface"
@@ -410,7 +402,6 @@ class ManagedCapture:
                         "viewportHeight": height,
                         "outputWidth": output_width,
                         "outputHeight": output_height,
-                        "surfaceExpanded": bool(pin.modal_id is not None and mode == "surface"),
                     },
                     "action": dict(last_action) if isinstance(last_action, Mapping) else None,
                     "media_metadata": media_metadata,
@@ -588,11 +579,11 @@ class _CaptureOps:
         ``viewer`` defaults to the Python presentation viewer. ``target`` may
         be a Message, ResponseMessage, InteractionResult, or snowflake; the
         default is the focused message, falling back to the latest visible
-        message. ``mode`` is ``"surface"`` (just the message surface) or
-        ``"viewport"`` (the full preview viewport). ``allow_incomplete`` permits
-        captures whose channel has no focusable target. ``media_time`` selects a
-        bounded deterministic frame time, defaulting to zero. Returned
-        ``media_metadata`` reports effective capture times and validated codecs.
+        message. ``mode`` is ``"surface"`` (the visible message or modal dialog
+        at its viewport-constrained geometry) or ``"viewport"`` (the full preview
+        viewport). ``allow_incomplete`` permits captures without a focusable
+        target. ``media_time`` selects a bounded deterministic frame time, and
+        ``media_metadata`` reports effective times and validated codecs.
 
         Returns an immutable ``PreviewCapture`` report; ``ready``,
         ``complete`` and ``calibrated`` are independent signals, and ``png``
