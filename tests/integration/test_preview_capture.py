@@ -340,6 +340,58 @@ async def test_capture_scrubs_capabilities_and_rejects_malformed_snapshots(tmp_p
     assert "[scrubbed-url]" in saved_report
 
 
+@pytest.mark.asyncio
+async def test_capture_blocks_unexercised_recipe_and_cleans_partial_files(tmp_path):
+    row = _coverage_row("historical.ref.30.string.select.string.select.two.message")
+    row.update(
+        variant="two",
+        steps=[{"input": "none", "action": "capture historical image without mutating state"}],
+        expected={"backend": "unchanged", "visible": "historical two surface"},
+    )
+    path = tmp_path / capture_visual_reference._capture_name(row)
+    metadata_path = path.with_suffix(".json")
+    path.write_bytes(b"partial png")
+    metadata_path.write_text("partial metadata")
+
+    result = await capture_visual_reference._capture_row(row, tmp_path, object(), {})
+
+    assert result["status"] == "blocked"
+    assert "no supported capture recipe" in result["reason"]
+    assert not path.exists()
+    assert not metadata_path.exists()
+
+    modal = _coverage_row("historical.ref.50.modals.modal.text.empty.dialog")
+    modal.update(
+        variant="empty",
+        steps=[{"input": "none", "action": "capture historical image without mutating state"}],
+        expected={"backend": "unchanged", "visible": "historical empty surface"},
+    )
+    modal_path = tmp_path / capture_visual_reference._capture_name(modal)
+    modal_metadata = modal_path.with_suffix(".json")
+    modal_path.write_bytes(b"partial png")
+    modal_metadata.write_text("partial metadata")
+    result = await capture_visual_reference._capture_row(modal, tmp_path, object(), {})
+    assert result["status"] == "blocked"
+    assert not modal_path.exists()
+    assert not modal_metadata.exists()
+
+    active = _coverage_row("historical.ref.20.buttons.button.primary.active")
+    active.update(
+        variant="active",
+        steps=[{"input": "none", "action": "capture historical image without mutating state"}],
+        expected={"backend": "unchanged", "visible": "historical active surface"},
+    )
+    assert capture_visual_reference._recipe(active) == ("active-button", "Primary")
+
+    idle = _coverage_row("historical.ref.30.string.select.idle")
+    idle.update(
+        variant="idle",
+        steps=[{"input": "none", "action": "capture historical image without mutating state"}],
+        expected={"backend": "unchanged", "visible": "historical idle surface"},
+    )
+    assert capture_visual_reference._recipe(idle) == ("idle", None)
+
+
 def test_capture_cli_fixture_selection_and_exit_status_are_deterministic(tmp_path, monkeypatch):
     calls: list[list[str]] = []
 

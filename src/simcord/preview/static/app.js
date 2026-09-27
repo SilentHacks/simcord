@@ -1196,8 +1196,10 @@ async function dispatch(kind, extra = {}) {
     published_revision: state.publishedRevision,
     ...extra,
   };
-  if (["click", "select"].includes(kind)) body.target_id = state.targetId;
-  state.pendingAction = { kind, requestId, sequence, ...extra };
+  if (["click", "select"].includes(kind)) {
+    body.target_id = /^message:(\d+):component:/.exec(extra.control_key)?.[1] ?? state.targetId;
+  }
+  state.pendingAction = { kind, requestId, sequence };
   localRender(false);
   try {
     const result = await requestAction(body);

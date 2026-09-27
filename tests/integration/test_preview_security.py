@@ -78,6 +78,19 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
             assert response.status == 200
             assert response.headers["Content-Type"].startswith("image/png")
             assert await response.read() == png_bytes()
+            await reply.edit(embeds=[discord.Embed().set_image(url=image_url)])
+            response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
+            assert response.status == 200
+            assert await response.read() == png_bytes()
+            preview._explicit_assets[image_url] = ("picture.png", b"replacement bytes")
+            response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
+            assert response.status == 404
+            preview._explicit_assets[image_url] = ("picture.png", png_bytes())
+            await reply.edit(
+                embeds=[discord.Embed().set_image(url="https://cdn.example.test/replacement.png")]
+            )
+            response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
+            assert response.status == 404
             response = await client.get(preview._origin + "/api/assets/not-an-asset", headers=headers)
             assert response.status == 404
 

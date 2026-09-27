@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from preview_helpers import action_body
 
@@ -54,10 +56,13 @@ async def test_channel_layout_authorizes_window_and_reanchors_targets(env, chann
         assert older["messages"][str(edited.id)]["edited_timestamp"] is not None
         assert older["messages"][str(starter.id)]["thread"]["name"] == "discussion"
 
-        await preview.show(history[0])
+        await preview.show(history[20])
         focused = await preview.snapshot()
-        assert focused["targetId"] == str(history[0].id)
-        assert str(history[0].id) in focused["timeline"]
+        assert focused["targetId"] == str(history[20].id)
+        assert focused["timeline"][24] == str(history[20].id)
+        assert focused["timeline"][-1] == str(history[45].id)
+        assert focused["history"]["hasBefore"] is True
+        assert focused["history"]["hasAfter"] is True
 
         bob_page = preview._open_page(bob.id, target_id=ephemeral.response.id)
         bob_snapshot = preview._page_payload(bob_page)
@@ -65,6 +70,46 @@ async def test_channel_layout_authorizes_window_and_reanchors_targets(env, chann
         assert ephemeral_projection["ephemeral"] is True
         assert ephemeral_projection["interaction_header"]["kind"] == "context_menu_command"
         assert ephemeral_projection["interaction_header"]["user"]["id"] == str(bob.id)
+
+
+@pytest.mark.asyncio
+async def test_channel_controls_dispatch_to_their_own_message(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    first = (await alice.slash(channel, "panel")).response.message
+    second = (await alice.slash(channel, "panel")).response.message
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        await preview.show(second)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                first_panel = page.locator(".channel-message").filter(has_text="Panel").first
+                assert await first_panel.get_attribute("data-message-id") == str(first.id)
+                await first_panel.get_by_role("button", name="Ping").click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.lastAction?.settlement === 'settled'"
+                    " && !window.simcordPreview.pendingAction"
+                )
+                assert (await page.evaluate("() => window.simcordPreview.lastAction"))["dispatched"]
+                assert channel.last_message.content == "pong"
+                release = asyncio.Event()
+
+                async def pause_action(route):
+                    await release.wait()
+                    await route.continue_()
+
+                await page.route("**/api/action", pause_action)
+                await page.get_by_role("textbox", name="Message").fill("private draft")
+                await page.get_by_role("button", name="Send").click()
+                await page.wait_for_function("() => Boolean(window.simcordPreview?.pendingAction)")
+                pending = await page.evaluate("() => window.simcordPreview.pendingAction")
+                assert "private draft" not in str(pending)
+                release.set()
+            finally:
+                await browser.close()
 
 
 @pytest.mark.asyncio

@@ -522,7 +522,9 @@ python scripts/compare_visual_reference.py \
 For one comparison add `--fixture ID`, or `--family buttons` for a family; omit
 both for the entire private batch. Use a separate clean `--actual-dir` per selection:
 unexpected PNGs from other rows correctly invalidate a batch. Capture writes
-`capture-report.json` and per-row metadata to the ignored output directory.
+`capture-report.json` and per-row metadata to the ignored output directory. Unsupported
+state recipes or controls that do not reach their registered state are `blocked`, never
+silently captured as idle.
 Comparison writes `comparison.json` and a
 contact sheet there, without resizing the images. Only a provenance-checked private
 `reference-pack.json` and authorized local images can support certification; the

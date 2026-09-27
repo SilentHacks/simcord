@@ -496,7 +496,7 @@ def _decorate_components(
                 }
                 icon_url = presentation.get("icon_url")
                 if icon_url is not None:
-                    asset_id = _asset_meta(page, icon_url)
+                    asset_id = _asset_meta(page, icon_url, message=message)
                     if asset_id:
                         value["icon_asset_id"] = asset_id
                         value["icon_available"] = _asset_available(page, asset_id)
@@ -557,7 +557,7 @@ def _embed_projection(
             owner_value["url"] = owner_link
         icon_url = owner.get("icon_url") or owner.get("icon_proxy_url")
         if isinstance(icon_url, str):
-            icon_id = _asset_meta(page, icon_url, None, None)
+            icon_id = _asset_meta(page, icon_url, message=message)
             if icon_id:
                 owner_value["icon_asset_id"] = icon_id
                 owner_value["icon_available"] = _asset_available(page, icon_id)
@@ -1289,11 +1289,13 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     target_index = next((index for index, item in enumerate(visible) if item.id == page.target_id), None)
     target = visible[target_index] if target_index is not None else None
     if preview.layout == "channel":
-        end = len(visible) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
-        start = max(0, end - 50)
-        if target_index is not None and not start <= target_index < end:
-            page.window_end_id = ids[target_index]
-            end = target_index + 1
+        if target_index is not None and (page.window_end_id is None or page.window_end_id == page.target_id):
+            start = max(0, target_index - 24)
+            end = min(len(visible), start + 50)
+            start = max(0, end - 50)
+            page.window_end_id = ids[end - 1] if end else None
+        else:
+            end = len(visible) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
             start = max(0, end - 50)
         if page.window_end_id is not None and page.window_end_id not in ids:
             page.window_end_id = ids[end - 1] if end else None

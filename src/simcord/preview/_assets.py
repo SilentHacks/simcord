@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE, sticker_url
 from ..backend.errors import BackendError, SetupError
+from ..components import walk_components
 from ._media import MediaError, MediaWorker
 
 if TYPE_CHECKING:
@@ -183,6 +184,8 @@ class _AssetOps:
             raise SetupError("asset is unavailable")
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("asset access denied")
+        if not record.available or record.digest is None:
+            raise SetupError("asset is unavailable")
         source = record.source
         if not isinstance(source, tuple) or not source:
             return record
@@ -216,6 +219,63 @@ class _AssetOps:
                 raise SetupError("asset is unavailable") from exc
             if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("asset access denied")
+            if record.key.startswith("url:"):
+                url_key, separator, message_ref = record.key[4:].rpartition(":message:")
+                if not separator or message_ref != f"{channel_id}:{message_id}":
+                    raise SetupError("asset is unavailable")
+                url = url_key
+                referenced = any(
+                    isinstance(media, dict) and media.get("url") == url
+                    for embed in message.embeds
+                    if isinstance(embed, dict)
+                    for media in (embed.get("image"), embed.get("thumbnail"), embed.get("video"))
+                ) or any(
+                    isinstance(embed.get(field), dict)
+                    and (embed[field].get("icon_url") or embed[field].get("icon_proxy_url")) == url
+                    for embed in message.embeds
+                    if isinstance(embed, dict)
+                    for field in ("author", "footer")
+                )
+                if not referenced:
+                    for component in walk_components(message.components):
+                        media = (component.get("media"), component.get("file"))
+                        if any(isinstance(item, dict) and item.get("url") == url for item in media):
+                            referenced = True
+                            break
+                        if any(
+                            isinstance(item, dict)
+                            and isinstance(item.get("media"), dict)
+                            and item["media"].get("url") == url
+                            for item in component.get("items", [])
+                        ):
+                            referenced = True
+                            break
+                        if component.get("style") == 6:
+                            presentation = page.preview._sku_presentations.get(
+                                str(component.get("sku_id", ""))
+                            )
+                            if presentation is not None and presentation.get("icon_url") == url:
+                                referenced = True
+                                break
+            elif record.key.startswith("webhook-avatar:"):
+                _, source_channel, source_message, url = record.key.split(":", 3)
+                referenced = (
+                    source_channel == str(channel_id)
+                    and source_message == str(message_id)
+                    and message.author_avatar == url
+                )
+            else:
+                raise SetupError("asset is unavailable")
+            if not referenced:
+                raise SetupError("asset is unavailable")
+            current = self.env.backend.cdn.get(url)
+            if current is None:
+                supplied = self._explicit_assets.get(url)
+                current = supplied[1] if supplied is not None else None
+            if current is None:
+                raise SetupError("asset is unavailable")
+            if hashlib.sha256(current).hexdigest() != record.digest:
+                raise SetupError("asset was replaced")
         elif owner == "emoji":
             _, emoji_id = source
             try:
