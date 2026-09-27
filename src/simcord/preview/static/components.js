@@ -280,9 +280,49 @@ function renderNode(component, path, options) {
   if (SELECT_TYPES.has(type)) return renderSelect(component, path, options).element;
   if (type === TYPE.TEXT_DISPLAY) { const text = node("div", "text-display"); appendMarkdownOrText(text, component.content, component.markdown_tokens, options); return text; }
   if (type === TYPE.SECTION) { const section = node("section", "component-section"); const text = node("div", "section-text"); (component.components || []).forEach((child, index) => text.append(renderNode(child, `${path}.components.${index}`, options))); section.append(text); if (component.accessory) { const accessory = node("div", "section-accessory"); accessory.append(renderNode(component.accessory, `${path}.accessory`, options)); section.append(accessory); } return section; }
-  if (type === TYPE.CONTAINER) { const container = node("section", "component-container"); if (component.accent_color !== undefined) { const color = Number(component.accent_color); if (Number.isFinite(color)) container.style.setProperty("--accent", `#${color.toString(16).padStart(6, "0").slice(-6)}`); } (component.components || []).forEach((child, index) => container.append(renderNode(child, `${path}.components.${index}`, options))); return renderSpoiler(container, component.spoiler, options, "container", `container:${path}`); }
-  if (type === TYPE.THUMBNAIL) { const result = renderSpoilerMedia({ ...component.media, spoiler: component.spoiler, description: component.description }, "component-thumbnail", options, "Thumbnail", `thumbnail:${path}`); const figure = node("figure", "component-media"); figure.append(result.element); if (component.description) figure.append(node("figcaption", "media-description", component.description)); options.pendingMedia?.push(...result.pending); return figure; }
-  if (type === TYPE.MEDIA_GALLERY) { const gallery = node("div", "component-gallery"); (component.items || []).forEach((item, index) => { const result = renderSpoilerMedia({ ...item.media, spoiler: item.spoiler, description: item.description }, "gallery-image", options, `Gallery item ${index + 1}`, `gallery:${path}:${index}`); const figure = node("figure", "gallery-item"); figure.append(result.element); if (item.description) figure.append(node("figcaption", "media-description", item.description)); gallery.append(figure); options.pendingMedia?.push(...result.pending); }); return gallery; }
+  if (type === TYPE.CONTAINER) {
+    const container = node("section", "component-container");
+    if (component.accent_color !== null && component.accent_color !== undefined) {
+      const color = Number(component.accent_color);
+      if (Number.isInteger(color) && color >= 0 && color <= 0xffffff) {
+        container.style.setProperty("--accent", `#${color.toString(16).padStart(6, "0")}`);
+      }
+    }
+    (component.components || []).forEach((child, index) => {
+      container.append(renderNode(child, `${path}.components.${index}`, options));
+    });
+    return renderSpoiler(container, component.spoiler, options, "container", `container:${path}`);
+  }
+  if (type === TYPE.THUMBNAIL) {
+    const result = renderSpoilerMedia(
+      { ...component.media, spoiler: component.spoiler, description: component.description },
+      "component-thumbnail",
+      options,
+      "Thumbnail",
+      `thumbnail:${path}`,
+    );
+    const figure = node("figure", "component-media");
+    figure.append(result.element);
+    options.pendingMedia?.push(...result.pending);
+    return figure;
+  }
+  if (type === TYPE.MEDIA_GALLERY) {
+    const gallery = node("div", "component-gallery");
+    (component.items || []).forEach((item, index) => {
+      const result = renderSpoilerMedia(
+        { ...item.media, spoiler: item.spoiler, description: item.description },
+        "gallery-image",
+        options,
+        `Gallery item ${index + 1}`,
+        `gallery:${path}:${index}`,
+      );
+      const figure = node("figure", "gallery-item");
+      figure.append(result.element);
+      gallery.append(figure);
+      options.pendingMedia?.push(...result.pending);
+    });
+    return gallery;
+  }
   if (type === TYPE.SEPARATOR) { const separator = node(component.divider === false ? "div" : "hr", `component-separator spacing-${Number(component.spacing || 1)}${component.divider === false ? " no-divider" : ""}`); separator.setAttribute("aria-hidden", "true"); return separator; }
   if (type === TYPE.FILE) {
     const data = component.file || {};

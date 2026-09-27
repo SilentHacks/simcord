@@ -64,6 +64,7 @@ const state = {
   lastMessageKey: null,
   lastMessageFingerprint: "",
   assetFingerprint: "",
+  pendingMedia: [],
   targetId: null,
   objectUrls: new Map(),
   assetLoads: new Map(),
@@ -365,7 +366,6 @@ function loadAsset(assetId, options = {}) {
         effectiveMediaTime: manifest.effectiveMediaTime,
         workerMemoryLimited: manifest.workerMemoryLimited,
       };
-      state.assetFingerprint = fingerprint(state.snapshot.assets);
     }
     state.objectUrls.set(key, url);
     return url;
@@ -857,9 +857,12 @@ function renderSnapshot(snapshot, generation, force = false) {
   if (state.spoilerContext && state.spoilerContext !== spoilerContext) state.spoilerState.clear();
   state.spoilerContext = spoilerContext;
   state.contextId = nextContextId;
-  const nextAssets = fingerprint(snapshot.assets || {});
+  // Decode metadata changes during media loads; only source identity invalidates blob URLs.
+  const nextAssets = fingerprint(Object.entries(snapshot.assets || {}).map(([id, asset]) => [
+    id, asset.filename, asset.contentType, asset.available, asset.bytes,
+  ]));
   const previousTargetId = state.targetId;
-  if (state.assetFingerprint && nextAssets !== state.assetFingerprint) revokeAssets();
+  if (state.assetFingerprint && (nextAssets !== state.assetFingerprint || nextRevision !== state.publishedRevision)) revokeAssets();
   state.assetFingerprint = nextAssets;
   if (state.authorized && (nextGeneration !== state.contextGeneration || nextRevision !== state.publishedRevision)) state.localDiagnostics = [];
   if (nextGeneration !== state.contextGeneration || nextViewer !== state.viewerId) revokeAssets();
@@ -892,6 +895,9 @@ function renderSnapshot(snapshot, generation, force = false) {
       state.lastMessageKey = selectedKey;
       state.lastMessageFingerprint = selectedFingerprint;
       renderMessage(ui.surface, selected, messageRenderOptions(snapshot, generation, pendingMedia, selected, false));
+      state.pendingMedia = pendingMedia;
+    } else {
+      pendingMedia.push(...state.pendingMedia);
     }
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
@@ -1075,10 +1081,8 @@ async function dispatch(kind, extra = {}) {
   try {
     const result = await requestAction(body);
     if (result && typeof result.expectedSequence === "number") state.sequence = result.expectedSequence;
-    state.pendingAction = null;
-    state.lastAction = result;
     if (Array.isArray(result.diagnostics)) result.diagnostics.forEach((item) => addDiagnostic(item));
-    if (kind === "close") { state.closed = true; state.ready = false; revokeAssets(); updateActionStatus(); return; }
+    if (kind === "close") { state.pendingAction = null; state.lastAction = result; state.closed = true; state.ready = false; revokeAssets(); updateActionStatus(); return; }
     if (kind === "send_message" && !result.rejected && result.settlement === "settled") {
       state.drafts.delete(`composer:${state.contextId}`);
       state.replyToId = null;
@@ -1105,10 +1109,9 @@ async function dispatch(kind, extra = {}) {
     }
     state.dismissedModal = null;
     await installSnapshot(snapshot, true);
-    if (result?.rejected) {
-      state.lastAction = result;
-      updateActionStatus();
-    }
+    state.pendingAction = null;
+    state.lastAction = result;
+    updateActionStatus();
   } catch (error) {
     state.pendingAction = null;
     state.lastAction = { requestId, sequence, dispatched: false, settlement: "rejected", diagnostics: [{ type: "PreviewRequestError", message: String(error) }] };

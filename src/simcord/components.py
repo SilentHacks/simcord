@@ -15,6 +15,7 @@ from typing import Any
 # (and to keep this module usable by the in-memory backend on its own).
 COMPONENTS_V2_FLAG = 1 << 15
 _MAX_COMPONENT_ID = (1 << 32) - 1
+_COMPONENT_TYPES = {*range(1, 15), 17, 18, 19, 21, 22, 23}
 
 # Components which Discord permits in a message's V2 layout.  Action rows are
 # also valid in a V2 container; the remaining values are the Bot UI Kit types.
@@ -71,7 +72,7 @@ def _component_type(component: Mapping[str, Any], path: str) -> int:
     value = component.get("type")
     if isinstance(value, bool) or not isinstance(value, int):
         raise _fail(path, "type is required")
-    if value not in {1, 2, 3, 4, 5, 6, 7, 8, *range(9, 15), *range(17, 24)}:
+    if value not in _COMPONENT_TYPES:
         raise _fail(path, f"unsupported type {value}")
     return value
 

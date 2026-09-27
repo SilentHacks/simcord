@@ -602,14 +602,14 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .component-thumbnail { width: 84px; height: 84px; }
 .component-gallery {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  align-items: start;
   gap: 4px;
   width: 100%;
   margin: 0 0 8px;
 }
 .component-gallery figure { min-width: 0; margin: 0; }
-.gallery-image { width: 100%; height: 280px; }
-.media-description { display: none; }
+.gallery-image { width: 100%; height: auto; }
 .file-description {
   display: block;
   color: var(--discord-subtle);
@@ -680,8 +680,6 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 }
 .component-media .spoiler-media, .section-accessory .spoiler-media { width: 84px; height: 84px; }
 .component-media .spoiler-cover, .section-accessory .spoiler-cover { min-height: 84px; height: 84px; aspect-ratio: auto; }
-.component-gallery .spoiler-media, .component-gallery .spoiler-cover { height: 280px; }
-.component-gallery .spoiler-cover { min-height: 280px; }
 .media-unavailable, .component-unavailable {
   padding: 10px;
   color: #faa61a;
@@ -1244,8 +1242,6 @@ textarea.modal-input { min-height: 90px; resize: none; }
   }
   .channel-message .embed-card { width: min(432px, calc(100% - 88px)); margin-left: 72px; }
   .component-section { grid-template-columns: 1fr; }
-  .component-gallery { grid-template-columns: 1fr; }
-  .gallery-image { height: auto; aspect-ratio: 1.5; }
   .embed-field.inline { grid-column: span 12; }
 }
 @media (prefers-reduced-motion: reduce) {

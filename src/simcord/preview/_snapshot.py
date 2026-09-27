@@ -579,13 +579,9 @@ def _embed_projection(
             if not isinstance(target, dict):
                 continue
             if isinstance(field.get("name"), str):
-                target["name_tokens"] = markdown_tokens(
-                    field["name"], "embed_field_name", context=context
-                )
+                target["name_tokens"] = markdown_tokens(field["name"], "embed_field_name", context=context)
             if isinstance(field.get("value"), str):
-                target["value_tokens"] = markdown_tokens(
-                    field["value"], "embed_field_value", context=context
-                )
+                target["value_tokens"] = markdown_tokens(field["value"], "embed_field_value", context=context)
     return _clean(_decorate_emoji(value, page))
 
 
