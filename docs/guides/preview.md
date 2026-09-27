@@ -26,7 +26,7 @@ Install the browser bridge when you need a page:
 python -m pip install "simcord[preview]"
 ```
 
-The `preview` extra supplies `aiohttp`, `markdown-it-py`, and `Pillow`. It does not launch a browser.
+The `preview` extra supplies `aiohttp`, `markdown-it-py`, Pillow, and PyAV. It does not launch a browser.
 For managed PNG capture, install Playwright and its pinned browser explicitly:
 
 ```bash
@@ -38,12 +38,11 @@ playwright install --with-deps chromium
 containers; plain `playwright install chromium` suffices where those dependencies already exist.
 
 `import simcord` and ordinary tests do not import these optional runtimes, read preview assets,
-start a server, or download a browser. `aiohttp` already ships as a discord.py dependency, so a
-Preview without the rest of the `preview` extra still serves — it degrades instead of refusing:
-Markdown fields render as plain text, and inline image media reports a diagnostic advising
-`install simcord[preview]` (the explicit download path still serves the original bytes). Calling
-`preview.screenshot(...)` without Playwright or its browser gives a direct
-`install simcord[screenshot]` / `playwright install --with-deps chromium` error.
+start a server, or download a browser. Entering a Preview now **requires** the complete `preview`
+extra and packaged fonts; missing dependencies fail early with a `simcord[preview]` install
+instruction instead of silently degrading Markdown or media. This is a breaking change from the
+older partial-preview behavior. Calling `preview.screenshot(...)` without Playwright or its browser
+gives a direct `install simcord[screenshot]` / `playwright install --with-deps chromium` error.
 
 ## Start and stop a session
 
@@ -168,8 +167,9 @@ blocked, so no Discord search/Apply behavior or per-variant commit parity is cla
 The browser submits complete effective modal state, including untouched defaults, explicit `false`,
 permitted empty values, and genuine uploaded bytes. Python remains authoritative for validation and
 dispatch. Link buttons navigate only after an explicit click and never dispatch a callback; premium
-purchase buttons are shown as unavailable. Unsupported component or presentation fields stay visible
-as diagnostics rather than silently disappearing.
+buttons use caller-supplied offline SKU presentation and disclose the external purchase boundary
+without dispatching. Missing metadata produces an incomplete diagnostic. Unsupported component or
+presentation fields stay visible as diagnostics rather than silently disappearing.
 
 Modal fields retain required/optional semantics, defaults, and local drafts. Validation points to
 the affected control and leaves drafts recoverable; Python validates every submitted value again
@@ -313,9 +313,10 @@ A browser exposes a deeply read-only `window.simcordPreview` object for agents a
 
 `ready` belongs to the current local `renderGeneration`. It becomes true only after the displayed
 settled projection, DOM, fonts, authorized media, validated display dimensions (or explicit diagnostics),
-and two animation frames are ready. It does not mean the callback succeeded, the output is complete,
-calibrated. `publishedRevision` is a settled publication; `contextGeneration` changes on viewer or
-focus changes; `botGeneration` changes on restart; render generations also cover local changes such
+and two animation frames are ready. It does not mean the callback succeeded, the output is
+complete, or the capture is calibrated. `publishedRevision` is a settled publication;
+`contextGeneration` changes on viewer or focus changes;
+`botGeneration` changes on restart; render generations also cover local changes such
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render
 continuations cannot update a newer generation.
 
@@ -372,6 +373,51 @@ identifies the focused projection. `modal`, `candidates`, `assets`, `entities`, 
 details may evolve under `protocolVersion`; assert on documented keys rather than exact payload
 layout.
 
+## Migrating preview consumers to protocol 2
+
+The 3.0 preview cutover intentionally removes the protocol-1 `selected` projection and
+`messages` summary list; there is no adapter. In code already inside an active Preview:
+
+```python
+# Before (protocol 1):
+snapshot = await preview.snapshot()
+selected = snapshot["selected"]        # full focused message
+summaries = snapshot["messages"]        # picker entries, not renderable messages
+
+# After (protocol 2):
+snapshot = await preview.snapshot()
+assert snapshot["protocolVersion"] == 2
+selected = snapshot["messages"].get(snapshot["targetId"])  # full projection
+summaries = snapshot["messageIndex"]     # picker entries only
+window = [snapshot["messages"][mid] for mid in snapshot["timeline"]]
+```
+
+Use `layout="channel"` to see the authorized history window and composer rather than only
+the focused message. A message action in this window names its own `target_id` and observed
+`publishedRevision`; a custom ID or focused-page target alone does not identify a message.
+Browser `window.simcordPreview` is a read-only diagnostic surface, not an action API; invoke
+controls in the page or use the Python actors.
+
+Relative labels and `<t:...>` tokens use `presentation_time` (timezone-aware), or the settled
+Env virtual clock when omitted. Publications freeze that time until refresh, rather than following
+the browser clock:
+
+```python
+async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+    before = await preview.snapshot()
+    env.advance_time(3600)
+    await preview.refresh()
+    after = await preview.snapshot()
+    assert before["profile"]["presentationTime"] != after["profile"]["presentationTime"]
+```
+
+Pin/thread/join and other modeled system events can now create real history entries, allocate
+message IDs and change `channel.last_message` or bot event order. Existing assertions should target
+the intended message by ID or type, not assume no intervening system message. A modal
+`screenshot(..., mode="surface")` now captures the viewport-constrained dialog **without** expanding
+its scroll contents; inspect top and bottom in a browser session rather than comparing a
+formerly expanded image.
+
 ## Channel message actions
 
 In channel layout, messages show only actions authorized for the selected viewer: reply, own-message
@@ -407,7 +453,8 @@ print(capture.complete, capture.media_metadata)
 suits agents and diff tooling that never touch disk.
 
 The effective profile records theme, viewport width/height, locale, timezone, device scale, reduced
-motion, Playwright/browser versions, system font identity, emoji fallback, and animation policy.
+motion, Playwright/browser versions, packaged font faces and any actual platform fallback, emoji
+fallback, and animation policy.
 `mode="surface"` captures the focused message or modal dialog at its actual viewport-constrained
 geometry; it never expands modal content for a screenshot. `mode="viewport"` captures the emulated
 preview viewport, including its modal backdrop and dialog but excluding the outside inspector. Use an
@@ -450,6 +497,44 @@ Unknown provenance or unavailable authorized observations are recorded as determ
 rows with their prerequisite and owner; they are never treated as passing comparisons. A
 whole-window modal image is `not_comparable` until every compared region belongs to the product
 surface—do not add a synthetic shell or fixture-specific CSS to make it pass.
+
+### One fixture, a family, or the private batch
+
+Install `simcord[screenshot]`, install Playwright Chromium, and use the example above to
+create a world, `show()` its target and inspect `snapshot()["diagnostics"]`; inspect the
+`PreviewCapture` report's separate `ready`, `complete`, `calibrated`, `diagnostics`, and
+`geometry` fields. The [executable example](https://github.com/SilentHacks/simcord/blob/master/examples/preview_example.py) prints a
+scrubbed JSON report, not its capability-bearing URL (except in explicitly interactive
+`--keep-open` mode on stderr). From a checkout, maintainers can then run:
+
+```bash
+python scripts/capture_visual_reference.py --check
+python scripts/capture_visual_reference.py --fixture historical.ref.00.index.idle
+python scripts/capture_visual_reference.py --family buttons
+python scripts/capture_visual_reference.py --all
+python scripts/compare_visual_reference.py \
+  --manifest tests/fixtures/preview/coverage.json \
+  --reference-dir .discord-reference-captures/private \
+  --actual-dir .discord-reference-captures/current \
+  --output-dir .discord-reference-captures/diff --required
+```
+
+For one comparison add `--fixture ID`, or `--family buttons` for a family; omit
+both for the entire private batch. Use a separate clean `--actual-dir` per selection:
+unexpected PNGs from other rows correctly invalidate a batch. Capture writes
+`capture-report.json` and per-row metadata to the ignored output directory.
+Comparison writes `comparison.json` and a
+contact sheet there, without resizing the images. Only a provenance-checked private
+`reference-pack.json` and authorized local images can support certification; the
+historical image registrations alone cannot. No credentials, images, identities,
+capability URLs or raw source bytes belong in commits, CI logs or shared reports.
+
+Exit `0` means the selected runnable captures completed, or all comparable selected
+rows passed comparison; `1` means a comparable visual difference; `2` means invalid,
+blocked or non-comparable rows (capture uses `2` for blocked). Do not turn `2` into
+success by lowering a threshold or supplying a fabricated reference. Complete missing
+measurements/interaction traces with the authorized reference owner, review deviations
+and perform human screen-reader smoke before claiming parity.
 
 ## Loopback security and SSH forwarding
 
@@ -500,18 +585,19 @@ These are intentionally independent:
 
 The renderer covers legacy messages, embeds, action rows, buttons, string/entity selects, text
 inputs, V2 sections/text/media/files/separators/containers, labels, file uploads, radio groups,
-checkbox groups, checkboxes, and channel history/composer/replies. Polls, stickers, voice, purchasing,
-arbitrary remote media, server/channel navigation, login, and native-mobile Discord are outside this
-surface or remain explicitly unavailable. Components and Markdown are rendered with controlled DOM
-nodes; their layout, typography, line wrapping, emoji fallback, responsive behavior, and browser
-font metrics can differ from Discord. No proprietary Discord font or asset is bundled: this package
-uses the platform system font stack and records that substitution in the capture profile.
+checkbox groups, checkboxes, channel history/composer/replies, reaction and poll state, and supplied
+stickers, voice attachments, and bounded animated media. Purchasing, arbitrary remote media,
+server/channel navigation, login, and native-mobile Discord remain outside this preview surface.
+Components and Markdown use controlled DOM nodes; their line wrapping, glyph outlines, geometry,
+and platform codec availability may differ from Discord. Licensed Noto fonts and Noto Color Emoji
+are packaged for covered scripts; proprietary Discord fonts and assets are not bundled.
 
-No legitimate Discord reference fixture is bundled in this release, so captures are uncalibrated by
-default. A stable repeated capture proves regression reproducibility, not Discord parity. When
-maintainers obtain permitted references, record client/platform/date, theme, density/font scale,
-viewport, locale, timezone, substitute font, browser build, and known differences separately from
-functional tests.
+No certification-grade Discord reference pack is bundled, so arbitrary captures remain uncalibrated.
+The ledger names the exact blocked profiles and fixture prerequisites. A repeated PNG proves local
+reproducibility, not Discord parity. A release additionally requires authorized private comparison
+and human screen-reader smoke for modal, select, reaction, and poll flows; automated roles alone do
+not certify usability. Record reviewed client/platform/date, theme, density/font scale, viewport,
+locale, timezone, font/browser versions and explicit deviations without publishing private images.
 
 See [Components & modals](components.md) for actor-level callback tests, the
 [parity matrix](../parity-matrix.md) for backend support, and the [API reference](../api.md) for

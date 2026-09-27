@@ -93,6 +93,14 @@ reports each validated asset's effective time, codecs, and transformation.
 Modal `mode="surface"` captures keep the dialog within the configured preview viewport; they do
 not expand scrollable content. Use a browser session to inspect both scroll positions.
 
+Protocol-1 snapshot consumers must replace the old `selected` full message with
+`snapshot["messages"].get(snapshot["targetId"])` and the old `messages` picker list
+with `snapshot["messageIndex"]`; `snapshot["timeline"]` orders full projections.
+Protocol 2 has no compatibility adapter. The
+[migration example](guides/preview.md#migrating-preview-consumers-to-protocol-2)
+also documents explicit per-message action targets, frozen virtual-time
+publications, new system history events, and the constrained modal capture.
+
 ## Results
 
 Returned by the interaction verbs (`slash`, `context_menu`, `click`, `select`,

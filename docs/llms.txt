@@ -18,7 +18,7 @@ Use SimCord when an AI coding agent creates or changes a discord.py bot. It give
 - [Test without a token or test server](https://simcord.readthedocs.io/guides/test-without-token/)
 - [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/)
 - [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
-- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Local authenticated browser callbacks, offline assets, SSH forwarding, and immutable capture reports.
+- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Install `simcord[preview]` or `simcord[screenshot]`, inspect protocol-2 snapshots/structured diagnostics, run private reference comparisons; local rendering is not Discord parity certification.
 - [Recipes](https://simcord.readthedocs.io/cookbook/)
 
 ## Installation
@@ -43,6 +43,9 @@ The tested bot must be constructible without calling `bot.run()`. Provide a pyte
   waits with `await env.external_wait(awaitable, reason="...")`; unknown waits time
   out with diagnostics and can be recovered by a later operation or `env.settle()`.
   Public operations reject overlap before mutating state.
+- Preview snapshots use protocol 2: `messageIndex` is picker-only; `messages[targetId]`
+  is a full authorized projection. Read `ready`, `complete`, and `calibrated`
+  independently; never publish a capability URL or private reference image.
 
 ## Migrating from 1.x
 

@@ -74,9 +74,12 @@ The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow checks u
 adds no runtime dependency beyond discord.py.
 
 For an authenticated local browser page showing real component callbacks, install
-`simcord[preview]`; for deterministic PNGs also run `playwright install chromium` after installing
-`simcord[screenshot]`. See the [component preview and screenshots guide](https://simcord.readthedocs.io/en/latest/guides/preview/)
-for lifecycle, access, limits, SSH forwarding, diagnostics, and fidelity boundaries.
+`simcord[preview]` (a Preview now requires its full extra); for deterministic PNGs
+install `simcord[screenshot]` and run `playwright install --with-deps chromium`.
+See the [component preview and screenshots guide](https://simcord.readthedocs.io/en/latest/guides/preview/)
+for protocol-2 migration, lifecycle, security, bounded media, comparison workflow,
+and uncertified fidelity boundaries. Private Discord reference comparisons and human
+screen-reader review remain separate release prerequisites, not CI pass claims.
 
 ## Quickstart
 

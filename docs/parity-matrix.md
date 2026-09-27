@@ -50,7 +50,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Preview Components V2 | ⚠️ | Sections/accessories, Text Displays, container accents/separators, spoiler reveal and authorized offline media render with an intrinsic responsive gallery fallback. Discord gallery geometry is not certified; `historical-family-v2` remains blocked pending authorized 1–10-item mixed-aspect captures with measured wide/narrow crop and region coordinates. |
 | Preview responsive and lifecycle verification | ⚠️ | Browser checks cover 320/360/420/640/960/1280 px message profiles at 700/900 px heights, long mixed-direction text and zoom, and delayed asset delivery during one viewer's revocation while another viewer stays authorized. These prove local behavior, not Discord geometry or human screen-reader usability. The private reference comparison and human modal/select/reaction/poll screen-reader smoke remain release blockers; no certified parity is claimed. |
 | Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
-| Preview fidelity boundary | ⚠️ | System font/emoji fallback, platform-dependent media codec support, uncalibrated references, and external purchase/service surfaces remain reported differences; browser playback is interactive while managed capture uses deterministic `media_time` |
+| Preview fidelity boundary | ⚠️ | Packaged, pinned licensed Noto text/script/emoji faces substitute for proprietary Discord fonts; uncovered glyphs and platform-dependent codecs may fall back. Visible keyboard focus intentionally differs. Offline assets are explicit, premium/provider service actions stay external, and arbitrary captures remain uncalibrated. Browser playback is interactive; managed capture uses deterministic `media_time`. |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
@@ -69,6 +69,28 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
 | Sharding simulation | ✅ | `AutoShardedClient`/`AutoShardedBot`; full and partial shard sets, Discord guild routing, per-shard READY/chunking/presence/latency/controls; no multi-process IPC |
+
+### Preview feature and evidence matrix
+
+The [fixture ledger](https://github.com/SilentHacks/simcord/blob/master/tests/fixtures/preview/coverage.json) defines 94 rows across
+14 families (`profile`, `identity`, `message_context`, `reactions`, `polls`,
+`stickers_system`, `markdown`, `attachments_media`, `embeds`, `buttons`, `selects`,
+`modals`, `v2`, `access_lifecycle`) and registers 76 historical images by hash.
+Its `referenceStatus`, `implementationStatus` and `comparisonStatus` are separate,
+per-row facts; 18 references are blocked and 13 comparisons are not comparable.
+See the [profile, transition and measurement recipes](https://github.com/SilentHacks/simcord/tree/master/tests/fixtures/preview)
+and the [private comparison workflow](guides/preview.md#one-fixture-a-family-or-the-private-batch).
+
+| Evidence state | Meaning | Current release claim |
+| --- | --- | --- |
+| Ready | Current local generation has finished rendering, fonts and authorized media or explicit diagnostics | Exercised by the local capture/browser checks; does not prove completeness or pixel parity |
+| Complete | All in-scope information for that capture is present, subject to diagnostics and resource limits | Per-capture report only, never inferred from a saved PNG |
+| Calibrated | Exact normalized fixture, profile, provenance-checked reference and reviewed comparison | **Not certified** without an authorized private pack, missing geometry/state traces and human screen-reader smoke |
+
+Feature support above is implementation support, not a promise of matching every
+Discord client state. Missing references, inaccessible service surfaces, resource
+ceilings and intentional focus/font substitutions remain visible rather than
+converted into a passing global pixel score.
 
 ## Implemented routes
 
