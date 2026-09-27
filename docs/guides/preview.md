@@ -602,5 +602,6 @@ not certify usability. Record reviewed client/platform/date, theme, density/font
 locale, timezone, font/browser versions and explicit deviations without publishing private images.
 
 See [Components & modals](components.md) for actor-level callback tests, the
-[parity matrix](../parity-matrix.md) for backend support, and the [API reference](../api.md) for
-public signatures.
+[parity matrix](../parity-matrix.md) for backend support, the
+[dated evidence attestation](../preview-attestation.md) for exact status counts and
+blocked prerequisites, and the [API reference](../api.md) for public signatures.
