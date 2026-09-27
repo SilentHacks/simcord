@@ -234,6 +234,38 @@ function renderSelect(component, path, options) {
   return { element: wrap, value: () => (Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : []), key };
 }
 
+function appendPremiumIcon(button, presentation, options) {
+  const assetId = presentation.icon_asset_id;
+  if (!assetId || presentation.icon_available !== true || !options.loadAsset) {
+    options.onDiagnostic?.({
+      code: "premium-sku-icon-unavailable",
+      severity: "warning",
+      message: `Offline icon for premium SKU ${presentation.sku_id} is unavailable`,
+      complete: false,
+    });
+    return;
+  }
+  const icon = node("img", "premium-button-icon");
+  icon.alt = "";
+  button.prepend(icon);
+  const pending = Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
+    if (!button.isConnected) return;
+    if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("icon is not a local asset");
+    icon.src = url;
+    if (icon.decode) await icon.decode();
+  }).catch(() => {
+    if (!button.isConnected || (options.isCurrent && !options.isCurrent())) return;
+    icon.remove();
+    options.onDiagnostic?.({
+      code: "premium-sku-icon-unavailable",
+      severity: "warning",
+      message: `Offline icon for premium SKU ${presentation.sku_id} failed to load`,
+      complete: false,
+    });
+  });
+  options.pendingMedia?.push(pending);
+}
+
 function renderButton(component, path, options) {
   const style = Number(component.style || 1);
   const button = node("button", `component-button button-style-${style}`);
@@ -269,8 +301,31 @@ function renderButton(component, path, options) {
     }
     button.disabled = true; button.append(node("span", "button-unavailable", "Unavailable link")); options.onDiagnostic?.({ code: "invalid-link", severity: "warning", message: "Link button has no safe URL", complete: false });
   } else if (style === 6) {
-    button.disabled = true; button.append(node("span", "button-unavailable", "Premium purchase unavailable")); options.onDiagnostic?.({ code: "premium-unavailable", severity: "info", message: `Premium SKU ${component.sku_id ?? "unknown"} cannot be purchased offline`, complete: false });
-  } else if (typeof component.custom_id === "string") button.addEventListener("click", () => options.onClick?.(controlKey));
+    button.classList.add("premium-button");
+    const presentation = component.sku_presentation;
+    if (presentation) {
+      const copy = node("span", "premium-button-copy");
+      const name = node("span", "premium-button-name", presentation.name);
+      const price = node("span", "premium-button-price", presentation.price_text);
+      name.lang = presentation.locale;
+      price.lang = presentation.locale;
+      copy.append(name, price);
+      button.append(copy);
+      if (presentation.icon_asset_id) appendPremiumIcon(button, presentation, options);
+    } else {
+      button.append(node("span", "button-unavailable", "Premium item details unavailable"));
+    }
+    button.addEventListener("click", () => {
+      if (!button.disabled) options.onPremiumActivate?.(String(component.sku_id));
+    });
+  } else if (typeof component.custom_id === "string") {
+    button.addEventListener("click", () => {
+      if (!button.disabled) options.onClick?.(controlKey);
+    });
+  }
+  if (button.querySelector(".button-emoji") && !button.querySelector(".button-label")) {
+    button.classList.add("is-icon-only");
+  }
   return button;
 }
 function renderNode(component, path, options) {

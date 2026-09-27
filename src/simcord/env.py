@@ -1103,6 +1103,7 @@ class Env:
         timezone: str = "UTC",
         presentation_time: datetime | None = None,
         assets: Mapping[str, tuple[str, bytes]] | None = None,
+        sku_presentations: Mapping[str, Mapping[str, str]] | None = None,
         port: int | None = None,
     ) -> Preview:
         """Create one eagerly validated local preview context manager.
@@ -1114,7 +1115,11 @@ class Env:
         ``UserHandle`` for DMs. ``width``/``height`` are positive-int viewport
         sizes; ``locale`` and ``timezone`` seed the rendered profile.
         ``assets`` maps otherwise-remote media URLs to ``(filename, bytes)``
-        tuples so they render offline. ``port`` pins the loopback port.
+        tuples so they render offline. ``sku_presentations`` maps positive SKU
+        snowflake strings to exact ``name``/``price_text`` and a supported
+        Discord ``locale``; optional ``icon_url`` values require matching
+        supported raster bytes in ``assets``. No purchase state is modeled.
+        ``port`` pins the loopback port.
 
         Returns an async context manager serving the authorized preview;
         ``preview.url`` is the capability-bearing address.
@@ -1138,6 +1143,7 @@ class Env:
                 timezone=timezone,
                 presentation_time=presentation_time,
                 assets=assets,
+                sku_presentations=sku_presentations,
                 port=port,
             )
         finally:

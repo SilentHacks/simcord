@@ -74,6 +74,37 @@ async def test_preview_eager_validation_and_dm_access(env, channel, alice):
         ({"viewers": [alice], "locale": "xx"}, "unsupported locale"),
         ({"viewers": [alice], "timezone": "Mars/Olympus"}, "unsupported timezone"),
         ({"viewers": [alice], "assets": {"u": "not-a-tuple"}}, "assets must map"),
+        ({"viewers": [alice], "sku_presentations": []}, "sku_presentations must map"),
+        (
+            {
+                "viewers": [alice],
+                "sku_presentations": {"123": {"name": "p", "price_text": "x", "locale": "xx"}},
+            },
+            "locale must be a supported",
+        ),
+        (
+            {
+                "viewers": [alice],
+                "sku_presentations": {
+                    "123": {"name": "p", "price_text": "x", "locale": "en-US", "extra": "value"}
+                },
+            },
+            "requires name, price_text, locale",
+        ),
+        (
+            {
+                "viewers": [alice],
+                "sku_presentations": {
+                    "123": {
+                        "name": "p",
+                        "price_text": "x",
+                        "locale": "en-US",
+                        "icon_url": "javascript:alert(1)",
+                    }
+                },
+            },
+            "safe URL supplied in assets",
+        ),
     )
     for options, message in invalid:
         with pytest.raises(simcord.SetupError, match=message):

@@ -464,6 +464,7 @@ def _attachment_index(
 
 
 def _decorate_components(
+    preview: Preview,
     page: _Page,
     message: Message,
     components: Any,
@@ -482,6 +483,24 @@ def _decorate_components(
                 node.pop("url", None)
             else:
                 node["url"] = link
+        if typ == int(ComponentType.BUTTON) and int(node.get("style", 0)) == 6:
+            node.pop("sku_presentation", None)
+            sku_id = str(node.get("sku_id", ""))
+            presentation = preview._sku_presentations.get(sku_id)
+            if presentation is not None:
+                value: dict[str, Any] = {
+                    "sku_id": sku_id,
+                    "name": presentation["name"],
+                    "price_text": presentation["price_text"],
+                    "locale": presentation["locale"],
+                }
+                icon_url = presentation.get("icon_url")
+                if icon_url is not None:
+                    asset_id = _asset_meta(page, icon_url)
+                    if asset_id:
+                        value["icon_asset_id"] = asset_id
+                        value["icon_available"] = _asset_available(page, asset_id)
+                node["sku_presentation"] = value
         media_nodes: list[dict[str, Any]] = []
         if typ == int(ComponentType.THUMBNAIL):
             media_nodes.append(node["media"])
@@ -761,7 +780,7 @@ def _message_projection(
             else []
         ),
         "embeds": [_embed_projection(page, message, item, attachments, context) for item in message.embeds],
-        "components": _decorate_components(page, message, message.components, attachments, context),
+        "components": _decorate_components(preview, page, message, message.components, attachments, context),
         "flags": int(message.flags),
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
         "components_v2": bool(message.flags & COMPONENTS_V2_FLAG),
@@ -1405,6 +1424,29 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
                     "message": f"Message type {value['type']} is not classified in this preview.",
                     "message_id": value["id"],
                     "complete": False,
+                }
+            )
+        missing_skus: set[str] = set()
+        for component in walk_components(value["components"]):
+            if component.get("type") != int(ComponentType.BUTTON) or component.get("style") != 6:
+                continue
+            sku_id = str(component.get("sku_id", "unknown"))
+            if sku_id in preview._sku_presentations or sku_id in missing_skus:
+                continue
+            missing_skus.add(sku_id)
+            diagnostics.append(
+                {
+                    "code": "premium-sku-metadata-missing",
+                    "severity": "warning",
+                    "message": f"Premium SKU {sku_id} has no caller-supplied offline name or price.",
+                    "complete": False,
+                    "feature": "premium_button",
+                    "message_id": value["id"],
+                    "sku_id": sku_id,
+                    "remediation": (
+                        "Supply sku_presentations with name, price_text, and locale; "
+                        "provide optional icon_url bytes through assets."
+                    ),
                 }
             )
         for sticker in value["stickers"]:

@@ -3,9 +3,10 @@ from pathlib import Path
 
 import discord
 import pytest
-from preview_helpers import png_bytes, target_message
+from preview_helpers import gif_bytes, png_bytes, target_message
 
 import simcord
+from simcord.backend.cdn import CDN_BASE
 
 
 @pytest.mark.asyncio
@@ -856,3 +857,152 @@ async def test_browser_reloads_release_page_contexts(env, channel, alice):
                 await browser.close()
         finally:
             await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_premium_buttons_use_supplied_metadata_and_never_dispatch(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    class ButtonView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            self.callback_count = 0
+
+            async def count_callback(interaction):
+                self.callback_count += 1
+                await interaction.response.defer()
+
+            action = discord.ui.Button(label="Action", custom_id="premium-action")
+            action.callback = count_callback
+            disabled = discord.ui.Button(label="Disabled", custom_id="disabled-action", disabled=True)
+            disabled.callback = count_callback
+            self.add_item(action)
+            self.add_item(disabled)
+            self.add_item(
+                discord.ui.Button(
+                    label="Disabled link",
+                    style=discord.ButtonStyle.link,
+                    url="https://example.test",
+                    disabled=True,
+                )
+            )
+            self.add_item(discord.ui.Button(sku_id=101))
+            self.add_item(discord.ui.Button(sku_id=202))
+
+    view = ButtonView()
+    message = await env.bot.get_channel(channel.id).send(view=view)
+    icon_url = "https://example.test/premium.png"
+    presentations = {
+        "101": {
+            "name": "Provided plan",
+            "price_text": "Provided price",
+            "locale": "en-US",
+            "icon_url": icon_url,
+        }
+    }
+    async with env.preview(
+        channel,
+        viewers=[alice],
+        assets={icon_url: ("premium.png", png_bytes())},
+        sku_presentations=presentations,
+    ) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.wait_for_function(
+                    "() => document.querySelector('.premium-button-icon')?.src.startsWith('blob:')"
+                )
+                assert await page.locator(".premium-button-name").inner_text() == "Provided plan"
+                assert await page.locator(".premium-button-price").inner_text() == "Provided price"
+                assert await page.evaluate(
+                    "() => window.simcordPreview.diagnostics.some(item => "
+                    "item.code === 'premium-sku-metadata-missing' && item.complete === false)"
+                )
+                link = page.locator("a.link-button.is-disabled")
+                assert await link.get_attribute("href") is None
+                original_url = page.url
+                await link.click(force=True)
+                await page.locator(".message-surface .component-row button:disabled").evaluate_all(
+                    "(items) => items.forEach(item => item.click())"
+                )
+                await page.get_by_role("button", name="Provided plan Provided price").click()
+                await page.get_by_role("button", name="Premium item details unavailable").click()
+                await page.locator(".premium-button").last.focus()
+                await page.keyboard.press("Enter")
+                await page.wait_for_function(
+                    "() => document.querySelector('#action-status').textContent.includes('No purchase was started')"
+                )
+                assert page.url == original_url
+                assert await page.evaluate("() => window.simcordPreview.lastAction") is None
+                assert view.callback_count == 0
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_button_focus_and_responsive_row_wrapping(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    static_emoji = env.guild.create_emoji("buttonmark")
+    animated_emoji = env.guild.create_emoji("buttonmotion", animated=True)
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="A deliberately long action label", custom_id="wrap-0"))
+    view.add_item(discord.ui.Button(emoji="🔥", custom_id="wrap-1"))
+    view.add_item(discord.ui.Button(label="Unicode 👋", emoji="👋", custom_id="wrap-2"))
+    view.add_item(
+        discord.ui.Button(
+            label="Static custom emoji",
+            emoji=discord.PartialEmoji(name=static_emoji.name, id=static_emoji.id),
+            custom_id="wrap-3",
+        )
+    )
+    view.add_item(
+        discord.ui.Button(
+            label="Animated custom emoji",
+            emoji=discord.PartialEmoji(name=animated_emoji.name, id=animated_emoji.id, animated=True),
+            custom_id="wrap-4",
+        )
+    )
+    assets = {
+        f"{CDN_BASE}/emojis/{static_emoji.id}.png": ("buttonmark.png", png_bytes()),
+        f"{CDN_BASE}/emojis/{animated_emoji.id}.gif": ("buttonmotion.gif", gif_bytes()),
+    }
+    message = await env.bot.get_channel(channel.id).send(view=view)
+    async with env.preview(channel, viewers=[alice], width=320, assets=assets) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 360, "height": 720})
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.wait_for_function(
+                    "() => { const images = [...document.querySelectorAll('.button-emoji img.custom-emoji')]; "
+                    "return images.length === 2 && images.every(image => image.complete && image.naturalWidth > 0); }"
+                )
+                assert await page.locator(".component-button.is-icon-only .button-emoji").count() == 1
+                await page.locator("#close").focus()
+                await page.keyboard.press("Tab")
+                await page.wait_for_function(
+                    "() => document.querySelector('.component-button:focus-visible') !== null"
+                )
+                outline = await page.locator(".component-button:focus-visible").evaluate(
+                    "(button) => getComputedStyle(button).outlineWidth"
+                )
+                assert outline != "0px"
+                rows = (
+                    await page.locator(".component-row")
+                    .first.locator(":scope > .component-button")
+                    .evaluate_all(
+                        "(buttons) => buttons.map(button => Math.round(button.getBoundingClientRect().top))"
+                    )
+                )
+                assert len(set(rows)) > 1
+            finally:
+                await browser.close()

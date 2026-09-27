@@ -511,13 +511,15 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   .embed-main-with-thumbnail, .embed-field-row { grid-template-columns: minmax(0, 1fr); }
 }
 
-.component-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 6px; }
+.component-row { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; margin: 4px 0 6px; }
 .component-button, .button-primary, .button-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 32px;
   min-height: 32px;
-  height: 32px;
+  max-width: 100%;
+  height: auto;
   color: #fff;
   font-size: 14px;
   font-weight: 500;
@@ -527,28 +529,36 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   border-radius: 8px;
   text-decoration: none;
 }
+.component-button:focus-visible { outline: 2px solid var(--discord-brand); outline-offset: 2px; }
+.button-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .button-style-1, .button-primary { background: #5865f2; }
 .button-style-2, .button-secondary { background: #3e3f45; }
 .button-style-3 { background: #008545; }
 .button-style-4 { background: #d22d39; }
 .button-style-5, .link-button { background: #3e3f45; }
 .button-style-6 { background: #3e3f45; }
-.component-button:hover:not(:disabled), .button-primary:hover:not(:disabled) { background: #4452bb; }
+.component-button:hover:not(:disabled):not(.is-disabled), .button-primary:hover:not(:disabled) { background: #4452bb; }
 .button-style-2:hover:not(:disabled), .button-secondary:hover:not(:disabled),
-.button-style-5:hover:not(:disabled), .link-button:hover:not(:disabled) { background: #42434a; }
+.button-style-5:hover:not(:disabled):not(.is-disabled), .link-button:hover:not(:disabled):not(.is-disabled) { background: #42434a; }
 .button-style-3:hover:not(:disabled) { background: #006c37; }
 .button-style-4:hover:not(:disabled) { background: #a9232e; }
-.component-button:active:not(:disabled), .button-primary:active:not(:disabled) { background: #3a48a3; }
+.component-button:active:not(:disabled):not(.is-disabled), .button-primary:active:not(:disabled) { background: #3a48a3; }
 .button-style-2:active:not(:disabled), .button-secondary:active:not(:disabled),
-.button-style-5:active:not(:disabled), .link-button:active:not(:disabled) { background: #46474e; }
+.button-style-5:active:not(:disabled):not(.is-disabled), .link-button:active:not(:disabled):not(.is-disabled) { background: #46474e; }
 .button-style-3:active:not(:disabled) { background: #005f30; }
 .button-style-4:active:not(:disabled) { background: #971d28; }
 .button-emoji { margin-right: 8px; }
+.component-button.is-icon-only .button-emoji { margin-right: 0; }
 .button-unavailable { color: #faa61a; }
 .link-button { gap: 6px; }
-.link-button.is-disabled { cursor: not-allowed; opacity: .45; }
+.link-button.is-disabled { cursor: not-allowed; opacity: .45; pointer-events: none; }
 .external-link-icon { display: inline-flex; }
 .external-link-icon svg { display: block; width: 16px; height: 16px; }
+.premium-button { gap: 8px; justify-content: flex-start; padding: 4px 10px 4px 4px; text-align: left; }
+.premium-button-icon { display: block; width: 24px; height: 24px; flex: 0 0 24px; border-radius: 4px; object-fit: cover; }
+.premium-button-copy { display: grid; min-width: 0; line-height: 16px; }
+.premium-button-name { font-weight: 600; }
+.premium-button-price { font-size: 12px; opacity: .8; }
 
 .component-section {
   display: grid;

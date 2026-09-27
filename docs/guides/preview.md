@@ -206,6 +206,24 @@ so deleting a message or removing an attachment immediately invalidates its asse
 stable across publications while the underlying asset remains referenced. Missing bytes show a
 labeled unavailable tile and make a capture incomplete unless `allow_incomplete=True`.
 
+## Premium button presentations
+
+Supply optional `sku_presentations` to `env.preview(...)` to render caller-provided offline details.
+It maps positive SKU snowflake strings to objects with exactly `name` (1–100 characters),
+`price_text` (1–80 characters), and a supported Discord `locale`, plus optional `icon_url`.
+`name` and `price_text` are displayed verbatim; SimCord does not look up, format, or infer commerce data.
+The locale must be a supported Discord locale. If `icon_url` is
+provided, its safe HTTP(S) URL must have matching raster bytes in the existing `assets` mapping;
+the URL is never fetched or exposed to the browser. No proprietary shop icon is bundled.
+
+A premium button without supplied details has a generic unavailable label and a structured
+`premium-sku-metadata-missing` diagnostic, so captures are incomplete rather than displaying an
+invented name or price. Activating any enabled premium button writes an external-purchase notice to
+the preview toolbar: purchases are handled by Discord outside the message surface and nothing is
+started here. It never dispatches a bot callback. Historical button geometry remains uncalibrated
+because the reference catalog has no crop regions or measured wrap points, and it contains no
+legitimate SKU price/icon observations.
+
 Inline raster validation uses Pillow for PNG, JPEG, WebP, GIF, and APNG. PyAV validates audio and
 video streams. Media over 10 MiB remains downloadable but is not decoded inline. `available` reports
 retained source bytes; `displayReady` remains false until validation succeeds. Valid still images are

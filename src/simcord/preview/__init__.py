@@ -13,6 +13,7 @@ from functools import cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
@@ -81,6 +82,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         timezone: str,
         presentation_time: datetime | None,
         assets: Mapping[str, tuple[str, bytes]] | None,
+        sku_presentations: Mapping[str, Mapping[str, str]] | None = None,
         port: int,
     ) -> None:
         self.layout = layout
@@ -92,6 +94,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.locale = locale
         self.timezone = timezone
         self._explicit_assets = dict(assets or {})
+        self._sku_presentations = {sku: dict(value) for sku, value in (sku_presentations or {}).items()}
         self._presentation_time_explicit = presentation_time is not None
         self.capture_time = presentation_time or datetime.fromisoformat(self.env.backend.now_iso())
         self.capability = secrets.token_urlsafe(32)
@@ -333,9 +336,16 @@ def _validate_preview(
     timezone: str,
     presentation_time: Any = None,
     assets: Any = None,
+    sku_presentations: Any = None,
     port: Any = None,
     layout: Any = "message",
-) -> tuple[ChannelHandle, tuple[Any, ...], Mapping[str, tuple[str, bytes]], int]:
+) -> tuple[
+    ChannelHandle,
+    tuple[Any, ...],
+    Mapping[str, tuple[str, bytes]],
+    Mapping[str, Mapping[str, str]],
+    int,
+]:
     if layout not in ("message", "channel"):
         raise SetupError("layout must be 'message' or 'channel'")
     if not isinstance(channel, ChannelHandle) or channel._env is not env:
@@ -386,15 +396,83 @@ def _validate_preview(
         if not isinstance(filename, str) or not isinstance(blob, bytes):
             raise SetupError("assets must map URLs to (filename, bytes) tuples")
         normalized[url] = (filename, blob)
+    sku_presentations = _validate_sku_presentations(sku_presentations, normalized)
     if port is None:
         port = 0
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise SetupError("port must be an integer between 0 and 65535")
-    return channel, selected, MappingProxyType(normalized), port
+    return channel, selected, MappingProxyType(normalized), sku_presentations, port
+
+
+def _validate_sku_presentations(
+    value: Any,
+    assets: Mapping[str, tuple[str, bytes]],
+) -> Mapping[str, Mapping[str, str]]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise SetupError("sku_presentations must map SKU snowflake strings to presentation objects")
+
+    required = {"name", "price_text", "locale"}
+    allowed = required | {"icon_url"}
+    normalized: dict[str, Mapping[str, str]] = {}
+    for sku_id, presentation in value.items():
+        if (
+            not isinstance(sku_id, str)
+            or not sku_id.isascii()
+            or not sku_id.isdigit()
+            or len(sku_id) > 20
+            or int(sku_id) <= 0
+        ):
+            raise SetupError("sku_presentations keys must be positive SKU snowflake strings")
+        if sku_id in normalized:
+            raise SetupError(f"duplicate SKU presentation for {sku_id}")
+        if not isinstance(presentation, Mapping):
+            raise SetupError(f"sku_presentations[{sku_id!r}] must be a presentation object")
+        fields = set(presentation)
+        if not required <= fields or fields - allowed:
+            raise SetupError(
+                f"sku_presentations[{sku_id!r}] requires name, price_text, locale and optional icon_url only"
+            )
+        name = presentation["name"]
+        price_text = presentation["price_text"]
+        locale = presentation["locale"]
+        if not isinstance(name, str) or not name.strip() or len(name) > 100:
+            raise SetupError(f"sku_presentations[{sku_id!r}].name must be 1-100 characters")
+        if not isinstance(price_text, str) or not price_text.strip() or len(price_text) > 80:
+            raise SetupError(f"sku_presentations[{sku_id!r}].price_text must be 1-80 characters")
+        if not isinstance(locale, str) or locale not in Preview._LOCALES:
+            raise SetupError(f"sku_presentations[{sku_id!r}].locale must be a supported Discord locale")
+        item = {"name": name, "price_text": price_text, "locale": locale}
+        if "icon_url" in presentation:
+            icon_url = presentation["icon_url"]
+            if not isinstance(icon_url, str):
+                raise SetupError(f"sku_presentations[{sku_id!r}].icon_url must be a safe offline asset URL")
+            try:
+                parsed = urlsplit(icon_url)
+                safe_url = (
+                    parsed.scheme in {"http", "https"}
+                    and parsed.hostname is not None
+                    and parsed.username is None
+                    and parsed.password is None
+                    and not parsed.fragment
+                )
+            except ValueError:
+                safe_url = False
+            supplied = assets.get(icon_url)
+            if not safe_url or supplied is None:
+                raise SetupError(
+                    f"sku_presentations[{sku_id!r}].icon_url must be a safe URL supplied in assets"
+                )
+            if Path(supplied[0]).suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                raise SetupError(f"sku_presentations[{sku_id!r}].icon_url must use a supported raster image")
+            item["icon_url"] = icon_url
+        normalized[sku_id] = MappingProxyType(item)
+    return MappingProxyType(normalized)
 
 
 def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
-    channel, viewers, assets, port = _validate_preview(env, channel, **kwargs)
+    channel, viewers, assets, sku_presentations, port = _validate_preview(env, channel, **kwargs)
     return Preview(
         env,
         channel,
@@ -404,6 +482,7 @@ def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
             for key in ("layout", "width", "height", "locale", "timezone", "presentation_time")
         },
         assets=assets,
+        sku_presentations=sku_presentations,
         port=port,
     )
 

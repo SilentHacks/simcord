@@ -48,6 +48,7 @@ const state = {
   diagnostics: [],
   localDiagnostics: [],
   lastAction: null,
+  externalNotice: null,
   pendingAction: null,
   sequence: 0,
   profile: { theme: "dark", width: 960, height: 720, locale: "en-US", timezone: "UTC", deviceScale: 1, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches, mediaTime: null },
@@ -548,6 +549,10 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     onInit: initDraft,
     onOpen: openDropdown,
     onDraft: updateDraft,
+    onPremiumActivate: () => {
+      state.externalNotice = "Premium purchases are handled by Discord outside this preview. No purchase was started.";
+      updateActionStatus();
+    },
     onClick: (controlKey) => dispatch("click", { control_key: controlKey }),
     onCommit: commitDropdown,
     onCancel: cancelDropdown,
@@ -692,6 +697,10 @@ function updateActionStatus() {
   ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || ui.composerForm.hidden;
   if (state.pendingAction) {
     ui.action.textContent = `${state.pendingAction.kind}…`;
+    return;
+  }
+  if (state.externalNotice) {
+    ui.action.textContent = state.externalNotice;
     return;
   }
   const action = state.lastAction;
@@ -1064,6 +1073,7 @@ async function dispatch(kind, extra = {}) {
     || !state.protocolCompatible
     || !state.contextId
   ) return;
+  state.externalNotice = null;
   const requestId = globalThis.crypto?.randomUUID?.() || `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const sequence = state.sequence + 1;
   const body = {

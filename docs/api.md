@@ -66,6 +66,13 @@ Discord connection. Install `simcord[preview]` for the bridge, or
 `port=` pins the loopback origin so a pre-created forward can use the same origin on both ends;
 it never makes the capability-bearing URL stable or safe to log. Keep `preview.url` secret.
 
+`Env.preview(..., sku_presentations=...)` optionally accepts a mapping from positive SKU snowflake
+strings to exactly `{"name": str, "price_text": str, "locale": str}` (`name` 1–100 characters,
+`price_text` 1–80, supported Discord locale) with optional `icon_url`. Text is caller-supplied and
+displayed verbatim. An icon URL must match a supported raster asset provided through `assets`;
+no remote fetch or purchase action occurs. See the
+[premium button preview contract](guides/preview.md#premium-button-presentations).
+
 ::: simcord.preview.Preview
 
 ::: simcord.preview.Preview.screenshot
