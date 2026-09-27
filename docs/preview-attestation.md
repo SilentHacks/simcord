@@ -18,6 +18,7 @@ review or authorized private reference comparison has occurred.
 | Renderer revision | `static/app.js` `3b0b3e96671e84cc21c622faedd53f957d6d3cf716ce4571dfdd8af0d5cb9401` |
 | Package environment | Linux `6.8.0-90-generic`, Python `3.12.13`, `uv.lock` `4e7dd350ea8e20840a973d7e85f69fb56cfa5df6bc82f498af6c7ffee4ae583a` |
 | Browser | Playwright `1.62.0`, Chromium `151.0.7922.34`, browser executable `0b20b130e7edd9dd51873be867761295fe0cfad490c2b9a64f95bd3cfc08fa71` |
+| Installed-wheel smoke browser | Playwright `1.63.0`, Chromium `153.0.8010.12`, browser executable `8c599d43aec53f2460a31ae2f4af6bd863f8258b34ff519564bc5d4726bfaa1e` |
 | Licensed font set | `static/fonts/manifest.json` `ef74a3641c6712480cc4c61007647af10b6b2d03874c2a1745669aab1f3f88bc`; individual face versions/hashes are recorded in that manifest and each capture profile |
 | Authorized reference pack revision / hash | **Unavailable / unavailable**; no provenance-checked private pack was used |
 
@@ -49,14 +50,20 @@ page count and screenshot raster have bounded limits; platform codec support var
 and the worker memory ceiling is Linux-only. Unmeasured transitions, unknown client
 provenance and human modal/select/reaction/poll screen-reader smoke are release blockers.
 
-**Commands exercised:** `uv run pytest -q --tb=short` (865 passed before review fixes);
+**Commands exercised:** `uv run pytest -q --tb=short` (867 passed, six
+third-party deprecation warnings, after review fixes);
 `uv run pytest tests/integration/test_preview*.py tests/unit/test_components_v2_validation.py -q --tb=short`
-(302 passed after fixes); `uv run pyright src` (zero errors); `uv run ruff check src tests examples benchmarks scripts`
-and `uv run ruff format --check src tests examples benchmarks scripts` (passed);
-`uv run --extra docs mkdocs build --strict` and `uv run python scripts/check_discoverability.py`
-(passed before this attestation); `uv build --out-dir /tmp/simcord-preview-feature-check` and
-`uv run python scripts/check_package.py /tmp/simcord-preview-feature-check` (fresh wheel and
-sdist verified before review fixes); `uv run python scripts/capture_visual_reference.py --check`,
+(302 passed); `uv run pyright src` (zero errors);
+`uv run ruff check src tests examples benchmarks scripts` and
+`uv run ruff format --check src tests examples benchmarks scripts` (passed);
+`uv run --extra docs mkdocs build --strict` and
+`uv run python scripts/check_discoverability.py` (38 HTML pages passed);
+`uv build --out-dir /tmp/simcord-preview-reviewed-final` and
+`uv run python scripts/check_package.py /tmp/simcord-preview-reviewed-final`
+(fresh wheel and sdist verified after fixes);
+installed that wheel into a fresh `/tmp` virtual environment and ran
+`examples/preview_example.py` outside the checkout (`complete=true`, no diagnostics);
+`uv run python scripts/capture_visual_reference.py --check`,
 `--fixture historical.ref.20.buttons.idle`, `--fixture historical.ref.30.string.select.open.string.select.message`
 (local captures succeeded); `uv run python scripts/compare_visual_reference.py --check-manifest tests/fixtures/preview/coverage.json`
 (94 rows validated). The private reference comparison and human assistive-technology
