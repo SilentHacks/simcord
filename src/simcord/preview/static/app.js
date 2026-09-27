@@ -62,6 +62,7 @@ const state = {
   modalError: null,
   modalErrorHandle: null,
   dropdown: null,
+  candidateFingerprint: null,
   lastMessageKey: null,
   lastMessageFingerprint: "",
   assetFingerprint: "",
@@ -651,7 +652,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId) {
       record = { element, fingerprint: "" };
       state.messageNodes.set(id, record);
     }
-    const value = `${fingerprint(message)}:${state.profile.mediaTime ?? ""}`;
+    const value = `${fingerprint(message)}:${state.candidateFingerprint}:${state.profile.mediaTime ?? ""}`;
     if (record.fingerprint !== value) {
       record.fingerprint = value;
       renderMessage(
@@ -729,26 +730,33 @@ function localRender(renderDom = true) {
   }
 }
 
-function openDropdown(key, selected, multi, minimum, maximum, highlight) {
+function openDropdown(key, selected, multi, minimum, maximum, highlight, entries = []) {
   rememberFocus();
   if (state.dropdown?.key === key) {
     cancelDropdown(key);
     return;
   }
+  if (state.dropdown) {
+    const previousKey = state.dropdown.key;
+    if (!state.dropdown.multi || !commitDropdown(previousKey)) cancelDropdown(previousKey);
+  }
+  const firstAvailable = entries.find((entry) => (
+    !multi || selected.includes(String(entry.value ?? entry.id ?? "")) || selected.length < maximum
+  ));
   state.dropdown = {
     key,
     selected: [...selected],
     multi,
     minimum,
     maximum,
-    highlight: highlight ?? selected[0] ?? null,
+    highlight: highlight ?? selected[0] ?? firstAvailable?.value ?? firstAvailable?.id ?? null,
   };
   localRender(true);
-  state.focusKey = `${key}:list`;
-  const list = [...document.querySelectorAll("[data-control-key]")].find(
-    (item) => item.dataset.controlKey === `${key}:list`,
+  state.focusKey = key;
+  const trigger = [...document.querySelectorAll(".select-trigger")].find(
+    (item) => item.dataset.controlKey === key,
   );
-  if (list instanceof HTMLElement) list.focus();
+  trigger?.focus();
 }
 
 function updateDraft(key, value, multi, minimum, maximum, selected) {
@@ -771,29 +779,37 @@ function navigateDropdown(key, highlight) {
   localRender(true);
 }
 
-function clearSelection(key) {
-  if (key.startsWith("modal:")) state.modalTouched.add(key);
+function clearSelection(key, minimum = 1) {
+  const modal = key.startsWith("modal:");
+  if (modal) state.modalTouched.add(key);
   currentDrafts(key).set(key, []);
-  if (state.dropdown?.key === key) {
-    state.dropdown.selected = [];
-    state.dropdown.highlight = null;
-    state.dropdown = null;
-  }
+  if (state.dropdown?.key === key) state.dropdown = null;
   localRender(true);
-  if (!key.startsWith("modal:")) dispatch("select", { control_key: key, values: [] });
+  if (!modal && minimum <= 0) dispatch("select", { control_key: key, values: [] });
 }
 
 function commitDropdown(key) {
   const dropdown = state.dropdown;
+  if (!dropdown || dropdown.key !== key) return false;
   const values = [...(currentDrafts(key).get(key) || [])];
-  if (dropdown?.multi && (values.length < dropdown.minimum || values.length > dropdown.maximum)) {
-    addDiagnostic({ code: "select-invalid", message: "Selection was not dispatched because its count is invalid" });
-    localRender(false);
-    return;
-  }
+  if (dropdown.multi && (values.length < dropdown.minimum || values.length > dropdown.maximum)) return false;
+  const previous = dropdown.selected || [];
+  const changed = values.length !== previous.length || values.some((value, index) => value !== previous[index]);
   state.dropdown = null;
-  localRender(true);
-  if (!key.startsWith("modal:")) dispatch("select", { control_key: key, values });
+  const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
+  const list = wrap?.querySelector(".select-list");
+  const trigger = wrap?.querySelector(".select-trigger");
+  if (list) {
+    if (typeof list.hidePopover === "function" && list.matches(":popover-open")) list.hidePopover();
+    list.hidden = true;
+  }
+  if (trigger) {
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.removeAttribute("aria-activedescendant");
+  } else localRender(true);
+  wrap?.classList.remove("is-open", "opens-up");
+  if (!key.startsWith("modal:") && changed) dispatch("select", { control_key: key, values });
+  return true;
 }
 
 function cancelDropdown(key) {
@@ -805,7 +821,11 @@ function cancelDropdown(key) {
 }
 
 document.addEventListener("pointerdown", (event) => {
-  if (state.dropdown && !(event.target instanceof Element && event.target.closest(".preview-select"))) cancelDropdown(state.dropdown.key);
+  const activeWrap = event.target instanceof Element ? event.target.closest(".preview-select") : null;
+  if (!state.dropdown || activeWrap?.dataset.controlKey === state.dropdown.key) return;
+  const key = state.dropdown.key;
+  if (state.dropdown.multi && commitDropdown(key)) return;
+  setTimeout(() => cancelDropdown(key), 0);
 });
 
 function submitModal(values) {
@@ -897,7 +917,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.dayNodes.clear();
     const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
     const selectedKey = selected ? String(selected.id) : null;
-    const selectedFingerprint = `${fingerprint(selected)}:${state.profile.mediaTime ?? ""}`;
+    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprint}:${state.profile.mediaTime ?? ""}`;
     const shouldRenderMessage =
       force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
     if (shouldRenderMessage) {
@@ -910,7 +930,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     }
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
-  const modalKey = modal ? fingerprint(modal) : "";
+  const modalKey = snapshot.modal ? `${fingerprint(snapshot.modal)}:${state.candidateFingerprint}` : "";
   if (modal && state.modalErrorHandle !== modal.handle) {
     state.modalError = null;
     state.modalErrorHandle = modal.handle;
@@ -957,7 +977,7 @@ function renderSnapshot(snapshot, generation, force = false) {
         state.modalTouched.add(key);
         if (state.modalError) {
           state.modalError = null;
-          state.lastModalFingerprint = fingerprint(state.snapshot?.modal);
+          state.lastModalFingerprint = `${fingerprint(state.snapshot?.modal)}:${state.candidateFingerprint}`;
           document.querySelectorAll(".field-error").forEach((error) => error.remove());
         }
         localRender(false);
@@ -966,7 +986,7 @@ function renderSnapshot(snapshot, generation, force = false) {
         state.modalDrafts.set(key, files);
         state.modalTouched.add(key);
         state.modalError = null;
-        state.lastModalFingerprint = fingerprint(state.snapshot?.modal);
+        state.lastModalFingerprint = `${fingerprint(state.snapshot?.modal)}:${state.candidateFingerprint}`;
         document.querySelectorAll(".field-error").forEach((error) => error.remove());
         localRender(false);
       },
@@ -996,15 +1016,43 @@ function renderSnapshot(snapshot, generation, force = false) {
 }
 
 function fitOpenDropdowns() {
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
   for (const wrap of document.querySelectorAll(".preview-select.is-open")) {
     const trigger = wrap.querySelector(".select-trigger");
     const list = wrap.querySelector(".select-list");
     if (!trigger || !list) continue;
-    wrap.classList.remove("opens-up");
-    const needed = Math.min(list.scrollHeight, 220) + 8;
-    if (window.innerHeight - trigger.getBoundingClientRect().bottom < needed) wrap.classList.add("opens-up");
+    if (typeof list.showPopover === "function" && !list.matches(":popover-open")) list.showPopover();
+    const rect = trigger.getBoundingClientRect();
+    if (rect.bottom <= 0 || rect.top >= viewportHeight) {
+      cancelDropdown(wrap.dataset.controlKey);
+      continue;
+    }
+    const gutter = 8, gap = 4;
+    const width = Math.max(0, Math.min(rect.width, viewportWidth - gutter * 2));
+    const left = Math.max(gutter, Math.min(rect.left, viewportWidth - width - gutter));
+    const below = Math.max(0, viewportHeight - rect.bottom - gap - gutter);
+    const above = Math.max(0, rect.top - gap - gutter);
+    const desired = Math.min(list.scrollHeight, 220);
+    const opensUp = below < desired && above > below;
+    const available = opensUp ? above : below;
+    const height = Math.min(220, available);
+    list.style.left = `${left}px`;
+    list.style.top = `${opensUp ? Math.max(gutter, rect.top - gap - height) : Math.max(gutter, Math.min(viewportHeight - gutter - height, rect.bottom + gap))}px`;
+    list.style.width = `${width}px`;
+    list.style.maxHeight = `${height}px`;
+    wrap.classList.toggle("opens-up", opensUp);
+    const active = list.querySelector(".select-option.is-highlighted");
+    if (active) {
+      if (active.offsetTop < list.scrollTop) list.scrollTop = active.offsetTop;
+      else if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) {
+        list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight;
+      }
+    }
   }
 }
+window.addEventListener("resize", fitOpenDropdowns);
+document.addEventListener("scroll", fitOpenDropdowns, true);
 
 async function installSnapshot(snapshot, force = false) {
   if (!snapshot || state.closed) return false;
@@ -1031,6 +1079,11 @@ async function installSnapshot(snapshot, force = false) {
     return false;
   }
   state.protocolCompatible = true;
+  const candidateFingerprint = fingerprint(snapshot.candidates || {});
+  if (state.candidateFingerprint !== null && state.candidateFingerprint !== candidateFingerprint) {
+    state.dropdown = null;
+  }
+  state.candidateFingerprint = candidateFingerprint;
   rememberFocus();
   if (!state.pendingAction && "lastAction" in snapshot) state.lastAction = snapshot.lastAction;
   const generation = beginRender();
@@ -1143,7 +1196,7 @@ async function poll() {
     if (
       snapshot.publishedRevision !== state.publishedRevision
       || snapshot.context?.generation !== state.contextGeneration
-      || fingerprint(snapshot.modal) !== state.lastModalFingerprint
+      || (snapshot.modal ? `${fingerprint(snapshot.modal)}:${fingerprint(snapshot.candidates || {})}` : "") !== state.lastModalFingerprint
       || statusFingerprint !== state.statusFingerprint
     ) {
       state.statusFingerprint = statusFingerprint;

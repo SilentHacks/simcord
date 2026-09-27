@@ -148,13 +148,22 @@ later successful refresh reconciles it without replaying the action.
 ## Controls, keyboard, and accessibility
 
 The bundled page uses semantic HTML buttons, inputs, textareas, native checkboxes/radios/file
-pickers, labels, focus rings, and a styled listbox for string/entity selects. It renders the Discord
-dark theme only, plus bounded width/height controls, responsive wrapping, spoiler reveal, and
-accessible modal
-focus containment. Use Tab/Shift+Tab to move through a modal, Escape to cancel a modal or close a
-select first, Arrow keys/Home/End to navigate an open select, and Enter/Space to select or commit.
-Single-select commits immediately; multi-select keeps a local draft until Enter/Apply semantics,
-while Escape/outside click cancels it. Invalid min/max selections stay local and show a diagnostic.
+pickers, labels, focus rings, and select-only comboboxes with listbox popups for string/entity
+selects. Select focus stays on the trigger and keyboard navigation exposes an active option; no
+search field is emulated. Modal focus remains contained. It also renders the Discord dark theme,
+bounded width/height controls, responsive wrapping, and spoiler reveal.
+
+Use Tab/Shift+Tab to move through a modal, Escape to close a select before the modal, and Arrow
+keys/Home/End to navigate an open select. Enter/Space on an open single select commits its active
+choice immediately. Multi-select pointer clicks and Space toggle a local draft; Enter, trigger-close,
+or outside click commits only when min/max are satisfied. Escape and focus leaving the select cancel
+the draft. Message choices use the existing callback; modal values stay local until submit. A required
+message clear stays local, and a required modal clear is validated locally before dispatch; invalid
+counts are never sent to the backend.
+
+These select transitions are an uncalibrated accessible fallback: reference commit/cancel traces are
+blocked, so no Discord search/Apply behavior or per-variant commit parity is claimed. See the
+[parity matrix](../parity-matrix.md) for the reference-data blocker.
 
 The browser submits complete effective modal state, including untouched defaults, explicit `false`,
 permitted empty values, and genuine uploaded bytes. Python remains authoritative for validation and

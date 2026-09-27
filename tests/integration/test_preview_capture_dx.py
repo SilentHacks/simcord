@@ -761,7 +761,7 @@ async def test_browser_settled_action_clears_pending_and_allows_second_action(en
 
 
 @pytest.mark.asyncio
-async def test_browser_select_navigation_retains_list_focus(env, channel, alice):
+async def test_browser_select_navigation_retains_combobox_focus(env, channel, alice):
     pytest.importorskip("playwright")
     from playwright.async_api import async_playwright
 
@@ -774,26 +774,99 @@ async def test_browser_select_navigation_retains_list_focus(env, channel, alice)
                 page = await browser.new_page()
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
-                trigger = page.locator('button[aria-haspopup="listbox"]')
+                trigger = page.locator(".select-trigger[role=combobox]")
                 await trigger.focus()
                 await trigger.press("ArrowDown")
-                listbox = page.locator('[role="listbox"]')
                 await page.wait_for_function(
-                    "() => document.activeElement?.getAttribute('role') === 'listbox'"
+                    "() => document.activeElement?.getAttribute('role') === 'combobox' && document.activeElement?.getAttribute('aria-expanded') === 'true'"
                 )
-                first = await listbox.get_attribute("aria-activedescendant")
-                await listbox.press("ArrowDown")
+                first = await trigger.get_attribute("aria-activedescendant")
+                await trigger.press("ArrowDown")
                 await page.wait_for_function(
-                    """(first) => document.activeElement?.getAttribute("role") === "listbox"
+                    """(first) => document.activeElement?.getAttribute("role") === "combobox"
                     && document.activeElement.getAttribute("aria-activedescendant") !== first""",
                     arg=first,
                 )
-                assert await page.locator('[role="listbox"]:focus').count() == 1
+                assert await page.locator(".select-trigger[aria-expanded=true]:focus").count() == 1
                 assert (await page.evaluate("() => window.simcordPreview")).get("pendingAction") is None
             finally:
                 await browser.close()
         finally:
             await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_multi_select_pointer_keyboard_commit_and_escape(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    choices = discord.ui.Select(
+        custom_id="multi-pick",
+        min_values=1,
+        max_values=2,
+        options=[discord.SelectOption(label=name, value=name) for name in ("red", "blue", "green")],
+    )
+    received = []
+
+    async def on_select(interaction):
+        values = list(interaction.data["values"])
+        received.append(values)
+        await interaction.response.defer()
+
+    choices.callback = on_select
+    view = discord.ui.View(timeout=None)
+    view.add_item(choices)
+    message = await env.bot.get_channel(channel.id).send("Choose colors", view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 390, "height": 360})
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                trigger = page.locator(".select-trigger")
+                await trigger.click()
+                options = page.locator(".select-option")
+                await options.filter(has_text="red").click()
+                await options.filter(has_text="blue").click()
+                assert received == []
+                await trigger.click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.lastAction?.settlement === 'settled' && !window.simcordPreview?.pendingAction"
+                )
+                assert received == [["red", "blue"]]
+
+                await trigger.focus()
+                await trigger.press("ArrowDown")
+                await trigger.press("Home")
+                await trigger.press(" ")
+                await trigger.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.lastAction?.sequence === 2 && !window.simcordPreview?.pendingAction"
+                )
+                assert received == [["red", "blue"], ["blue"]]
+
+                await trigger.press("ArrowDown")
+                await options.filter(has_text="green").click()
+                await trigger.press("Escape")
+                assert received == [["red", "blue"], ["blue"]]
+                assert await trigger.get_attribute("aria-expanded") == "false"
+                await trigger.press("ArrowDown")
+                assert await trigger.get_attribute("aria-expanded") == "true"
+                await trigger.press("Escape")
+
+                await page.set_viewport_size({"width": 390, "height": 130})
+                await trigger.click()
+                assert await page.locator(".select-list").evaluate(
+                    "element => element.matches(':popover-open')"
+                )
+                trigger_box = await trigger.bounding_box()
+                popup_box = await page.locator(".select-list").bounding_box()
+                assert trigger_box is not None and popup_box is not None
+                assert popup_box["y"] >= 0
+                assert popup_box["y"] + popup_box["height"] <= 130
+            finally:
+                await browser.close()
 
 
 @pytest.mark.asyncio

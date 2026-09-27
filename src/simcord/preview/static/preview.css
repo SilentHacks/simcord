@@ -830,6 +830,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 
 .preview-select { position: relative; width: 400px; max-width: 100%; }
 .select-trigger {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -870,9 +871,12 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .select-type-8 .select-trigger { min-height: 40px; height: 40px; }
 .select-trigger::after {
   content: "";
+  position: absolute;
+  top: 50%;
+  right: 14px;
   width: 7px;
   height: 7px;
-  margin: -4px 2px 0 12px;
+  margin-top: -5px;
   border-right: 2px solid var(--discord-subtle);
   border-bottom: 2px solid var(--discord-subtle);
   transform: rotate(45deg);
@@ -891,16 +895,35 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 .select-entity .entity-channel { display: grid; place-items: center; color: var(--entity-text); }
 .select-entity .entity-channel svg { display: block; width: 20px; height: 20px; }
 .select-entity-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.select-clear { margin-left: auto; display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--discord-subtle); }
-.select-clear svg { display: block; width: 16px; height: 16px; }
-.preview-select.is-open .select-trigger::after { margin-top: 4px; transform: rotate(225deg); }
-.select-list {
+.preview-select.has-clear .select-trigger { padding-right: 66px; }
+.select-clear {
   position: absolute;
-  z-index: 5;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
+  top: 50%;
+  right: 34px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--discord-subtle);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+.select-clear:hover { color: var(--discord-text); background: transparent; }
+.select-clear:focus-visible { outline: 2px solid var(--discord-brand); }
+.select-clear svg { display: block; width: 16px; height: 16px; }
+.preview-select.is-open .select-trigger::after { transform: translateY(2px) rotate(225deg); }
+.select-list {
+  position: fixed;
+  inset: auto;
+  z-index: 20;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
   max-height: 220px;
+  margin: 0;
   overflow: auto;
   padding: 0;
   background: var(--list-surface);
@@ -908,11 +931,8 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   border-radius: 8px;
   box-shadow: 0 8px 16px #0008;
 }
-.preview-select.opens-up .select-list {
-  top: auto;
-  bottom: calc(100% + 8px);
-  box-shadow: 0 -8px 16px #0008;
-}
+.select-list[hidden] { display: none; }
+.preview-select.opens-up .select-list { box-shadow: 0 -8px 16px #0008; }
 .select-option {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) 24px;
