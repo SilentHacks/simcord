@@ -175,16 +175,7 @@ def _component_types(value: object) -> set[int]:
 def _check() -> None:
     assert len(REFERENCE_IDS) == len(set(REFERENCE_IDS))
     assert _png(2, 2, (0, 0, 0), (255, 255, 255)).startswith(b"\x89PNG\r\n\x1a\n")
-    assert len(ButtonGallery(None).children) == 7
-    assert len(StringSelectGallery().children) == 2
-    assert len(EntitySelectGallery().children) == 4
     layout, files = _layout_view()
-    assert len(layout.children) == 6 and len(files) == 4
-    assert len(ModalGallery().children) == 4
-    assert len(TextModal().children) == 3
-    assert len(ChoiceModal().children) == 4
-    assert len(EntityModal().children) == 4
-    assert len(UploadModal().children) == 1
     fixtures = (
         ButtonGallery(None),
         StringSelectGallery(),

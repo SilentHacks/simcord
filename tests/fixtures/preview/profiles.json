@@ -83,5 +83,43 @@
       "referencePackHash": null,
       "fixtureHashSource": "coverage.json row historicalCapture.sha256"
     }
+  ],
+  "referenceProfileRequirements": [
+    {
+      "id": "authorized-buttons",
+      "existingProfileCandidates": ["discord-dark-idle-1280x900", "discord-dark-guided-1280x700"],
+      "regions": ["button sizes", "row wrapping", "disabled/link/premium variants", "keyboard focus"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Authorized Discord client and permitted private fixture assets; retain original images/recordings outside the repository."
+    },
+    {
+      "id": "authorized-thumbnail-spoiler",
+      "existingProfileCandidates": ["discord-dark-idle-1280x900", "discord-dark-guided-1280x700"],
+      "regions": ["thumbnail accessory", "spoiler badge", "localized/narrow wrap and reveal target"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Measure the authorized thumbnail profile and badge/wrap boxes; do not substitute the audit's local accessory size."
+    },
+    {
+      "id": "authorized-gallery-mixed-aspect",
+      "existingProfileCandidates": ["discord-dark-idle-1280x900", "discord-dark-guided-1280x700"],
+      "regions": ["1-10 mixed-aspect items", "narrow/wide wrapping", "spoilers and media"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Acquire permitted authorized gallery assets and measured layouts at named profiles; private images remain outside the repository."
+    },
+    {
+      "id": "authorized-modal",
+      "existingProfileCandidates": ["discord-dark-guided-1280x700"],
+      "regions": ["backdrop", "dialog", "header", "fields", "validation", "footer/actions", "scroll viewport"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Acquire authorized modal geometry and validation states; commit sanitized measurements/provenance only, not source images."
+    }
   ]
 }

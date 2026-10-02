@@ -76,6 +76,200 @@
       "observationStatus": "historical for V2 captures; expanded formats blocked"
     }
   ],
+  "referenceTraceActions": [
+    "open",
+    "navigate/search",
+    "choose",
+    "clear",
+    "Enter",
+    "Space",
+    "Escape",
+    "outside click",
+    "blur",
+    "trigger-close",
+    "submit",
+    "Record not-applicable actions rather than inferring their result."
+  ],
+  "referenceTraceOwner": "preview maintainers",
+  "interactionTraceRequirements": [
+    {
+      "id": "message-string-select",
+      "placement": "message",
+      "family": "string",
+      "fixtures": [
+        "REF-30",
+        "DOG-02/dogfood:single-select",
+        "DOG-02/dogfood:multi-required-select",
+        "DOG-04/dogfood:single-optional-select",
+        "DOG-04/dogfood:multi-optional-select"
+      ],
+      "variants": [
+        "single required min=1/max=1",
+        "single optional min=0/max=1",
+        "multi required min=1/max=2",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["candidate order", "draft and committed values", "callback dispatch", "close/cancel result"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private test application/server, permitted fixtures, and separate pointer/keyboard trace for each variant."
+    },
+    {
+      "id": "modal-string-select",
+      "placement": "modal",
+      "family": "string",
+      "fixtures": [
+        "REF-52/reference:open-choice",
+        "REF-52/reference:modal-select",
+        "REF-52/reference:modal-select-optional",
+        "REF-52/reference:open-single-select-variants",
+        "REF-52/reference:modal-select-single",
+        "REF-52/reference:modal-select-single-optional"
+      ],
+      "variants": [
+        "single required min=1/max=1",
+        "single optional min=0/max=1",
+        "multi required min=1/max=2",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["candidate order", "defaults", "draft and submitted values", "cancel and modal validation result"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private test application/server, permitted fixtures, and separate pointer/keyboard trace for each variant."
+    },
+    {
+      "id": "message-user-select",
+      "placement": "message",
+      "family": "user",
+      "fixtures": ["REF-31"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["authorized candidates and ordering", "default resolution", "draft/commit/cancel", "denied candidate behavior"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild with permitted member fixtures, and separate pointer/keyboard trace per variant."
+    },
+    {
+      "id": "modal-user-select",
+      "placement": "modal",
+      "family": "user",
+      "contexts": ["guild", "DM"],
+      "fixtures": ["REF-53", "DOG-D01"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["context-scoped candidates/order", "default resolution including unloaded defaults", "submit/clear/cancel", "denied candidate behavior"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private test application, guild and DM fixtures, and separate pointer/keyboard trace in both contexts."
+    },
+    {
+      "id": "message-role-select",
+      "placement": "message",
+      "family": "role",
+      "fixtures": ["REF-31"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["authorized candidates and ordering", "default resolution", "draft/commit/cancel", "denied candidate behavior"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild with permitted role fixtures, and separate pointer/keyboard trace per variant."
+    },
+    {
+      "id": "modal-role-select",
+      "placement": "modal",
+      "family": "role",
+      "contexts": ["guild; DM not applicable"],
+      "fixtures": ["REF-53", "DOG-D01"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["authorized candidates/order", "defaults including unloaded defaults", "submit/clear/cancel", "DM not-applicable result"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild fixture, and separate pointer/keyboard trace; record DM as not applicable only after observing it."
+    },
+    {
+      "id": "message-mentionable-select",
+      "placement": "message",
+      "family": "mentionable",
+      "fixtures": ["REF-31"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["user/role candidate ordering and decoration", "defaults", "draft/commit/cancel", "denied candidate behavior"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild with permitted member/role fixtures, and separate pointer/keyboard trace per variant."
+    },
+    {
+      "id": "modal-mentionable-select",
+      "placement": "modal",
+      "family": "mentionable",
+      "contexts": ["guild; DM not applicable"],
+      "fixtures": ["REF-53", "DOG-D01"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["user/role candidate ordering and decoration", "defaults", "submit/clear/cancel", "DM not-applicable result"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild fixture, and separate pointer/keyboard trace; record DM as not applicable only after observing it."
+    },
+    {
+      "id": "message-channel-select",
+      "placement": "message",
+      "family": "channel",
+      "fixtures": ["REF-31"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["authorized channel types/order", "defaults", "draft/commit/cancel", "permission-denied candidates"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild with permitted channel/type and permission fixtures, and separate pointer/keyboard trace per variant."
+    },
+    {
+      "id": "modal-channel-select",
+      "placement": "modal",
+      "family": "channel",
+      "contexts": ["guild; DM not applicable"],
+      "fixtures": ["REF-53", "DOG-D01"],
+      "variants": [
+        "single required min=1/max=1",
+        "multi required min=1/max=2",
+        "single optional min=0/max=1",
+        "multi optional min=0/max=2"
+      ],
+      "record": ["authorized channel types/order", "defaults including unloaded defaults", "submit/clear/cancel", "permission-denied candidates"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private guild with permitted channel/type and permission fixtures, and separate pointer/keyboard trace; DM not applicable."
+    },
+    {
+      "id": "modal-text-validation",
+      "placement": "modal",
+      "family": "text-input",
+      "fixtures": ["REF-51"],
+      "variants": ["required empty", "below min", "at min", "above max", "optional empty"],
+      "record": ["field error text/association", "retained input", "submit/cancel", "focus restoration"],
+      "observationStatus": "blocked",
+      "prerequisite": "Authorized Discord client, private test application, permitted fixture, and separate pointer/keyboard trace for each validation boundary."
+    }
+  ],
   "transitions": [
     {
       "id": "message-select",
