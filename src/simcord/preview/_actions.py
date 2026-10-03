@@ -110,6 +110,7 @@ class _ActionOps:
     _initial_target: Callable[[Any, int], int | None]
     _target_id: Callable[..., int | None]
     _clear_page_assets: Callable[[_Page], None]
+    _redact_page_receipts: Callable[[_Page], None]
     _publish: Callable[..., None]
     _pages: dict[str, _Page]
     _receipt_payload: Callable[..., Any]
@@ -457,6 +458,9 @@ class _ActionOps:
                         "messageId": str(target_id),
                         "controlKey": control_key if isinstance(control_key, str) else None,
                     }
+            if kind == "viewer":
+                # Redact the previous latest action before admission replaces it.
+                self._redact_page_receipts(page)
             page.last_sequence = sequence  # consumed only after full admission
             page.latest_action = action
             self._active_action = action
@@ -524,11 +528,12 @@ class _ActionOps:
                     page.generation += 1
                     page.navigation_cursor = None
                     page.candidate_queries.clear()
+                    if layout == "channel":
+                        page.window_end_id = page.target_id
                 page.layout = layout
                 page.display = display
                 page.width, page.height = width, height
                 page.host_width, page.host_height = host_width, host_height
-                page.window_end_id = page.target_id if layout == "channel" else page.window_end_id
                 result = self._finish_action(page, action, "settled", cursor)
                 self._publish(page, reason="presentation")
                 result["result"] = {"presentation": page.snapshot["presentation"]}

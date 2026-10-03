@@ -30,6 +30,30 @@ class _ReleasableView(discord.ui.View):
         await interaction.response.defer()
 
 
+class _CountingView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    @discord.ui.button(label="Count", custom_id="browser-count")
+    async def count(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.calls += 1
+        await interaction.response.defer()
+
+
+class _CountingChannelSelect(discord.ui.ChannelSelect):
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.view.calls += 1
+        await interaction.response.defer()
+
+
+class _CountingChannelSelectView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+        self.add_item(_CountingChannelSelect(custom_id="channels", min_values=1, max_values=25))
+
+
 @pytest.mark.asyncio
 async def test_ephemeral_attachment_not_servable_via_foreign_embed(env, channel, alice):
     """CDN bytes only resolve for the attachment's owning message."""
@@ -707,3 +731,236 @@ async def test_page_close_waits_for_active_action_before_releasing_assets(env, c
         assert page.id not in preview._pages
         assert not page.assets
         assert {blob.refs for blob in preview._blobs.values()} == {1}
+
+
+@pytest.mark.asyncio
+async def test_browser_uncertain_receipt_recovers_dropped_action_response(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    view = _CountingView()
+    message = await env.bot.get_channel(channel.id).send("count action", view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.add_init_script("""(() => {
+                  const realFetch = window.fetch.bind(window);
+                  window.__droppedActionResponses = 0;
+                  window.fetch = async (input, init = {}) => {
+                    const url = typeof input === "string" ? input : input.url;
+                    let body = null;
+                    try { body = typeof init.body === "string" ? JSON.parse(init.body) : null; } catch {}
+                    if (url.endsWith("/api/action") && body?.kind === "click") {
+                      await realFetch(input, init);
+                      window.__droppedActionResponses += 1;
+                      throw new Error("response dropped after real action POST");
+                    }
+                    return realFetch(input, init);
+                  };
+                })()""")
+                await page.goto(preview.url)
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.ready && !window.simcordPreview.pendingAction"
+                    " && window.simcordPreview.awaitingRevision === null"
+                )
+                await page.get_by_role("button", name="Count", exact=True).click()
+                await page.wait_for_function("""() => {
+                  const status = window.simcordPreview;
+                  return window.__droppedActionResponses === 1
+                    && status.transport.uncertainRequestId === null
+                    && status.transport.history.some(item => item.code === "action-receipt-observed")
+                    && status.diagnostics.some(item => item.code === "action-response-unavailable"
+                      && item.state === "recovered" && item.complete === true);
+                }""")
+                status = await page.evaluate("() => window.simcordPreview")
+                assert view.calls == 1
+                assert status["complete"] is True
+                assert not any(
+                    item["code"] in {"action-response-unavailable", "action-receipt-unavailable"}
+                    and item["state"] != "recovered"
+                    for item in status["diagnostics"]
+                )
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_close_proceeds_after_unadmitted_uncertain_action(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    view = _CountingView()
+    message = await env.bot.get_channel(channel.id).send("close uncertain action", view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.add_init_script("""(() => {
+                  const realFetch = window.fetch.bind(window);
+                  window.__blockedClicks = 0;
+                  window.fetch = async (input, init = {}) => {
+                    const url = typeof input === "string" ? input : input.url;
+                    let body = null;
+                    try { body = typeof init.body === "string" ? JSON.parse(init.body) : null; } catch {}
+                    if (url.endsWith("/api/action") && body?.kind === "click") {
+                      window.__blockedClicks += 1;
+                      throw new Error("click POST blocked before admission");
+                    }
+                    return realFetch(input, init);
+                  };
+                })()""")
+                await page.goto(preview.url)
+                await page.locator("#inspector > summary").click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.ready && !window.simcordPreview.pendingAction"
+                    " && window.simcordPreview.awaitingRevision === null"
+                )
+                await page.get_by_role("button", name="Count", exact=True).click()
+                await page.wait_for_function("""() => window.__blockedClicks === 1
+                  && window.simcordPreview.transport.uncertainRequestId !== null
+                  && window.simcordPreview.pendingAction === null""")
+                await page.get_by_role("button", name="Close", exact=True).click()
+                await page.wait_for_function("""() => {
+                  const status = window.simcordPreview;
+                  return status.authorized === false && status.complete === true
+                    && status.transport.uncertainRequestId === null
+                    && status.transport.history.some(item => item.code === "action-not-admitted-by-close")
+                    && status.visibleMessageIds.length === 0 && Object.keys(status.selectDrafts).length === 0;
+                }""")
+                await asyncio.wait_for(preview._closed_event.wait(), timeout=5)
+                assert view.calls == 0
+                assert await page.locator("#focused-content *").count() == 0
+                assert await page.locator("#channel-message-list *").count() == 0
+                assert await page.locator("#message-picker option, #viewer-picker option").count() == 0
+                assert await page.evaluate(
+                    "() => window.simcordPreview.targetId === null && window.simcordPreview.viewerId === null"
+                )
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_reauthorizes_cached_channel_select_draft_after_refresh(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    private = env.guild.create_text_channel(
+        "private-review-entity",
+        overwrites={
+            env.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            env.bot.user: discord.PermissionOverwrite(view_channel=True, manage_roles=True),
+            env.bot.get_guild(env.guild.id).get_member(alice.id): discord.PermissionOverwrite(
+                view_channel=True
+            ),
+        },
+    )
+    cached_private = env.bot.get_channel(private.id)
+    member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+    view = _CountingChannelSelectView()
+    message = await env.bot.get_channel(channel.id).send("channel select", view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                trigger = page.locator(".select-trigger").first
+                await trigger.click()
+                await page.locator(".select-candidate-search").first.fill(private.name)
+                option = page.locator(".select-option").filter(has_text=private.name).first
+                await option.wait_for()
+                await option.click()
+                await page.wait_for_function(
+                    """({id, name}) => {
+                      const trigger = document.querySelector(".select-trigger");
+                      const key = trigger?.dataset.controlKey;
+                      return window.simcordPreview.selectDrafts[key]?.includes(id)
+                        && trigger.textContent.includes(name);
+                    }""",
+                    arg={"id": str(private.id), "name": private.name},
+                )
+                key = await trigger.get_attribute("data-control-key")
+
+                await cached_private.set_permissions(member, view_channel=False)
+                await env.settle()
+                await preview.refresh()
+                await page.wait_for_function(
+                    """({id, name, key}) => {
+                      const status = window.simcordPreview;
+                      const trigger = document.querySelector(".select-trigger");
+                      const guidance = document.querySelector(".select-guidance")?.textContent || "";
+                      return !status.selectDrafts[key]?.includes(id)
+                        && !trigger?.textContent.includes(name)
+                        && !trigger?.textContent.includes(id)
+                        && guidance.includes("no longer available");
+                    }""",
+                    arg={"id": str(private.id), "name": private.name, "key": key},
+                )
+                assert view.calls == 0
+                trigger_text = await trigger.text_content()
+                assert private.name not in trigger_text
+                assert str(private.id) not in trigger_text
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_rendering_diagnostics_follow_media_surface_replacement(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    image_url = "https://cdn.example.test/browser-repaired-image.png"
+    good = await env.bot.get_channel(channel.id).send("ordinary target")
+    bad = await env.bot.get_channel(channel.id).send(embed=discord.Embed().set_image(url=image_url))
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(bad)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.locator("#inspector > summary").click()
+                await page.wait_for_function(
+                    "(id) => window.simcordPreview?.ready"
+                    " && window.simcordPreview.targetId === id && !window.simcordPreview.complete",
+                    arg=str(bad.id),
+                )
+                assert await page.locator(".media-unavailable").count() == 1
+                before_resize = await page.evaluate("() => window.simcordPreview.publishedRevision")
+                await page.set_viewport_size({"width": 1180, "height": 820})
+                await page.wait_for_function(
+                    "(revision) => window.simcordPreview.publishedRevision > revision",
+                    arg=before_resize,
+                )
+                await page.wait_for_function(
+                    "() => window.simcordPreview.ready && !window.simcordPreview.pendingAction"
+                    " && window.simcordPreview.awaitingRevision === null"
+                )
+                status = await page.evaluate("() => window.simcordPreview")
+                assert status["complete"] is False
+                assert any(
+                    item["code"] == "media-unavailable" and item["state"] == "current"
+                    for item in status["diagnostics"]
+                )
+
+                await page.locator("#message-picker").select_option(str(good.id))
+                await page.wait_for_function(
+                    "(id) => window.simcordPreview.targetId === id && window.simcordPreview.complete",
+                    arg=str(good.id),
+                )
+                status = await page.evaluate("() => window.simcordPreview")
+                assert not any(
+                    item["code"] == "media-unavailable" and item["state"] == "current"
+                    for item in status["diagnostics"]
+                )
+                assert await page.locator(".media-unavailable").count() == 0
+
+            finally:
+                await browser.close()

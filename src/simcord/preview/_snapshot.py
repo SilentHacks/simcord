@@ -1337,7 +1337,7 @@ def _message_summary_parts(preview: Preview, page: _Page, message: Message, chan
     if type_info["kind"] not in {"system", "unknown"} and message.content:
         excerpt = markdown_summary(markdown_tokens(message.content, "message", context=context))
     component_summaries: list[dict[str, str]] = []
-    text_display: list[str] = []
+    text_display_tokens: list[dict[str, Any]] = []
     for component in walk_components(message.components):
         try:
             component_type = int(component.get("type", -1))
@@ -1346,22 +1346,27 @@ def _message_summary_parts(preview: Preview, page: _Page, message: Message, chan
             component_type = -1
             name = "unknown"
         raw_label = component.get("label") or component.get("placeholder") or ""
+        component_tokens = None
         if component_type == int(ComponentType.TEXT_DISPLAY):
             raw_label = component.get("content", "")
             if isinstance(raw_label, str):
-                text_display.append(
-                    markdown_summary(markdown_tokens(raw_label, "text_display", context=context))
-                )
+                component_tokens = markdown_tokens(raw_label, "text_display", context=context)
+                if text_display_tokens:
+                    text_display_tokens.append({"type": "break"})
+                text_display_tokens.extend(component_tokens)
         label = (
-            markdown_summary(markdown_tokens(raw_label, "label"), 80) if isinstance(raw_label, str) else ""
+            markdown_summary(
+                component_tokens if component_tokens is not None else markdown_tokens(raw_label, "label"),
+                80,
+            )
+            if isinstance(raw_label, str)
+            else ""
         )
         component_summaries.append({"kind": name, "label": label})
         if len(component_summaries) >= 50:
             break
-    if not excerpt and text_display:
-        excerpt = markdown_summary(
-            markdown_tokens(" ".join(item for item in text_display if item), "text_display", context=context)
-        )
+    if not excerpt and text_display_tokens:
+        excerpt = markdown_summary(text_display_tokens)
 
     content_kinds: list[str] = []
     if message.content and type_info["kind"] not in {"system", "unknown"}:

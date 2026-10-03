@@ -85,7 +85,8 @@ export function renderSelect(component, path, options) {
   };
   const multi = Number(component.max_values ?? 1) > 1 || Number(component.min_values ?? 1) > 1;
   const minimum = Number(component.min_values ?? 1), maximum = Number(component.max_values ?? 1);
-  const selectedEntries = [
+  const identityPending = component.type !== TYPE.STRING_SELECT && options.identityPending?.(candidateKey) === true;
+  const selectedEntries = identityPending ? [] : [
     ...(Array.isArray(descriptor?.selected) ? descriptor.selected.filter((entry) => entry && typeof entry === "object") : []),
     ...(options.identityEntries?.(candidateKey) || []),
   ];
@@ -97,7 +98,7 @@ export function renderSelect(component, path, options) {
   }
   const rawSelected = Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : [];
   const entryValues = new Set(entries.map(entryValue));
-  let selected = rawSelected.map(String);
+  let selected = identityPending ? [] : rawSelected.map(String);
   if (component.type === TYPE.STRING_SELECT) {
     const valid = selected.filter((value) => entryValues.has(value));
     if (valid.length !== selected.length) drafts.set(key, valid);
@@ -166,7 +167,7 @@ export function renderSelect(component, path, options) {
     clear.addEventListener("click", () => onClear?.(key, minimum));
     wrap.classList.add("has-clear");
   }
-  trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
+  trigger.type = "button"; trigger.disabled = component.disabled === true || identityPending; trigger.dataset.controlKey = key;
   trigger.id = `select-${safeId(key)}`;
   trigger.setAttribute("role", "combobox");
   trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
@@ -253,8 +254,8 @@ export function renderSelect(component, path, options) {
     const guidance = node("div", "select-guidance");
     guidance.setAttribute("role", "status");
     guidance.setAttribute("aria-live", "polite");
-    guidance.textContent = options.selectionStatus?.(key)
-      || `${selected.length} selected. Choose ${minimum}–${maximum} options.`;
+    guidance.textContent = identityPending ? "Checking access to saved selections."
+      : options.selectionStatus?.(key) || `${selected.length} selected. Choose ${minimum}–${maximum} options.`;
     guidance.id = `select-guidance-${safeId(key)}`;
     trigger.setAttribute("aria-describedby", guidance.id);
     wrap.append(guidance);

@@ -7,11 +7,11 @@ description: "Reviewed local preview evidence, exact coverage counts, hashes, an
 
 ## Current status — 2026-10-03
 
-**Local implementation gates pass; independent review is pending.** The preview
+**Local implementation and independent review correction gates pass.** The preview
 uses protocol 3 while `pyproject.toml` remains package version `2.2.1`; no package 3.0 release,
 complete resolution of all 21 findings, or release-certification claim is made.
 
-Observed local checks: 915 repository tests passed with six third-party warnings; the unchanged
+Observed local checks: 922 repository tests passed with six third-party warnings; the unchanged
 core coverage report passes its 95% ratchet. An untouched `988e4a2` snapshot had passed 877
 tests but failed that gate at 94%. User-approved behavioral core checks now exercise malformed
 mention/sticker payloads, external sticker authorization, callback rejection without consuming
@@ -26,6 +26,13 @@ The full pinned COLRv1 emoji build renders regional flags; glyph faces were insp
 Unicode text/control corpus with only DejaVu Sans available as a system font. Fresh wheel/sdist
 content checks passed, and the installed wheel outside the checkout completed a modal/edit/PNG
 journey with `complete=true`, no diagnostics, and custom platform font glyphs.
+
+Exactly one fresh independent review identified eight branch-introduced defects; all eight
+were reproduced and corrected, with native/browser regression journeys. Corrections cover
+Text Display spoiler summaries, grapheme-compatible schema bounds, preserved history anchors,
+prior-viewer receipt redaction, recovered transport diagnostics, sequence-safe Close after an
+unadmitted uncertain action, cached select authorization, and replaced rendering diagnostics.
+No findings were rejected and no second review was substituted for fixing them.
 
 Authorized private Discord transition/pixel measurements and human screen-reader attestation are
 unavailable. These external gates remain blocked; local screenshots and automated ARIA checks

@@ -103,6 +103,9 @@ const state = {
   selectStatuses: new Map(),
   candidateIdentities: new Map(),
   candidateQueries: new Map(),
+  selectValidationRevisions: new Map(),
+  pendingSelectValidations: new Map(),
+  selectVerifiedValues: new Map(),
   modalDrafts: new Map(),
   modalTouched: new Set(),
   modalHandle: null,
@@ -137,7 +140,7 @@ const state = {
   fontStatus: { loaded: [], missing: [], faces: [] },
   mediaCaptureTimes: {},
   mediaMetadata: {},
-  transport: { state: "idle", failures: 0, recoveries: 0, uncertainRequestId: null, history: [] },
+  transport: { state: "idle", failures: 0, recoveries: 0, uncertainRequestId: null, uncertainSequence: null, uncertainCloseAttemptFor: null, history: [] },
   activityBackStack: [],
   activityReturnKey: null,
   diagnosticFilter: "all",
@@ -195,7 +198,7 @@ function visibleMessageIds() {
 function selectStates() {
   return Object.fromEntries([...document.querySelectorAll(".preview-select")].map((element) => {
     const key = element.dataset.controlKey;
-    const values = [...(state.selectDrafts.get(key) || [])];
+    const values = state.pendingSelectValidations.has(key) ? [] : [...(state.selectDrafts.get(key) || [])];
     const minimum = Number(element.dataset.minimum), maximum = Number(element.dataset.maximum);
     const optional = element.dataset.optional === "true";
     const touched = state.modalTouched.has(key);
@@ -239,7 +242,9 @@ function statusObject() {
     presentation: clone(state.snapshot?.presentation || null),
     renderGeneration: state.renderGeneration,
     renderState,
-    selectDrafts: Object.fromEntries([...state.selectDrafts].map(([key, values]) => [key, [...values]])),
+    selectDrafts: Object.fromEntries([...state.selectDrafts].map(([key, values]) => [
+      key, state.pendingSelectValidations.has(key) ? [] : [...values],
+    ])),
     selectStates: selectStates(),
     lastAction: state.authorized ? clone(state.lastAction) : null,
     pendingAction: state.pendingAction && !state.authorized
@@ -397,11 +402,28 @@ function addDiagnostic(diagnostic) {
     complete: diagnostic.complete !== false,
     message: catalog?.[1] || diagnostic.message,
     remediation: catalog?.[2] || diagnostic.remediation,
+    ...(diagnostic.renderOwner ? { renderOwner: diagnostic.renderOwner } : {}),
   };
   state.localDiagnostics = state.localDiagnostics.filter((entry) => entry.id !== item.id);
   state.localDiagnostics.push(item);
   state.localDiagnostics = state.localDiagnostics.slice(-20);
   renderDiagnostics();
+}
+
+function clearRenderDiagnostics(owner) {
+  if (!owner) return;
+  const retained = state.localDiagnostics.filter((item) => item.renderOwner !== owner);
+  if (retained.length === state.localDiagnostics.length) return;
+  state.localDiagnostics = retained;
+  renderDiagnostics();
+}
+
+function recoverActionTransportDiagnostics(message = "The matching action receipt was observed; transport failure remains in history.") {
+  const codes = new Set(["action-response-unavailable", "action-receipt-unavailable"]);
+  state.localDiagnostics = state.localDiagnostics.map((item) => codes.has(item.code)
+    && item.category === "transport" && item.state === "current"
+    ? { ...item, state: "recovered", severity: "warning", complete: true, message }
+    : item);
 }
 
 function renderDiagnostics() {
@@ -452,11 +474,14 @@ function renderDiagnostics() {
   ui.diagnostics.append(list);
 }
 
-function noteTransportFailure(code, requestId = null) {
+function noteTransportFailure(code, requestId = null, sequence = null) {
   state.transport.failures += 1;
   const uncertain = Boolean(requestId || state.transport.uncertainRequestId);
   state.transport.state = uncertain ? "uncertain" : "error";
-  if (requestId) state.transport.uncertainRequestId = requestId;
+  if (requestId && !state.transport.uncertainRequestId) {
+    state.transport.uncertainRequestId = requestId;
+    state.transport.uncertainSequence = Number.isInteger(sequence) ? sequence : null;
+  }
   state.transport.history.push({ state: state.transport.state, code, at: Date.now() });
   state.transport.history = state.transport.history.slice(-20);
   addDiagnostic({
@@ -479,8 +504,9 @@ function noteTransportHealthy() {
     state.transport.recoveries += 1;
     state.transport.state = "recovered";
     state.transport.history.push({ state: "recovered", code: "transport-restored", at: Date.now() });
-    state.transport.history = state.transport.history.slice(-20);
-    state.localDiagnostics = state.localDiagnostics.map((item) => item.category === "transport" && item.state === "current"
+    const recovered = new Set(["state-poll-unavailable", "state-refresh-unavailable", "bootstrap-failed"]);
+    state.localDiagnostics = state.localDiagnostics.map((item) => item.category === "transport"
+      && recovered.has(item.code) && item.state === "current"
       ? { ...item, state: "recovered", severity: "warning", complete: true, message: "Transport recovered; failure remains in history." }
       : item);
     renderDiagnostics();
@@ -492,7 +518,6 @@ function noteTransportHealthy() {
   if (state.transport.state === "recovered") announceStatus("Connection restored.");
   updateActionStatus();
 }
-
 
 function renderTransportStatus() {
   if (!ui.transportStatus) return;
@@ -851,6 +876,7 @@ function localMessageDay(message) {
 
 function messageRenderOptions(snapshot, generation, pendingMedia, message, channelLayout) {
   const pollKey = (item) => `poll:${state.contextId}:${item.id}`;
+  const renderOwner = message ? `message:${message.id}` : null;
   return {
     drafts: state.drafts,
     candidates: snapshot.candidates || {},
@@ -881,8 +907,13 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
       }
     },
     dropdown: state.dropdown,
+    onDiagnostic: (diagnostic) => addDiagnostic({
+      ...diagnostic,
+      ...(renderOwner ? { id: `local:render:${renderOwner}:${diagnostic.code}`, renderOwner } : {}),
+    }),
     onInit: (key, value) => initSelectDraft(key, value, state.drafts),
     identityEntries,
+    identityPending: (key) => state.pendingSelectValidations.has(key),
     candidateQuery: (key) => state.candidateQueries.get(key),
     onCandidateQuery: queueCandidateQuery,
     selectionStatus: (key) => state.selectStatuses.get(key)?.message || "",
@@ -901,7 +932,6 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     onClear: clearSelection,
     loadAsset,
     isCurrent: () => generation === state.renderGeneration,
-    onDiagnostic: addDiagnostic,
     onLocalRender: () => localRender(true),
     pendingMedia,
     channelLayout,
@@ -990,6 +1020,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId) {
     const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}`;
     if (record.fingerprint !== value) {
       record.fingerprint = value;
+      clearRenderDiagnostics(`message:${id}`);
       renderMessage(
         record.element,
         message,
@@ -1003,6 +1034,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId) {
   for (const [id, record] of state.messageNodes) {
     if (!active.has(id)) {
       record.element.remove();
+      clearRenderDiagnostics(`message:${id}`);
       state.messageNodes.delete(id);
     }
   }
@@ -1209,11 +1241,38 @@ function initDraft(key, value, drafts = currentDrafts(key)) {
 function initSelectDraft(key, value, drafts = currentDrafts(key)) {
   initDraft(key, value, drafts);
   const current = drafts.get(key);
-  if (Array.isArray(current)) state.selectDrafts.set(key, current.map(String));
+  if (Array.isArray(current)) {
+    state.selectDrafts.set(key, current.map(String));
+    if (state.snapshot?.candidates?.[key] && !state.selectValidationRevisions.has(key)) {
+      state.selectValidationRevisions.set(key, state.publishedRevision);
+      state.selectVerifiedValues.set(key, current.map(String));
+    }
+  }
 }
 
 function identityEntries(key) {
   return [...(state.candidateIdentities.get(key)?.values() || [])];
+}
+function reconcileCandidateSelection(key, selected, requested, revision) {
+  const authorized = new Map(selected.map((entry) => [String(entry.value ?? entry.id), entry]));
+  const values = requested.filter((value) => authorized.has(String(value))).map(String);
+  currentDrafts(key).set(key, values);
+  state.selectDrafts.set(key, values);
+  const identities = new Map(values.map((id) => [id, authorized.get(id)]));
+  if (identities.size) state.candidateIdentities.set(key, identities);
+  else state.candidateIdentities.delete(key);
+  state.selectValidationRevisions.set(key, Number(revision));
+  state.selectVerifiedValues.set(key, values);
+  state.pendingSelectValidations.delete(key);
+  if (values.length !== requested.length) {
+    state.selectStatuses.set(key, {
+      fingerprint: JSON.stringify(["authorization", values]),
+      message: "One or more selected options are no longer available.",
+      authorization: true,
+    });
+  } else if (state.selectStatuses.get(key)?.authorization) {
+    state.selectStatuses.delete(key);
+  }
 }
 function clearModalDrafts() {
   for (const [timerKey, timer] of state.selectQueryTimers) {
@@ -1227,6 +1286,9 @@ function clearModalDrafts() {
     state.selectStatuses.delete(key);
     state.candidateIdentities.delete(key);
     state.candidateQueries.delete(key);
+    state.selectValidationRevisions.delete(key);
+    state.selectVerifiedValues.delete(key);
+    state.pendingSelectValidations.delete(key);
   }
   state.modalDrafts.clear();
   state.modalTouched.clear();
@@ -1345,15 +1407,16 @@ function updateDraft(key, value, multi, minimum, maximum, selected, entry) {
   }
   drafts.set(key, next);
   state.selectDrafts.set(key, [...next]);
-  state.selectStatuses.delete(key);
-  if (entry && next.includes(id)) {
+  if (state.snapshot?.candidates?.[key]) {
     const identities = state.candidateIdentities.get(key) || new Map();
-    identities.set(id, entry);
+    if (entry && next.includes(id)) identities.set(id, entry);
     for (const candidateId of identities.keys()) {
       if (!next.includes(candidateId)) identities.delete(candidateId);
     }
-    state.candidateIdentities.set(key, identities);
+    if (identities.size) state.candidateIdentities.set(key, identities);
+    else state.candidateIdentities.delete(key);
   }
+  state.selectStatuses.delete(key);
   if (state.dropdown) state.dropdown.highlight = id;
   localRender(true);
 }
@@ -1372,6 +1435,11 @@ function clearSelection(key, minimum = 1) {
   }
   currentDrafts(key).set(key, []);
   state.selectDrafts.set(key, []);
+  if (state.snapshot?.candidates?.[key]) {
+    state.selectValidationRevisions.set(key, state.publishedRevision);
+    state.selectVerifiedValues.set(key, []);
+  }
+  state.pendingSelectValidations.delete(key);
   state.selectStatuses.delete(key);
   state.candidateIdentities.delete(key);
   if (state.dropdown?.key === key) state.dropdown = null;
@@ -1553,6 +1621,8 @@ function renderSnapshot(snapshot, generation, force = false) {
     const shouldRenderMessage =
       force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
     if (shouldRenderMessage) {
+      clearRenderDiagnostics(`message:${state.lastMessageKey}`);
+      clearRenderDiagnostics(`message:${selectedKey}`);
       state.lastMessageKey = selectedKey;
       state.lastMessageFingerprint = selectedFingerprint;
       renderMessage(ui.surface, selected, messageRenderOptions(snapshot, generation, pendingMedia, selected, false));
@@ -1579,6 +1649,8 @@ function renderSnapshot(snapshot, generation, force = false) {
   setModalIsolation(Boolean(nextHandle));
   if (force || modalKey !== state.lastModalFingerprint) {
     const scrollTop = ui.modal.querySelector(".modal-body")?.scrollTop || 0;
+    clearRenderDiagnostics(state.modalHandle ? `modal:${state.modalHandle}` : null);
+    if (modal) clearRenderDiagnostics(`modal:${modal.handle}`);
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
       dropdown: state.dropdown,
@@ -1597,6 +1669,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       isCurrent: () => generation === state.renderGeneration,
       onInit: (key, value) => initSelectDraft(key, value, state.modalDrafts),
       identityEntries,
+      identityPending: (key) => state.pendingSelectValidations.has(key),
       candidateQuery: (key) => state.candidateQueries.get(key),
       onCandidateQuery: queueCandidateQuery,
       selectionStatus: (key) => state.selectStatuses.get(key)?.message || "",
@@ -1633,7 +1706,11 @@ function renderSnapshot(snapshot, generation, force = false) {
         localRender(true);
       },
       onSubmit: submitModal,
-      onDiagnostic: addDiagnostic,
+      onDiagnostic: (diagnostic) => addDiagnostic({
+        ...diagnostic,
+        id: `local:render:modal:${modal.handle}:${diagnostic.code}`,
+        renderOwner: `modal:${modal.handle}`,
+      }),
     });
     if (nextHandle && state.modalError && rendered.errorTarget) {
       rendered.errorTarget.scrollIntoView({ block: "nearest" });
@@ -1754,12 +1831,39 @@ async function installSnapshot(snapshot, force = false) {
     if (!groups.has(scope)) groups.set(scope, []);
     groups.get(scope).push([key, descriptor]);
   }
-  state.candidateFingerprints = new Map([...groups].map(([scope, entries]) => [scope, fingerprint(entries)]));
+  for (const [key, values] of state.selectDrafts) {
+    if (!state.selectValidationRevisions.has(key)) continue;
+    const selected = snapshot.candidates?.[key]?.selected;
+    const verified = state.selectVerifiedValues.get(key);
+    const selectedValues = Array.isArray(selected)
+      ? new Set(selected.map((entry) => String(entry.value ?? entry.id)))
+      : null;
+    const selectedCoversDraft = selectedValues
+      && values.every((value) => selectedValues.has(String(value)));
+    if (!values.length) {
+      state.selectValidationRevisions.set(key, Number(snapshot.publishedRevision));
+      state.selectVerifiedValues.set(key, []);
+      state.pendingSelectValidations.delete(key);
+    } else if (Array.isArray(selected)
+      && (selectedCoversDraft || (Array.isArray(verified) && fingerprint(verified) === fingerprint(values)))) {
+      reconcileCandidateSelection(key, selected, values, snapshot.publishedRevision);
+    } else {
+      state.pendingSelectValidations.set(key, Number(snapshot.publishedRevision));
+      if (state.dropdown?.key === key) state.dropdown = null;
+    }
+  }
+  state.candidateFingerprints = new Map([...groups].map(([scope, entries]) => [
+    scope,
+    fingerprint(entries.map(([key, descriptor]) => [
+      key, descriptor, state.pendingSelectValidations.has(key),
+    ])),
+  ]));
   rememberFocus();
   if (!state.pendingAction && "lastAction" in snapshot) state.lastAction = snapshot.lastAction;
   reconcileUncertainAction(snapshot);
   const generation = beginRender();
   renderSnapshot(snapshot, generation, force);
+  queuePendingCandidateValidations();
   return true;
 }
 
@@ -1868,6 +1972,14 @@ function queueCandidateQuery(controlKey, query, cursor = null, modalHandle = nul
     queueQuery(key, "browse_candidates", body);
   }
 }
+function queuePendingCandidateValidations() {
+  for (const [key, revision] of state.pendingSelectValidations) {
+    if (revision !== state.publishedRevision || !state.snapshot?.candidates?.[key] || candidateLoading(key)) continue;
+    const modalHandle = state.modalHandle && key.startsWith(`modal:${state.modalHandle}:`)
+      ? state.modalHandle : null;
+    queueCandidateQuery(key, state.candidateQueries.get(key) ?? state.snapshot.candidates[key].query ?? "", null, modalHandle);
+  }
+}
 
 function queueMessageQuery(query, cursor = null) {
   if (state.pinnedCapture) return;
@@ -1908,14 +2020,22 @@ function receiptFor(snapshot, requestId) {
 function reconcileUncertainAction(snapshot) {
   const requestId = state.transport.uncertainRequestId;
   const receipt = receiptFor(snapshot, requestId);
-  if (receipt) {
+  const terminal = receipt?.rejected === true
+    || (typeof receipt?.settlement === "string" && receipt.settlement !== "pending");
+  if (receipt && terminal) {
     state.lastAction = receipt;
     if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
     state.transport.uncertainRequestId = null;
+    state.transport.uncertainSequence = null;
+    state.transport.uncertainCloseAttemptFor = null;
     state.transport.state = "recovered";
     state.transport.recoveries += 1;
     state.transport.history.push({ state: "recovered", code: "action-receipt-observed", at: Date.now() });
     state.transport.history = state.transport.history.slice(-20);
+    recoverActionTransportDiagnostics();
+    renderTransportStatus();
+    updateActionStatus();
+    renderDiagnostics();
   }
   if (Number.isInteger(state.awaitingRevision) && snapshot.publishedRevision >= state.awaitingRevision) {
     state.awaitingRevision = null;
@@ -1937,6 +2057,9 @@ function resetInteractionState() {
   state.selectStatuses.clear();
   state.candidateIdentities.clear();
   state.candidateQueries.clear();
+  state.selectValidationRevisions.clear();
+  state.selectVerifiedValues.clear();
+  state.pendingSelectValidations.clear();
   state.pollDrafts.clear();
   clearModalDrafts();
   state.editTargetId = null;
@@ -1951,6 +2074,10 @@ function redactPrivateView() {
   resetInteractionState();
   state.snapshot = null;
   state.lastAction = null;
+  state.viewerId = null;
+  state.targetId = null;
+  ui.viewer.replaceChildren();
+  ui.message.replaceChildren();
   ui.captureRecipe.value = "";
   ui.exactId.value = "";
   ui.search.value = "";
@@ -1992,20 +2119,24 @@ function queryStatusFingerprint(snapshot) {
   });
 }
 function drainIntents() {
+  const uncertain = state.transport.uncertainRequestId;
+  const canClose = Boolean(uncertain && "close" in state.queuedPageIntents
+    && state.transport.uncertainCloseAttemptFor !== uncertain);
   if (
     state.pendingAction || state.closed || state.pinnedCapture
-    || !state.protocolCompatible || !state.contextId || state.transport.uncertainRequestId
-    || (Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.observedRevision)
+    || !state.protocolCompatible || !state.contextId || (uncertain && !canClose)
+    || ((Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.observedRevision) && !canClose)
   ) return;
   for (const kind of ["close", "viewer", "refresh", "focus", "configure_presentation"]) {
     if (!(kind in state.queuedPageIntents)) continue;
+    if (uncertain && kind !== "close") continue;
     if (!state.authorized && !["close", "viewer", "refresh"].includes(kind)) continue;
     const body = state.queuedPageIntents[kind];
     delete state.queuedPageIntents[kind];
     dispatch(kind, body);
     return;
   }
-  if (!state.authorized) return;
+  if (!state.authorized || uncertain) return;
   const next = state.queuedQueries.entries().next().value;
   if (!next) return;
   const [key, intent] = next;
@@ -2034,7 +2165,11 @@ async function performAction(kind, extra, queryIntentValue = null) {
   if (["click", "select"].includes(kind)) {
     body.target_id = /^message:(\d+):component:/.exec(extra.control_key)?.[1] ?? state.targetId;
   }
-  state.pendingAction = { kind, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null };
+  state.pendingAction = {
+    kind, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null,
+    closeProbe: kind === "close" && state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId
+      && Boolean(state.transport.uncertainRequestId),
+  };
   if (queryIntentValue) {
     state.pendingQuery = { kind, key: queryIntentValue.key, controlKey: extra.control_key || null, requestId, sequence, query: extra.query };
   }
@@ -2045,14 +2180,14 @@ async function performAction(kind, extra, queryIntentValue = null) {
   } catch (_) {
     state.pendingAction = null;
     state.pendingQuery = null;
-    noteTransportFailure("action-response-unavailable", requestId);
+    noteTransportFailure("action-response-unavailable", requestId, sequence);
     localRender(false);
     return;
   }
   if (!receipt || typeof receipt !== "object" || receipt.requestId !== requestId) {
     state.pendingAction = null;
     state.pendingQuery = null;
-    noteTransportFailure("action-receipt-unavailable", requestId);
+    noteTransportFailure("action-receipt-unavailable", requestId, sequence);
     localRender(false);
     return;
   }
@@ -2062,6 +2197,23 @@ async function performAction(kind, extra, queryIntentValue = null) {
     state.awaitingRevision = receipt.revision;
   }
   if (Array.isArray(receipt.diagnostics)) receipt.diagnostics.forEach((item) => addDiagnostic(item));
+  if (kind === "close" && receipt.rejected && state.pendingAction?.closeProbe) {
+    state.queuedPageIntents.close = extra;
+  }
+  if (kind === "close" && !receipt.rejected && receipt.settlement === "settled"
+    && Number.isInteger(state.transport.uncertainSequence)
+    && receipt.sequence === state.transport.uncertainSequence) {
+    state.transport.uncertainRequestId = null;
+    state.transport.uncertainSequence = null;
+    state.transport.uncertainCloseAttemptFor = null;
+    state.transport.state = "recovered";
+    state.transport.recoveries += 1;
+    state.transport.history.push({ state: "recovered", code: "action-not-admitted-by-close", at: Date.now() });
+    state.transport.history = state.transport.history.slice(-20);
+    recoverActionTransportDiagnostics("The accepted Close proved the uncertain action was not admitted; transport failure remains in history.");
+    renderTransportStatus();
+    renderDiagnostics();
+  }
   if (kind === "close" && !receipt.rejected && receipt.settlement === "settled") {
     state.closed = true;
     state.authorized = false;
@@ -2103,16 +2255,15 @@ async function performAction(kind, extra, queryIntentValue = null) {
     state.observedRevision = Number(snapshot.publishedRevision);
     if (!queryIntentValue || (state.queryIntents.get(queryIntentValue.key) === queryIntentValue.token
       && queryIntentValue.scope === `${state.viewerId}:${state.contextGeneration}`)) {
-      if (kind === "browse_candidates" && Array.isArray(extra.selected_values)
+      if (kind === "browse_candidates" && !receipt.rejected && receipt.settlement === "settled"
+        && (!extra.modal_handle || snapshot.modal?.handle === extra.modal_handle)
+        && Array.isArray(extra.selected_values)
         && fingerprint(extra.selected_values) === fingerprint(state.selectDrafts.get(extra.control_key) || [])) {
         const selected = snapshot.candidates?.[extra.control_key]?.selected;
         if (Array.isArray(selected)) {
-          const allowed = new Set(selected.map((entry) => String(entry.value ?? entry.id)));
-          const values = extra.selected_values.filter((value) => allowed.has(value));
-          currentDrafts(extra.control_key).set(extra.control_key, values);
-          state.selectDrafts.set(extra.control_key, values);
-          const identities = state.candidateIdentities.get(extra.control_key);
-          if (identities) for (const id of identities.keys()) if (!allowed.has(id)) identities.delete(id);
+          reconcileCandidateSelection(
+            extra.control_key, selected, extra.selected_values, snapshot.publishedRevision,
+          );
         }
       }
       await installSnapshot(snapshot, false);
@@ -2126,6 +2277,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
   }
   state.pendingAction = null;
   state.pendingQuery = null;
+  queuePendingCandidateValidations();
   updateActionStatus();
   drainIntents();
 }
@@ -2139,11 +2291,19 @@ function dispatch(kind, extra = {}) {
   }
   if (state.closed || !state.contextId || !state.protocolCompatible || state.pinnedCapture) return;
   if (!state.authorized && !["close", "viewer", "refresh"].includes(kind)) return;
-  if (state.pendingAction || state.transport.uncertainRequestId) {
+  if (state.pendingAction || (state.transport.uncertainRequestId && kind !== "close")) {
     if (pageAction(kind)) pageIntent(kind, extra);
     return;
   }
-  if (Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision) {
+  if (state.transport.uncertainRequestId) {
+    if (state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId) {
+      pageIntent(kind, extra);
+      return;
+    }
+    state.transport.uncertainCloseAttemptFor = state.transport.uncertainRequestId;
+  }
+  if (kind !== "close" && Number.isInteger(state.awaitingRevision)
+    && state.awaitingRevision > state.publishedRevision) {
     if (pageAction(kind)) pageIntent(kind, extra);
     return;
   }
@@ -2179,6 +2339,7 @@ async function poll() {
         updateActionStatus();
       }
     }
+    queuePendingCandidateValidations();
     drainIntents();
   } catch (_) {
     if (!state.closed) noteTransportFailure("state-poll-unavailable");

@@ -5,6 +5,7 @@ from importlib import resources
 import discord
 import jsonschema
 import pytest
+import regex
 from aiohttp import ClientSession
 from preview_helpers import action_body, control_key, preview_headers, target_message
 
@@ -24,6 +25,56 @@ async def test_preview_snapshot_matches_packaged_schema(env, channel, alice):
     invalid = {**snapshot, "protocolVersion": 1}
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(invalid)
+
+
+@pytest.mark.asyncio
+async def test_v2_text_display_summary_hides_spoilers_but_searches_visible_text(env, channel, alice):
+    secret = "unrevealed-review-secret"
+    view = discord.ui.LayoutView()
+    view.add_item(discord.ui.TextDisplay(f"Visible ||{secret}||"))
+    message = await env.bot.get_channel(channel.id).send(view=view)
+
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        summary = next(
+            item for item in preview._page_payload(page)["messageIndex"] if item["id"] == str(message.id)
+        )
+        assert summary["excerpt"] == "Visible [spoiler]"
+        assert summary["components"][0]["label"] == "Visible [spoiler]"
+        assert secret not in json.dumps(summary)
+
+        hidden = await preview._action(page.id, action_body(page, "browse_messages", 1, query=secret))
+        assert hidden["result"]["messageIndex"] == []
+        visible = await preview._action(page.id, action_body(page, "browse_messages", 2, query="visible"))
+        assert [item["id"] for item in visible["result"]["messageIndex"]] == [str(message.id)]
+
+
+@pytest.mark.asyncio
+async def test_preview_unicode_grapheme_summaries_validate_against_schema(env, channel, alice):
+    family = "👨‍👩‍👧‍👦"
+    combining_cluster = "e" + "\u0301" * 300
+    content = family * 99 + combining_cluster
+    label_content = family * 79 + combining_cluster
+    cached = env.bot.get_channel(channel.id)
+    plain = await cached.send(content)
+    view = discord.ui.LayoutView()
+    view.add_item(discord.ui.TextDisplay(label_content))
+    v2 = await cached.send(view=view)
+    assert plain.content == content
+    assert v2.components[0].content == label_content
+
+    schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        snapshot = await preview.snapshot()
+        validator.validate(snapshot)
+        summaries = {item["id"]: item for item in snapshot["messageIndex"]}
+        excerpt = summaries[str(plain.id)]["excerpt"]
+        label = summaries[str(v2.id)]["components"][0]["label"]
+        assert len(excerpt) > 512 and len(regex.findall(r"\X", excerpt)) == 100
+        assert excerpt.endswith(combining_cluster)
+        assert len(label) > 200 and len(regex.findall(r"\X", label)) == 80
+        assert label.endswith(combining_cluster)
 
 
 @pytest.mark.asyncio
@@ -180,8 +231,11 @@ async def test_preview_localhost_origin_allowed(env, channel, alice):
 @pytest.mark.asyncio
 async def test_navigation_is_bounded_query_scoped_and_preserved_on_resize(env, channel, alice):
     cached = env.bot.get_channel(channel.id)
+    history_target = None
     for number in range(1001):
-        await cached.send(f"INDEX {number:04} Café 👩🏽‍💻 ||classifiedneedle||")
+        message = await cached.send(f"INDEX {number:04} Café 👩🏽‍💻 ||classifiedneedle||")
+        if number == 500:
+            history_target = message
     async with env.preview(channel, viewers=[alice]) as preview:
         page = preview._open_page(alice.id)
         other = preview._open_page(alice.id)
@@ -243,6 +297,138 @@ async def test_navigation_is_bounded_query_scoped_and_preserved_on_resize(env, c
         assert hidden["result"]["messageIndex"] == []
         too_long = await preview._action(page.id, action_body(page, "browse_messages", 6, query="x" * 129))
         assert too_long["rejected"] and page.last_sequence == 5
+
+        focused_middle = await preview._action(
+            page.id, action_body(page, "focus", 6, target_id=history_target.id)
+        )
+        assert not focused_middle["rejected"]
+        configured_channel = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "configure_presentation",
+                7,
+                layout="channel",
+                display="responsive",
+                width=960,
+                height=720,
+                host_width=320,
+                host_height=240,
+            ),
+        )
+        assert not configured_channel["rejected"]
+        older = await preview._action(page.id, action_body(page, "history", 8, direction="older"))
+        assert not older["rejected"]
+        older_snapshot = preview._page_payload(page)
+        assert older_snapshot["targetId"] is None
+        assert older_snapshot["history"]["hasAfter"]
+
+        resized_channel = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "configure_presentation",
+                9,
+                layout="channel",
+                display="responsive",
+                width=1280,
+                height=900,
+                host_width=400,
+                host_height=300,
+            ),
+        )
+        assert not resized_channel["rejected"]
+        resized_snapshot = preview._page_payload(page)
+        assert resized_snapshot["history"] == older_snapshot["history"]
+        assert resized_snapshot["timeline"] == older_snapshot["timeline"]
+        assert resized_snapshot["presentation"]["viewport"] == {"width": 400, "height": 300}
+
+        message_layout = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "configure_presentation",
+                10,
+                layout="message",
+                display="responsive",
+                width=1280,
+                height=900,
+                host_width=400,
+                host_height=300,
+            ),
+        )
+        assert not message_layout["rejected"]
+        assert preview._page_payload(page)["history"]["hasAfter"] is False
+        focused_again = await preview._action(
+            page.id, action_body(page, "focus", 11, target_id=history_target.id)
+        )
+        assert not focused_again["rejected"]
+        channel_again = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "configure_presentation",
+                12,
+                layout="channel",
+                display="responsive",
+                width=1280,
+                height=900,
+                host_width=400,
+                host_height=300,
+            ),
+        )
+        assert not channel_again["rejected"]
+        channel_snapshot = preview._page_payload(page)
+        assert channel_snapshot["targetId"] == str(history_target.id)
+        assert str(history_target.id) in channel_snapshot["timeline"]
+        assert channel_snapshot["history"]["windowEndId"] != older_snapshot["history"]["windowEndId"]
+
+
+@pytest.mark.asyncio
+async def test_viewer_transition_redacts_prior_private_action_receipts(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+
+    class PrivateOutputView(discord.ui.View):
+        @discord.ui.button(label="Output", custom_id="private-output")
+        async def output(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.send_message("private response", ephemeral=True)
+            await interaction.followup.send("private followup", ephemeral=True)
+
+    source = await env.bot.get_channel(channel.id).send("source", view=PrivateOutputView())
+    async with env.preview(channel, viewers=[alice, bob]) as preview:
+        await preview.show(source)
+        page = preview._open_page(alice.id)
+        click = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "click",
+                1,
+                custom_id="private-output",
+                control_key=control_key(preview._page_payload(page), "private-output"),
+            ),
+        )
+        old_action = page.latest_action
+        old_correlation = click["correlation"]
+        output_ids = {item["messageId"] for item in click["outcomes"]}
+        assert (
+            old_action is not None and old_action.interaction is not None and old_action.response is not None
+        )
+        assert {item["kind"] for item in click["outcomes"]} == {"response", "followup"}
+
+        transition = await preview._action(page.id, action_body(page, "viewer", 2, viewer_id=bob.id))
+        assert transition["settlement"] == "settled"
+        snapshot = preview._page_payload(page)
+        assert snapshot["viewerId"] == str(bob.id)
+        assert len(snapshot["activity"]) == 1
+        assert snapshot["activity"][0]["correlation"] == transition["correlation"]
+        assert snapshot["activity"][0]["outcomes"] == []
+        assert snapshot["lastAction"]["correlation"] == transition["correlation"]
+        assert old_action.interaction is None and old_action.outcomes == []
+        assert old_action.target is None and old_action.response["outcomes"] == []
+        serialized = json.dumps(snapshot)
+        assert old_correlation not in serialized
+        assert all(output_id not in serialized for output_id in output_ids)
 
 
 @pytest.mark.asyncio
