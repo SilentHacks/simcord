@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import copy
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from itertools import count
 from typing import Any
 from urllib.parse import urlparse
 
@@ -270,6 +271,14 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
         if kind == "code_inline":
             result.append({"type": "code", "content": str(getattr(token, "content", ""))})
             continue
+        if kind in {"discord_spoiler_open", "discord_spoiler_close"}:
+            result.append(
+                {
+                    "type": "spoiler_open" if kind == "discord_spoiler_open" else "spoiler_close",
+                    "group": (getattr(token, "meta", None) or {}).get("group"),
+                }
+            )
+            continue
         if kind == "discord_spoiler":
             result.append({"type": "spoiler_open"})
             result.extend(_inline(getattr(token, "children", ()) or ()))
@@ -306,16 +315,36 @@ _INLINE_OPEN_TO_CLOSE = {
     "em_open": "em_close",
     "s_open": "s_close",
     "link_open": "link_close",
+    "discord_spoiler_open": "discord_spoiler_close",
 }
 _INLINE_CLOSE_TO_OPEN = {close: open for open, close in _INLINE_OPEN_TO_CLOSE.items()}
 
 
-def _inline_blocks(children: Iterable[Any], policy: Mapping[str, bool | str]) -> list[dict[str, Any]]:
+def _inline_blocks(
+    children: Iterable[Any],
+    policy: Mapping[str, bool | str],
+    spoiler_groups: Iterator[int],
+) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     active: list[Any] = []
     line: list[Any] = []
     inherited: list[Any] = []
     previous_subtext = False
+
+    def flatten_spoilers(tokens: Iterable[Any]) -> Iterable[Any]:
+        for token in tokens:
+            if getattr(token, "type", "") != "discord_spoiler" or not policy["subtext"]:
+                yield token
+                continue
+            group = f"spoiler-{next(spoiler_groups)}"
+            opened = copy.copy(token)
+            opened.type = "discord_spoiler_open"
+            opened.meta = {"group": group}
+            yield opened
+            yield from flatten_spoilers(getattr(token, "children", ()) or ())
+            closed = copy.copy(opened)
+            closed.type = "discord_spoiler_close"
+            yield closed
 
     def emit_line() -> None:
         nonlocal previous_subtext
@@ -342,7 +371,7 @@ def _inline_blocks(children: Iterable[Any], policy: Mapping[str, bool | str]) ->
         blocks.append({"type": "subtext" if subtext else "inline", "children": _inline(tokens)})
         previous_subtext = subtext
 
-    for token in children:
+    for token in flatten_spoilers(children):
         kind = getattr(token, "type", "")
         if kind in {"softbreak", "hardbreak"}:
             emit_line()
@@ -362,11 +391,12 @@ def _inline_blocks(children: Iterable[Any], policy: Mapping[str, bool | str]) ->
 def _blocks(tokens: Iterable[Any], policy: Mapping[str, bool | str]) -> list[dict[str, Any]]:
     root: list[dict[str, Any]] = []
     stack: list[list[dict[str, Any]]] = [root]
+    spoiler_groups = count()
     for token in tokens:
         kind = getattr(token, "type", "")
         nesting = int(getattr(token, "nesting", 0) or 0)
         if kind == "inline":
-            stack[-1].extend(_inline_blocks(getattr(token, "children", ()) or (), policy))
+            stack[-1].extend(_inline_blocks(getattr(token, "children", ()) or (), policy, spoiler_groups))
         elif kind in {"code_block", "fence"}:
             info = str(getattr(token, "info", "") or "").strip()
             block: dict[str, Any] = {"type": "code_block", "content": str(getattr(token, "content", ""))}
@@ -457,14 +487,18 @@ def markdown_summary(
         raise ValueError("max_graphemes must be a non-negative integer")
 
     parts: list[str] = []
+    spoiler_groups: set[str] = set()
 
     def visit(items: Iterable[Mapping[str, Any]]) -> None:
         hidden = 0
         for token in items:
             kind = token.get("type")
             if kind == "spoiler_open":
-                if not hidden:
+                group = token.get("group")
+                if not hidden and (not isinstance(group, str) or group not in spoiler_groups):
                     parts.append("[spoiler]")
+                if isinstance(group, str):
+                    spoiler_groups.add(group)
                 hidden += 1
                 continue
             if kind == "spoiler_close":

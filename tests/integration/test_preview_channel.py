@@ -538,6 +538,11 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
                 await composer.fill("Send exactly once")
                 await page.get_by_role("button", name="Send").click()
                 await delivered.wait()
+                await (
+                    page.get_by_label("Preview viewport")
+                    .get_by_text("Send exactly once", exact=True)
+                    .wait_for()
+                )
                 if newer_draft:
                     await composer.fill(newer_draft)
                 release.set()

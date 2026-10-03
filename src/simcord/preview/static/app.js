@@ -530,30 +530,35 @@ function updatePickers(snapshot) {
     : "No visible messages.";
   ui.pickerEmpty.hidden = Boolean(messageRows.length);
   ui.pickerEmpty.textContent = "No visible messages.";
-  if (channelLayout) {
-    const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
-    const key = editKey || `composer:${state.contextId}`;
-    ui.composer.dataset.controlKey = key;
-    const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
-    if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
-    if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
-    ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
-    ui.send.textContent = state.editTargetId ? "Save" : "Send";
-    ui.composer.placeholder = state.editTargetId ? "Edit message" : `Message #${channelName}`;
-    const reply = state.replyToId
-      ? messageRows.find((item) => String(item.id) === state.replyToId)
-      : null;
-    ui.replyContext.hidden = !state.replyToId && !state.editTargetId;
-    ui.replyLabel.textContent = state.editTargetId
-      ? `Editing message ${state.editTargetId}`
-      : state.replyToId
-        ? reply
-          ? `Replying to ${reply.author?.name || "Unknown author"}: ${String(reply.excerpt || "").slice(0, 100)}`
-          : `Replying to message ${state.replyToId}`
-        : "";
-    ui.replyCancel.setAttribute("aria-label", state.editTargetId ? "Cancel edit" : "Cancel reply");
-  }
+  updateComposer(snapshot);
 }
+function updateComposer(snapshot) {
+  if (snapshot.layout !== "channel") return;
+  const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
+  const key = editKey || `composer:${state.contextId}`;
+  ui.composer.dataset.controlKey = key;
+  const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
+  if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
+  if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
+  ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
+  ui.send.textContent = state.editTargetId ? "Save" : "Send";
+  const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
+  ui.composer.placeholder = state.editTargetId ? "Edit message" : `Message #${channelName}`;
+  const messageRows = state.authorized ? snapshot.messageIndex || [] : [];
+  const reply = state.replyToId
+    ? messageRows.find((item) => String(item.id) === state.replyToId)
+    : null;
+  ui.replyContext.hidden = !state.replyToId && !state.editTargetId;
+  ui.replyLabel.textContent = state.editTargetId
+    ? `Editing message ${state.editTargetId}`
+    : state.replyToId
+      ? reply
+        ? `Replying to ${reply.author?.name || "Unknown author"}: ${String(reply.excerpt || "").slice(0, 100)}`
+        : `Replying to message ${state.replyToId}`
+      : "";
+  ui.replyCancel.setAttribute("aria-label", state.editTargetId ? "Cancel edit" : "Cancel reply");
+}
+
 
 function revokeAssets() {
   closeLightbox();
@@ -2206,9 +2211,11 @@ function reconcileUncertainAction(snapshot) {
   const terminal = receipt?.rejected === true
     || (typeof receipt?.settlement === "string" && receipt.settlement !== "pending");
   if (receipt && terminal) {
+    const action = state.uncertainAction;
     state.lastAction = receipt;
-    completeActionDrafts(state.uncertainAction, receipt);
-    state.lastActionKind = state.uncertainAction?.kind || state.lastActionKind;
+    completeActionDrafts(action, receipt);
+    if (action?.contextId === state.contextId && snapshot.context?.id === state.contextId) updateComposer(snapshot);
+    state.lastActionKind = action?.kind || state.lastActionKind;
     state.uncertainAction = null;
     if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
     state.transport.uncertainRequestId = null;

@@ -226,9 +226,11 @@ authorized interaction trace. See the [parity matrix](../parity-matrix.md).
 
 In channel layout, history paging and message sends are admitted against the current publication.
 The composer is available only when the selected viewer has send permission; replies are one level
-deep and require an authorized referenced message. A successful send clears its draft, while a
-rejected or failed send leaves it available for correction. The bot receives the ordinary actor
-message event, and replies it creates appear after a new publication.
+deep and require an authorized referenced message. A successful send clears its draft. A lost
+response is reconciled from its settled receipt without replaying the send or discarding newer
+typing, even if polling already displayed the sent message. Rejected or confirmed failed sends
+retain the draft for correction. The bot receives the ordinary actor message event, and replies it
+creates appear after a new publication.
 
 ## Text, code and emoji
 
@@ -241,6 +243,10 @@ existing HTTP, HTTPS and mailto policy. Bare links are parsed by Markdown only i
 and only absolute HTTP(S) URLs are linked; fuzzy domains/emails, protocol-relative URLs and other
 schemes remain text. Escaped text, code, and literal fields are not browser-autolinked. Links never
 trigger remote fetches or previews.
+
+Message and Text Display subtext (`-# ` at line start) applies only to that line, including inside
+multiline spoilers. Revealing one fragment reveals the other lines of the same spoiler, without
+revealing adjacent spoilers.
 
 Fenced code preserves its language label. Highlighting uses the pinned Highlight.js 11.11.1 ESM
 build from `@highlightjs/cdn-assets` with these explicit grammars: Bash, C++, C#, CSS, diff,

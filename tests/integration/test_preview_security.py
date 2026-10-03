@@ -228,7 +228,8 @@ async def test_preview_renders_markdown_spoilers_highlight_and_inert_html_in_bro
     content = (
         " ".join(f"<t:1700000000:{style}>" for style in styles)
         + "\nfirst\n-# quiet line\nthird"
-        + "\n||[masked](https://example.test) `inline secret`||"
+        + "\n||[masked](https://example.test) `inline secret`\n-# small spoiler middle\nnormal spoiler last||"
+        + " and ||same paragraph spoiler||\n\n||separate paragraph spoiler||"
         + "\n```python\ndef hello():\n    return 1\n```\n<script>window.previewInjected = true</script>"
     )
     await env.bot.get_channel(channel.id).send(content)
@@ -244,20 +245,30 @@ async def test_preview_renders_markdown_spoilers_highlight_and_inert_html_in_bro
                     "elements => elements.every(element => Boolean(element.title))"
                 )
                 subtext = page.locator(".message-content .markdown-subtext")
-                assert await subtext.all_text_contents() == ["quiet line"]
+                assert await subtext.all_text_contents() == ["quiet line", "small spoiler middle"]
                 assert "-# quiet line" not in await page.locator(".message-content").inner_text()
                 code = page.locator(".code-block code")
                 assert await code.text_content() == "def hello():\n    return 1\n"
                 assert await code.locator(".hljs-title.function_").count() > 0
-                spoiler = page.locator(".markdown-spoiler")
+                paragraph = page.locator(".message-content .markdown-paragraph").first
+                spoiler_fragments = paragraph.locator(".markdown-spoiler")
+                assert await spoiler_fragments.count() == 4
+                spoiler = spoiler_fragments.first
                 spoiler_content = spoiler.locator(".markdown-spoiler-content")
                 link = spoiler_content.locator("a.markdown-link")
                 inline_code = spoiler_content.locator("code.inline-code")
-                assert await spoiler_content.evaluate(
-                    "element => element.inert && element.getAttribute('aria-hidden') === 'true'"
+                assert await spoiler_fragments.evaluate_all(
+                    """elements => elements.every(element => {
+                      const content = element.querySelector('.markdown-spoiler-content');
+                      return content.inert && content.getAttribute('aria-hidden') === 'true'
+                        && getComputedStyle(content).visibility === 'hidden';
+                    })"""
                 )
-                assert await spoiler_content.evaluate(
-                    "element => getComputedStyle(element).visibility === 'hidden'"
+                separate_spoiler = (
+                    page.locator(".message-content .markdown-paragraph").nth(1).locator(".markdown-spoiler")
+                )
+                assert await separate_spoiler.locator(".markdown-spoiler-content").evaluate(
+                    "element => element.inert && element.getAttribute('aria-hidden') === 'true'"
                 )
                 assert await inline_code.text_content() == "inline secret"
                 assert not await link.evaluate(
@@ -265,9 +276,20 @@ async def test_preview_renders_markdown_spoilers_highlight_and_inert_html_in_bro
                 )
                 await spoiler.focus()
                 await page.keyboard.press("Enter")
+                assert await spoiler_fragments.evaluate_all(
+                    """elements => elements.slice(0, 3).every(element => {
+                      const content = element.querySelector('.markdown-spoiler-content');
+                      return element.classList.contains('is-revealed') && !content.inert
+                        && !content.hasAttribute('aria-hidden');
+                    }) && !elements[3].classList.contains('is-revealed')
+                      && elements[3].querySelector('.markdown-spoiler-content').inert"""
+                )
+                assert await separate_spoiler.locator(".markdown-spoiler-content").evaluate(
+                    "element => element.inert && element.getAttribute('aria-hidden') === 'true'"
+                )
                 assert await spoiler.evaluate("element => element.classList.contains('is-revealed')")
-                assert not await spoiler_content.evaluate(
-                    "element => element.inert || element.hasAttribute('aria-hidden')"
+                assert await spoiler_content.evaluate(
+                    "element => !element.inert && !element.hasAttribute('aria-hidden')"
                 )
                 assert await link.get_attribute("href") == "https://example.test/"
                 assert await link.get_attribute("target") == "_blank"
@@ -352,28 +374,49 @@ def test_preview_markdown_links_breaks_styles_and_spoilers():
 
 
 def test_preview_subtext_marker_applies_per_line_across_boundaries():
+    formatted = "||**normal first\r\n-# small middle\r\nnormal last**||"
     cases = (
-        ("first\n-# second\nthird", ["second"]),
-        ("-# first\nsecond", ["first"]),
-        ("-# first\n-# second", ["first", "second"]),
-        ("first\n\n-# second", ["second"]),
-        ("first\r\n-# second\r\nthird", ["second"]),
+        ("first\n-# second\nthird", ["second"], ["first", "third"]),
+        ("-# first\nsecond", ["first"], ["second"]),
+        ("-# first\n-# second", ["first", "second"], []),
+        ("first\n\n-# second", ["second"], ["first"]),
+        ("first\r\n-# second\r\nthird", ["second"], ["first", "third"]),
+        (
+            "first\n-# ||small first\nnormal continuation||\nlast",
+            ["small first"],
+            ["first", "normal continuation", "last"],
+        ),
+        (
+            "||normal first\n-# small middle\nnormal last||",
+            ["small middle"],
+            ["normal first", "normal last"],
+        ),
+        (formatted, ["small middle"], ["normal first", "normal last"]),
     )
-    for source, expected in cases:
-        tokens = markdown_tokens(source)
-        subtexts = [
-            "".join(
-                child.get("content", "") for child in block.get("children", []) if child.get("type") == "text"
+    for profile in ("message", "text_display"):
+        for source, expected_subtext, expected_inline in cases:
+            tokens = markdown_tokens(source, profile)
+            lines = [block for block in _walk_tokens(tokens) if block.get("type") in {"inline", "subtext"}]
+
+            def text(block):
+                return "".join(
+                    child.get("content", "")
+                    for child in block.get("children", [])
+                    if child.get("type") == "text"
+                )
+
+            assert [text(block) for block in lines if block.get("type") == "subtext"] == expected_subtext
+            inline_text = [text(block) for block in lines if block.get("type") == "inline"]
+            assert [value for value in inline_text if value] == expected_inline
+            visible = "".join(
+                token.get("content", "") for token in _walk_tokens(tokens) if token.get("type") == "text"
             )
-            for block in _walk_tokens(tokens)
-            if block.get("type") == "subtext"
-        ]
-        assert subtexts == expected
-        visible = "".join(
-            token.get("content", "") for token in _walk_tokens(tokens) if token.get("type") == "text"
-        )
-        assert "-#" not in visible
-    assert markdown_summary(markdown_tokens("-# first\nsecond")) == "first second"
+            assert "-#" not in visible
+    formatted_lines = [
+        block for block in _walk_tokens(markdown_tokens(formatted)) if block.get("type") == "subtext"
+    ]
+    assert {"strong_open", "strong_close"} <= {child["type"] for child in formatted_lines[0]["children"]}
+    assert markdown_summary(markdown_tokens("||normal first\n-# small middle\nnormal last||")) == "[spoiler]"
 
 
 def test_preview_markdown_non_text_is_safe_plain_text():

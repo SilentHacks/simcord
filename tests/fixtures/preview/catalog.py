@@ -1016,7 +1016,9 @@ def dogfood_payloads(
             "content": (
                 "DOG-MD-02 Later-line subtext boundary\n"
                 "First paragraph\n-# only this later line is subtext\nthird line stays normal\n\n"
-                "-# first subtext line\n-# second subtext line"
+                "-# first subtext line\n-# second subtext line\n\n"
+                "||Normal spoiler first\n-# small spoiler middle\nnormal spoiler last||\n\n"
+                "Normal line\n-# ||small spoiler first\nnormal spoiler continuation||"
             )
         },
         {

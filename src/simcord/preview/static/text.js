@@ -192,19 +192,30 @@ function renderInlineTokens(parent, tokens, options) {
     const element = document.createElement(tag);
     const content = name === "spoiler" ? node("span", "markdown-spoiler-content") : element;
     if (name === "spoiler") {
+      const group = token.group == null ? null : String(token.group);
       element.className = "markdown-spoiler";
+      if (group !== null) element.dataset.spoilerGroup = group;
       element.tabIndex = 0;
       element.setAttribute("role", "button");
       element.setAttribute("aria-label", "Reveal spoiler");
       content.inert = true;
       content.setAttribute("aria-hidden", "true");
       const reveal = () => {
-        element.classList.add("is-revealed");
-        content.inert = false;
-        content.removeAttribute("aria-hidden");
-        element.removeAttribute("role");
-        element.removeAttribute("tabindex");
-        element.removeAttribute("aria-label");
+        const paragraph = element.closest(".markdown-paragraph");
+        const fragments = group === null || !paragraph
+          ? [element]
+          : [...paragraph.querySelectorAll(".markdown-spoiler")]
+            .filter((fragment) => fragment.dataset.spoilerGroup === group);
+        for (const fragment of fragments) {
+          fragment.classList.add("is-revealed");
+          const fragmentContent = fragment.querySelector(".markdown-spoiler-content");
+          if (!fragmentContent) continue;
+          fragmentContent.inert = false;
+          fragmentContent.removeAttribute("aria-hidden");
+          fragment.removeAttribute("role");
+          fragment.removeAttribute("tabindex");
+          fragment.removeAttribute("aria-label");
+        }
       };
       element.addEventListener("click", reveal);
       element.addEventListener("keydown", (event) => {
