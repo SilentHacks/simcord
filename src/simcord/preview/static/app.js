@@ -343,17 +343,7 @@ function setModalIsolation(open) {
   [ui.channel, ui.empty, ui.surface].forEach((element) => {
     if (element) element.inert = open;
   });
-  const mobile = isMobileWorkbench();
-  const drawerOpen = ui.shell.classList.contains("messages-open");
-  const sidebarClosed = mobile ? !drawerOpen : ui.shell.classList.contains("messages-closed");
-  ui.toolbar.inert = open;
-  ui.sidebar.inert = open || sidebarClosed || (mobile && !ui.panel.hidden);
-  ui.sidebar.setAttribute("aria-hidden", String(open || sidebarClosed || (mobile && !ui.panel.hidden)));
-  ui.panel.inert = open || ui.panel.hidden;
-  ui.stage.inert = !open && mobile && drawerOpen && ui.panel.hidden;
-  ui.drawerScrim.hidden = !mobile || !drawerOpen || open;
-  ui.messagesToggle.setAttribute("aria-expanded", String(!sidebarClosed));
-  ui.inspectorToggle.setAttribute("aria-expanded", String(!ui.panel.hidden));
+  updateWorkbenchIsolation(open);
   ui.modal.setAttribute("aria-hidden", String(!open));
 }
 function renderDiagnostics() {
@@ -829,8 +819,10 @@ function applyProfile() {
   ui.app.style.height = `${height}px`;
   const exact = presentation.exactProfile || { width, height };
   if (!state.queuedPageIntents.configure_presentation && state.pendingAction?.kind !== "configure_presentation") {
-    ui.width.value = String(fixed ? exact.width : width);
-    ui.height.value = String(fixed ? exact.height : height);
+    for (const [field, value] of [[ui.width, fixed ? exact.width : width], [ui.height, fixed ? exact.height : height]]) {
+      if (!fixed || Number(field.value) === Number(value)) delete field.dataset.dirty;
+      if (!field.dataset.dirty) field.value = String(value);
+    }
     ui.display.value = presentation.display || "responsive";
     ui.layout.value = presentation.layout || state.snapshot?.layout || "message";
   }
@@ -1613,6 +1605,7 @@ function commitDropdown(key) {
   state.dropdown = null;
   const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
   const list = wrap?.querySelector(".select-list");
+  const restoreTrigger = list?.contains(document.activeElement);
   const trigger = wrap?.querySelector(".select-trigger");
   if (list) {
     if (typeof list.hidePopover === "function" && list.matches(":popover-open")) list.hidePopover();
@@ -1623,6 +1616,10 @@ function commitDropdown(key) {
     trigger.removeAttribute("aria-activedescendant");
   } else localRender(true);
   wrap?.classList.remove("is-open", "opens-up");
+  if (restoreTrigger) {
+    state.focusKey = key;
+    restoreFocus(key);
+  }
   if (!dropdown.modal && !state.modalDrafts.has(key) && changed) dispatch("select", { control_key: key, values });
   return true;
 }
@@ -1630,6 +1627,9 @@ function commitDropdown(key) {
 function cancelDropdown(key) {
   const dropdown = state.dropdown;
   if (!dropdown || dropdown.key !== key) return;
+  const restoreTrigger = [...document.querySelectorAll(".preview-select")].some(
+    (element) => element.dataset.controlKey === key && element.contains(document.activeElement),
+  );
   const values = [...dropdown.selected];
   currentDrafts(key).set(key, values);
   state.selectDrafts.set(key, values);
@@ -1640,6 +1640,10 @@ function cancelDropdown(key) {
   }
   state.dropdown = null;
   localRender(true);
+  if (restoreTrigger) {
+    state.focusKey = key;
+    restoreFocus(key);
+  }
 }
 
 function clearModalValidation() {
@@ -2554,14 +2558,13 @@ function isMobileWorkbench() {
   return window.matchMedia("(max-width: 760px)").matches;
 }
 
-function updateWorkbenchIsolation() {
+function updateWorkbenchIsolation(modalOpen = Boolean(state.modalHandle)) {
   const mobile = isMobileWorkbench();
   if (mobile) ui.shell.classList.remove("messages-closed");
   else ui.shell.classList.remove("messages-open");
   const drawerOpen = ui.shell.classList.contains("messages-open");
   const sidebarClosed = mobile ? !drawerOpen : ui.shell.classList.contains("messages-closed");
   const inspectorOpen = !ui.panel.hidden;
-  const modalOpen = Boolean(state.modalHandle);
   ui.toolbar.inert = modalOpen;
   ui.sidebar.inert = modalOpen || sidebarClosed || (mobile && inspectorOpen);
   ui.sidebar.setAttribute("aria-hidden", String(modalOpen || sidebarClosed || (mobile && inspectorOpen)));
@@ -2668,13 +2671,14 @@ document.addEventListener("keydown", (event) => {
     closeMessagesDrawer();
   }
 });
-window.addEventListener("resize", updateWorkbenchIsolation);
+window.addEventListener("resize", () => updateWorkbenchIsolation());
 updateWorkbenchIsolation();
 function updateViewport(field, minimum, maximum) {
   const value = Number(field.value);
   if (!Number.isInteger(value) || value < minimum || value > maximum
     || Number(ui.width.value) * Number(ui.height.value) > 32 * 1024 * 1024) {
     addDiagnostic({ code: "viewport-invalid", message: "Viewport dimensions must be bounded integers", complete: true });
+    delete field.dataset.dirty;
     applyProfile();
     return;
   }
@@ -2754,6 +2758,8 @@ ui.diagnosticFilter.addEventListener("change", () => {
 state.scrollObserver = new ResizeObserver(scheduleScrollCorrection);
 state.scrollObserver.observe(ui.messageList);
 state.scrollObserver.observe(ui.timeline);
+ui.width.addEventListener("input", () => { ui.width.dataset.dirty = "true"; });
+ui.height.addEventListener("input", () => { ui.height.dataset.dirty = "true"; });
 ui.width.addEventListener("change", () => updateViewport(ui.width, 240, 32768));
 ui.height.addEventListener("change", () => updateViewport(ui.height, 180, 32768));
 ui.refresh.addEventListener("click", () => dispatch("refresh"));

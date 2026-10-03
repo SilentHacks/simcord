@@ -331,7 +331,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .advanced-search > summary, .custom-dimensions > summary { padding: 5px 0; cursor: pointer; }
 .advanced-search form { display: grid; gap: 6px; padding: 6px 0 4px; }
 .sidebar-empty { margin: 12px 0; padding: 16px 6px; font-size: 12px; }
-.preview-stage { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; align-items: center; justify-content: center; background: #313338; }
+.preview-stage { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; background: #313338; }
 .preview-app {
   position: relative;
   flex: none;
@@ -1536,16 +1536,9 @@ textarea.modal-input { min-height: 90px; resize: none; }
 
 @media (max-width: 600px) {
   .message-surface { width: 100%; }
-.message-header, .message-content, .message-components, .message-attachments,
-.message-system, .message-stickers { width: calc(100% - 24px); margin-left: 24px; }
-  .embed-card { width: calc(100% - 24px); margin-left: 24px; }
-.channel-message .message-header, .channel-message .message-content,
-.channel-message .message-components, .channel-message .message-attachments,
-.channel-message .message-system, .channel-message .message-stickers {
-    width: calc(100% - 88px);
-    margin-left: 72px;
-  }
-  .channel-message .embed-card { width: min(432px, calc(100% - 88px)); margin-left: 72px; }
+  .message-header, .message-content, .message-components, .message-attachments,
+  .message-system, .message-stickers { width: calc(100% - 88px); margin-left: 72px; }
+  .embed-card { width: min(432px, calc(100% - 88px)); margin-left: 72px; }
   .component-section { grid-template-columns: 1fr; }
   .embed-field.inline { grid-column: span 12; }
 }
