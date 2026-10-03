@@ -435,8 +435,7 @@ async def test_browser_attachment_count_one_and_ten_remains_intrinsic(env, chann
                     "(image) => [image.width, image.height]"
                 ) == [2, 2]
 
-                await page.locator("#inspector > summary").click()
-                await page.locator("#message-picker").select_option(str(single.id))
+                await page.locator(f"#message-picker button[data-message-id='{single.id}']").click()
                 await page.wait_for_function(
                     "(id) => window.simcordPreview?.ready === true && window.simcordPreview.targetId === id",
                     arg=str(single.id),
@@ -535,13 +534,14 @@ async def test_browser_v2_galleries_retain_intrinsic_ratios_and_reveal_spoilers(
                 page = await browser.new_page()
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
-                await page.locator("#inspector > summary").click()
+                await page.locator("#capture-open").click()
                 await page.locator("#display-mode").select_option("fixed")
+                await page.locator(".custom-dimensions > summary").click()
                 await page.wait_for_function(
                     "() => !window.simcordPreview.pendingAction && window.simcordPreview.presentation.display === 'fixed'"
                 )
                 for message, count in messages:
-                    await page.locator("#message-picker").select_option(str(message.id))
+                    await page.locator(f"#message-picker button[data-message-id='{message.id}']").click()
                     await page.wait_for_function(
                         "(id) => window.simcordPreview?.ready === true && window.simcordPreview.targetId === id",
                         arg=str(message.id),
@@ -914,7 +914,7 @@ async def test_browser_modal_traps_focus_and_escape_restores_surface(env, channe
                 await page.keyboard.press("Escape")
                 await page.wait_for_function("() => !document.querySelector('.modal-dialog')")
                 assert await page.locator(".message-surface").get_attribute("inert") is None
-                assert await page.locator("#inspector > summary:focus").count() == 1
+                assert await page.locator("#messages-toggle:focus").count() == 1
                 await page.reload()
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
                 await page.get_by_role("textbox").fill("Ada")
@@ -1079,7 +1079,12 @@ async def test_browser_button_focus_and_responsive_row_wrapping(env, channel, al
                     "return images.length === 2 && images.every(image => image.complete && image.naturalWidth > 0); }"
                 )
                 assert await page.locator(".component-button.is-icon-only .button-emoji").count() == 1
-                await page.locator("#inspector > summary").focus()
+                await page.locator(".component-button.is-icon-only").first.evaluate("""button => {
+                  const focusable = [...document.querySelectorAll(
+                    'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]'
+                  )].filter(element => element.checkVisibility());
+                  focusable[focusable.indexOf(button) - 1]?.focus();
+                }""")
                 await page.keyboard.press("Tab")
                 await page.wait_for_function(
                     "() => document.querySelector('.component-button:focus-visible') !== null"
@@ -1114,8 +1119,9 @@ async def test_browser_responsive_message_column_reflows_long_bidi_text(env, cha
                 page = await browser.new_page(viewport={"width": 1360, "height": 1000})
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
-                await page.locator("#inspector > summary").click()
+                await page.locator("#capture-open").click()
                 await page.locator("#display-mode").select_option("fixed")
+                await page.locator(".custom-dimensions > summary").click()
                 await page.wait_for_function(
                     "() => !window.simcordPreview.pendingAction && window.simcordPreview.presentation.display === 'fixed'"
                 )
@@ -1198,7 +1204,6 @@ async def test_browser_search_recovers_access_and_queues_close(env, channel, ali
                 await page.wait_for_function(
                     "() => window.simcordPreview.ready && !window.simcordPreview.pendingAction"
                 )
-                await page.locator("#inspector > summary").click()
                 await page.locator("#message-search").fill("Needle")
                 await page.get_by_role("button", name="Search", exact=True).click()
                 await page.wait_for_function(
@@ -1206,7 +1211,7 @@ async def test_browser_search_recovers_access_and_queues_close(env, channel, ali
                 )
                 assert await page.evaluate("() => window.simcordPreview.targetId") == str(source.id)
                 assert "private-spoiler" not in await page.locator("#message-picker").inner_text()
-                await page.locator("#message-picker").select_option(str(needle.id))
+                await page.locator(f"#message-picker button[data-message-id='{needle.id}']").click()
                 await page.wait_for_function(
                     "(id) => window.simcordPreview.targetId === id && !window.simcordPreview.pendingAction",
                     arg=str(needle.id),
@@ -1221,9 +1226,13 @@ async def test_browser_search_recovers_access_and_queues_close(env, channel, ali
                 assert denied["visibleMessageIds"] == [] and denied["selectDrafts"] == {}
                 await env.bot.get_channel(channel.id).set_permissions(member, view_channel=True)
                 await env.settle()
-                await page.get_by_role("button", name="Refresh", exact=True).click()
+                await page.get_by_role("button", name="Refresh preview", exact=True).click()
                 await page.wait_for_function(
                     "() => window.simcordPreview.authorized && window.simcordPreview.ready && !window.simcordPreview.pendingAction"
+                )
+                await page.locator("#capture-open").click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.ready && !window.simcordPreview.pendingAction"
                 )
 
                 started, release = asyncio.Event(), asyncio.Event()
@@ -1237,7 +1246,8 @@ async def test_browser_search_recovers_access_and_queues_close(env, channel, ali
                 await page.route("**/api/action", hold_presentation)
                 await page.locator("#display-mode").select_option("fixed")
                 await asyncio.wait_for(started.wait(), timeout=10)
-                await page.get_by_role("button", name="Close", exact=True).click()
+                await page.locator(".session-menu > summary").click()
+                await page.get_by_role("button", name="End preview session", exact=True).click()
                 release.set()
                 await asyncio.wait_for(preview.wait_closed(), timeout=10)
                 await page.wait_for_function(

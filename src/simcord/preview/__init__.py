@@ -310,7 +310,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             self.env._end_operation(token)
 
     async def wait_closed(self) -> None:
-        """Return once the session closes — via the browser Close action, ``close()``, or env shutdown."""
+        """Return once the session ends via End preview session, ``close()``, or env shutdown."""
         await self._closed_event.wait()
 
     async def close(self) -> None:

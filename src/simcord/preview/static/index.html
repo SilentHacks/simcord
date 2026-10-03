@@ -7,113 +7,179 @@
     <link rel="stylesheet" href="/preview.css">
   </head>
   <body>
-    <details id="inspector" class="preview-inspector">
-      <summary id="inspector-summary">Preview inspector</summary>
-      <header class="preview-toolbar" id="toolbar" role="toolbar" aria-label="Preview inspector">
-        <label class="toolbar-field">Viewer <select id="viewer-picker" aria-label="Viewer"></select></label>
-        <label class="toolbar-field">Authorized message results <select id="message-picker" size="5" aria-label="Authorized message results"></select></label>
-        <form id="message-search-form" class="toolbar-group">
-          <label class="toolbar-field">Search messages <input id="message-search" type="search" maxlength="128" autocomplete="off"></label>
-          <button type="submit">Search</button>
-          <button id="message-previous" type="button">Previous page</button>
-          <button id="message-next" type="button">Next page</button>
-          <span id="message-page-status" class="toolbar-status" aria-live="polite"></span>
-        </form>
-        <form id="message-exact-form" class="toolbar-group">
-          <label class="toolbar-field">Authorized message ID <input id="message-exact-id" inputmode="numeric" maxlength="24" autocomplete="off"></label>
-          <button type="submit">Focus ID</button>
-        </form>
-        <label class="toolbar-field">Display
-          <select id="display-mode"><option value="responsive">Responsive</option><option value="fixed">Exact</option></select>
-        </label>
-        <label class="toolbar-field">Layout
-          <select id="layout-mode"><option value="message">Message</option><option value="channel">Channel</option></select>
-        </label>
-        <label class="toolbar-field">Profile
-          <select id="viewport-preset">
-            <option value="custom">Custom</option>
-            <option value="320x700">320 × 700</option>
-            <option value="640x700">640 × 700</option>
-            <option value="960x720">960 × 720</option>
-            <option value="1280x900">1280 × 900</option>
-          </select>
-        </label>
-        <label class="toolbar-field">Width <input id="viewport-width" type="number" min="240" max="32768" step="1"></label>
-        <label class="toolbar-field">Height <input id="viewport-height" type="number" min="180" max="32768" step="1"></label>
-        <span id="viewport-readout" class="toolbar-status" aria-live="polite"></span>
-        <button id="use-available" type="button">Use available</button>
-        <button id="reset-profile" type="button">Reset profile</button>
-        <button id="capture-current" type="button">Use current viewport for capture</button>
-        <button id="refresh" type="button">Refresh</button>
-        <button id="close" type="button">Close</button>
-        <button id="back-activity" type="button" hidden>Back</button>
-        <div id="select-draft-actions" class="select-draft-actions" role="group" aria-label="SimCord select draft actions" hidden>
-          <span>SimCord selection draft</span>
-          <button id="select-apply" type="button">Apply</button>
-          <button id="select-cancel" type="button">Cancel</button>
+    <div id="preview-shell" class="preview-shell">
+      <header class="preview-toolbar" id="toolbar" aria-label="SimCord preview">
+        <div class="preview-brand">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <span><strong>SimCord</strong><small>Preview</small></span>
         </div>
-        <span id="action-status" class="toolbar-status"></span>
-      </header>
-    </details>
-    <div class="preview-workspace" id="preview-workspace">
-      <div id="preview-stage" class="preview-stage">
-      <main id="preview-app" class="preview-app" aria-busy="true">
-        <section id="channel-layout" class="channel-layout" aria-label="Channel" hidden>
-          <header class="channel-header">
-            <span class="channel-hash" aria-hidden="true">#</span>
-            <div class="channel-heading">
-              <h1 id="channel-name"></h1>
-              <p id="channel-topic"></p>
-            </div>
-          </header>
-          <button id="history-older" class="history-button" type="button" hidden>Load earlier messages</button>
-          <div id="channel-timeline" class="channel-timeline" role="log" aria-live="polite">
-            <p id="channel-empty" class="channel-empty" hidden>No messages in this channel.</p>
-            <div id="channel-message-list"></div>
-          </div>
-          <button id="history-newer" class="history-button" type="button" hidden>Newer messages</button>
-          <button id="new-messages" class="history-button" type="button" hidden>New messages · jump to latest</button>
-          <form id="channel-composer" class="channel-composer" hidden>
-            <div id="reply-context" class="composer-reply" hidden>
-              <span id="reply-label"></span>
-              <button id="reply-cancel" type="button" aria-label="Cancel reply">×</button>
-            </div>
-            <div class="composer-row">
-              <label class="visually-hidden" for="channel-composer-input">Message</label>
-              <textarea id="channel-composer-input" maxlength="2000" rows="1" placeholder="Message"></textarea>
-              <button id="send-message" class="send-message" type="submit">Send</button>
-            </div>
-          </form>
-        </section>
-        <section id="message-picker-empty" class="empty-state" hidden aria-live="polite">No visible messages.</section>
-        <article id="focused-content" class="message-surface" aria-label="Focused message" hidden></article>
-        <section id="modal-root" class="modal-root" aria-label="Dialog"></section>
-      </main>
-      </div>
-      <details id="inspector-panel" class="inspector-panel">
-        <summary>Activity, diagnostics and capture</summary>
-        <section id="capture-panel" class="capture-panel" aria-label="Capture handoff">
-          <h2>Capture handoff</h2>
-          <p>Managed recipes run only inside the active Python scenario with <code>preview</code> in scope. They do not inherit browser drafts or open menus. For this live page, use your browser/agent screenshot tool after <code>window.simcordPreview.ready</code>, matching action/revision and render-generation checkpoints. Screenshots and recipes are private, unlike the support report.</p>
-          <label class="toolbar-field" for="capture-recipe">Executable recipe</label>
-          <textarea id="capture-recipe" readonly rows="4" spellcheck="false"></textarea>
-          <button id="copy-capture-recipe" type="button">Copy recipe</button>
-          <button id="copy-support-report" type="button">Copy safe support report</button>
-          <button id="download-support-report" type="button">Download safe support report</button>
-          <output id="capture-status" aria-live="polite"></output>
-        </section>
-        <section id="activity-panel" class="activity-panel" aria-label="Recent activity">
-          <h2>Recent activity</h2>
-          <ol id="activity-list"></ol>
-        </section>
-        <section id="transport-status" class="transport-status" aria-label="Connection and publication"></section>
-        <label class="toolbar-field">Diagnostic severity
-          <select id="diagnostic-filter"><option value="all">All</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Information</option></select>
+        <button id="messages-toggle" class="toolbar-button" type="button" aria-controls="messages-sidebar" aria-expanded="false">Messages</button>
+        <label class="viewer-control">Viewing as
+          <select id="viewer-picker" aria-label="Viewing as"></select>
         </label>
-        <aside id="diagnostics" class="diagnostics" aria-label="Diagnostics"></aside>
-      </details>
+        <button id="refresh" class="toolbar-button" type="button" title="Publish the latest scenario state to this preview. This is not guaranteed live sync.">Refresh preview</button>
+        <button id="capture-open" class="toolbar-button" type="button">Capture</button>
+        <button id="inspector-toggle" class="toolbar-button" type="button" aria-controls="inspector-panel" aria-expanded="false">
+          Inspector <span id="inspector-count" class="inspector-count" hidden></span>
+        </button>
+        <details class="session-menu">
+          <summary>More</summary>
+          <div class="session-menu-popover">
+            <button id="close" type="button">End preview session</button>
+          </div>
+        </details>
+        <button id="back-activity" class="toolbar-button" type="button" hidden>Back</button>
+        <span id="action-status" class="toolbar-status" role="status" aria-live="polite"></span>
+      </header>
+      <div class="preview-workspace" id="preview-workspace">
+        <button id="drawer-scrim" class="drawer-scrim" type="button" aria-label="Close messages drawer" hidden></button>
+        <aside id="messages-sidebar" class="messages-sidebar" aria-label="Message navigation">
+          <header class="sidebar-heading">
+            <h1>Messages</h1>
+            <div class="channel-context">
+              <span class="channel-context-hash" aria-hidden="true">#</span>
+              <span id="channel-context-name">Unavailable channel</span>
+            </div>
+            <span id="layout-label" class="layout-label">Isolate message</span>
+          </header>
+          <nav class="message-navigation" aria-label="Authorized messages">
+            <ul id="message-picker" class="message-list"></ul>
+          </nav>
+          <section id="message-picker-empty" class="empty-state sidebar-empty" hidden aria-live="polite">No visible messages.</section>
+          <form id="message-search-form" class="sidebar-search">
+            <label class="toolbar-field" for="message-search">Search messages</label>
+            <div class="search-row">
+              <input id="message-search" type="search" maxlength="128" autocomplete="off" placeholder="Find a message">
+              <button type="submit">Search</button>
+            </div>
+            <div class="message-pagination">
+              <button id="message-previous" type="button" aria-label="Previous message results">Previous</button>
+              <button id="message-next" type="button" aria-label="Next message results">Next</button>
+            </div>
+            <span id="message-page-status" class="toolbar-status" aria-live="polite"></span>
+          </form>
+          <details class="advanced-search">
+            <summary>Jump to message ID</summary>
+            <form id="message-exact-form">
+              <label class="toolbar-field" for="message-exact-id">Authorized message ID</label>
+              <input id="message-exact-id" inputmode="numeric" maxlength="24" autocomplete="off">
+              <button type="submit">Focus message</button>
+            </form>
+          </details>
+        </aside>
+        <div id="preview-stage" class="preview-stage">
+          <main id="preview-app" class="preview-app" aria-busy="true" aria-label="Preview viewport">
+            <section id="channel-layout" class="channel-layout" aria-label="Conversation" hidden>
+              <header class="channel-header">
+                <span class="channel-hash" aria-hidden="true">#</span>
+                <div class="channel-heading">
+                  <h1 id="channel-name"></h1>
+                  <p id="channel-topic" class="channel-topic"></p>
+                </div>
+              </header>
+              <button id="history-older" class="history-button" type="button" hidden>Load earlier messages</button>
+              <div id="channel-timeline" class="channel-timeline" role="log" aria-live="polite">
+                <p id="channel-empty" class="channel-empty" hidden>No messages in this channel.</p>
+                <div id="channel-message-list"></div>
+              </div>
+              <button id="history-newer" class="history-button" type="button" hidden>Newer messages</button>
+              <button id="new-messages" class="history-button" type="button" hidden>New messages · jump to latest</button>
+              <form id="channel-composer" class="channel-composer" hidden>
+                <div id="reply-context" class="composer-reply" hidden>
+                  <span id="reply-label"></span>
+                  <button id="reply-cancel" type="button" aria-label="Cancel reply">×</button>
+                </div>
+                <div class="composer-row">
+                  <label class="visually-hidden" for="channel-composer-input">Message</label>
+                  <textarea id="channel-composer-input" maxlength="2000" rows="1" placeholder="Message"></textarea>
+                  <button id="send-message" class="send-message" type="submit">Send</button>
+                </div>
+              </form>
+            </section>
+            <article id="focused-content" class="message-surface" aria-label="Focused message" hidden></article>
+            <section id="preview-empty" class="preview-empty" role="status" aria-live="polite" hidden></section>
+            <section id="modal-root" class="modal-root" aria-label="Dialog"></section>
+          </main>
+        </div>
+        <aside id="inspector-panel" class="inspector-panel" aria-label="Preview inspector" hidden tabindex="-1">
+          <header class="inspector-heading">
+            <h2>Inspector</h2>
+            <button id="inspector-close" type="button" aria-label="Close inspector">×</button>
+          </header>
+          <nav class="inspector-navigation" role="tablist" aria-label="Inspector sections">
+            <button id="activity-tab" type="button" role="tab" aria-controls="activity-panel" aria-selected="true" tabindex="0" data-inspector-tab="activity">Activity</button>
+            <button id="diagnostics-tab" type="button" role="tab" aria-controls="diagnostics-panel" aria-selected="false" tabindex="-1" data-inspector-tab="diagnostics">Diagnostics <span id="inspector-tab-count" hidden></span></button>
+            <button id="capture-tab" type="button" role="tab" aria-controls="capture-panel" aria-selected="false" tabindex="-1" data-inspector-tab="capture">Capture</button>
+          </nav>
+          <section id="activity-panel" class="inspector-section" role="tabpanel" aria-labelledby="activity-tab" aria-label="Recent activity" tabindex="0">
+            <h3>Recent activity</h3>
+            <ol id="activity-list"></ol>
+            <details class="technical-details">
+              <summary>Technical details</summary>
+              <section id="transport-status" class="transport-status" aria-label="Connection and publication"></section>
+            </details>
+          </section>
+          <section id="diagnostics-panel" class="inspector-section" role="tabpanel" aria-labelledby="diagnostics-tab" aria-label="Diagnostics" tabindex="0" hidden>
+            <div class="section-heading">
+              <h3>Diagnostics</h3>
+              <label class="toolbar-field">Severity
+                <select id="diagnostic-filter"><option value="all">All</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Information</option></select>
+              </label>
+            </div>
+            <aside id="diagnostics" class="diagnostics" aria-label="Diagnostic messages"></aside>
+          </section>
+          <section id="capture-panel" class="inspector-section capture-panel" role="tabpanel" aria-labelledby="capture-tab" aria-label="Capture" tabindex="0" hidden>
+            <h3>Capture</h3>
+            <div class="capture-settings">
+              <h4>Viewport settings</h4>
+              <label class="toolbar-field">Viewport
+                <select id="display-mode"><option value="responsive">Fit window</option><option value="fixed">Fixed size</option></select>
+              </label>
+              <label class="toolbar-field">Layout
+                <select id="layout-mode"><option value="message">Isolate message</option><option value="channel">Conversation</option></select>
+              </label>
+              <label class="toolbar-field">Preset
+                <select id="viewport-preset">
+                  <option value="custom">Custom</option>
+                  <option value="320x700">320 × 700</option>
+                  <option value="640x700">640 × 700</option>
+                  <option value="960x720">960 × 720</option>
+                  <option value="1280x900">1280 × 900</option>
+                </select>
+              </label>
+              <details class="custom-dimensions">
+                <summary>Custom dimensions</summary>
+                <div class="dimension-fields">
+                  <label class="toolbar-field" for="viewport-width">Width <input id="viewport-width" type="number" min="240" max="32768" step="1"></label>
+                  <label class="toolbar-field" for="viewport-height">Height <input id="viewport-height" type="number" min="180" max="32768" step="1"></label>
+                </div>
+              </details>
+              <span id="viewport-readout" class="toolbar-status" aria-live="polite"></span>
+              <div class="capture-settings-actions">
+                <button id="use-available" type="button">Use available</button>
+                <button id="reset-profile" type="button">Reset profile</button>
+                <button id="capture-current" type="button">Use current viewport for capture</button>
+              </div>
+            </div>
+            <section class="capture-handoff" aria-label="Capture handoff">
+              <h4>Live browser view</h4>
+              <p>Use your browser or agent screenshot tool for this live view after <code>window.simcordPreview.ready</code>, matching the action, revision, and render-generation checkpoints.</p>
+              <h4>Managed Python capture</h4>
+              <p>Managed recipes run inside the active Python scenario with <code>preview</code> in scope. They capture the published scenario state and do not inherit open menus or browser drafts. Screenshots and recipes are private, unlike the safe support report.</p>
+              <label class="toolbar-field" for="capture-recipe">Executable recipe</label>
+              <textarea id="capture-recipe" readonly rows="4" spellcheck="false"></textarea>
+              <div class="capture-report-actions">
+                <button id="copy-capture-recipe" type="button">Copy recipe</button>
+                <button id="copy-support-report" type="button">Copy safe support report</button>
+                <button id="download-support-report" type="button">Download safe support report</button>
+              </div>
+              <output id="capture-status" aria-live="polite"></output>
+            </section>
+          </section>
+        </aside>
+      </div>
     </div>
-        <div id="live-status" class="visually-hidden" role="status" aria-live="polite"></div>
+    <div id="live-status" class="visually-hidden" role="status" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

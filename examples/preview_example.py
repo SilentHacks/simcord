@@ -64,7 +64,7 @@ async def main(destination: str = "preview-example.png", keep_open: bool = False
             )
             if keep_open:
                 print(
-                    "Keeping the preview open — use the page's Close action or Ctrl+C to exit.",
+                    "Keeping the preview open — use More → End preview session or Ctrl+C to exit.",
                     file=sys.stderr,
                 )
                 await preview.wait_closed()

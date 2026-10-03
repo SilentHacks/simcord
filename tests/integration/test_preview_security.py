@@ -580,7 +580,6 @@ async def test_browser_downloaded_support_report_is_share_safe_after_error_and_r
                 page = await browser.new_page()
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
-                await page.locator("#inspector-summary").click()
                 await page.route("**/api/action", capture_action)
                 await page.route("**/api/state", interrupt_one_read)
 
@@ -635,7 +634,7 @@ async def test_browser_downloaded_support_report_is_share_safe_after_error_and_r
                 cancel = page.get_by_role("button", name="Cancel", exact=True)
                 if await cancel.is_visible():
                     await cancel.click()
-                await page.locator("#inspector-panel > summary").click()
+                await page.locator("#capture-open").click()
                 await page.wait_for_function(
                     "() => window.simcordPreview.ready && !window.simcordPreview.pendingAction"
                     " && window.simcordPreview.presentation.host.width === document.getElementById('preview-stage').clientWidth"

@@ -5,13 +5,24 @@ import { closeLightbox } from "./media.js";
 const $ = (id) => document.getElementById(id);
 const ui = {
   app: $("preview-app"),
+  shell: $("preview-shell"),
   workspace: $("preview-workspace"),
   stage: $("preview-stage"),
-  inspector: $("inspector"),
   toolbar: $("toolbar"),
+  sidebar: $("messages-sidebar"),
+  drawerScrim: $("drawer-scrim"),
+  messagesToggle: $("messages-toggle"),
+  inspectorToggle: $("inspector-toggle"),
+  inspectorClose: $("inspector-close"),
+  inspectorCount: $("inspector-count"),
+  inspectorTabCount: $("inspector-tab-count"),
+  captureOpen: $("capture-open"),
+  channelContextName: $("channel-context-name"),
+  layoutLabel: $("layout-label"),
   surface: $("focused-content"),
   modal: $("modal-root"),
   diagnostics: $("diagnostics"),
+  diagnosticsPanel: $("diagnostics-panel"),
   panel: $("inspector-panel"),
   capturePanel: $("capture-panel"),
   captureRecipe: $("capture-recipe"),
@@ -23,7 +34,8 @@ const ui = {
   downloadReport: $("download-support-report"),
   diagnosticFilter: $("diagnostic-filter"),
   transportStatus: $("transport-status"),
-  empty: $("message-picker-empty"),
+  empty: $("preview-empty"),
+  pickerEmpty: $("message-picker-empty"),
   channel: $("channel-layout"),
   channelName: $("channel-name"),
   channelTopic: $("channel-topic"),
@@ -60,10 +72,14 @@ const ui = {
   refresh: $("refresh"),
   close: $("close"),
   backActivity: $("back-activity"),
-  selectActions: $("select-draft-actions"),
-  selectApply: $("select-apply"),
-  selectCancel: $("select-cancel"),
   action: $("action-status"),
+};
+
+const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
+const inspectorPanels = {
+  activity: $("activity-panel"),
+  diagnostics: $("diagnostics-panel"),
+  capture: $("capture-panel"),
 };
 
 const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
@@ -81,6 +97,7 @@ const state = {
   diagnostics: [],
   localDiagnostics: [],
   lastAction: null,
+  lastActionKind: null,
   externalNotice: null,
   pendingAction: null,
   pendingQuery: null,
@@ -132,6 +149,8 @@ const state = {
   authorized: true,
   pinnedCapture: false,
   modalOpenerFocusKey: null,
+  panelOpener: null,
+  drawerOpener: null,
   focusKey: null,
   focusSelection: null,
   focusInModal: false,
@@ -321,10 +340,220 @@ function restoreFocus(key = state.focusKey) {
 }
 
 function setModalIsolation(open) {
-  [ui.channel, ui.empty, ui.surface, ui.inspector, ui.panel].forEach((element) => {
+  [ui.channel, ui.empty, ui.surface].forEach((element) => {
     if (element) element.inert = open;
   });
+  const mobile = isMobileWorkbench();
+  const drawerOpen = ui.shell.classList.contains("messages-open");
+  const sidebarClosed = mobile ? !drawerOpen : ui.shell.classList.contains("messages-closed");
+  ui.toolbar.inert = open;
+  ui.sidebar.inert = open || sidebarClosed || (mobile && !ui.panel.hidden);
+  ui.sidebar.setAttribute("aria-hidden", String(open || sidebarClosed || (mobile && !ui.panel.hidden)));
+  ui.panel.inert = open || ui.panel.hidden;
+  ui.stage.inert = !open && mobile && drawerOpen && ui.panel.hidden;
+  ui.drawerScrim.hidden = !mobile || !drawerOpen || open;
+  ui.messagesToggle.setAttribute("aria-expanded", String(!sidebarClosed));
+  ui.inspectorToggle.setAttribute("aria-expanded", String(!ui.panel.hidden));
   ui.modal.setAttribute("aria-hidden", String(!open));
+}
+function renderDiagnostics() {
+  const previous = state.diagnostics;
+  const diagnostics = [...(state.snapshot?.diagnostics || []),
+    ...(state.snapshot?.activity || []).flatMap((receipt) => receipt.diagnostics || []), ...state.localDiagnostics];
+  const seen = new Set();
+  state.diagnostics = diagnostics.filter((item) => {
+    const key = item.id || JSON.stringify(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const count = state.diagnostics.filter((item) =>
+    ["error", "warning"].includes(item.severity) && item.state !== "recovered").length;
+  for (const badge of [ui.inspectorCount, ui.inspectorTabCount]) {
+    badge.hidden = count === 0;
+    badge.textContent = count ? String(count) : "";
+  }
+  ui.inspectorToggle.setAttribute("aria-label", count
+    ? `Inspector, ${count} active warning${count === 1 ? "" : "s"} or error${count === 1 ? "" : "s"}`
+    : "Inspector");
+  const error = state.diagnostics.find((item) => item.severity === "error" && item.state !== "recovered"
+    && item.code !== "modal-validation"
+    && !previous.some((old) => old.id === item.id && old.state !== "recovered"));
+  if (error) {
+    state.lastAnnouncement = null;
+    announceStatus(error.message || "Preview error.", true);
+  }
+  state.complete = !state.diagnostics.some((item) => item.state !== "recovered" && item.complete === false);
+  ui.diagnostics.replaceChildren();
+  const visible = state.diagnostics.filter((item) =>
+    state.diagnosticFilter === "all" || item.severity === state.diagnosticFilter);
+  if (!visible.length) {
+    ui.diagnostics.append(Object.assign(document.createElement("p"), {
+      textContent: state.diagnostics.length ? "No diagnostics match this filter." : "No warnings or errors.",
+    }));
+    return;
+  }
+  const list = document.createElement("ul");
+  visible.forEach((item) => {
+    const row = document.createElement("li");
+    row.className = `diagnostic-${item.severity || "warning"}`;
+    row.append(Object.assign(document.createElement("p"), {
+      className: "diagnostic-message",
+      textContent: item.message || "Preview diagnostic.",
+    }));
+    if (item.remediation) {
+      row.append(Object.assign(document.createElement("p"), {
+        className: "diagnostic-remediation",
+        textContent: item.remediation,
+      }));
+    }
+    if (item.subject?.messageId) {
+      const view = Object.assign(document.createElement("button"), { type: "button", textContent: "View affected message" });
+      view.addEventListener("click", () => viewActivityMessage(String(item.subject.messageId)));
+      row.append(view);
+    }
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Technical details";
+    details.append(summary, Object.assign(document.createElement("p"), {
+      textContent: `${item.code} · ${item.category} · ${item.severity} · ${item.state} · revision ${state.publishedRevision}`,
+    }));
+    row.append(details);
+    list.append(row);
+  });
+  ui.diagnostics.append(list);
+}
+function messageTime(createdAt) {
+  if (!createdAt) return "Time unavailable";
+  const date = new Date(createdAt);
+  if (!Number.isFinite(date.getTime())) return "Time unavailable";
+  try {
+    return new Intl.DateTimeFormat(state.profile.locale, {
+      hour: "numeric", minute: "2-digit", timeZone: state.profile.timezone,
+    }).format(date);
+  } catch (_) {
+    return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+}
+
+function updatePickers(snapshot) {
+  ui.viewer.replaceChildren();
+  const viewers = Array.isArray(snapshot.viewers) && snapshot.viewers.length ? snapshot.viewers : [{ id: snapshot.viewerId }];
+  viewers.forEach((viewer) => {
+    const id = typeof viewer === "object" ? viewer.id : viewer;
+    const option = document.createElement("option");
+    option.value = String(id || "");
+    option.textContent = typeof viewer === "object" && viewer.name ? String(viewer.name) : `Viewer ${id || "unavailable"}`;
+    ui.viewer.append(option);
+  });
+  ui.viewer.value = snapshot.viewerId || "";
+  const messageRows = state.authorized ? [...(snapshot.messageIndex || [])] : [];
+  const targetId = String(snapshot.targetId || "");
+  ui.message.replaceChildren();
+  messageRows.forEach((message) => {
+    const id = String(message.id);
+    const item = document.createElement("li");
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "message-row";
+    row.dataset.messageId = id;
+    row.dataset.controlKey = `message:${id}`;
+    row.disabled = !state.authorized || Boolean(state.pendingAction || state.queuedQueries.size
+      || state.transport.uncertainRequestId || state.pinnedCapture);
+    if (id === targetId) row.setAttribute("aria-current", "page");
+
+    const heading = document.createElement("span");
+    heading.className = "message-row-heading";
+    heading.append(
+      Object.assign(document.createElement("strong"), {
+        className: "message-row-author",
+        textContent: message.author?.name || "Unknown author",
+      }),
+      Object.assign(document.createElement("time"), {
+        className: "message-row-time",
+        dateTime: message.createdAt || "",
+        textContent: messageTime(message.createdAt),
+      }),
+    );
+    row.append(heading, Object.assign(document.createElement("span"), {
+      className: "message-row-excerpt",
+      textContent: String(message.excerpt || "") || (message.contentKinds || []).join(", ") || "(No text preview)",
+    }));
+    const indicators = document.createElement("span");
+    indicators.className = "message-row-indicators";
+    if (message.attachments?.count) {
+      const count = Number(message.attachments.count);
+      indicators.append(Object.assign(document.createElement("span"), {
+        className: "message-indicator",
+        textContent: `${count} attachment${count === 1 ? "" : "s"}`,
+      }));
+    }
+    if (message.components?.length) {
+      const count = message.components.length;
+      indicators.append(Object.assign(document.createElement("span"), {
+        className: "message-indicator",
+        textContent: `${count} component${count === 1 ? "" : "s"}`,
+      }));
+    }
+    if (message.ephemeral) indicators.append(Object.assign(document.createElement("span"), {
+      className: "message-indicator",
+      textContent: "Ephemeral",
+    }));
+    if (indicators.childElementCount) row.append(indicators);
+    row.addEventListener("click", () => dispatch("focus", { target_id: id }));
+    item.append(row);
+    ui.message.append(item);
+  });
+  const navigation = snapshot.navigation || {};
+  if (document.activeElement !== ui.search && !state.queuedQuery) ui.search.value = navigation.query || "";
+  ui.previous.disabled = !navigation.hasPrevious || Boolean(state.pendingAction);
+  ui.next.disabled = !navigation.hasNext || Boolean(state.pendingAction);
+  ui.pageStatus.textContent = [
+    navigation.hasPrevious ? "Earlier results available" : "",
+    navigation.hasNext ? "More results available" : "",
+    navigation.filter ? `Filter: ${navigation.filter}` : "",
+  ].filter(Boolean).join(" · ") || "Current authorized page";
+  const channelLayout = snapshot.layout === "channel";
+  const target = targetId ? snapshot.messages?.[targetId] : null;
+  const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
+  ui.channelContextName.textContent = channelName;
+  ui.layoutLabel.textContent = channelLayout ? "Conversation" : "Isolate message";
+  ui.channel.hidden = !channelLayout;
+  ui.channelName.textContent = channelName;
+  ui.channelTopic.textContent = state.authorized ? snapshot.channel?.topic || "" : "";
+  ui.channelTopic.hidden = !state.authorized || !snapshot.channel?.topic;
+  ui.composerForm.hidden = !channelLayout || !(state.authorized && (snapshot.channel?.canSendMessages || state.editTargetId));
+  ui.surface.classList.toggle("message-surface", !channelLayout);
+  ui.surface.hidden = channelLayout || !target;
+  ui.empty.hidden = channelLayout || Boolean(target);
+  if (!ui.empty.hidden) ui.empty.textContent = messageRows.length
+    ? "Choose a message from Messages."
+    : "No visible messages.";
+  ui.pickerEmpty.hidden = Boolean(messageRows.length);
+  ui.pickerEmpty.textContent = "No visible messages.";
+  if (channelLayout) {
+    const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
+    const key = editKey || `composer:${state.contextId}`;
+    ui.composer.dataset.controlKey = key;
+    const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
+    if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
+    if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
+    ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
+    ui.send.textContent = state.editTargetId ? "Save" : "Send";
+    ui.composer.placeholder = state.editTargetId ? "Edit message" : `Message #${channelName}`;
+    const reply = state.replyToId
+      ? messageRows.find((item) => String(item.id) === state.replyToId)
+      : null;
+    ui.replyContext.hidden = !state.replyToId && !state.editTargetId;
+    ui.replyLabel.textContent = state.editTargetId
+      ? `Editing message ${state.editTargetId}`
+      : state.replyToId
+        ? reply
+          ? `Replying to ${reply.author?.name || "Unknown author"}: ${String(reply.excerpt || "").slice(0, 100)}`
+          : `Replying to message ${state.replyToId}`
+        : "";
+    ui.replyCancel.setAttribute("aria-label", state.editTargetId ? "Cancel edit" : "Cancel reply");
+  }
 }
 
 function revokeAssets() {
@@ -426,53 +655,6 @@ function recoverActionTransportDiagnostics(message = "The matching action receip
     : item);
 }
 
-function renderDiagnostics() {
-  const previous = state.diagnostics;
-  const diagnostics = [...(state.snapshot?.diagnostics || []),
-    ...(state.snapshot?.activity || []).flatMap((receipt) => receipt.diagnostics || []), ...state.localDiagnostics];
-  const seen = new Set();
-  state.diagnostics = diagnostics.filter((item) => {
-    const key = item.id || JSON.stringify(item);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const error = state.diagnostics.find((item) => item.severity === "error" && item.state !== "recovered"
-    && item.code !== "modal-validation" // Its associated field already owns the alert.
-    && !previous.some((old) => old.id === item.id && old.state !== "recovered"));
-  if (error) {
-    state.lastAnnouncement = null;
-    announceStatus(error.message || "Preview error.", true);
-  }
-  state.complete = !state.diagnostics.some((item) => item.state !== "recovered" && item.complete === false);
-  ui.diagnostics.replaceChildren();
-  ui.diagnostics.hidden = !state.diagnostics.length;
-  if (!state.diagnostics.length) return;
-  const heading = document.createElement("h2");
-  heading.textContent = "Diagnostics";
-  ui.diagnostics.append(heading);
-  const list = document.createElement("ul");
-  state.diagnostics.filter((item) => state.diagnosticFilter === "all" || item.severity === state.diagnosticFilter).forEach((item) => {
-    const row = document.createElement("li");
-    row.className = `diagnostic-${item.severity || "warning"}`;
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = `${item.message || item.code} (${item.severity}, ${item.state})`;
-    details.append(summary);
-    details.append(Object.assign(document.createElement("p"), {
-      textContent: `${item.code} · ${item.category} · revision ${state.publishedRevision}`,
-    }));
-    if (item.remediation) details.append(Object.assign(document.createElement("p"), { textContent: item.remediation }));
-    if (item.subject?.messageId) {
-      const view = Object.assign(document.createElement("button"), { type: "button", textContent: "View affected message" });
-      view.addEventListener("click", () => viewActivityMessage(String(item.subject.messageId)));
-      details.append(view);
-    }
-    row.append(details);
-    list.append(row);
-  });
-  ui.diagnostics.append(list);
-}
 
 function noteTransportFailure(code, requestId = null, sequence = null) {
   state.transport.failures += 1;
@@ -754,86 +936,6 @@ function fingerprint(value) {
   return value ? JSON.stringify(value) : "";
 }
 
-function messageSummary(message) {
-  const author = message.author?.name || "Unknown author";
-  const excerpt = [...new Intl.Segmenter(state.profile.locale, { granularity: "grapheme" })
-    .segment(String(message.excerpt || ""))].slice(0, 70).map((item) => item.segment).join("");
-  const labels = (message.components || []).map((item) => item.label).filter(Boolean);
-  const kinds = message.contentKinds || [];
-  const details = [
-    excerpt || kinds.join(", ") || "(no text preview)",
-    labels.length ? `components: ${labels.join(", ")}` : "",
-    message.attachments?.count ? `${message.attachments.count} attachment(s)` : "",
-    message.ephemeral ? "ephemeral" : "",
-  ].filter(Boolean);
-  return `${author} · ${message.createdAt || "time unavailable"} · ${message.id}: ${details.join(" · ")}`;
-}
-
-function updatePickers(snapshot) {
-  ui.viewer.replaceChildren();
-  const viewers = Array.isArray(snapshot.viewers) && snapshot.viewers.length ? snapshot.viewers : [{ id: snapshot.viewerId }];
-  viewers.forEach((viewer) => {
-    const id = typeof viewer === "object" ? viewer.id : viewer;
-    const option = document.createElement("option");
-    option.value = String(id || "");
-    option.textContent = typeof viewer === "object" && viewer.name ? String(viewer.name) : `Viewer ${id || "unavailable"}`;
-    ui.viewer.append(option);
-  });
-  ui.viewer.value = snapshot.viewerId || "";
-  const messageRows = [...(snapshot.messageIndex || [])];
-  const targetId = String(snapshot.targetId || "");
-  ui.message.replaceChildren();
-  messageRows.forEach((message) => {
-    const option = document.createElement("option");
-    option.value = String(message.id);
-    option.textContent = messageSummary(message);
-    ui.message.append(option);
-  });
-  ui.message.value = targetId;
-  ui.message.disabled = !messageRows.length || Boolean(state.pendingAction || state.queuedQueries.size);
-  const navigation = snapshot.navigation || {};
-  if (document.activeElement !== ui.search && !state.queuedQuery) ui.search.value = navigation.query || "";
-  ui.previous.disabled = !navigation.hasPrevious || Boolean(state.pendingAction);
-  ui.next.disabled = !navigation.hasNext || Boolean(state.pendingAction);
-  ui.pageStatus.textContent = [
-    navigation.hasPrevious ? "Earlier results available" : "",
-    navigation.hasNext ? "More results available" : "",
-    navigation.filter ? `Filter: ${navigation.filter}` : "",
-  ].filter(Boolean).join(" · ") || "Current authorized page";
-  const channelLayout = snapshot.layout === "channel";
-  const target = targetId ? snapshot.messages?.[targetId] : null;
-  ui.channel.hidden = !channelLayout;
-  ui.channelName.textContent = snapshot.channel?.name || "Unavailable channel";
-  ui.channelTopic.textContent = snapshot.channel?.topic || "";
-  ui.channelTopic.hidden = !snapshot.channel?.topic;
-  ui.composerForm.hidden = !channelLayout || !(snapshot.channel?.canSendMessages || state.editTargetId);
-  ui.surface.classList.toggle("message-surface", !channelLayout);
-  ui.empty.hidden = channelLayout || Boolean(target);
-  ui.surface.hidden = channelLayout || !target;
-  if (channelLayout) {
-    const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
-    const key = editKey || `composer:${state.contextId}`;
-    ui.composer.dataset.controlKey = key;
-    const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
-    if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
-    if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
-    ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
-    ui.send.textContent = state.editTargetId ? "Save" : "Send";
-    ui.composer.placeholder = state.editTargetId ? "Edit message" : "Message";
-    const reply = state.replyToId
-      ? messageRows.find((item) => String(item.id) === state.replyToId)
-      : null;
-    ui.replyContext.hidden = !state.replyToId && !state.editTargetId;
-    ui.replyLabel.textContent = state.editTargetId
-      ? `Editing message ${state.editTargetId}`
-      : state.replyToId
-        ? reply
-          ? `Replying to ${reply.author?.name || "Unknown author"}: ${String(reply.excerpt || "").slice(0, 100)}`
-          : `Replying to message ${state.replyToId}`
-        : "";
-    ui.replyCancel.setAttribute("aria-label", state.editTargetId ? "Cancel edit" : "Cancel reply");
-  }
-}
 
 function setReplyTo(message) {
   state.editTargetId = null;
@@ -980,7 +1082,7 @@ function setMessageOrder(nodes) {
   }
 }
 
-function renderChannelTimeline(snapshot, generation, previousTargetId) {
+function renderChannelTimeline(snapshot, generation, previousTargetId, force = false) {
   const ids = (snapshot.timeline || []).map(String);
   const active = new Set(ids);
   const previousIds = [...state.messageNodes.keys()];
@@ -1018,7 +1120,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId) {
       state.messageNodes.set(id, record);
     }
     const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}`;
-    if (record.fingerprint !== value) {
+    if (force || record.fingerprint !== value) {
       record.fingerprint = value;
       clearRenderDiagnostics(`message:${id}`);
       renderMessage(
@@ -1053,41 +1155,131 @@ function renderChannelTimeline(snapshot, generation, previousTargetId) {
   return pendingMedia;
 }
 
+function actionResultMessage(action, kind) {
+  if (action?.uncertain || state.transport.uncertainRequestId) return "Action outcome uncertain. It will not be retried.";
+  if (action?.rejected || ["rejected", "failed", "timeout", "cancelled"].includes(action?.settlement)
+    || action?.acknowledgement === "unacknowledged") return "Action was not completed.";
+  if (action?.settlement !== "settled") return "Action is awaiting a confirmed result.";
+  return ({
+    send_message: "Message sent",
+    edit_message: "Message updated",
+    delete_message: "Message deleted",
+    set_reaction: "Reaction updated",
+    set_poll_votes: "Poll updated",
+    set_pinned: "Pin updated",
+    viewer: "Viewer switched",
+    focus: "Message opened",
+    history: "Conversation updated",
+    refresh: "Preview refreshed",
+    configure_presentation: "Viewport updated",
+    browse_messages: "Message results updated",
+    browse_candidates: "Options updated",
+    click: "Callback completed",
+    select: "Callback completed",
+    modal_submit: "Callback completed",
+  })[kind] || "Action completed";
+}
+
 function updateActionStatus() {
   const waiting = Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision;
   const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
   ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden;
-  ui.message.disabled = blocked || !state.authorized || !ui.message.options.length || state.pinnedCapture;
+  ui.message.querySelectorAll(".message-row").forEach((row) => {
+    row.disabled = blocked || Boolean(state.queuedQueries.size) || !state.authorized || state.pinnedCapture;
+  });
   ui.previous.disabled = blocked || !state.snapshot?.navigation?.hasPrevious;
   ui.next.disabled = blocked || !state.snapshot?.navigation?.hasNext;
-  if (ui.selectActions) {
-    ui.selectActions.hidden = !state.dropdown || state.pinnedCapture;
-    ui.selectApply.disabled = blocked || !state.dropdown;
-    ui.selectCancel.disabled = !state.dropdown;
-  }
+  document.querySelectorAll(".select-draft-actions button").forEach((button) => {
+    button.disabled = blocked || !state.dropdown || state.pinnedCapture;
+  });
   ui.backActivity.hidden = !state.activityBackStack.length || state.pinnedCapture;
-  const publication = state.snapshot?.publication;
-  const action = state.lastAction;
-  const actionText = action
-    ? [
-      action.dispatch || "Action",
-      action.acknowledgement || "acknowledgement pending",
-      action.settlement || "settlement pending",
-      action.uncertain ? "outcome uncertain" : "",
-    ].filter(Boolean).join(" · ")
-    : "";
-  const pendingText = state.pendingAction ? `${state.pendingAction.kind}…` : "";
-  const queuedText = [
-    state.queuedQueries.size ? "query queued" : "",
-    Object.keys(state.queuedPageIntents).length ? "page change queued" : "",
-    waiting ? `awaiting revision ${state.awaitingRevision}` : "",
-  ].filter(Boolean).join(" · ");
-  const publicationText = publication
-    ? `Published ${publication.publishedRevision ?? state.publishedRevision}${publication.reason ? ` · ${publication.reason}` : ""}`
-    : `Revision ${state.publishedRevision}`;
-  ui.action.textContent = state.externalNotice
-    || [pendingText || actionText, queuedText, publicationText, state.transport.state === "uncertain" ? "action outcome uncertain; not retried" : ""]
-      .filter(Boolean).join(" — ");
+  const pendingLabel = ({
+    browse_messages: "Updating message results…",
+    browse_candidates: "Updating options…",
+    send_message: "Sending message…",
+    edit_message: "Saving message…",
+    delete_message: "Deleting message…",
+    viewer: "Switching viewer…",
+    focus: "Opening message…",
+    refresh: "Updating preview…",
+    configure_presentation: "Updating viewport…",
+    history: "Loading conversation…",
+  })[state.pendingAction?.kind] || (state.pendingAction ? "Completing action…" : "");
+  const status = state.externalNotice
+    || (state.closed ? "Preview session ended."
+      : state.transport.uncertainRequestId || state.transport.state === "uncertain"
+        ? "Action outcome uncertain. It will not be retried."
+        : state.transport.state === "error"
+          ? "Connection interrupted; trying again…"
+          : pendingLabel || (waiting || state.queuedQueries.size || Object.keys(state.queuedPageIntents).length
+            ? "Updating preview…"
+            : state.lastAction
+              ? actionResultMessage(state.lastAction, state.lastActionKind)
+              : !state.authorized
+                ? "Access to this preview is unavailable."
+                : state.ready ? "Preview ready" : "Loading preview…"));
+  ui.action.textContent = status;
+}
+function renderActivity() {
+  ui.activity.replaceChildren();
+  const receipts = state.snapshot?.activity || [];
+  if (!receipts.length) {
+    ui.activity.append(Object.assign(document.createElement("li"), { textContent: "No activity yet." }));
+    return;
+  }
+  const outcomeLabels = {
+    response: "Response",
+    followup: "Follow-up",
+    source_edit: "Source message updated",
+    message: "Message",
+    modal: "Form opened",
+    no_output: "No response",
+    deferred: "Response deferred",
+    unavailable: "Response unavailable",
+  };
+  receipts.slice(-20).forEach((receipt) => {
+    const row = document.createElement("li");
+    const status = receipt.uncertain ? "Outcome uncertain"
+      : receipt.rejected || ["rejected", "failed", "timeout", "cancelled"].includes(receipt.settlement)
+        || receipt.acknowledgement === "unacknowledged" ? "Action was not completed"
+        : receipt.settlement === "settled"
+          ? receipt.dispatched ? "Callback completed" : "Preview updated"
+          : "Action is awaiting a confirmed result";
+    row.append(Object.assign(document.createElement("p"), {
+      className: "activity-result",
+      textContent: status,
+    }));
+    const details = document.createElement("details");
+    details.append(Object.assign(document.createElement("summary"), { textContent: "Technical details" }));
+    const fields = [
+      `Request ${receipt.requestId || "unavailable"}`,
+      Number.isInteger(receipt.sequence) ? `sequence ${receipt.sequence}` : "",
+      receipt.dispatch || "",
+      receipt.acknowledgement || "",
+      receipt.settlement || "",
+      receipt.uncertain ? "outcome uncertain" : "",
+      receipt.target?.messageId ? `Target message ${receipt.target.messageId}` : "",
+      receipt.target?.controlKey ? `Control ${receipt.target.controlKey}` : "",
+    ].filter(Boolean);
+    details.append(Object.assign(document.createElement("p"), { textContent: fields.join(" · ") }));
+    row.append(details);
+    const outcomes = document.createElement("ul");
+    (receipt.outcomes || []).forEach((outcome) => {
+      const item = document.createElement("li");
+      const kind = Object.hasOwn(outcomeLabels, outcome.kind) ? outcome.kind : "unavailable";
+      item.append(document.createTextNode(outcomeLabels[kind]));
+      if (["response", "followup", "source_edit", "message"].includes(kind) && outcome.messageId) {
+        const view = document.createElement("button");
+        view.type = "button";
+        view.textContent = "View response";
+        view.addEventListener("click", () => viewActivityMessage(String(outcome.messageId), receipt.target));
+        item.append(" ", view);
+      }
+      outcomes.append(item);
+    });
+    if (outcomes.childElementCount) row.append(outcomes);
+    ui.activity.append(row);
+  });
 }
 
 function viewActivityMessage(messageId, source = null) {
@@ -1108,54 +1300,6 @@ function backActivity() {
   state.activityReturnKey = target.controlKey;
   updateActionStatus();
   dispatch("focus", { target_id: target.targetId });
-}
-function renderActivity() {
-  ui.activity.replaceChildren();
-  const receipts = state.snapshot?.activity || [];
-  if (!receipts.length) {
-    ui.activity.append(Object.assign(document.createElement("li"), { textContent: "No activity receipts" }));
-    return;
-  }
-  receipts.slice(-20).forEach((receipt) => {
-    const row = document.createElement("li");
-    const summary = document.createElement("p");
-    const fields = [
-      `Request ${receipt.requestId || "unavailable"}`,
-      Number.isInteger(receipt.sequence) ? `sequence ${receipt.sequence}` : "",
-      receipt.dispatch || "",
-      receipt.acknowledgement || "",
-      receipt.settlement || "",
-      receipt.uncertain ? "outcome uncertain" : "",
-    ].filter(Boolean);
-    summary.textContent = fields.join(" · ");
-    row.append(summary);
-    if (receipt.target?.messageId || receipt.target?.controlKey) {
-      const target = document.createElement("p");
-      target.textContent = [
-        receipt.target.messageId ? `Target message ${receipt.target.messageId}` : "",
-        receipt.target.controlKey ? `Control ${receipt.target.controlKey}` : "",
-      ].filter(Boolean).join(" · ");
-      row.append(target);
-    }
-    const outcomes = document.createElement("ul");
-    (receipt.outcomes || []).forEach((outcome) => {
-      const item = document.createElement("li");
-      const kind = ["response", "followup", "source_edit", "message", "modal", "no_output", "deferred", "unavailable"].includes(outcome.kind)
-        ? outcome.kind
-        : "unavailable";
-      item.append(document.createTextNode(kind));
-      if (["response", "followup", "source_edit", "message"].includes(kind) && outcome.messageId) {
-        const view = document.createElement("button");
-        view.type = "button";
-        view.textContent = "View response";
-        view.addEventListener("click", () => viewActivityMessage(String(outcome.messageId), receipt.target));
-        item.append(" ", view);
-      }
-      outcomes.append(item);
-    });
-    if (outcomes.childElementCount) row.append(outcomes);
-    ui.activity.append(row);
-  });
 }
 
 function safeSupportReport() {
@@ -1610,7 +1754,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   updatePickers(snapshot);
   const pendingMedia = [];
   if (snapshot.layout === "channel") {
-    pendingMedia.push(...renderChannelTimeline(snapshot, generation, previousTargetId));
+    pendingMedia.push(...renderChannelTimeline(snapshot, generation, previousTargetId, force));
   } else {
     ui.messageList.replaceChildren();
     state.messageNodes.clear();
@@ -1718,11 +1862,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     } else if (nextHandle && !previousHandle) requestAnimationFrame(() => rendered.focus?.focus());
     else if (nextHandle) restoreFocus();
     else if (previousHandle) {
-      if (!restoreFocus(state.modalOpenerFocusKey)) {
-        const fallback = ui.message.checkVisibility() && !ui.message.disabled
-          ? ui.message : ui.inspector.querySelector("summary");
-        fallback.focus();
-      }
+      if (!restoreFocus(state.modalOpenerFocusKey)) ui.messagesToggle.focus();
     }
   }
   state.modalHandle = nextHandle;
@@ -1859,7 +1999,10 @@ async function installSnapshot(snapshot, force = false) {
     ])),
   ]));
   rememberFocus();
-  if (!state.pendingAction && "lastAction" in snapshot) state.lastAction = snapshot.lastAction;
+  if (!state.pendingAction && "lastAction" in snapshot) {
+    if (state.lastAction?.requestId !== snapshot.lastAction?.requestId) state.lastActionKind = null;
+    state.lastAction = snapshot.lastAction;
+  }
   reconcileUncertainAction(snapshot);
   const generation = beginRender();
   renderSnapshot(snapshot, generation, force);
@@ -2065,6 +2208,7 @@ function resetInteractionState() {
   state.editTargetId = null;
   state.replyToId = null;
   state.dismissedModal = null;
+  state.lastActionKind = null;
   state.activityBackStack = [];
   state.activityReturnKey = null;
 }
@@ -2081,6 +2225,15 @@ function redactPrivateView() {
   ui.captureRecipe.value = "";
   ui.exactId.value = "";
   ui.search.value = "";
+  ui.channelName.textContent = "Unavailable channel";
+  ui.channelContextName.textContent = "Unavailable channel";
+  ui.channelTopic.textContent = "";
+  ui.channelTopic.hidden = true;
+  ui.channel.hidden = true;
+  ui.composerForm.hidden = true;
+  ui.empty.hidden = true;
+  ui.pickerEmpty.hidden = false;
+  ui.pickerEmpty.textContent = "No visible messages.";
   state.lastMessageKey = null;
   state.lastMessageFingerprint = "";
   state.messageNodes.clear();
@@ -2275,6 +2428,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
     noteTransportFailure("state-refresh-unavailable");
     localRender(Boolean(queryIntentValue));
   }
+  state.lastActionKind = kind;
   state.pendingAction = null;
   state.pendingQuery = null;
   queuePendingCandidateValidations();
@@ -2396,7 +2550,126 @@ async function bootstrap() {
 }
 
 ui.viewer.addEventListener("change", () => dispatch("viewer", { viewer_id: ui.viewer.value }));
-ui.message.addEventListener("change", () => dispatch("focus", { target_id: ui.message.value }));
+function isMobileWorkbench() {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function updateWorkbenchIsolation() {
+  const mobile = isMobileWorkbench();
+  if (mobile) ui.shell.classList.remove("messages-closed");
+  else ui.shell.classList.remove("messages-open");
+  const drawerOpen = ui.shell.classList.contains("messages-open");
+  const sidebarClosed = mobile ? !drawerOpen : ui.shell.classList.contains("messages-closed");
+  const inspectorOpen = !ui.panel.hidden;
+  const modalOpen = Boolean(state.modalHandle);
+  ui.toolbar.inert = modalOpen;
+  ui.sidebar.inert = modalOpen || sidebarClosed || (mobile && inspectorOpen);
+  ui.sidebar.setAttribute("aria-hidden", String(modalOpen || sidebarClosed || (mobile && inspectorOpen)));
+  ui.panel.inert = modalOpen || !inspectorOpen;
+  ui.stage.inert = !modalOpen && mobile && (drawerOpen || inspectorOpen);
+  ui.drawerScrim.hidden = !mobile || !drawerOpen || modalOpen;
+  ui.messagesToggle.setAttribute("aria-expanded", String(!sidebarClosed));
+  ui.inspectorToggle.setAttribute("aria-expanded", String(inspectorOpen));
+}
+
+function setInspectorTab(name) {
+  inspectorTabs.forEach((button) => {
+    const selected = button.dataset.inspectorTab === name;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    inspectorPanels[button.dataset.inspectorTab].hidden = !selected;
+  });
+}
+
+function closeMessagesDrawer(restore = true) {
+  if (!ui.shell.classList.contains("messages-open")) return;
+  ui.shell.classList.remove("messages-open");
+  updateWorkbenchIsolation();
+  if (restore) (state.drawerOpener?.isConnected ? state.drawerOpener : ui.messagesToggle).focus({ preventScroll: true });
+  state.drawerOpener = null;
+}
+
+function openInspector(name = "activity", opener = document.activeElement) {
+  if (ui.panel.hidden) state.panelOpener = opener instanceof HTMLElement ? opener : ui.inspectorToggle;
+  closeMessagesDrawer(false);
+  ui.panel.hidden = false;
+  ui.shell.classList.add("inspector-open");
+  setInspectorTab(name);
+  updateWorkbenchIsolation();
+  requestAnimationFrame(() => inspectorTabs.find((button) => button.dataset.inspectorTab === name)?.focus());
+}
+
+function closeInspector(restore = true) {
+  if (ui.panel.hidden) return;
+  ui.panel.hidden = true;
+  ui.shell.classList.remove("inspector-open");
+  updateWorkbenchIsolation();
+  if (restore) {
+    const target = state.panelOpener instanceof HTMLElement && state.panelOpener.isConnected
+      && !state.panelOpener.inert ? state.panelOpener : ui.inspectorToggle;
+    target.focus({ preventScroll: true });
+  }
+  state.panelOpener = null;
+}
+
+function openMessagesDrawer() {
+  closeInspector(false);
+  if (isMobileWorkbench()) {
+    state.drawerOpener = ui.messagesToggle;
+    ui.shell.classList.add("messages-open");
+    updateWorkbenchIsolation();
+    ui.search.focus({ preventScroll: true });
+  } else {
+    ui.shell.classList.remove("messages-closed");
+    updateWorkbenchIsolation();
+  }
+}
+
+ui.messagesToggle.addEventListener("click", () => {
+  const closed = isMobileWorkbench()
+    ? !ui.shell.classList.contains("messages-open")
+    : ui.shell.classList.contains("messages-closed");
+  if (closed) openMessagesDrawer();
+  else if (isMobileWorkbench()) closeMessagesDrawer();
+  else {
+    ui.shell.classList.add("messages-closed");
+    updateWorkbenchIsolation();
+    ui.messagesToggle.focus({ preventScroll: true });
+  }
+});
+ui.drawerScrim.addEventListener("click", () => closeMessagesDrawer());
+ui.inspectorToggle.addEventListener("click", () => {
+  if (ui.panel.hidden) openInspector();
+  else closeInspector();
+});
+ui.captureOpen.addEventListener("click", () => openInspector("capture", ui.captureOpen));
+ui.inspectorClose.addEventListener("click", () => closeInspector());
+inspectorTabs.forEach((button, index) => {
+  button.addEventListener("click", () => setInspectorTab(button.dataset.inspectorTab));
+  button.addEventListener("keydown", (event) => {
+    let next = index;
+    if (event.key === "ArrowRight") next = (index + 1) % inspectorTabs.length;
+    else if (event.key === "ArrowLeft") next = (index + inspectorTabs.length - 1) % inspectorTabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = inspectorTabs.length - 1;
+    else return;
+    event.preventDefault();
+    setInspectorTab(inspectorTabs[next].dataset.inspectorTab);
+    inspectorTabs[next].focus();
+  });
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented || state.modalHandle) return;
+  if (!ui.panel.hidden) {
+    event.preventDefault();
+    closeInspector();
+  } else if (ui.shell.classList.contains("messages-open")) {
+    event.preventDefault();
+    closeMessagesDrawer();
+  }
+});
+window.addEventListener("resize", updateWorkbenchIsolation);
+updateWorkbenchIsolation();
 function updateViewport(field, minimum, maximum) {
   const value = Number(field.value);
   if (!Number.isInteger(value) || value < minimum || value > maximum
@@ -2449,8 +2722,6 @@ ui.exactForm.addEventListener("submit", (event) => {
   dispatch("focus", { target_id: ui.exactId.value });
 });
 ui.backActivity.addEventListener("click", backActivity);
-ui.selectApply.addEventListener("click", () => state.dropdown && commitDropdown(state.dropdown.key));
-ui.selectCancel.addEventListener("click", () => state.dropdown && cancelDropdown(state.dropdown.key));
 async function copyText(value) {
   try { await navigator.clipboard.writeText(value); ui.captureStatus.textContent = "Copied."; }
   catch (_) { ui.captureStatus.textContent = "Clipboard unavailable; select the text and copy manually."; }
@@ -2466,12 +2737,6 @@ ui.downloadReport.addEventListener("click", () => {
   link.download = "simcord-support.json";
   link.click();
   URL.revokeObjectURL(url);
-});
-ui.panel.addEventListener("toggle", () => {
-  if (!ui.panel.open) ui.panel.querySelector("summary").focus({ preventScroll: true });
-});
-ui.panel.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") { ui.panel.open = false; event.preventDefault(); }
 });
 ui.timeline.addEventListener("scroll", () => {
   state.scrollIntent = captureScrollIntent();

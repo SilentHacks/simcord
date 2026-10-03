@@ -815,7 +815,6 @@ async def test_browser_close_proceeds_after_unadmitted_uncertain_action(env, cha
                   };
                 })()""")
                 await page.goto(preview.url)
-                await page.locator("#inspector > summary").click()
                 await page.wait_for_function(
                     "() => window.simcordPreview?.ready && !window.simcordPreview.pendingAction"
                     " && window.simcordPreview.awaitingRevision === null"
@@ -824,7 +823,8 @@ async def test_browser_close_proceeds_after_unadmitted_uncertain_action(env, cha
                 await page.wait_for_function("""() => window.__blockedClicks === 1
                   && window.simcordPreview.transport.uncertainRequestId !== null
                   && window.simcordPreview.pendingAction === null""")
-                await page.get_by_role("button", name="Close", exact=True).click()
+                await page.locator(".session-menu > summary").click()
+                await page.get_by_role("button", name="End preview session", exact=True).click()
                 await page.wait_for_function("""() => {
                   const status = window.simcordPreview;
                   return status.authorized === false && status.complete === true
@@ -836,7 +836,12 @@ async def test_browser_close_proceeds_after_unadmitted_uncertain_action(env, cha
                 assert view.calls == 0
                 assert await page.locator("#focused-content *").count() == 0
                 assert await page.locator("#channel-message-list *").count() == 0
-                assert await page.locator("#message-picker option, #viewer-picker option").count() == 0
+                assert (
+                    await page.locator(
+                        "#message-picker button[data-message-id], #viewer-picker option"
+                    ).count()
+                    == 0
+                )
                 assert await page.evaluate(
                     "() => window.simcordPreview.targetId === null && window.simcordPreview.viewerId === null"
                 )
@@ -926,7 +931,6 @@ async def test_browser_rendering_diagnostics_follow_media_surface_replacement(en
             try:
                 page = await browser.new_page()
                 await page.goto(preview.url)
-                await page.locator("#inspector > summary").click()
                 await page.wait_for_function(
                     "(id) => window.simcordPreview?.ready"
                     " && window.simcordPreview.targetId === id && !window.simcordPreview.complete",
@@ -950,7 +954,7 @@ async def test_browser_rendering_diagnostics_follow_media_surface_replacement(en
                     for item in status["diagnostics"]
                 )
 
-                await page.locator("#message-picker").select_option(str(good.id))
+                await page.locator(f"#message-picker button[data-message-id='{good.id}']").click()
                 await page.wait_for_function(
                     "(id) => window.simcordPreview.targetId === id && window.simcordPreview.complete",
                     arg=str(good.id),

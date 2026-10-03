@@ -161,7 +161,6 @@ async def test_browser_revocation_during_asset_fetch_cannot_publish_old_pixels(e
                 bob_page = await browser.new_page()
                 await bob_page.goto(preview.url)
                 await bob_page.wait_for_function("() => window.simcordPreview?.ready === true")
-                await bob_page.locator("#inspector-summary").click()
                 await bob_page.locator("#viewer-picker").select_option(str(bob.id))
                 await bob_page.wait_for_function(
                     "(id) => window.simcordPreview?.viewerId === id && window.simcordPreview?.ready",

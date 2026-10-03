@@ -352,6 +352,20 @@ export function renderSelect(component, path, options) {
   });
   if (!entries.length) list.append(node("div", "select-empty", "No available options"));
   popup.append(list);
+  if (multi && isOpen) {
+    const actions = node("div", "select-draft-actions preview-helper");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "SimCord selection draft actions");
+    actions.append(node("span", "", "SimCord selection draft"));
+    const apply = node("button", "select-apply", "Apply");
+    apply.type = "button";
+    apply.addEventListener("click", () => onCommit?.(key));
+    const cancel = node("button", "select-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => onCancel?.(key));
+    actions.append(apply, cancel);
+    popup.append(actions);
+  }
   wrap.append(popup);
   return { element: wrap, value: () => (Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : []), key };
 }

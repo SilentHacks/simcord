@@ -68,7 +68,7 @@ async with simcord.run(create_bot()) as env:
 
 There is one active Preview per `Env`. `close()` is idempotent and is also called by context exit,
 environment shutdown, and cancellation. Closing a browser tab releases only that page; it does
-not stop Python or the Preview. The toolbar's **Close** action closes the whole session. No browser
+not stop Python or the Preview. **More → End preview session** closes the whole session. No browser
 is launched automatically.
 
 `layout="message"` is the default and preserves the focused-message surface.
@@ -162,6 +162,28 @@ pickers, labels, focus rings, and select-only comboboxes with listbox popups for
 selects. Select focus stays on the trigger and keyboard navigation exposes an active option; no
 search field is emulated. Modal focus remains contained. It also renders the Discord dark theme,
 bounded width/height controls, responsive wrapping, and spoiler reveal.
+
+The SimCord workbench stays outside the emulated Discord viewport and managed screenshot crop:
+
+- **Viewing as** selects the authorized actor used by message and component actions.
+- **Messages** toggles a sidebar with readable previews, search, bounded result pages, and
+  **Jump to message ID**. On narrow screens it opens a drawer; Escape closes it and restores focus.
+  Selecting a result focuses that authorized message without changing the configured layout.
+- **Refresh preview** publishes the latest scenario state; it is not guaranteed live synchronization.
+- **Inspector** opens Activity, Diagnostics, and Capture tabs. Activity presents operation results
+  and links to authorized outputs, with protocol receipts available under **Technical details**.
+  Diagnostics show recovery instructions and an actionable warning/error count on the Inspector button.
+- **Capture** opens viewport settings: **Fit window**, **Fixed size**, presets, custom dimensions,
+  and **Isolate message** or **Conversation** layout. These settings belong to this browser page.
+  The managed Python recipe does not inherit live browser drafts or open menus; use a browser
+  screenshot tool to capture those transient states.
+
+Tab/Shift+Tab navigates the workbench, arrow keys/Home/End switch inspector tabs, and Escape closes
+an open inspector. Narrow-screen drawers isolate the background while open. Modal dialogs isolate
+the workbench and return focus to their invoking control when dismissed. Multi-select **Apply/Cancel**
+helpers sit beside their owning menu, are explicitly marked as SimCord controls, and are omitted
+from managed captures. The workbench represents only the current preview channel, not a full
+Discord client with server, voice, or cross-channel navigation.
 
 Use Tab/Shift+Tab to move through a modal, Escape to close a select before the modal, and Arrow
 keys/Home/End to navigate an open select. Enter/Space on an open single select commits its active
