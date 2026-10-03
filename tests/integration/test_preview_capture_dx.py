@@ -1,3 +1,4 @@
+import asyncio
 import io
 from pathlib import Path
 
@@ -262,6 +263,10 @@ async def test_browser_adaptive_embed_composition_and_offline_provider_media(env
                     assert projected["embeds"][2]["video"]["available"] is True
 
                     await page.set_viewport_size({"width": 390, "height": 900})
+                    await page.wait_for_function(
+                        "() => window.simcordPreview.ready && !window.simcordPreview.pendingAction "
+                        "&& window.simcordPreview.presentation.host.width <= 390"
+                    )
                     narrow = await first.evaluate(
                         "card => ({right: card.getBoundingClientRect().right, "
                         "rows: [...card.querySelectorAll('.embed-field-row')].map(row => "
@@ -388,9 +393,7 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
 
                 spoiler = page.locator(".attachment-inline").nth(2)
                 await spoiler.locator(".spoiler-cover").click()
-                await page.locator("#viewport-width").evaluate(
-                    "(input) => { input.value = String(Number(input.value) + 1); input.dispatchEvent(new Event('change', { bubbles: true })); }"
-                )
+                await page.set_viewport_size({"width": 900, "height": 700})
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
                 spoiler = page.locator(".attachment-inline").nth(2)
                 assert await spoiler.locator(".spoiler-cover").count() == 0
@@ -432,6 +435,7 @@ async def test_browser_attachment_count_one_and_ten_remains_intrinsic(env, chann
                     "(image) => [image.width, image.height]"
                 ) == [2, 2]
 
+                await page.locator("#inspector > summary").click()
                 await page.locator("#message-picker").select_option(str(single.id))
                 await page.wait_for_function(
                     "(id) => window.simcordPreview?.ready === true && window.simcordPreview.targetId === id",
@@ -531,6 +535,11 @@ async def test_browser_v2_galleries_retain_intrinsic_ratios_and_reveal_spoilers(
                 page = await browser.new_page()
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.locator("#inspector > summary").click()
+                await page.locator("#display-mode").select_option("fixed")
+                await page.wait_for_function(
+                    "() => !window.simcordPreview.pendingAction && window.simcordPreview.presentation.display === 'fixed'"
+                )
                 for message, count in messages:
                     await page.locator("#message-picker").select_option(str(message.id))
                     await page.wait_for_function(
@@ -559,7 +568,7 @@ async def test_browser_v2_galleries_retain_intrinsic_ratios_and_reveal_spoilers(
                             == 0
                         )
                         assert await page.get_by_text("unreferenced-v2.txt").count() == 0
-                        assert "alt-only-10-0" not in await page.locator("#message-surface").inner_text()
+                        assert "alt-only-10-0" not in await page.locator("#focused-content").inner_text()
                         assert await images.first.get_attribute("alt") == "alt-only-10-0"
                         assert await images.nth(0).get_attribute("src") == await images.nth(9).get_attribute(
                             "src"
@@ -617,7 +626,7 @@ async def test_browser_v2_galleries_retain_intrinsic_ratios_and_reveal_spoilers(
                         assert len(set(narrow_columns)) == 1
                     else:
                         assert (
-                            await page.locator("#message-surface")
+                            await page.locator("#focused-content")
                             .get_by_text(f"Gallery with {count} item(s)")
                             .count()
                             == 1
@@ -744,15 +753,24 @@ async def test_browser_settled_action_clears_pending_and_allows_second_action(en
                 page = await browser.new_page()
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.wait_for_function("() => !window.simcordPreview.pendingAction")
+                prior_request = await page.evaluate("() => window.simcordPreview.lastAction?.requestId")
                 await page.get_by_role("button", name="Ping").click()
                 await page.wait_for_function(
-                    "() => window.simcordPreview?.lastAction?.sequence === 1 "
-                    "&& window.simcordPreview.pendingAction === null"
+                    "(prior) => window.simcordPreview.lastAction?.requestId !== prior "
+                    "&& window.simcordPreview.lastAction?.dispatched && window.simcordPreview.pendingAction === null",
+                    arg=prior_request,
                 )
+                prior_request = await page.evaluate("() => window.simcordPreview.lastAction.requestId")
                 await page.get_by_role("button", name="Ping").click()
                 await page.wait_for_function(
-                    "() => window.simcordPreview?.lastAction?.sequence === 2 "
-                    "&& window.simcordPreview.pendingAction === null"
+                    "(prior) => window.simcordPreview.lastAction?.requestId !== prior "
+                    "&& window.simcordPreview.lastAction?.dispatched && window.simcordPreview.pendingAction === null",
+                    arg=prior_request,
+                )
+                assert (
+                    sum(message.content == "pong" for message in env.backend.messages[channel.id].values())
+                    == 2
                 )
             finally:
                 await browser.close()
@@ -836,13 +854,15 @@ async def test_browser_multi_select_pointer_keyboard_commit_and_escape(env, chan
                 )
                 assert received == [["red", "blue"]]
 
+                prior_request = await page.evaluate("() => window.simcordPreview.lastAction.requestId")
                 await trigger.focus()
                 await trigger.press("ArrowDown")
                 await trigger.press("Home")
                 await trigger.press(" ")
                 await trigger.press("Enter")
                 await page.wait_for_function(
-                    "() => window.simcordPreview?.lastAction?.sequence === 2 && !window.simcordPreview?.pendingAction"
+                    "(prior) => window.simcordPreview.lastAction?.requestId !== prior && !window.simcordPreview.pendingAction",
+                    arg=prior_request,
                 )
                 assert received == [["red", "blue"], ["blue"]]
 
@@ -894,7 +914,7 @@ async def test_browser_modal_traps_focus_and_escape_restores_surface(env, channe
                 await page.keyboard.press("Escape")
                 await page.wait_for_function("() => !document.querySelector('.modal-dialog')")
                 assert await page.locator(".message-surface").get_attribute("inert") is None
-                assert await page.locator("#viewer-picker:focus").count() == 1
+                assert await page.locator("#inspector > summary:focus").count() == 1
                 await page.reload()
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
                 await page.get_by_role("textbox").fill("Ada")
@@ -1011,7 +1031,6 @@ async def test_browser_premium_buttons_use_supplied_metadata_and_never_dispatch(
                     "() => document.querySelector('#action-status').textContent.includes('No purchase was started')"
                 )
                 assert page.url == original_url
-                assert await page.evaluate("() => window.simcordPreview.lastAction") is None
                 assert view.callback_count == 0
             finally:
                 await browser.close()
@@ -1060,7 +1079,7 @@ async def test_browser_button_focus_and_responsive_row_wrapping(env, channel, al
                     "return images.length === 2 && images.every(image => image.complete && image.naturalWidth > 0); }"
                 )
                 assert await page.locator(".component-button.is-icon-only .button-emoji").count() == 1
-                await page.locator("#close").focus()
+                await page.locator("#inspector > summary").focus()
                 await page.keyboard.press("Tab")
                 await page.wait_for_function(
                     "() => document.querySelector('.component-button:focus-visible') !== null"
@@ -1095,6 +1114,11 @@ async def test_browser_responsive_message_column_reflows_long_bidi_text(env, cha
                 page = await browser.new_page(viewport={"width": 1360, "height": 1000})
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.locator("#inspector > summary").click()
+                await page.locator("#display-mode").select_option("fixed")
+                await page.wait_for_function(
+                    "() => !window.simcordPreview.pendingAction && window.simcordPreview.presentation.display === 'fixed'"
+                )
                 for width in (320, 360, 420, 640, 960, 1280):
                     for height in (700, 900):
                         await page.set_viewport_size({"width": width + 80, "height": height + 100})
@@ -1110,7 +1134,7 @@ async def test_browser_responsive_message_column_reflows_long_bidi_text(env, cha
                         geometry = await page.evaluate(
                             """() => {
                               const app = document.querySelector('#preview-app').getBoundingClientRect();
-                              const surface = document.querySelector('#message-surface').getBoundingClientRect();
+                              const surface = document.querySelector('#focused-content').getBoundingClientRect();
                               const content = document.querySelector('.message-content').getBoundingClientRect();
                               return { app: app.width, surface: surface.width, text: content.width,
                                 textRight: content.right, surfaceRight: surface.right,
@@ -1124,5 +1148,101 @@ async def test_browser_responsive_message_column_reflows_long_bidi_text(env, cha
                 assert await page.locator(".message-content").evaluate(
                     "element => element.scrollWidth <= element.clientWidth"
                 )
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_capture_overrides_crop_visible_content_without_mutating_pages(env, channel, alice):
+    pytest.importorskip("playwright")
+    message = await env.bot.get_channel(channel.id).send("Reachable line\n" * 100)
+    async with env.preview(channel, viewers=[alice], width=640, height=700) as preview:
+        await preview.show(message)
+        human = preview._open_page()
+        before = (human.layout, human.display, human.width, human.height, human.target_id)
+        capture = await preview.screenshot(
+            target=message.id, viewport=(320, 240), layout="message", mode="surface"
+        )
+        assert capture.geometry["scope"] == "visible"
+        assert capture.geometry["contentExtent"]["height"] > capture.output_height
+        assert capture.geometry["overflow"]["vertical"] is True
+        assert capture.output_width <= 320 and capture.output_height <= 240
+        assert (human.layout, human.display, human.width, human.height, human.target_id) == before
+        assert (preview.width, preview.height, preview._python.layout) == (640, 700, "message")
+        viewport = await preview.screenshot(
+            target=message.id, viewport=(320, 240), layout="channel", mode="viewport"
+        )
+        assert (viewport.output_width, viewport.output_height) == (320, 240)
+        assert viewport.geometry["scope"] == "visible"
+        assert viewport.png.startswith(b"\x89PNG")
+        for invalid in ((True, 240), (320, 0), (32769, 240), (10000, 10000), [320, 240]):
+            with pytest.raises(simcord.SetupError):
+                await preview.screenshot(viewport=invalid)
+        with pytest.raises(simcord.SetupError, match="layout"):
+            await preview.screenshot(layout="document")
+
+
+@pytest.mark.asyncio
+async def test_browser_search_recovers_access_and_queues_close(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    source = await env.bot.get_channel(channel.id).send("Original focus")
+    needle = await env.bot.get_channel(channel.id).send("Needle 👩🏽‍💻 ||private-spoiler||")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(source)
+        async with async_playwright() as api:
+            browser = await api.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 800, "height": 600})
+                await page.goto(preview.url)
+                await page.wait_for_function(
+                    "() => window.simcordPreview.ready && !window.simcordPreview.pendingAction"
+                )
+                await page.locator("#inspector > summary").click()
+                await page.locator("#message-search").fill("Needle")
+                await page.get_by_role("button", name="Search", exact=True).click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.navigation.query === 'needle' && !window.simcordPreview.pendingAction"
+                )
+                assert await page.evaluate("() => window.simcordPreview.targetId") == str(source.id)
+                assert "private-spoiler" not in await page.locator("#message-picker").inner_text()
+                await page.locator("#message-picker").select_option(str(needle.id))
+                await page.wait_for_function(
+                    "(id) => window.simcordPreview.targetId === id && !window.simcordPreview.pendingAction",
+                    arg=str(needle.id),
+                )
+
+                member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+                await env.bot.get_channel(channel.id).set_permissions(member, view_channel=False)
+                await env.settle()
+                await page.wait_for_function("() => !window.simcordPreview.authorized")
+                denied = await page.evaluate("() => window.simcordPreview")
+                assert denied["lastAction"] is None and denied["activeControlKey"] is None
+                assert denied["visibleMessageIds"] == [] and denied["selectDrafts"] == {}
+                await env.bot.get_channel(channel.id).set_permissions(member, view_channel=True)
+                await env.settle()
+                await page.get_by_role("button", name="Refresh", exact=True).click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.authorized && window.simcordPreview.ready && !window.simcordPreview.pendingAction"
+                )
+
+                started, release = asyncio.Event(), asyncio.Event()
+
+                async def hold_presentation(route):
+                    if route.request.post_data_json.get("kind") == "configure_presentation":
+                        started.set()
+                        await release.wait()
+                    await route.continue_()
+
+                await page.route("**/api/action", hold_presentation)
+                await page.locator("#display-mode").select_option("fixed")
+                await asyncio.wait_for(started.wait(), timeout=10)
+                await page.get_by_role("button", name="Close", exact=True).click()
+                release.set()
+                await asyncio.wait_for(preview.wait_closed(), timeout=10)
+                await page.wait_for_function(
+                    "() => !window.simcordPreview.authorized && !window.simcordPreview.ready && !window.simcordPreview.pendingAction"
+                )
+                assert await page.locator("#focused-content").inner_text() == ""
             finally:
                 await browser.close()

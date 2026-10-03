@@ -26,7 +26,10 @@ Install the browser bridge when you need a page:
 python -m pip install "simcord[preview]"
 ```
 
-The `preview` extra supplies `aiohttp`, `markdown-it-py`, Pillow, and PyAV. It does not launch a browser.
+The `preview` extra supplies `aiohttp`, `markdown-it-py`, `linkify-it-py`, `regex`, Pillow, and PyAV.
+`markdown-it-py` parses link-enabled Markdown; `linkify-it-py` recognizes links for the safe absolute
+HTTP(S)-only linkifier, and `regex` keeps summary truncation on grapheme boundaries. The text helpers
+remain lazy and are not imported by `import simcord`. Installing the extra does not launch a browser.
 For managed PNG capture, install Playwright and its pinned browser explicitly:
 
 ```bash
@@ -75,6 +78,14 @@ through the configured viewer's SimCord actor and may reply only to messages tha
 rejected or failed sends retain the draft. It does not navigate to another channel or create a new
 Preview session. The inspector remains outside the emulated viewport, while a modal backdrop covers
 only that viewport.
+
+`display="responsive"` (default for human browser pages) fits the measured workspace with a logical
+viewport minimum of 240×180. `presentation.host` retains the actual host dimensions; below the minimum,
+the viewport clamps to 240×180, reports `host_below_minimum`, and the stage pans rather than claiming
+an impossible fit. `"fixed"` preserves the exact `width`/`height` profile and never flex-shrinks it;
+overflow remains visible for host panning. The inspector stays outside the simulated viewport and its
+capture crop. Each browser page owns its layout, display and profile; reconfiguration does not change
+other pages or the Python/session capture defaults.
 
 `port=` pins the loopback origin: `None` or `0` keeps the OS-assigned port, while an integer in
 1–65535 binds that exact origin so a pre-created SSH forward can use the same port on both ends.
@@ -134,15 +145,15 @@ await preview.refresh()
 ```
 
 `refresh()` settles bot work and republishes every page while preserving each page's viewer, target,
-channel-history anchor, modal, and drafts. Browser actions that settle also publish their resulting edits/followups. A
-publication is labeled by `publishedRevision` and simulated time; it is not a live synchronization
-promise. Each publication's `messageIndex` array carries detached authorized picker summaries.
-`messages` maps the current authorized window (at most 50 in channel layout, or the focused target
-in message layout) to full projections, and `timeline` gives their visible order. `history` reports
-the window boundaries and whether authorized earlier/later messages remain. The focused
-message is `messages[targetId]`; there is no `selected` alias. A failed or timed-out action may
-already have mutated the backend: its last settled projection is retained and marked stale, then a
-later successful refresh reconciles it without replaying the action.
+channel-history anchor, modal, and drafts. Browser actions that settle also publish their resulting
+edits/followups. A publication is labeled by `publishedRevision` and simulated time; it is not a live
+synchronization promise. `messages` maps full authorized projections for the current window (at most
+50 in channel layout, or the focused target in message layout), and `timeline` gives their visible
+order. `history` reports window boundaries and whether authorized earlier/later messages remain. The
+separate `messageIndex` is a bounded navigation-summary page; `navigation` carries its query and page
+cursors. `targetId` identifies the focused projection; there is no `selected` alias. A failed or
+timed-out action may already have mutated the backend: its last settled projection is retained and
+marked stale, then a later successful refresh reconciles it without replaying the action.
 
 ## Controls, keyboard, and accessibility
 
@@ -196,8 +207,11 @@ Preview parses message and Text Display bodies on the server into safe tokens. M
 embed descriptions/field values support block Markdown; embed titles and field names stay inline,
 and embed footers, system text, labels and descriptions remain literal text. Mentions and command
 references resolve only against the selected viewer's authorized users, roles, channels and known
-chat-input commands. Code spans are literal, raw HTML is never inserted, and links are restricted
-to HTTP, HTTPS and mailto.
+chat-input commands. Code spans are literal, raw HTML is never inserted, and explicit links keep the
+existing HTTP, HTTPS and mailto policy. Bare links are parsed by Markdown only in link-enabled fields,
+and only absolute HTTP(S) URLs are linked; fuzzy domains/emails, protocol-relative URLs and other
+schemes remain text. Escaped text, code, and literal fields are not browser-autolinked. Links never
+trigger remote fetches or previews.
 
 Fenced code preserves its language label. Highlighting uses the pinned Highlight.js 11.11.1 ESM
 build from `@highlightjs/cdn-assets` with these explicit grammars: Bash, C++, C#, CSS, diff,
@@ -207,11 +221,22 @@ per-file SHA-256 values are in `static/vendor/highlight/LICENSE` and `SHA256SUMS
 
 Discord timestamps use the page's locale, timezone and published `presentationTime`; relative
 timestamps do not tick against the host clock, and the absolute time is available on hover.
-Unicode emoji use the bundled Noto Color Emoji face. Custom emoji render only when the emoji is
-available to the selected viewer and authorized bytes exist in SimCord's CDN or `preview.assets`.
-Animated emoji retain their supplied GIF bytes; unavailable emoji stay labeled and diagnostic.
-These behaviors are deterministic, but the bundled captures do not establish Discord's exact text,
-emoji-art or font-wrap parity for every field and script.
+Unicode emoji in explicit descriptors select the packaged Noto Color Emoji face; mixed text keeps
+Latin or monospace primary and places emoji before broad script fallbacks. Native text shaping and
+variation selectors remain intact. Packaged releases are Noto Sans/Italic v2.015, Sans Mono v2.014,
+Arabic v2.012, Hebrew v3.001, Devanagari v2.007, Simplified Chinese (SC; Google Fonts commit
+`e44c4b0`), and Noto Color Emoji v2.051 (COLRv1, commit `0612165`); unmodified asset sources and
+hashes are listed in `static/fonts/manifest.json`. The fonts carry the SIL Open Font License 1.1;
+the corresponding `OFL-1.1-Noto*.txt` notices ship beside the assets. They are licensed substitutes
+for proprietary Discord fonts/artwork, not a claim of Discord fidelity. The full emoji build includes
+regional-indicator flags; Latin font ranges leave their shaping to the native emoji fallback.
+Chromium glyph inspection and visible flag rendering were exercised across the text/control corpus
+with a sparse one-face system-font configuration. This is not platform-wide glyph, Discord artwork,
+or human assistive-technology certification.
+
+The installed metadata records `markdown-it-py` and `linkify-it-py` as MIT and `regex` as
+Apache-2.0 AND CNRI-Python; each installed distribution supplies its own license files. These are
+Python dependencies, not copied into SimCord's vendored assets.
 
 
 ## Offline assets and media
@@ -300,14 +325,17 @@ sandbox for malicious bot code.
 
 ## Readiness, generations, and action reconciliation
 
-A browser exposes a deeply read-only `window.simcordPreview` object for agents and capture tooling:
+A browser exposes the immutable, deeply read-only `window.simcordPreview` status object (schema
+version 1, protocol version 3) for agents and capture tooling:
 
 ```javascript
 {
-  schemaVersion, protocolVersion, contextId, contextGeneration, botGeneration,
-  viewerId, targetId, activeControlKey, visibleMessageIds, publishedRevision,
-  renderGeneration, renderState, lastAction, ready, complete, calibration,
-  diagnostics, profile
+  schemaVersion: 1, protocolVersion: 3, contextId, contextGeneration, botGeneration,
+  viewerId, targetId, activeControlKey, visibleMessageIds, projectedMessageIds,
+  publishedRevision, publication, navigation, presentation, renderGeneration,
+  renderState, selectDrafts, selectStates, lastAction, pendingAction, pendingQuery,
+  ready, awaitingRevision, queryResultRevision, geometry, complete, diagnostics,
+  activity, transport, authorized, calibration, profile
 }
 ```
 
@@ -320,42 +348,49 @@ complete, or the capture is calibrated. `publishedRevision` is a settled publica
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render
 continuations cannot update a newer generation.
 
-Every browser action carries a positive integer `generation` and `bot_generation`, a context
-generation, bot generation, request ID, published revision, and positive per-page sequence.
-Missing or malformed generation fields return structured `bad-envelope` before admission and do
-not consume the sequence; correctly typed but stale values return `stale-context` or
-`stale-generation`. Kind, control resolution, and values are validated before the sequence is
-admitted. Admission is at-most-once: a duplicate latest request with the same payload returns its
-recorded status, a changed payload conflicts, old sequences expire, and gaps are rejected. Busy,
-stale, unauthorized, disabled, deleted, or invalid controls are rejected before admission and are
-never automatically retried. A disconnected client does not cancel an admitted callback; delivery
-failure is separate from callback settlement.
+`projectedMessageIds` mirrors `snapshot["timeline"]`; `visibleMessageIds` lists only IDs currently
+visible in the simulated viewport, not every projected window item. `geometry` reports measured app,
+host, stage, focused-surface, timeline and modal-body geometry. `selectDrafts` and `selectStates` expose
+page-local draft/commit state. Publication, transport health, `ready`, and `complete` are separate
+facts, not one freshness or success flag.
 
-A pre-admission rejection is an ordinary result, not a transport error: the response reports
-`rejected: true`, `settlement: "rejected"`, `dispatch: "not_dispatched"`, the offending `sequence`,
-the page's current `expectedSequence`, the live `revision` and `presentation`, and one structured
-diagnostic (`bad-envelope`, `stale-sequence`, `sequence-gap`, `conflicting-request`, `busy`,
-`stale-context`, `stale-generation`, `stale-revision`, `unknown-kind`, or `validation-failed`).
-Rejections never consume the sequence: the next admissible action may reuse it.
+Every browser action carries `protocol_version: 3`, positive `generation`, `bot_generation`, the
+observed `published_revision`, a positive per-page `sequence`, a `request_id`, and its `kind`.
+Malformed envelopes return a safe `bad-envelope`/`unsupported-protocol` receipt before admission;
+correctly typed but stale context or generation values return `stale-context` or `stale-generation`.
+Kind, control resolution, and values are validated before the sequence is admitted. Admission is
+at-most-once: a duplicate latest request with the same payload returns its recorded outcome, a
+changed payload conflicts, old sequences expire, and gaps are rejected. Busy, stale, unauthorized,
+disabled, deleted, or invalid controls are rejected before admission and are never automatically
+retried. A disconnected client does not cancel an admitted callback; delivery failure is separate
+from callback settlement.
+
 Revision-bound actions (`click`, `select`, `modal_submit`, `history`, `send_message`, `edit_message`,
-`delete_message`, `set_reaction`, `set_poll_votes`, `set_pinned`) must echo the page's current
-`publishedRevision`; a mismatch is rejected as `stale-revision` so a stale render cannot dispatch
-into newer state. Per-message actions also carry the authorized message `target_id`.
+`delete_message`, `set_reaction`, `set_poll_votes`, `set_pinned`, `browse_messages`,
+`browse_candidates`, and `configure_presentation`) must echo the page's current
+`publishedRevision`; a mismatch is rejected as `stale-revision`. Per-message actions also carry the
+authorized message `target_id`.
 
-`lastAction` reports dispatch (`dispatched`/`not_dispatched`), acknowledgement
-(`pending`/`acknowledged`/`deferred`/`unacknowledged`/`not_applicable`), settlement (`pending`/`settled`/`failed`/
-`timeout`/`cancelled`), and presentation (`current`/`stale`/`access_denied`) independently. Bot callback
-errors and mutations are both retained; errors are diagnostics, not rollback. An unacknowledged
-interaction is failure, not simulated success. Inspect this result and then refresh; never retry a
-consumed sequence to make a screenshot look successful.
+Each receipt retains `requestId`, `sequence`, `expectedSequence`, `rejected`, `dispatch`,
+`acknowledgement`, `settlement`, `presentation`, `revision`, typed safe `diagnostics`, `target`,
+`uncertain`, server-generated `correlation`, and authorized `outcomes`. Outcomes distinguish
+responses, followups, source edits, sent messages, modals, deferred interactions, no output, and
+unavailable outputs. They are correlated to the admitted interaction/actor operation, never guessed
+from a channel diff or last-message change. View and Back are explicit navigation: activating View
+focuses an authorized outcome, and Back returns to the prior target and invoking control if it still
+exists. Receipts never auto-focus a page. A pre-admission rejection does not consume the sequence;
+the activity ledger holds at most 20 receipts and no message bodies, and references are reauthorized
+on every read. Diagnostics use catalog-owned codes and remediation, never raw request or exception
+text. Inspect the receipt and refresh after failures; never retry a consumed sequence to make a
+screenshot look successful.
 
 ## Structured snapshots
 
 `await preview.snapshot()` is the structured, agent-facing read surface: it settles bot work,
 republishes the Python presentation, and returns the detached JSON projection dict the bundled page
-renders — the same state a browser would display, as plain data. It is intended for assertions and
-text-only tooling where no browser or PNG is needed, and raises `SetupError` when the preview is not
-active:
+renders — the same authorized state a browser would display, as plain data. It is private diagnostic
+data, intended for assertions and text-only tooling, not for sharing. It raises `SetupError` when the
+preview is not active:
 
 ```python
 snapshot = await preview.snapshot()
@@ -364,39 +399,75 @@ assert target is not None
 print(snapshot["diagnostics"], snapshot["lastAction"])
 ```
 
-The payload is protocol-versioned diagnostic data, not pixel output:
-`protocolVersion` is `2`; `publishedRevision`/`botGeneration` label the settled publication it
-reflects. `messageIndex` is picker-only summary data. `messages` contains full authorized
-projections, `timeline` gives visible order, and `history` reports omitted history. `targetId`
-identifies the focused projection. `modal`, `candidates`, `assets`, `entities`, `profile`,
-`status`, `diagnostics`, and `lastAction` describe the same focused presentation. Field-level
-details may evolve under `protocolVersion`; assert on documented keys rather than exact payload
-layout.
+The detached payload is protocol-versioned diagnostic data, not pixel output. `protocolVersion` is
+`3`; `runtimeVersion` and `publishedRevision` label the runtime and settled page state. `publication`
+contains a real UTC `publishedAt`, its revision, and a publication reason. `presentation` describes
+page-local display mode, layout, viewport, exact profile, measured host dimensions, and any fit
+constraint.
 
-## Migrating preview consumers to protocol 2
+`messageIndex` is one authorized navigation page of at most 50 summaries: ID, author identity, created
+and edited times, safe text excerpt, content kinds, component labels, attachment count/kinds, and
+ephemeral state. `navigation` carries the normalized query, filter, page boundaries and opaque cursors.
+`browse_messages` queries authorized summaries only; it does not run bot callbacks or settle bot work.
+Queries are plain NFC/case-folded text, limited to 128 Unicode code points before and after
+normalization, and return no more than 50 rows. Numeric snowflakes perform exact-ID lookup; denied and
+deleted IDs produce the same empty page and unavailable navigation shape. Cursors are opaque and bound
+to the page generation, query, scope and stable ordering.
 
-The 3.0 preview cutover intentionally removes the protocol-1 `selected` projection and
-`messages` summary list; there is no adapter. In code already inside an active Preview:
+`candidates` is keyed by scoped `control_key`; each descriptor separates independently authorized
+`selected` identities from at most 50 `entries`, and reports type, filter, state, query and cursors.
+`browse_candidates` queries one currently authorized control (and `modal_handle` for modal controls).
+Defaults/selections are resolved separately from the options page, count against select constraints,
+and are not pruned when outside that page. Entity controls do not project raw
+`component.default_values`; use the descriptor's `selected` entries. Browser drafts remain page-local
+and are visible in `window.simcordPreview.selectDrafts`/`selectStates`. Querying does not run bot work
+or dispatch an interaction.
+
+`messages` contains full authorized projections, `timeline` gives projected order, and `history`
+reports omitted history. `targetId` identifies the focused projection. `modal`, `assets`, `entities`,
+`profile`, `status`, typed `diagnostics`, `lastAction`, and the at-most-20-entry `activity` ledger
+describe the same page. Message references in receipts are reauthorized on each read. The bundled
+schema is authoritative; field-level details may evolve under `protocolVersion`.
+
+The private snapshot is not the Copy/Download support report. Those buttons produce only the
+allowlisted schema-version-1, protocol-3 report: runtime/protocol/renderer versions, display and
+viewport/host dimensions, publication revision, and at most 40 safe diagnostic codes, severities,
+states, remediation values and approved structural paths/correlation IDs. It excludes viewer/channel/
+message IDs, names, message or draft text, filenames, URLs, capabilities, raw exception/HTTP text,
+and PNG data. Treat snapshots, executable recipes and screenshots as private even when they omit a
+capability.
+
+## Migrating preview consumers to protocol 3
+
+Protocol 3 is the current schema and a breaking cutover: it changes the message navigation page and
+candidate descriptors and adds typed receipts, publication and diagnostics state. Protocol-2 consumers
+must migrate explicitly; there are no compatibility aliases or adapter. Do not silently accept an
+older `protocolVersion`:
 
 ```python
-# Before (protocol 1):
 snapshot = await preview.snapshot()
-selected = snapshot["selected"]        # full focused message
-summaries = snapshot["messages"]        # picker entries, not renderable messages
+if snapshot["protocolVersion"] != 3:
+    raise RuntimeError("migrate this consumer to preview protocol 3")
 
-# After (protocol 2):
-snapshot = await preview.snapshot()
-assert snapshot["protocolVersion"] == 2
-selected = snapshot["messages"].get(snapshot["targetId"])  # full projection
-summaries = snapshot["messageIndex"]     # picker entries only
+selected = snapshot["messages"].get(snapshot["targetId"])  # full authorized projection
+summaries = snapshot["messageIndex"]                       # at most 50 authorized summaries
 window = [snapshot["messages"][mid] for mid in snapshot["timeline"]]
+candidate_pages = snapshot["candidates"]                       # authorized control_key -> descriptor
 ```
 
-Use `layout="channel"` to see the authorized history window and composer rather than only
-the focused message. A message action in this window names its own `target_id` and observed
-`publishedRevision`; a custom ID or focused-page target alone does not identify a message.
-Browser `window.simcordPreview` is a read-only diagnostic surface, not an action API; invoke
-controls in the page or use the Python actors.
+An action envelope includes `protocol_version: 3`, `generation`, `bot_generation`,
+`published_revision`, `sequence`, `request_id`, and `kind`. For example, the bundled consumer sends
+`browse_messages` with `{query, filter: "all", cursor}` or `browse_candidates` with
+`{control_key, query, cursor, modal_handle?}`. The response contains a typed receipt and a `result`
+with only the requested page. The `protocol.schema.json` file also defines the immutable browser-status
+and allowlisted support-report shapes; there is no diagnostics/report upload endpoint.
+
+## Channel layout, publication time, and system history
+
+Use `layout="channel"` to see the authorized history window and composer rather than only the
+focused message. A message action in this window names its own `target_id`; a custom ID or focused-page
+target alone does not identify a message. `window.simcordPreview` remains a read-only status surface;
+use the bundled controls for actions.
 
 Relative labels and `<t:...>` tokens use `presentation_time` (timezone-aware), or the settled
 Env virtual clock when omitted. Publications freeze that time until refresh, rather than following
@@ -434,41 +505,52 @@ and the viewer's own reaction state; poll projections expose answer counts, perc
 and the viewer's selections, never voter lists. Failed actions retain recoverable drafts; refresh
 the page after a stale or failed result rather than replaying the consumed request.
 
-## Screenshot profiles, modes, and reports
-
 `preview.screenshot(path, ...)` settles and pins the requested viewer/target before releasing the
-Env operation guard. It returns an immutable `PreviewCapture`, not just a path:
+Env operation guard. It returns an immutable, versioned `PreviewCapture`, not just a path:
 
 ```python
 capture = await preview.screenshot(
     "panel.png", viewer=alice, target=panel, mode="surface",
-    media_time=2.5, allow_incomplete=False,
+    viewport=(360, 640), layout="channel",
 )
 assert capture.ready
-print(capture.complete, capture.media_metadata)
+print(capture.complete, capture.geometry)
 ```
 
-`path` is `str | os.PathLike | None`. Pass `None` to render entirely in memory: `capture.path` is then `None` and
-`capture.png` holds the PNG bytes (`bytes | None`, `None` when a filesystem path was given), which
-suits agents and diff tooling that never touch disk.
+`viewport=(width, height)` requests those exact logical dimensions for this capture; `layout` is
+`"message"` or `"channel"`. Both override only the managed capture pin and do not resize or retarget
+human pages or change session defaults. If omitted, dimensions and layout come from the Python
+presentation. The report identifies `schema_version=1` and `protocol_version=3`; `geometry` records
+the requested logical viewport, content extent, visible crop, scroll offset, overflow, scope and output
+dimensions.
 
-The effective profile records theme, viewport width/height, locale, timezone, device scale, reduced
-motion, Playwright/browser versions, packaged font faces and any actual platform fallback, emoji
-fallback, and animation policy.
-`mode="surface"` captures the focused message or modal dialog at its actual viewport-constrained
-geometry; it never expands modal content for a screenshot. `mode="viewport"` captures the emulated
-preview viewport, including its modal backdrop and dialog but excluding the outside inspector. Use an
-interactive browser session to inspect modal content at both scroll extremes. Width and height are
-positive bounded integers and are checked against the screenshot raster limits above.
+`path` is `str | os.PathLike | None`. Pass `None` to render entirely in memory: `capture.path` is then
+`None` and `capture.png` holds the PNG bytes (`bytes | None`, `None` when a filesystem path was given),
+which suits agents and diff tooling that never touch disk.
 
-The report includes viewer, channel, target, and modal IDs, published and render generations, output
-geometry, media metadata (effective frame times, codec selection, transformations), readiness,
-calibration, action status, and diagnostics. Captures reject unsettled actions, unavailable authorization,
-incomplete output (unless explicitly opted in),
-concurrent capture, a bot restart during capture, and invalid destinations. Output is written
-atomically, so cancellation or a failed capture does not leave a partial PNG. A pinned capture
-cannot follow later focus, viewer, or backend changes; access and attachment membership are
-rechecked before bytes are served.
+The effective profile records theme, viewport width/height, locale, timezone, device scale,
+reduced motion, Playwright/browser versions, packaged font faces and any actual platform fallback,
+emoji fallback, and animation policy. `mode="surface"` captures only the visible intersection of the
+focused message or modal dialog with its owning viewport (`scope="visible"`); it never expands,
+stitches or scrolls content to simulate a full-scroll image. `mode="viewport"` captures the exact
+logical preview viewport, including its modal backdrop and dialog but excluding the outside inspector.
+Use an interactive browser session to inspect modal content at both scroll extremes. Width and height
+are positive bounded integers and are checked against the screenshot raster limits above.
+
+The report includes viewer, channel, target and modal IDs, published and render generations, geometry,
+media metadata (effective frame times, codec selection, transformations), readiness, calibration,
+action status and diagnostics. Captures reject unsettled actions, unavailable authorization,
+incomplete output (unless explicitly opted in), concurrent capture, a bot restart during capture, and
+invalid destinations. Output is written atomically, so cancellation or a failed capture does not leave
+a partial PNG. A pinned capture cannot follow later focus, viewer or backend changes; access and
+attachment membership are rechecked before bytes are served.
+
+The Capture panel's executable recipe is Python for the real active scenario, with `preview` in scope;
+it is not a standalone scenario definition. Managed captures use a separate pinned page and do not
+inherit a human page's open menus, select/modal drafts, or other transient UI state. To capture those
+states, use the browser/agent screenshot tool on that live page after checking
+`window.simcordPreview.ready`, the action/publication revision and render generation. The recipe and
+live screenshot are private artifacts, unlike the allowlisted support report above.
 
 ## Reference fixture catalog
 
@@ -592,7 +674,9 @@ stickers, voice attachments, and bounded animated media. Purchasing, arbitrary r
 server/channel navigation, login, and native-mobile Discord remain outside this preview surface.
 Components and Markdown use controlled DOM nodes; their line wrapping, glyph outlines, geometry,
 and platform codec availability may differ from Discord. Licensed Noto fonts and Noto Color Emoji
-are packaged for covered scripts; proprietary Discord fonts and assets are not bundled.
+are packaged for covered scripts; proprietary Discord fonts and assets are not bundled. Their
+per-face versions and SIL OFL 1.1 notices are listed in `static/fonts/manifest.json` and its adjacent
+license files; this does not certify actual browser glyph selection.
 
 No certification-grade Discord reference pack is bundled, so arbitrary captures remain uncalibrated.
 The ledger names the exact blocked profiles and fixture prerequisites. A repeated PNG proves local

@@ -85,9 +85,9 @@ def _scrub(value: Any) -> Any:
 
 
 def validate_snapshot(snapshot: Mapping[str, Any]) -> None:
-    """Reject malformed protocol-2 data before it can become a capture."""
-    if snapshot.get("protocolVersion") != 2:
-        raise ValueError("capture snapshot is not protocol 2")
+    """Reject malformed protocol-3 data before it can become a capture."""
+    if snapshot.get("protocolVersion") != 3:
+        raise ValueError("capture snapshot is not protocol 3")
     if not isinstance(snapshot.get("messages"), Mapping):
         raise ValueError("capture snapshot messages must be an object")
     if not isinstance(snapshot.get("profile"), Mapping):
@@ -198,7 +198,11 @@ def _bot() -> commands.Bot:
 
 
 async def _ready(page: Any, deadline_ms: float = 30_000) -> None:
-    await page.wait_for_function("() => window.simcordPreview?.ready === true", timeout=deadline_ms)
+    await page.wait_for_function(
+        "() => window.simcordPreview?.ready === true && !window.simcordPreview.pendingAction && "
+        "['healthy', 'recovered'].includes(window.simcordPreview.transport.state)",
+        timeout=deadline_ms,
+    )
     await page.wait_for_function(
         "() => !document.fonts || document.fonts.status === 'loaded'", timeout=deadline_ms
     )
@@ -410,6 +414,7 @@ async def _capture_row(
                 viewers=[viewer],
                 width=int(profile["viewport"]["width"]),
                 height=int(profile["viewport"]["height"]),
+                display="fixed",
                 locale=str(profile.get("locale", "en-GB"))
                 if profile.get("locale") not in {None, "unknown"}
                 else "en-GB",
@@ -438,6 +443,17 @@ async def _capture_row(
                     try:
                         await page.goto(preview.url, wait_until="domcontentloaded", timeout=30_000)
                         await _ready(page)
+                        chrome = await page.evaluate(
+                            "() => { const host = document.querySelector('#preview-stage'); "
+                            "return {width: innerWidth - host.clientWidth, height: innerHeight - host.clientHeight}; }"
+                        )
+                        await page.set_viewport_size(
+                            {
+                                "width": int(profile["viewport"]["width"]) + int(chrome["width"]),
+                                "height": int(profile["viewport"]["height"]) + int(chrome["height"]),
+                            }
+                        )
+                        await _ready(page)
                         action = await _act(page, recipe)
                         final_snapshot = await preview.snapshot()
                         validate_snapshot(final_snapshot)
@@ -448,7 +464,7 @@ async def _capture_row(
                         surface = (
                             page.get_by_role("listbox")
                             if recipe[0] == "open-select" and scope == "dialog"
-                            else page.locator(".message-surface")
+                            else page.locator("#focused-content")
                         )
                         if not await surface.is_visible():
                             raise ValueError("expected capture surface is unavailable")
@@ -458,15 +474,34 @@ async def _capture_row(
                             capture_action = capture.action
                             capture_profile = dict(capture.profile)
                         else:
-                            await surface.screenshot(path=str(path), type="png")
-                            box = await surface.bounding_box()
-                            geometry = {"surface": dict(box) if isinstance(box, Mapping) else {}}
+                            geometry = await surface.evaluate("""element => {
+                              const rect = element.getBoundingClientRect();
+                              const app = document.querySelector('#preview-app').getBoundingClientRect();
+                              const host = document.querySelector('#preview-stage').getBoundingClientRect();
+                              const x = Math.ceil(Math.max(rect.left, app.left, host.left, 0));
+                              const y = Math.ceil(Math.max(rect.top, app.top, host.top, 0));
+                              const right = Math.floor(Math.min(rect.right, app.right, host.right, innerWidth));
+                              const bottom = Math.floor(Math.min(rect.bottom, app.bottom, host.bottom, innerHeight));
+                              return {mode:'surface', scope:'visible',
+                                logicalViewport:{x:app.x,y:app.y,width:app.width,height:app.height,right:app.right,bottom:app.bottom},
+                                contentExtent:{width:element.scrollWidth,height:element.scrollHeight},
+                                visibleCrop:{x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)},
+                                scrollOffset:{x:element.scrollLeft,y:element.scrollTop},
+                                overflow:{horizontal:element.scrollWidth>element.clientWidth,vertical:element.scrollHeight>element.clientHeight},
+                                viewportWidth:app.width,viewportHeight:app.height,
+                                outputWidth:Math.max(0,right-x),outputHeight:Math.max(0,bottom-y)};
+                            }""")
+                            if geometry["outputWidth"] <= 0 or geometry["outputHeight"] <= 0:
+                                raise ValueError("capture surface has no visible intersection")
+                            await page.screenshot(path=str(path), type="png", clip=geometry["visibleCrop"])
                             status = await _status(page)
                             capture_action = status.get("lastAction")
-                            capture_profile = dict(snapshot.get("profile", {}))
+                            capture_profile = dict(status.get("profile", {}))
                         metadata = _scrub(
                             {
                                 "schemaVersion": 1,
+                                "protocolVersion": 3,
+                                "runtimeVersion": simcord.__version__,
                                 "profile": capture_profile,
                                 "action": capture_action,
                                 "actionRecipe": action,

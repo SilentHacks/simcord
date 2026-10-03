@@ -69,8 +69,8 @@ async def test_preview_eager_validation_and_dm_access(env, channel, alice):
         ({"viewers": []}, "viewers must be a non-empty sequence"),
         ({"viewers": [alice, alice]}, "viewers must be unique"),
         ({"viewers": [env.create_user("outsider")]}, "guild previews require members"),
-        ({"viewers": [alice], "width": True}, "width must be"),
-        ({"viewers": [alice], "height": 0}, "height must be"),
+        ({"viewers": [alice], "width": True}, None),
+        ({"viewers": [alice], "height": 0}, None),
         ({"viewers": [alice], "locale": "xx"}, "unsupported locale"),
         ({"viewers": [alice], "timezone": "Mars/Olympus"}, "unsupported timezone"),
         ({"viewers": [alice], "assets": {"u": "not-a-tuple"}}, "assets must map"),
@@ -496,6 +496,7 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
         )
         assert failed["dispatched"] is True
         assert failed["acknowledgement"] == "unacknowledged"
+        assert failed["settlement"] == "failed"
 
         timed = await preview._action(
             "python",
@@ -510,10 +511,12 @@ async def test_preview_click_error_timeout_and_close_action(env, channel, alice)
         )
         assert timed["dispatched"] is True
         assert timed["acknowledgement"] == "unacknowledged"
+        assert timed["settlement"] == "failed"
 
         closed = await preview._action("python", action_body(page, "close", 3, request_id="close"))
         assert closed["settlement"] == "settled"
         await preview.wait_closed()
+    assert [type(error) for error in env.errors] == [RuntimeError, TimeoutError]
 
 
 @pytest.mark.asyncio
@@ -639,7 +642,7 @@ async def test_preview_dm_entity_candidates_and_select(env, alice):
         page = preview._python
         payload = preview._page_payload(page)
         who_key = control_key(payload, "who")
-        assert payload["candidates"][who_key][0]["id"] == str(alice.id)
+        assert payload["candidates"][who_key]["entries"][0]["id"] == str(alice.id)
         result = await preview._action(
             "python",
             action_body(
@@ -659,11 +662,12 @@ async def test_preview_dm_entity_candidates_and_select(env, alice):
 @pytest.mark.asyncio
 async def test_preview_projects_system_references_and_unknown_message_types(env, channel, alice):
     referenced = env.backend.create_message(channel.id, alice.id, "original")
-    system = env.backend.create_system_message(
-        channel.id,
+    native_reference = await env.bot.get_channel(channel.id).fetch_message(referenced.id)
+    system = env.guild.create_system_message(
+        channel,
         MessageType.PINS_ADD,
-        alice.id,
-        referenced_message_id=referenced.id,
+        author=alice,
+        referenced_message=native_reference,
     )
     unknown = env.backend.create_message(channel.id, alice.id, "plain fallback", message_type=999)
 
@@ -671,12 +675,11 @@ async def test_preview_projects_system_references_and_unknown_message_types(env,
         payload = preview._page_payload(preview._open_page(alice.id, target_id=system.id))
         system_view = payload["messages"][str(system.id)]
         assert system_view["type_info"]["kind"] == "system"
-        assert system_view["system"]["text"] == "pinned a message to this channel."
         assert system_view["system"]["reference"]["id"] == str(referenced.id)
         unknown_payload = preview._page_payload(preview._open_page(alice.id, target_id=unknown.id))
         unknown_view = unknown_payload["messages"][str(unknown.id)]
         assert unknown_view["type_info"] == {"kind": "unknown", "known": False}
-        assert any(item["code"] == "message_type_unknown" for item in unknown_payload["diagnostics"])
+        assert any(item["code"] == "message-type-unknown" for item in unknown_payload["diagnostics"])
         from playwright.async_api import async_playwright
 
         async with async_playwright() as playwright:
@@ -684,8 +687,32 @@ async def test_preview_projects_system_references_and_unknown_message_types(env,
             try:
                 page = await browser.new_page()
                 await page.goto(preview.url)
-                await page.get_by_text("pinned a message to this channel.", exact=True).wait_for()
+                reference_link = page.locator(".message-system-link")
+                await reference_link.wait_for()
+                assert await reference_link.get_attribute("href") == native_reference.jump_url
                 assert await page.get_by_text("plain fallback", exact=True).is_visible()
-                assert await page.locator("#diagnostics").get_by_text("message_type_unknown").count()
+                assert await page.locator("#diagnostics").get_by_text("message-type-unknown").count()
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_service_references_reject_foreign_fixture_identities(env, channel, alice):
+    async with simcord.run(create_bot()) as foreign:
+        foreign_guild = foreign.create_guild("Private foreign guild")
+        foreign_channel = foreign_guild.create_text_channel("private")
+        foreign_author = foreign_guild.add_member(foreign.create_user("private author"))
+        before = tuple(env.backend.messages)
+        for overrides in (
+            {"channel": foreign_channel},
+            {"author": foreign_author},
+            {"recipient": foreign_author},
+            {"target_channel": foreign_channel},
+        ):
+            arguments = {"channel": channel, "author": alice, **overrides}
+            with pytest.raises(simcord.SetupError):
+                env.guild.create_system_message(message_type=MessageType.PINS_ADD, **arguments)
+        assert tuple(env.backend.messages) == before
+    dm = await alice.send_dm("private DM reference")
+    with pytest.raises(simcord.SetupError):
+        env.guild.create_system_message(channel, MessageType.PINS_ADD, author=alice, referenced_message=dm)

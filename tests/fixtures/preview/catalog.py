@@ -282,9 +282,7 @@ class StringSelectVariantModal(discord.ui.Modal, title="REF-52-STRING-SELECT-VAR
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            "REF-52 string-select variants submitted.", ephemeral=True
-        )
+        await interaction.response.send_message("REF-52 string-select variants submitted.", ephemeral=True)
 
 
 class EntityModal(discord.ui.Modal, title="REF-53-ENTITY-MODAL"):
@@ -307,8 +305,8 @@ class EntityModal(discord.ui.Modal, title="REF-53-ENTITY-MODAL"):
         await interaction.response.send_message(
             "REF-53 submitted; reopen it for more captures.", ephemeral=True
         )
- 
- 
+
+
 class DogfoodEntityDefaultsModal(discord.ui.Modal, title="DOG-D01-GUILD-ENTITY-DEFAULTS"):
     def __init__(self, guild: discord.Guild, viewer_id: int) -> None:
         super().__init__()
@@ -327,9 +325,7 @@ class DogfoodEntityDefaultsModal(discord.ui.Modal, title="DOG-D01-GUILD-ENTITY-D
         user_default = discord.SelectDefaultValue(
             id=default_member.id, type=discord.SelectDefaultValueType.user
         )
-        role_default = discord.SelectDefaultValue(
-            id=role.id, type=discord.SelectDefaultValueType.role
-        )
+        role_default = discord.SelectDefaultValue(id=role.id, type=discord.SelectDefaultValueType.role)
         channel_default = discord.SelectDefaultValue(
             id=channel.id, type=discord.SelectDefaultValueType.channel
         )
@@ -383,9 +379,7 @@ class DogfoodEntityDefaultsModal(discord.ui.Modal, title="DOG-D01-GUILD-ENTITY-D
 class DogfoodDMEntityDefaultsModal(discord.ui.Modal, title="DOG-D01-DM-USER-DEFAULTS"):
     def __init__(self, viewer_id: int) -> None:
         super().__init__()
-        default = discord.SelectDefaultValue(
-            id=viewer_id, type=discord.SelectDefaultValueType.user
-        )
+        default = discord.SelectDefaultValue(id=viewer_id, type=discord.SelectDefaultValueType.user)
         self.add_item(
             discord.ui.Label(
                 text="Required user",
@@ -670,9 +664,7 @@ def close_payload(payload: dict[str, object]) -> None:
 
 
 class DogfoodChoices(discord.ui.View):
-    def __init__(
-        self, *, custom_id: str, minimum: int = 1, maximum: int = 1
-    ) -> None:
+    def __init__(self, *, custom_id: str, minimum: int = 1, maximum: int = 1) -> None:
         super().__init__(timeout=None)
         select = discord.ui.Select(
             custom_id=custom_id,
@@ -691,13 +683,10 @@ class DogfoodChoices(discord.ui.View):
 
         async def picked(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(
-                f"Selected: {select.values}", ephemeral=True
-            )
+            await interaction.followup.send(f"Selected: {select.values}", ephemeral=True)
 
         select.callback = picked
         self.add_item(select)
-
 
 
 class DogfoodLongMessageView(discord.ui.View):
@@ -710,9 +699,7 @@ class DogfoodLongMessageView(discord.ui.View):
         custom_id="dogfood:long:tail",
     )
     async def tail(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_message(
-            "DOG-05 final control reached.", ephemeral=True
-        )
+        await interaction.response.send_message("DOG-05 final control reached.", ephemeral=True)
 
 
 DOGFOOD_SCENARIOS = (
@@ -895,7 +882,8 @@ def dogfood_payloads(viewer_mention: str) -> list[dict[str, object]]:
         "__underline__ ~~strike~~ ||secret||\n> Quote\n>>> Multi-line quote\ncontinued\n"
         "[Masked link](https://example.com)\nhttps://example.com\n"
         "Escaped: \\https://example.com\nUnsafe schemes: javascript:alert(1) data:text/plain,unsafe\n"
-        "```python\nprint('hello')\n```\n:smile: 😀\n" + viewer_mention
+        "```python\nprint('hello')\n```\n:smile: 😀\n"
+        "Latin العربية עברית 中文 नमस्ते 👩🏽‍💻 👍🏽 🇺🇳 1️⃣ ♥︎ ♥️\n" + viewer_mention
     )
     payloads: list[dict[str, object]] = [
         {"content": markdown},
@@ -905,31 +893,22 @@ def dogfood_payloads(viewer_mention: str) -> list[dict[str, object]]:
         },
         {
             "content": "DOG-02 Required multi select, 25 choices, min 1/max 2",
-            "view": DogfoodChoices(
-                custom_id="dogfood:multi-required-select", minimum=1, maximum=2
-            ),
+            "view": DogfoodChoices(custom_id="dogfood:multi-required-select", minimum=1, maximum=2),
         },
         {
             "content": "DOG-04 Optional single select, 25 choices",
-            "view": DogfoodChoices(
-                custom_id="dogfood:single-optional-select", minimum=0, maximum=1
-            ),
+            "view": DogfoodChoices(custom_id="dogfood:single-optional-select", minimum=0, maximum=1),
         },
         {
             "content": "DOG-03 Multi select, 25 choices, requires two",
-            "view": DogfoodChoices(
-                custom_id="dogfood:multi-min2-select", minimum=2, maximum=3
-            ),
+            "view": DogfoodChoices(custom_id="dogfood:multi-min2-select", minimum=2, maximum=3),
         },
         {
             "content": "DOG-04 Optional multi select",
-            "view": DogfoodChoices(
-                custom_id="dogfood:multi-optional-select", minimum=0, maximum=2
-            ),
+            "view": DogfoodChoices(custom_id="dogfood:multi-optional-select", minimum=0, maximum=2),
         },
         {
-            "content": "DOG-05 Long content\n"
-            + "Long message line, inspect scrolling and clipping.\n" * 32,
+            "content": "DOG-05 Long content\n" + "Long message line, inspect scrolling and clipping.\n" * 32,
             "view": DogfoodLongMessageView(),
         },
         {"content": "DOG-06 Duplicate label"},

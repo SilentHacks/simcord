@@ -41,7 +41,7 @@ export function appendEmojiValue(parent, emoji, options = {}, label = "Custom em
     return;
   }
   if (emoji.custom !== true && !emoji.id) {
-    appendText(parent, emoji.name || "");
+    parent.append(node("span", "unicode-emoji", emoji.name || ""));
     return;
   }
   const assetId = typeof emoji.asset_id === "string" ? emoji.asset_id : null;
@@ -60,12 +60,12 @@ export function appendEmojiValue(parent, emoji, options = {}, label = "Custom em
   image.alt = String(emoji.name || label || "Custom emoji");
   const pending = Promise.resolve(options.loadAsset(assetId, { download: emoji.animated === true }))
     .then((url) => {
-      if (options.isCurrent && !options.isCurrent()) return;
+      if (!image.isConnected && options.isCurrent && !options.isCurrent()) return;
       image.src = url;
       return image.decode ? image.decode() : undefined;
     })
     .catch((error) => {
-      if (!options.isCurrent || options.isCurrent()) {
+      if (image.isConnected || !options.isCurrent || options.isCurrent()) {
         image.replaceWith(node("span", "emoji-unavailable", `${label} unavailable`));
         options.onDiagnostic?.({
           code: "custom-emoji-unavailable",

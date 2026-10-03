@@ -6,7 +6,7 @@ import discord
 import jsonschema
 import pytest
 from aiohttp import ClientSession
-from preview_helpers import control_key, preview_headers, target_message
+from preview_helpers import action_body, control_key, preview_headers, target_message
 
 import simcord
 
@@ -31,7 +31,7 @@ async def test_preview_snapshot_returns_detached_projection(env, channel, alice)
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
         snap = await preview.snapshot()
-        assert snap["protocolVersion"] == 2
+        assert snap["protocolVersion"] == 3
         assert "selected" not in snap
         assert snap["viewerId"] == str(alice.id)
         assert target_message(snap)["content"] == "Panel"
@@ -175,3 +175,121 @@ async def test_preview_localhost_origin_allowed(env, channel, alice):
             json={},
         )
         assert response.status == 401
+
+
+@pytest.mark.asyncio
+async def test_navigation_is_bounded_query_scoped_and_preserved_on_resize(env, channel, alice):
+    cached = env.bot.get_channel(channel.id)
+    for number in range(1001):
+        await cached.send(f"INDEX {number:04} Café 👩🏽‍💻 ||classifiedneedle||")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        other = preview._open_page(alice.id)
+        initial = preview._page_payload(page)
+        assert len(initial["messageIndex"]) == 50
+        assert len(initial["messages"]) == 1
+        assert "classifiedneedle" not in json.dumps(initial["messageIndex"])
+
+        query = await preview._action(page.id, action_body(page, "browse_messages", 1, query="CAFE\u0301"))
+        assert query["settlement"] == "settled"
+        first = query["result"]["messageIndex"]
+        cursor = query["result"]["navigation"]["nextCursor"]
+        assert len(first) == 50 and cursor
+        rejected = await preview._action(
+            other.id, action_body(other, "browse_messages", 1, query="CAFE\u0301", cursor=cursor)
+        )
+        assert rejected["rejected"] and other.last_sequence == 0
+        assert rejected["diagnostics"][0]["code"] == "stale-cursor"
+        second = await preview._action(
+            page.id, action_body(page, "browse_messages", 2, query="CAFE\u0301", cursor=cursor)
+        )
+        assert not ({row["id"] for row in first} & {row["id"] for row in second["result"]["messageIndex"]})
+        generation = page.generation
+        resized = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "configure_presentation",
+                3,
+                layout="message",
+                display="responsive",
+                width=960,
+                height=720,
+                host_width=320,
+                host_height=240,
+            ),
+        )
+        assert not resized["rejected"]
+        assert page.generation == generation
+        snapshot = preview._page_payload(page)
+        assert snapshot["presentation"]["viewport"] == {"width": 320, "height": 240}
+        assert snapshot["presentation"]["exactProfile"] == {"width": 960, "height": 720}
+        assert snapshot["navigation"]["query"] == "café"
+        assert snapshot["messageIndex"] == second["result"]["messageIndex"]
+        assert preview._page_payload(preview._python)["presentation"]["viewport"] == {
+            "width": 960,
+            "height": 720,
+        }
+        focused = await preview._action(page.id, action_body(page, "focus", 4, target_id=first[0]["id"]))
+        assert not focused["rejected"]
+        assert preview._page_payload(page)["navigation"]["query"] == "café"
+        old_cursor = await preview._action(
+            page.id, action_body(page, "browse_messages", 5, query="CAFE\u0301", cursor=cursor)
+        )
+        assert old_cursor["rejected"] and old_cursor["diagnostics"][0]["code"] == "stale-cursor"
+        hidden = await preview._action(
+            page.id, action_body(page, "browse_messages", 5, query="classifiedneedle")
+        )
+        assert hidden["result"]["messageIndex"] == []
+        too_long = await preview._action(page.id, action_body(page, "browse_messages", 6, query="x" * 129))
+        assert too_long["rejected"] and page.last_sequence == 5
+
+
+@pytest.mark.asyncio
+async def test_receipts_only_discover_causal_authorized_outputs_and_never_replay(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    calls = []
+    unrelated = []
+
+    class OutputView(discord.ui.View):
+        @discord.ui.button(label="Output", custom_id="causal-output")
+        async def output(self, interaction: discord.Interaction, button: discord.ui.Button):
+            calls.append(interaction.id)
+            await interaction.response.send_message("private response", ephemeral=True)
+            await interaction.followup.send("private followup", ephemeral=True)
+            unrelated.append(await env.bot.get_channel(channel.id).send("unrelated bot output"))
+
+    source = await env.bot.get_channel(channel.id).send("source", view=OutputView())
+    async with env.preview(channel, viewers=[alice, bob]) as preview:
+        await preview.show(source)
+        page = preview._open_page(alice.id)
+        body = action_body(
+            page,
+            "click",
+            1,
+            custom_id="causal-output",
+            control_key=control_key(preview._page_payload(page), "causal-output"),
+        )
+        receipt = await preview._action(page.id, body)
+        assert receipt["dispatch"] == "dispatched" and receipt["settlement"] == "settled"
+        assert {item["kind"] for item in receipt["outcomes"]} == {"response", "followup"}
+        output_ids = {item["messageId"] for item in receipt["outcomes"]}
+        assert str(unrelated[0].id) not in output_ids
+        assert receipt["target"]["messageId"] == str(source.id)
+        assert page.target_id == source.id
+        replay = await preview._action(page.id, body)
+        assert replay == receipt and len(calls) == 1
+        other = preview._open_page(bob.id)
+        private_focus = await preview._action(
+            other.id, action_body(other, "focus", 1, target_id=next(iter(output_ids)))
+        )
+        assert private_focus["rejected"] and other.target_id == source.id
+        await env.bot.get_channel(channel.id).set_permissions(
+            env.bot.get_guild(env.guild.id).get_member(alice.id), view_channel=False
+        )
+        await preview.refresh()
+        replay_denied = await preview._action(page.id, body)
+        assert replay_denied["presentation"] == "access_denied"
+        assert replay_denied["target"] is None
+        assert replay_denied["outcomes"] == [] and len(calls) == 1
+        assert not preview._page_payload(page)["messageIndex"]

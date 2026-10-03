@@ -77,9 +77,9 @@ For an authenticated local browser page showing real component callbacks, instal
 `simcord[preview]` (a Preview now requires its full extra); for deterministic PNGs
 install `simcord[screenshot]` and run `playwright install --with-deps chromium`.
 See the [component preview and screenshots guide](https://simcord.readthedocs.io/en/latest/guides/preview/)
-for protocol-2 migration, lifecycle, security, bounded media, comparison workflow,
-and uncertified fidelity boundaries. Private Discord reference comparisons and human
-screen-reader review remain separate release prerequisites, not CI pass claims.
+for the protocol-3 snapshot, navigation, candidate and receipt contracts; lifecycle,
+security, bounded media and deterministic capture. Private Discord reference comparison
+and human screen-reader review remain blocked release gates; no parity certification is claimed.
 
 ## Quickstart
 

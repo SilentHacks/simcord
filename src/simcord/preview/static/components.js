@@ -1,5 +1,6 @@
 import { node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { appendEmojiValue, appendMarkdownOrText } from "./text.js";
+import { SELECT_TYPES, optionDefaults, optionEntries, renderSelect, selectedIds } from "./selects.js";
 import {
   downloadButton,
   fileTypeLabel,
@@ -14,10 +15,8 @@ const TYPE = Object.freeze({
   MEDIA_GALLERY: 12, FILE: 13, SEPARATOR: 14, CONTAINER: 17, LABEL: 18, FILE_UPLOAD: 19,
   RADIO_GROUP: 21, CHECKBOX_GROUP: 22, CHECKBOX: 23,
 });
-const SELECT_TYPES = new Set([TYPE.STRING_SELECT, TYPE.USER_SELECT, TYPE.ROLE_SELECT, TYPE.MENTIONABLE_SELECT, TYPE.CHANNEL_SELECT]);
 const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADIO_GROUP, TYPE.CHECKBOX_GROUP, TYPE.CHECKBOX, TYPE.FILE_UPLOAD]);
 const FILE_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
-const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"/></svg>';
 
 function appendEmojiText(parent, text) {
   parent.append(document.createTextNode(String(text ?? "")));
@@ -30,9 +29,6 @@ function keyFor(component, path, scope = "message") {
 }
 function safeId(path) {
   return encodeURIComponent(path);
-}
-function optionId(key, value) {
-  return `option-${safeId(JSON.stringify([key, value]))}`;
 }
 function safeLink(value) {
   if (typeof value !== "string") return null;
@@ -47,254 +43,8 @@ function appendLabel(parent, text, required = false) {
   parent.append(label);
   return label;
 }
-function optionDefaults(component, options) {
-  if (Array.isArray(component.default_values)) {
-    return component.default_values.map((entry) => String(entry && typeof entry === "object" ? entry.id : entry));
-  }
-  return options.filter((item) => item && item.default === true).map((item) => String(item.value ?? item.id));
-}
-function optionEntries(component, candidates) {
-  return component.type === TYPE.STRING_SELECT ? (Array.isArray(component.options) ? component.options : []) : (Array.isArray(candidates) ? candidates : []);
-}
-function displaySelection(values, entries, placeholder) {
-  const labels = values.map((value) => {
-    const found = entries.find((item) => String(item.value ?? item.id) === String(value));
-    return found ? String(found.label ?? found.name ?? found.value ?? found.id) : String(value);
-  });
-  return labels.length ? labels.join(", ") : (placeholder || "Select an option");
-}
 
 
-function renderSelect(component, path, options) {
-  const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel, onNavigate, onClear } = options;
-  const key = keyFor(component, path, scope);
-  const entries = optionEntries(component, candidates?.[component.control_key || key]);
-  const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
-  const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
-  const entityIcon = (entry, kind) => {
-    const icon = node("span", "entity-icon");
-    if (kind === "user") {
-      const rendered = renderIdentityAvatar(entry, options);
-      icon.append(rendered.element);
-      options.pendingMedia?.push(...rendered.pending);
-      const dot = presenceDot(entry);
-      if (dot) icon.append(dot);
-      return icon;
-    }
-    if (kind === "role") {
-      const mark = node("span", "entity-role-mark");
-      const iconColor = Number(entry.icon_color ?? entry.color ?? 0) >>> 0;
-      mark.style.color = iconColor ? `#${iconColor.toString(16).padStart(6, "0")}` : "#b5bac1";
-      mark.insertAdjacentHTML("beforeend", ROLE_MARK_SVG);
-      icon.append(mark);
-      return icon;
-    }
-    if (kind === "channel") {
-      const hash = node("span", "entity-channel");
-      hash.innerHTML = HASH_SVG;
-      icon.append(hash);
-      return icon;
-    }
-    return icon;
-  };
-  const multi = Number(component.max_values ?? 1) > 1 || Number(component.min_values ?? 1) > 1;
-  const minimum = Number(component.min_values ?? 1), maximum = Number(component.max_values ?? 1);
-  if (!drafts.has(key)) onInit?.(key, optionDefaults(component, entries).slice(0, maximum));
-  const rawSelected = Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : [];
-  const entryValues = new Set(entries.map((entry) => String(entry.value ?? entry.id ?? "")));
-  const selected = rawSelected.map(String).filter((value) => entryValues.has(value));
-  if (selected.length !== rawSelected.length || selected.some((value, index) => value !== rawSelected[index])) {
-    drafts.set(key, selected);
-  }
-  const isOpen = dropdown?.key === key;
-  const wrap = node("div", `preview-select select-type-${Number(component.type)}${isOpen ? " is-open" : ""}`); wrap.dataset.controlKey = key;
-  const popupOpen = () => wrap.classList.contains("is-open");
-  const label = component.placeholder || (multi ? "Select one or more options" : "Select an option");
-  const trigger = node("button", "select-trigger");
-  const valueDisplay = node("span", "select-value");
-  const single = selected.length === 1 ? entries.find((entry) => String(entry.value ?? entry.id ?? "") === selected[0]) : null;
-  if (multi && selected.length > 0) {
-    const chips = node("span", "select-chips");
-    for (const value of selected) {
-      const entry = entries.find((item) => String(item.value ?? item.id ?? "") === value);
-      const chip = node("span", entry?.kind && entry.kind !== "string" ? "select-chip select-entity" : "select-chip");
-      if (entry?.kind && entry.kind !== "string") {
-        chip.append(entityIcon(entry, entry.kind));
-        if (entry.kind === "role") {
-          const swatch = node("span", "entity-role-swatch");
-          const color = Number(entry.color ?? 0) >>> 0;
-          swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
-          chip.append(swatch);
-        }
-      } else if (entry?.emoji) appendEmojiValue(chip, entry.emoji, options);
-      const chipLabel = node("span", "select-chip-label");
-      appendEmojiText(chipLabel, entry ? (entry.label ?? entry.name ?? value) : value);
-      chip.append(chipLabel);
-      chips.append(chip);
-    }
-    valueDisplay.append(chips);
-  } else if (single && single.kind && single.kind !== "string") {
-    const chip = node("span", "select-entity");
-    chip.append(entityIcon(single, single.kind));
-    if (single.kind === "role") {
-      const swatch = node("span", "entity-role-swatch");
-      const color = Number(single.color ?? 0) >>> 0;
-      swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
-      chip.append(swatch);
-    }
-    chip.append(node("span", "select-entity-name", single.label ?? single.name ?? selected[0]));
-    valueDisplay.append(chip);
-  } else {
-    if (single?.emoji) { const emoji = node("span", "selected-emoji"); appendEmojiValue(emoji, single.emoji, options); valueDisplay.append(emoji); }
-    const valueLabel = node("span", "select-value-label");
-    if (selected.length === 1 && single) appendEmojiText(valueLabel, single.label ?? single.name ?? selected[0]);
-    else valueLabel.textContent = displaySelection(selected, entries, label);
-    valueDisplay.append(valueLabel);
-  }
-  trigger.append(valueDisplay);
-  let clear = null;
-  if (!multi && single && single.kind && single.kind !== "string") {
-    clear = node("button", "select-clear");
-    clear.type = "button";
-    clear.dataset.controlKey = key;
-    clear.setAttribute("aria-label", "Clear selection");
-    clear.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.4 4 12 10.4 5.6 4 4 5.6 10.4 12 4 18.4 5.6 20 12 13.6 18.4 20 20 18.4 13.6 12 20 5.6 18.4 4Z"/></svg>';
-    clear.addEventListener("click", () => onClear?.(key, minimum));
-    wrap.classList.add("has-clear");
-  }
-  trigger.type = "button"; trigger.disabled = component.disabled === true; trigger.dataset.controlKey = key;
-  trigger.id = `select-${safeId(key)}`;
-  trigger.setAttribute("role", "combobox");
-  trigger.setAttribute("aria-haspopup", "listbox"); trigger.setAttribute("aria-expanded", String(isOpen));
-  if (options.labelledBy) trigger.setAttribute("aria-labelledby", options.labelledBy);
-  else trigger.setAttribute("aria-label", label);
-  trigger.setAttribute("aria-valuetext", displaySelection(selected, entries, label));
-  if (scope.startsWith("modal:") && component.required !== false) trigger.setAttribute("aria-required", "true");
-  if (typeof component.custom_id === "string" && component.custom_id && options.validationError?.controlId === component.custom_id) {
-    trigger.setAttribute("aria-invalid", "true");
-  }
-  trigger.setAttribute("aria-controls", `listbox-${safeId(key)}`);
-  const activeValue = isOpen ? String(dropdown?.highlight ?? "") : "";
-  if (activeValue && entries.some((entry) => String(entry.value ?? entry.id ?? "") === activeValue)) {
-    trigger.setAttribute("aria-activedescendant", optionId(key, activeValue));
-  }
-  // Uncalibrated: singles commit on choice; multis on Enter/close/outside; Escape/blur cancel; modal stays local.
-  const choose = (value) => {
-    onDraft?.(key, value, multi, minimum, maximum, selected);
-    if (!multi) onCommit?.(key, [value]);
-  };
-  trigger.addEventListener("click", () => {
-    if (popupOpen()) {
-      if (multi) onCommit?.(key);
-      else onCancel?.(key);
-    } else onOpen?.(key, selected, multi, minimum, maximum, undefined, entries);
-  });
-  trigger.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && popupOpen()) {
-      event.preventDefault();
-      event.stopPropagation();
-      onCancel?.(key);
-      return;
-    }
-    if (!popupOpen() && ["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
-      event.preventDefault();
-      onOpen?.(key, selected, multi, minimum, maximum, undefined, entries);
-      return;
-    }
-    if (!popupOpen()) return;
-    const optionNodes = [...list.querySelectorAll('[role="option"]:not(.is-disabled)')];
-    let index = optionNodes.findIndex((item) => item.dataset.value === activeValue);
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
-      event.preventDefault();
-      if (event.key === "Home") index = 0;
-      else if (event.key === "End") index = optionNodes.length - 1;
-      else {
-        const start = index < 0 ? (event.key === "ArrowUp" ? optionNodes.length : -1) : index;
-        const delta = event.key === "ArrowDown" ? 1 : -1;
-        index = Math.max(0, Math.min(optionNodes.length - 1, start + delta));
-      }
-      if (optionNodes[index]) onNavigate?.(key, optionNodes[index].dataset.value);
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (multi && event.key === "Enter") {
-        onCommit?.(key);
-        return;
-      }
-      const value = optionNodes[index]?.dataset.value;
-      if (value !== undefined) choose(value);
-    }
-  });
-  wrap.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && popupOpen()) {
-      event.preventDefault();
-      event.stopPropagation();
-      onCancel?.(key);
-    }
-  });
-  wrap.addEventListener("focusout", () => {
-    if (!popupOpen() || !wrap.isConnected) return;
-    setTimeout(() => {
-      if (wrap.isConnected && !wrap.contains(document.activeElement)) onCancel?.(key);
-    }, 0);
-  });
-  wrap.append(trigger);
-  if (clear) wrap.append(clear);
-  const list = node("div", "select-list"); list.id = `listbox-${safeId(key)}`; list.hidden = !isOpen;
-  list.setAttribute("popover", "manual");
-  list.setAttribute("role", "listbox"); list.setAttribute("aria-multiselectable", String(multi));
-  list.setAttribute("aria-labelledby", trigger.id);
-  list.dataset.controlKey = `${key}:list`;
-  const decorateEntity = (option, entry, kind) => {
-    option.classList.add("option-entity");
-    option.append(entityIcon(entry, kind));
-    const label = node("span", "entity-label");
-    if (kind === "user") {
-      label.append(node("span", "entity-name", entry.label ?? entry.name ?? ""));
-      if (entry.username) label.append(node("span", "entity-username", entry.username));
-      if (entry.bot) label.append(node("span", "entity-app-badge", "APP"));
-      option.append(label);
-      return;
-    }
-    if (kind === "role") {
-      const color = Number(entry.color ?? 0) >>> 0;
-      const swatch = node("span", "entity-role-swatch");
-      swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
-      label.append(swatch, node("span", "entity-name entity-dim", entry.label ?? entry.name ?? ""));
-      const count = node("span", "entity-count");
-      count.insertAdjacentHTML("beforeend", PERSON_SVG);
-      count.append(document.createTextNode(String(entry.members ?? 0)));
-      label.append(count);
-      option.append(label);
-      return;
-    }
-    label.append(node("span", `entity-name${kind === "channel" ? " entity-dim" : ""}`, entry.label ?? entry.name ?? ""));
-    option.append(label);
-  };
-  const atMax = multi && selected.length >= maximum;
-  entries.forEach((entry) => {
-    const value = String(entry.value ?? entry.id ?? "");
-    const option = node("div", "select-option");
-    option.id = optionId(key, value);
-    option.dataset.value = value;
-    option.setAttribute("role", "option");
-    option.setAttribute("aria-selected", String(selected.includes(value)));
-    option.tabIndex = -1;
-    const disabled = atMax && !selected.includes(value);
-    if (disabled) { option.classList.add("is-disabled"); option.setAttribute("aria-disabled", "true"); }
-    if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
-    if (entry.kind && entry.kind !== "string") {
-      decorateEntity(option, entry, entry.kind);
-    } else {
-      if (entry.emoji) { const emoji = node("span", "option-emoji"); appendEmojiValue(emoji, entry.emoji, options); option.append(emoji); }
-      const optionLabel = node("span", "option-label"); appendEmojiText(optionLabel, entry.label ?? entry.name ?? value); option.append(optionLabel);
-      if (entry.description) option.append(node("small", "option-description", entry.description));
-    }
-    option.addEventListener("click", () => { if (disabled) return; choose(value); }); list.append(option);
-  });
-  if (!entries.length) list.append(node("div", "select-empty", "No available options"));
-  wrap.append(list);
-  return { element: wrap, value: () => (Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : []), key };
-}
 
 function appendPremiumIcon(button, presentation, options) {
   const assetId = presentation.icon_asset_id;
@@ -661,9 +411,9 @@ function modalError(options, customId) {
 function modalDefault(component, entries) {
   const type = Number(component.type);
   if (type === TYPE.TEXT_INPUT) return String(component.value ?? component.default ?? "");
-  if (SELECT_TYPES.has(type)) return optionDefaults(component, entries);
+  if (SELECT_TYPES.has(type)) return optionDefaults(entries);
   if (type === TYPE.RADIO_GROUP) return (component.options || []).find((item) => item.default)?.value ?? null;
-  if (type === TYPE.CHECKBOX_GROUP) return optionDefaults(component, component.options || []);
+  if (type === TYPE.CHECKBOX_GROUP) return optionDefaults(component.options || []);
   if (type === TYPE.CHECKBOX) return component.default === true;
   return [];
 }
@@ -714,9 +464,11 @@ function modalControl(component, path, labelText, options) {
     return finish(input, input, () => String(options.drafts.get(key) ?? ""), hasDefault);
   }
   if (SELECT_TYPES.has(type)) {
-    const entries = optionEntries(component, options.candidates?.[component.control_key || key]);
-    const defaults = modalDefault(component, entries);
+    const descriptor = options.candidates?.[component.control_key || key];
+    const entries = optionEntries(component, descriptor);
+    const defaults = Array.isArray(descriptor?.selected) ? selectedIds(descriptor) : modalDefault(component, entries);
     if (!options.drafts.has(key)) options.drafts.set(key, defaults);
+    options.onInit?.(key, options.drafts.get(key));
     const select = renderSelect(component, path, {
       ...options,
       labelledBy: labelId,

@@ -2,7 +2,7 @@
 
 Status: **implementation in progress; reference and human accessibility release gates remain blocked**.
 
-Implementation checkpoint: Commit 01 registers all 21 findings with independent implementation/reference states and reusable gallery controls. `preview_dogfood.py --check` passes for 21 scenarios; message, channel, and DM launches were exercised in Chromium at 800×600 and 360×640. Reference-bot and capture-catalog checks pass for eight registered surfaces. These checks do not certify Discord parity or complete the remaining commits.
+Implementation checkpoint: Commit 01 registers all 21 findings with independent implementation/reference states. The local protocol-3 cutover, responsive/exact presentation, scoped message/modal entity queries, Unicode/link pipeline, causal navigation, diagnostics/report privacy, and capture recipes are implemented. Real Chromium journeys, a sparse-font glyph corpus, executed Python capture recipes, fresh wheel/sdist checks, and an installed-wheel modal/edit/PNG journey were exercised. The repository suite passes 888 tests; the unchanged core coverage gate still fails at 94.27% against 95%. An untouched `988e4a2` snapshot also fails that gate at 94%; no threshold reduction or unrelated test padding was made. Independent review is blocked by the failed required gate. Authorized Discord transition/pixel evidence and human screen-reader gates remain unavailable; no 3.0 release or complete finding closure is claimed.
 
 Source of requirements: [the dogfood audit](../reviews/preview-dogfood.md), findings **D01–D12 and U01–U09**. These identifiers always refer to that audit, not the unrelated decision IDs in older plans.
 

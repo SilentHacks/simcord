@@ -8,6 +8,7 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 import asyncio
 import asyncio.timeouts
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import discord
@@ -25,6 +26,26 @@ def listener_futures(client: discord.Client) -> list[Any]:
     """Every future registered by ``Client.wait_for`` (``Client._listeners``)."""
     listeners = getattr(client, "_listeners", None)
     return [fut for entries in (listeners or {}).values() for fut, _ in entries]
+
+
+def capture_ui_errors(client: discord.Client, record_error: Callable[[BaseException], None]) -> None:
+    """Capture UI exceptions before discord.py's default handlers swallow them."""
+    store = get_state(client)._view_store
+    add_view = _original_callback(store.add_view)
+
+    def register(view: Any, message_id: int | None = None) -> None:
+        original = _original_callback(view.on_error)
+
+        async def on_error(interaction: Any, error: BaseException, *args: Any) -> None:
+            record_error(error)
+            await original(interaction, error, *args)
+
+        on_error.__simcord_original_callback__ = original
+        view.on_error = on_error
+        add_view(view, message_id)
+
+    register.__simcord_original_callback__ = add_view
+    store.add_view = register
 
 
 def verify() -> None:

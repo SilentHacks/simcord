@@ -7,6 +7,7 @@ from aiohttp import ClientSession
 from preview_helpers import png_bytes, preview_headers, target_message
 
 from simcord.backend.cdn import CDN_BASE
+from simcord.preview._markdown import markdown_summary, markdown_tokens
 
 
 @pytest.mark.asyncio
@@ -79,9 +80,33 @@ async def test_preview_avatar_authorization_copied_url_and_replacement(env, chan
         await response.read()
         original = env.backend.cdn.get(first.attachments[0].url)
         assert original is not None
-        env.backend.cdn._blobs[first.attachments[0].url] = png_bytes() + b"replacement"
+        from PIL import Image
+
+        replacement = io.BytesIO()
+        Image.new("RGBA", (2, 2), (60, 40, 20, 255)).save(replacement, format="PNG")
+        replacement_bytes = replacement.getvalue()
+        assert len(replacement_bytes) == len(original)
+        env.backend.cdn._blobs[first.attachments[0].url] = replacement_bytes
         response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
         assert response.status == 404
+
+        await preview.refresh()
+        replacement_id = target_message(preview._page_payload(preview._python))["attachments"][0]["asset_id"]
+        assert replacement_id != asset_id
+        response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
+        assert response.status == 404
+        response = await client.get(
+            preview._origin + f"/api/assets/{replacement_id}?download=1", headers=headers
+        )
+        assert response.status == 200
+        assert await response.read() == replacement_bytes
+        retained = preview._retained_media_bytes
+        await preview.refresh()
+        assert (
+            target_message(preview._page_payload(preview._python))["attachments"][0]["asset_id"]
+            == replacement_id
+        )
+        assert preview._retained_media_bytes == retained
 
 
 @pytest.mark.asyncio
@@ -136,6 +161,7 @@ async def test_browser_revocation_during_asset_fetch_cannot_publish_old_pixels(e
                 bob_page = await browser.new_page()
                 await bob_page.goto(preview.url)
                 await bob_page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await bob_page.locator("#inspector-summary").click()
                 await bob_page.locator("#viewer-picker").select_option(str(bob.id))
                 await bob_page.wait_for_function(
                     "(id) => window.simcordPreview?.viewerId === id && window.simcordPreview?.ready",
@@ -152,7 +178,7 @@ async def test_browser_revocation_during_asset_fetch_cannot_publish_old_pixels(e
                 await alice_page.wait_for_function("() => window.simcordPreview?.authorized === false")
                 release.set()
                 await alice_page.wait_for_function("() => !document.querySelector('img[src^=\"blob:\"]')")
-                assert await alice_page.locator("#message-surface").inner_text() == ""
+                assert await alice_page.locator("#focused-content").inner_text() == ""
                 assert await bob_page.evaluate("() => window.simcordPreview?.authorized") is True
                 assert await bob_page.locator(".attachment-image").evaluate(
                     "image => image.complete && image.naturalWidth > 0"
@@ -160,3 +186,19 @@ async def test_browser_revocation_during_asset_fetch_cannot_publish_old_pixels(e
             finally:
                 release.set()
                 await browser.close()
+
+
+def test_preview_summary_hides_spoilers_and_keeps_graphemes_complete():
+    tokens = markdown_tokens("visible ||private 👨‍👩‍👧|| 👩‍🚒xy")
+
+    summary = markdown_summary(tokens)
+    assert "private" not in summary
+    assert "👨‍👩‍👧" not in summary
+    assert "[spoiler]" in summary
+
+    truncated = markdown_summary(markdown_tokens("👩‍🚒xy"), max_graphemes=2)
+    assert truncated == "👩‍🚒…"
+
+    assert markdown_summary(markdown_tokens("visible"), max_graphemes=0) == ""
+    with pytest.raises(ValueError, match="max_graphemes"):
+        markdown_summary(markdown_tokens("visible"), max_graphemes=-1)

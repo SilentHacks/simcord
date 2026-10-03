@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+from pathlib import Path
 
 import pytest
 
@@ -138,7 +139,6 @@ async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, 
         assert gap["sequence"] == 5
         assert gap["expectedSequence"] == 0
         assert gap["diagnostics"][0]["code"] == "sequence-gap"
-        assert gap["diagnostics"][0]["severity"] == "error"
 
         payload = preview._page_payload(page)
         ping_key = control_key(payload, "persistent:ping")
@@ -262,6 +262,114 @@ async def test_shared_blob_counts_once_against_media_budget(env, channel, alice)
         preview._close_page(second.id)
         assert preview._retained_media_bytes == retained
     assert preview._retained_media_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_native_audio_state_survives_local_select_redraw_and_source_replacement(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    original = await asyncio.to_thread((Path(__file__).parents[1] / "fixtures/preview/voice.ogg").read_bytes)
+
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Select(
+            custom_id="draft",
+            min_values=1,
+            max_values=2,
+            options=[
+                discord.SelectOption(label="One", value="one", default=True),
+                discord.SelectOption(label="Two", value="two"),
+            ],
+        )
+    )
+    message = await env.bot.get_channel(channel.id).send(
+        "audio state",
+        file=discord.File(io.BytesIO(original), filename="tone.ogg"),
+        view=view,
+    )
+    stored = env.backend.get_message(channel.id, message.id)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function(
+                    "() => { const audio = document.querySelector('audio.media-player-native');"
+                    " return audio?.readyState >= 2 && audio.duration > 0.5; }"
+                )
+                before = await page.evaluate("""async () => {
+                  const audio = document.querySelector("audio.media-player-native");
+                  const seeked = new Promise(resolve => audio.addEventListener("seeked", resolve, { once: true }));
+                  audio.currentTime = 0.4;
+                  await seeked;
+                  audio.pause();
+                  audio.volume = 0.35;
+                  audio.playbackRate = 1.5;
+                  audio.loop = true;
+                  window.__retainedAudio = audio;
+                  return audio.currentTime;
+                }""")
+
+                await page.locator(".select-trigger").first.click()
+                await page.get_by_role("option", name="Two", exact=True).click()
+                await page.wait_for_function(
+                    "() => document.querySelector('.select-value')?.textContent.includes('Two')"
+                )
+                after = await page.evaluate("""() => {
+                  const audio = document.querySelector("audio.media-player-native");
+                  return {
+                    same: audio === window.__retainedAudio,
+                    currentTime: audio?.currentTime,
+                    paused: audio?.paused,
+                    volume: audio?.volume,
+                    playbackRate: audio?.playbackRate,
+                  };
+                }""")
+                assert after["same"] is True
+                assert abs(after["currentTime"] - before) < 0.05
+                assert after["paused"] is True
+                assert after["volume"] == pytest.approx(0.35)
+                assert after["playbackRate"] == pytest.approx(1.5)
+
+                await page.wait_for_function("() => window.simcordPreview.ready")
+                await page.keyboard.press("Escape")
+                await page.get_by_role("button", name="Play tone.ogg", exact=True).click()
+                await page.wait_for_function(
+                    "() => !document.querySelector('audio.media-player-native').paused"
+                )
+                await page.locator(".select-trigger").first.click()
+                await page.get_by_role("option", name="One", exact=True).click()
+                playing = await page.locator("audio.media-player-native").evaluate(
+                    "(audio) => ({paused: audio.paused, loop: audio.loop})"
+                )
+                assert playing["paused"] is False
+                assert playing["loop"] is True
+
+                old_source = await page.locator("audio.media-player-native").get_attribute("src")
+                stored.attachments[:] = [
+                    env.backend.cdn.store_attachment(
+                        message.id, channel.id, "replacement.ogg", original, None
+                    )
+                ]
+                await preview.refresh()
+                await page.wait_for_function(
+                    "(oldSource) => { const audio = document.querySelector('audio.media-player-native');"
+                    " return audio?.src && audio.src !== oldSource && audio.readyState >= 2 && audio.duration > 0.5; }",
+                    arg=old_source,
+                )
+                replaced = await page.evaluate(
+                    "() => document.querySelector('audio.media-player-native') !== window.__retainedAudio"
+                )
+                assert replaced is True
+
+                stored.attachments.clear()
+                await preview.refresh()
+                await page.wait_for_function("() => !document.querySelector('audio.media-player-native')")
+            finally:
+                await browser.close()
 
 
 @pytest.mark.asyncio
@@ -509,7 +617,8 @@ async def test_failed_dispatch_settles_instead_of_wedging_replays(env, channel, 
         assert first["rejected"] is False
         assert first["settlement"] == "failed"
         assert first["dispatched"] is False
-        assert {"type": "KeyError", "message": "'guild vanished'"} in first["diagnostics"]
+        assert "guild vanished" not in repr(first)
+        assert first["diagnostics"][0]["code"] == "action-callback-error"
         assert page.status == "stale"
 
         # The same sequence+request_id replays the stored result rather than

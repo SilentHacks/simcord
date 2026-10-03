@@ -12,9 +12,15 @@ keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import heapq
+import hmac
+import json
 import re
+import unicodedata
 from bisect import bisect_right
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -22,20 +28,22 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+from .. import __version__ as _RUNTIME_VERSION
 from ..backend.access import _viewer_id, can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE, sticker_url
-from ..backend.errors import BackendError
+from ..backend.errors import BackendError, SetupError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG, walk_components
 from ..enums import AppCommandType, ComponentType, InteractionType, MessageType
-from ._markdown import markdown_tokens
+from ._diagnostics import make_diagnostic
+from ._markdown import markdown_summary, markdown_tokens
 
 if TYPE_CHECKING:
     from ..env import Env
     from . import Preview
     from ._pages import _Page
 
-_PROTOCOL_VERSION = 2
+_PROTOCOL_VERSION = 3
 _ENTITY_TYPES = {
     int(ComponentType.USER_SELECT): "users",
     int(ComponentType.ROLE_SELECT): "roles",
@@ -72,8 +80,8 @@ _FONT_PROFILE = (
         "style": "normal",
         "weight": "400",
         "filename": "noto-color-emoji-v2.051.ttf",
-        "sha256": "741815c198323b067670a1cfe6660ad8463ffcb8733314af30868eab9c4eb18b",
-        "scripts": ["Emoji ZWJ", "skin-tone modifiers", "variation selectors"],
+        "sha256": "b8e25ea68db82f9e4d0aee921f4420be2be39887bd5c893a2ad98710531f9d0c",
+        "scripts": ["Emoji ZWJ", "skin-tone modifiers", "variation selectors", "regional-indicator flags"],
     },
     {
         "family": "Noto Sans Arabic",
@@ -717,7 +725,7 @@ def _poll_expired(preview: Preview, poll: Any) -> bool:
 
 def _message_allowed_actions(preview: Preview, page: _Page, channel: Any, message: Message) -> list[str]:
     actions: list[str] = []
-    if preview.layout == "channel":
+    if page.layout == "channel":
         if _can_send_message(preview, page, channel):
             actions.append("reply")
         if message.author_id == page.viewer.id:
@@ -1062,6 +1070,33 @@ def _role_allowed(preview: Preview, page: _Page, role_id: int) -> bool:
     return guild is not None and role_id in guild.roles and role_id != guild.id
 
 
+def _identity_name(
+    preview: Preview,
+    page: _Page,
+    user_id: int,
+    *,
+    message: Message | None = None,
+    override: str | None = None,
+) -> str:
+    user = preview.env.backend.get_user(user_id)
+    channel_id = message.channel_id if message is not None else page.channel_id
+    try:
+        channel = preview.env.backend.get_channel(channel_id)
+    except BackendError:
+        channel = None
+    guild = (
+        preview.env.backend.guilds.get(channel.guild_id)
+        if channel is not None and channel.guild_id is not None
+        else None
+    )
+    member = guild.members.get(user_id) if guild is not None else None
+    return (
+        override
+        if override is not None
+        else (member.nick if member is not None and member.nick else user.global_name or user.name)
+    )
+
+
 def _markdown_context(
     preview: Preview,
     page: _Page,
@@ -1099,7 +1134,7 @@ def _markdown_context(
         for match in re.finditer(r"<@!?([0-9]{1,20})>", text):
             user_id = int(match.group(1))
             if _user_allowed(preview, page, user_id):
-                users[match.group(1)] = _identity_wire(resolve_identity(preview, page, user_id))["name"]
+                users[match.group(1)] = _identity_name(preview, page, user_id)
 
     roles: dict[str, str] = {}
     for text in texts:
@@ -1163,108 +1198,652 @@ def _markdown_context(
     }
 
 
-def _message_summary(preview: Preview, page: _Page, message: Message) -> dict[str, Any]:
-    identity = _identity_wire(
-        resolve_identity(preview, page, message.author_id, message=message, override=message.author_name)
+class _QueryError(SetupError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _normalize_query(value: Any) -> str:
+    if not isinstance(value, str) or len(value) > 128:
+        raise _QueryError("query-invalid")
+    normalized = unicodedata.normalize("NFC", value.strip()).casefold()
+    normalized = unicodedata.normalize("NFC", normalized)
+    if len(normalized) > 128:
+        raise _QueryError("query-invalid")
+    return normalized
+
+
+def _b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64decode(value: str) -> bytes:
+    return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+
+
+def _make_cursor(
+    page: _Page,
+    scope: str,
+    query: str,
+    order: str,
+    direction: str,
+    position: tuple[Any, ...],
+) -> str:
+    raw = json.dumps(
+        {
+            "generation": page.generation,
+            "scope": scope,
+            "query": query,
+            "order": order,
+            "direction": direction,
+            "position": [str(value) for value in position],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    signature = hmac.new(page.cursor_secret, raw, hashlib.sha256).digest()
+    return f"{_b64encode(raw)}.{_b64encode(signature)}"
+
+
+def _read_cursor(
+    page: _Page,
+    cursor: Any,
+    scope: str,
+    query: str,
+    order: str,
+    position_length: int,
+) -> dict[str, Any] | None:
+    if cursor is None:
+        return None
+    if not isinstance(cursor, str) or len(cursor) > 1024 or cursor.count(".") != 1:
+        raise _QueryError("stale-cursor")
+    try:
+        encoded, encoded_signature = cursor.split(".", 1)
+        raw, signature = _b64decode(encoded), _b64decode(encoded_signature)
+        expected = hmac.new(page.cursor_secret, raw, hashlib.sha256).digest()
+        value = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise _QueryError("stale-cursor") from None
+    if (
+        not hmac.compare_digest(signature, expected)
+        or not isinstance(value, dict)
+        or isinstance(value.get("generation"), bool)
+        or not isinstance(value.get("generation"), int)
+        or value.get("generation") != page.generation
+        or value.get("scope") != scope
+        or value.get("query") != query
+        or value.get("order") != order
+        or value.get("direction") not in {"before", "after"}
+        or not isinstance(value.get("position"), list)
+        or len(value["position"]) != position_length
+        or any(not isinstance(item, str) for item in value["position"])
+    ):
+        raise _QueryError("stale-cursor")
+    return value
+
+
+def validate_message_query(page: _Page, query: Any, filter_value: Any, cursor: Any) -> tuple[str, str | None]:
+    normalized = _normalize_query(query)
+    if filter_value != "all" or (cursor is not None and not isinstance(cursor, str)):
+        raise _QueryError("query-invalid")
+    _read_cursor(page, cursor, "messages:all", normalized, "message-id", 1)
+    return normalized, cursor
+
+
+def _candidate_scope(control_key: str, modal_handle: str | None) -> str:
+    return f"candidate:{control_key}:{modal_handle or ''}"
+
+
+def validate_candidate_query(
+    page: _Page,
+    control_key: Any,
+    modal_handle: Any,
+    query: Any,
+    cursor: Any,
+) -> tuple[str, str | None, str | None]:
+    if (
+        not isinstance(control_key, str)
+        or not control_key
+        or len(control_key) > 256
+        or (modal_handle is not None and not isinstance(modal_handle, str))
+        or (cursor is not None and not isinstance(cursor, str))
+    ):
+        raise _QueryError("control-unavailable")
+    normalized = _normalize_query(query)
+    handle = modal_handle
+    _read_cursor(
+        page,
+        cursor,
+        _candidate_scope(control_key, handle),
+        normalized,
+        "candidate-label-id",
+        2,
     )
+    return normalized, cursor, handle
+
+
+def _normal_text(value: Any) -> str:
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", str(value)).casefold())
+
+
+def _message_summary_parts(preview: Preview, page: _Page, message: Message, channel: Any) -> dict[str, Any]:
+    author_name = _identity_name(
+        preview, page, message.author_id, message=message, override=message.author_name
+    )
+    context = _markdown_context(preview, page, message, channel)
+    type_info = _message_type_info(int(message.type))
+    excerpt = ""
+    if type_info["kind"] not in {"system", "unknown"} and message.content:
+        excerpt = markdown_summary(markdown_tokens(message.content, "message", context=context))
+    component_summaries: list[dict[str, str]] = []
+    text_display: list[str] = []
+    for component in walk_components(message.components):
+        try:
+            component_type = int(component.get("type", -1))
+            name = ComponentType(component_type).name.lower()
+        except (TypeError, ValueError):
+            component_type = -1
+            name = "unknown"
+        raw_label = component.get("label") or component.get("placeholder") or ""
+        if component_type == int(ComponentType.TEXT_DISPLAY):
+            raw_label = component.get("content", "")
+            if isinstance(raw_label, str):
+                text_display.append(
+                    markdown_summary(markdown_tokens(raw_label, "text_display", context=context))
+                )
+        label = (
+            markdown_summary(markdown_tokens(raw_label, "label"), 80) if isinstance(raw_label, str) else ""
+        )
+        component_summaries.append({"kind": name, "label": label})
+        if len(component_summaries) >= 50:
+            break
+    if not excerpt and text_display:
+        excerpt = markdown_summary(
+            markdown_tokens(" ".join(item for item in text_display if item), "text_display", context=context)
+        )
+
+    content_kinds: list[str] = []
+    if message.content and type_info["kind"] not in {"system", "unknown"}:
+        content_kinds.append("text")
+    if message.embeds:
+        content_kinds.append("embeds")
+    if message.components:
+        content_kinds.append("components")
+    if message.attachments:
+        content_kinds.append("attachments")
+    if message.stickers:
+        content_kinds.append("stickers")
+    if message.poll is not None:
+        content_kinds.append("poll")
+    thread = preview.env.backend.channels.get(message.id)
+    if (
+        thread is not None
+        and thread.is_thread
+        and thread.parent_id == message.channel_id
+        and can_access_channel(preview.env, thread.id, page.viewer, history=True)
+    ):
+        content_kinds.append("thread")
+    if message.flags & EPHEMERAL_FLAG:
+        content_kinds.append("ephemeral")
+
+    attachment_kinds = set()
+    for attachment in message.attachments:
+        content_type = str(attachment.get("content_type") or "").lower()
+        attachment_kinds.add(
+            content_type.split("/", 1)[0]
+            if content_type.startswith(("image/", "video/", "audio/"))
+            else "file"
+        )
     return {
-        "id": str(message.id),
-        "author_name": identity["name"],
-        "excerpt": message.content[:100],
+        "author_name": author_name,
+        "excerpt": excerpt,
+        "contentKinds": content_kinds,
+        "components": component_summaries,
+        "attachments": {"count": len(message.attachments), "kinds": sorted(attachment_kinds)},
+        "createdAt": message.timestamp,
+        "editedAt": message.edited_timestamp,
+        "ephemeral": bool(message.flags & EPHEMERAL_FLAG),
     }
 
 
-def _candidates(
-    preview: Preview, page: _Page, components: list[dict[str, Any]]
-) -> dict[str, list[dict[str, Any]]]:
+def _message_summary(
+    preview: Preview,
+    page: _Page,
+    message: Message,
+    parts: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": str(message.id),
+        "author": _identity_wire(
+            resolve_identity(preview, page, message.author_id, message=message, override=message.author_name)
+        ),
+        "createdAt": parts["createdAt"],
+        "editedAt": parts["editedAt"],
+        "excerpt": parts["excerpt"],
+        "contentKinds": parts["contentKinds"],
+        "components": parts["components"],
+        "attachments": parts["attachments"],
+        "ephemeral": parts["ephemeral"],
+    }
+
+
+def _summary_matches(parts: Mapping[str, Any], message: Message, query: str) -> bool:
+    if not query:
+        return True
+    fields = [
+        parts["author_name"],
+        parts["excerpt"],
+        *parts["contentKinds"],
+        parts["createdAt"] or "",
+        parts["editedAt"] or "",
+        *[item["kind"] for item in parts["components"]],
+        *[item["label"] for item in parts["components"]],
+        *parts["attachments"]["kinds"],
+    ]
+    return any(query in _normal_text(value) for value in fields)
+
+
+def _paginate(
+    page: _Page,
+    scope: str,
+    query: str,
+    order: str,
+    source: Callable[[], Iterable[Any]],
+    key: Callable[[Any], tuple[Any, ...]],
+    cursor: Any,
+    *,
+    position_length: int,
+    position_parser: Callable[[list[str]], tuple[Any, ...]],
+) -> tuple[list[Any], bool, bool, str | None, str | None]:
+    cursor_state = _read_cursor(page, cursor, scope, query, order, position_length)
+    direction = cursor_state["direction"] if cursor_state is not None else None
+    pivot = position_parser(cursor_state["position"]) if cursor_state is not None else None
+    has_previous = False
+    has_next = False
+
+    if direction == "after":
+
+        def after_pivot() -> Iterable[Any]:
+            nonlocal has_previous
+            assert pivot is not None
+            for item in source():
+                if key(item) <= pivot:
+                    has_previous = True
+                else:
+                    yield item
+
+        matches = heapq.nsmallest(51, after_pivot(), key=key)
+        rows = matches[:50]
+        has_next = len(matches) > 50
+    elif direction == "before":
+
+        def before_pivot() -> Iterable[Any]:
+            nonlocal has_next
+            assert pivot is not None
+            for item in source():
+                if key(item) >= pivot:
+                    has_next = True
+                else:
+                    yield item
+
+        matches = heapq.nlargest(51, before_pivot(), key=key)
+        rows = list(reversed(matches[:50]))
+        has_previous = len(matches) > 50
+    else:
+        matches = heapq.nsmallest(51, source(), key=key)
+        rows = matches[:50]
+        has_next = len(matches) > 50
+
+    if not rows:
+        return [], False, False, None, None
+    previous = _make_cursor(page, scope, query, order, "before", key(rows[0])) if has_previous else None
+    following = _make_cursor(page, scope, query, order, "after", key(rows[-1])) if has_next else None
+    return rows, has_previous, has_next, previous, following
+
+
+def _message_position(value: list[str]) -> tuple[int]:
+    return (int(value[0]),)
+
+
+def _message_navigation(
+    preview: Preview,
+    page: _Page,
+    visible: list[Message],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not can_access_channel(preview.env, page.channel_id, page.viewer, history=True):
+        return [], {
+            "query": "",
+            "filter": "all",
+            "hasPrevious": False,
+            "hasNext": False,
+            "previousCursor": None,
+            "nextCursor": None,
+        }
+    query = page.navigation_query
+    cursor = page.navigation_cursor
+    if query.isascii() and query.isdecimal() and len(query) <= 20:
+        try:
+            message = preview.env.backend.get_message(page.channel_id, int(query))
+        except (BackendError, ValueError):
+            message = None
+        if (
+            message is not None
+            and str(message.id) == query
+            and can_access_message(preview.env, page.channel_id, message, page.viewer, history=True)
+        ):
+            parts = _message_summary_parts(
+                preview, page, message, preview.env.backend.get_channel(page.channel_id)
+            )
+            rows = [_message_summary(preview, page, message, parts)]
+        else:
+            rows = []
+        return rows, {
+            "query": query,
+            "filter": "all",
+            "hasPrevious": False,
+            "hasNext": False,
+            "previousCursor": None,
+            "nextCursor": None,
+        }
+
+    channel = preview.env.backend.get_channel(page.channel_id)
+
+    def source() -> Iterable[dict[str, Any]]:
+        for message in visible:
+            parts = _message_summary_parts(preview, page, message, channel)
+            if _summary_matches(parts, message, query):
+                yield {"message": message, "parts": parts}
+
+    records, has_previous, has_next, previous, following = _paginate(
+        page,
+        "messages:all",
+        query,
+        "message-id",
+        source,
+        lambda item: (item["message"].id,),
+        cursor,
+        position_length=1,
+        position_parser=_message_position,
+    )
+    return (
+        [_message_summary(preview, page, item["message"], item["parts"]) for item in records],
+        {
+            "query": query,
+            "filter": "all",
+            "hasPrevious": has_previous,
+            "hasNext": has_next,
+            "previousCursor": previous,
+            "nextCursor": following,
+        },
+    )
+
+
+def query_message_page(preview: Preview, page: _Page) -> dict[str, Any]:
+    preview.env.backend.get_channel(page.channel_id)
+    visible = [
+        item
+        for item in sorted(
+            preview.env.backend.messages.get(page.channel_id, {}).values(), key=lambda item: item.id
+        )
+        if can_access_message(preview.env, page.channel_id, item, page.viewer, history=True)
+    ]
+    rows, navigation = _message_navigation(preview, page, visible)
+    return {"navigation": navigation, "messageIndex": rows}
+
+
+def _candidate_filter(component: Mapping[str, Any]) -> dict[str, list[int]] | None:
+    values = component.get("channel_types")
+    if not isinstance(values, list) or not values:
+        return None
+    return {
+        "channelTypes": [value for value in values if isinstance(value, int) and not isinstance(value, bool)]
+    }
+
+
+def _candidate_source(
+    preview: Preview, page: _Page, component: Mapping[str, Any], kind: str
+) -> Iterable[dict[str, Any]]:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
-    result: dict[str, list[dict[str, Any]]] = {}
+    if channel.guild_id is None:
+        if kind in {"users", "mentionables"}:
+            for user_id in channel.recipient_ids:
+                if _user_allowed(preview, page, user_id):
+                    label = _identity_name(preview, page, user_id)
+                    yield {"id": str(user_id), "label": label, "kind": "user"}
+        return
+    guild = env.backend.guilds.get(channel.guild_id)
+    if guild is None:
+        return
+    if kind in {"users", "mentionables"}:
+        for user_id in guild.members:
+            if _user_allowed(preview, page, user_id):
+                yield {
+                    "id": str(user_id),
+                    "label": _identity_name(preview, page, user_id),
+                    "kind": "user",
+                }
+    if kind in {"roles", "mentionables"}:
+        for role_id, role in guild.roles.items():
+            if role_id != guild.id:
+                yield {"id": str(role_id), "label": role.name, "kind": "role"}
+    if kind == "channels":
+        allowed_types = component.get("channel_types")
+        for candidate in env.backend.channels.values():
+            if (
+                candidate.guild_id == channel.guild_id
+                and can_access_channel(env, candidate.id, page.viewer)
+                and (
+                    not isinstance(allowed_types, list)
+                    or not allowed_types
+                    or candidate.type in allowed_types
+                )
+            ):
+                yield {
+                    "id": str(candidate.id),
+                    "label": candidate.name or str(candidate.id),
+                    "kind": "channel",
+                    "type": int(candidate.type),
+                }
+
+
+def _candidate_key(item: Mapping[str, Any]) -> tuple[str, str]:
+    return (_normal_text(item["label"]), str(item["id"]))
+
+
+def _candidate_position(value: list[str]) -> tuple[str, str]:
+    return (value[0], value[1])
+
+
+def _candidate_wire(
+    preview: Preview, page: _Page, component: Mapping[str, Any], item: Mapping[str, Any]
+) -> dict[str, Any]:
+    kind = item["kind"]
+    entity_id = int(item["id"])
+    if kind == "user":
+        identity = _identity_wire(resolve_identity(preview, page, entity_id))
+        user = preview.env.backend.get_user(entity_id)
+        username = f"{user.name}#{user.discriminator}" if user.discriminator not in ("0", "") else user.name
+        return {**identity, "label": identity["name"], "username": username, "kind": "user"}
+    if kind == "role":
+        channel = preview.env.backend.get_channel(page.channel_id)
+        if channel.guild_id is None:
+            raise SetupError("role is unavailable")
+        guild = preview.env.backend.guilds[channel.guild_id]
+        role = guild.roles[entity_id]
+        return {
+            "id": str(entity_id),
+            "name": role.name,
+            "label": role.name,
+            "kind": "role",
+            "color": int(role.color or 0),
+            "icon_color": int(role.color or 0),
+            "members": sum(1 for member in guild.members.values() if entity_id in member.role_ids),
+        }
+    return {
+        "id": str(entity_id),
+        "name": item["label"],
+        "label": item["label"],
+        "kind": "channel",
+        "type": item["type"],
+    }
+
+
+def _candidate_defaults(
+    preview: Preview, page: _Page, component: Mapping[str, Any], kind: str
+) -> list[dict[str, Any]]:
+    defaults = component.get("default_values")
+    if not isinstance(defaults, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in defaults[:25]:
+        entity_id = value.get("id") if isinstance(value, Mapping) else value
+        declared_kind = value.get("type") if isinstance(value, Mapping) else None
+        if isinstance(entity_id, bool) or not isinstance(entity_id, (str, int)):
+            continue
+        entity_id = str(entity_id)
+        if not entity_id.isascii() or not entity_id.isdecimal() or entity_id in seen:
+            continue
+        for item in _candidate_source(preview, page, component, kind):
+            if item["id"] != entity_id or (declared_kind is not None and declared_kind != item["kind"]):
+                continue
+            result.append(_candidate_wire(preview, page, component, item))
+            seen.add(entity_id)
+            break
+    return result
+
+
+def _candidate_descriptor(
+    preview: Preview,
+    page: _Page,
+    component: Mapping[str, Any],
+    control_key: str,
+    *,
+    modal_handle: str | None,
+) -> dict[str, Any]:
+    kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
+    if kind is None:
+        return {}
+    query_state = page.candidate_queries.get(control_key)
+    if query_state is not None and query_state.get("modal_handle") != modal_handle:
+        query_state = None
+    query = query_state.get("query", "") if query_state else ""
+    cursor = query_state.get("cursor") if query_state else None
+    scope = _candidate_scope(control_key, modal_handle)
+
+    def source() -> Iterable[dict[str, Any]]:
+        for item in _candidate_source(preview, page, component, kind):
+            if not query or query in _normal_text(item["label"]) or query in item["id"]:
+                yield item
+
+    rows, has_previous, has_next, previous, following = _paginate(
+        page,
+        scope,
+        query,
+        "candidate-label-id",
+        source,
+        _candidate_key,
+        cursor,
+        position_length=2,
+        position_parser=_candidate_position,
+    )
+    entries = [_candidate_wire(preview, page, component, item) for item in rows]
+    return {
+        "type": kind,
+        "filter": _candidate_filter(component),
+        "selected": _candidate_defaults(
+            preview,
+            page,
+            {**component, "default_values": query_state["selected_values"]}
+            if query_state and query_state.get("selected_values") is not None
+            else component,
+            kind,
+        ),
+        "entries": entries,
+        "state": "available" if entries else "empty",
+        "query": query,
+        "hasPrevious": has_previous,
+        "hasNext": has_next,
+        "previousCursor": previous,
+        "nextCursor": following,
+    }
+
+
+def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
     for component in walk_components(components):
-        kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
+        try:
+            kind = _ENTITY_TYPES.get(int(component.get("type", -1)))
+        except (TypeError, ValueError):
+            kind = None
         control_key = component.get("control_key")
         if kind is None or not isinstance(control_key, str):
             continue
-        entries: list[dict[str, Any]] = []
-        if channel.guild_id is None:
-            user_ids = channel.recipient_ids if kind in {"users", "mentionables"} else ()
-            for uid in user_ids:
-                if not _user_allowed(preview, page, uid):
-                    continue
-                identity = _identity_wire(resolve_identity(preview, page, uid))
-                user = env.backend.get_user(uid)
-                entries.append(
-                    {
-                        **identity,
-                        "id": str(uid),
-                        "label": identity["name"],
-                        "username": (
-                            f"{user.name}#{user.discriminator}"
-                            if user.discriminator not in ("0", "")
-                            else user.name
-                        ),
-                        "kind": "user",
-                    }
-                )
-        else:
-            guild = env.backend.guilds[channel.guild_id]
-            if kind in {"users", "mentionables"}:
-                for uid in guild.members:
-                    if not _user_allowed(preview, page, uid):
-                        continue
-                    identity = _identity_wire(resolve_identity(preview, page, uid))
-                    user = env.backend.get_user(uid)
-                    entries.append(
-                        {
-                            **identity,
-                            "id": str(uid),
-                            "label": identity["name"],
-                            "username": (
-                                f"{user.name}#{user.discriminator}"
-                                if user.discriminator not in ("0", "")
-                                else user.name
-                            ),
-                            "kind": "user",
-                        }
-                    )
-            if kind in {"roles", "mentionables"}:
-                for rid, role in guild.roles.items():
-                    if rid != guild.id:
-                        entries.append(
-                            {
-                                "id": str(rid),
-                                "label": role.name,
-                                "kind": "role",
-                                "color": int(role.color or 0),
-                                "icon_color": int(role.color or 0),
-                                "members": sum(1 for m in guild.members.values() if rid in m.role_ids),
-                            }
-                        )
-            if kind == "channels":
-                allowed_types = component.get("channel_types")
-                for candidate in sorted(
-                    env.backend.channels.values(), key=lambda item: (item.position, item.id)
-                ):
-                    if candidate.guild_id != channel.guild_id or not can_access_channel(
-                        env, candidate.id, page.viewer
-                    ):
-                        continue
-                    if (
-                        isinstance(allowed_types, list)
-                        and allowed_types
-                        and candidate.type not in allowed_types
-                    ):
-                        continue
-                    entries.append(
-                        {
-                            "id": str(candidate.id),
-                            "label": candidate.name or str(candidate.id),
-                            "kind": "channel",
-                            "type": candidate.type,
-                        }
-                    )
-        result[control_key] = entries
+        modal_handle = (
+            page.modal_handle
+            if page.modal_handle is not None and control_key.startswith(f"modal:{page.modal_handle}:")
+            else None
+        )
+        result[control_key] = _candidate_descriptor(
+            preview, page, component, control_key, modal_handle=modal_handle
+        )
+        component.pop("default_values", None)
+    page.candidate_queries = {key: value for key, value in page.candidate_queries.items() if key in result}
     return result
+
+
+def candidate_control(
+    preview: Preview, page: _Page, control_key: str, modal_handle: str | None
+) -> tuple[dict[str, Any], str | None]:
+    if not can_access_channel(preview.env, page.channel_id, page.viewer, history=True):
+        raise _QueryError("control-unavailable")
+    roots: Any
+    scope: str
+    if modal_handle is not None:
+        if page.modal is None or modal_handle != page.modal_handle:
+            raise _QueryError("control-unavailable")
+        payload = deepcopy(page.modal.modal or {})
+        roots = payload.get("components", [])
+        _annotate_tree(roots, f"modal:{modal_handle}")
+        scope = "modal"
+    else:
+        if page.modal is not None:
+            raise _QueryError("control-unavailable")
+        match = re.fullmatch(r"message:([0-9]{1,20}):component:.{1,200}", control_key)
+        if match is None or str(int(match.group(1))) not in page.snapshot.get("messages", {}):
+            raise _QueryError("control-unavailable")
+        message_id = int(match.group(1))
+        try:
+            message = preview.env.backend.get_message(page.channel_id, message_id)
+        except BackendError:
+            raise _QueryError("control-unavailable") from None
+        if not can_access_message(preview.env, page.channel_id, message, page.viewer, history=True):
+            raise _QueryError("control-unavailable")
+        roots = deepcopy(message.components)
+        _annotate_tree(roots, f"message:{message.id}")
+        scope = "message"
+    for component in walk_components(roots):
+        if component.get("control_key") == control_key:
+            try:
+                valid = int(component.get("type", -1)) in _ENTITY_TYPES
+            except (TypeError, ValueError):
+                valid = False
+            if valid and not component.get("disabled"):
+                return component, modal_handle if scope == "modal" else None
+    raise _QueryError("control-unavailable")
+
+
+__all__ = [
+    "IdentityRecord",
+    "build_snapshot",
+    "candidate_control",
+    "query_message_page",
+    "resolve_identity",
+    "validate_candidate_query",
+    "validate_message_query",
+]
 
 
 def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
@@ -1288,12 +1867,12 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     ids = [item.id for item in visible]
     target_index = next((index for index, item in enumerate(visible) if item.id == page.target_id), None)
     target = visible[target_index] if target_index is not None else None
-    if preview.layout == "channel":
-        if target_index is not None and (page.window_end_id is None or page.window_end_id == page.target_id):
+    if page.layout == "channel":
+        if target_index is not None and page.window_end_id == page.target_id:
             start = max(0, target_index - 24)
             end = min(len(visible), start + 50)
             start = max(0, end - 50)
-            page.window_end_id = ids[end - 1] if end else None
+            page.window_end_id = ids[end - 1] if end and end < len(visible) else None
         else:
             end = len(visible) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
             start = max(0, end - 50)
@@ -1314,11 +1893,12 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     candidate_components: list[dict[str, Any]] = []
     previous = None
     for item in window:
-        compact = preview.layout == "channel" and _is_compact_message(previous, item, preview.timezone, env)
+        compact = page.layout == "channel" and _is_compact_message(previous, item, preview.timezone, env)
         value = _message_projection(preview, page, item, compact=compact, channel=channel)
         projected[str(item.id)] = value
         candidate_components.extend(value.get("components", []))
         previous = item
+    message_index, navigation = _message_navigation(preview, page, visible)
 
     modal = None
     if allowed and page.modal is not None:
@@ -1335,6 +1915,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         application = _identity_wire(resolve_identity(preview, page, preview.env.backend.bot_user.id))
         payload["application_identity"] = application
         payload["application_name"] = application["name"]
+        candidate_components.extend(payload.get("components", []))
         modal = {"handle": page.modal_handle, "payload": payload}
     entities: dict[str, dict[str, dict[str, Any]]] = {
         "users": {},
@@ -1411,59 +1992,59 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
                     )
     diagnostics: list[dict[str, Any]] = []
     for item in page.diagnostics:
-        value = dict(item)
-        value.setdefault("code", "preview")
-        value.setdefault("severity", "warning")
-        value.setdefault("message", "")
-        value.setdefault("complete", False)
-        diagnostics.append(value)
+        if isinstance(item, Mapping):
+            subject = None
+            message_id = item.get("message_id")
+            if isinstance(message_id, str) and message_id in projected:
+                subject = {"messageId": message_id}
+            diagnostics.append(make_diagnostic(str(item.get("code", "internal-error")), subject=subject))
     for value in projected.values():
+        message_id = value["id"]
         if value["type_info"]["kind"] == "unknown":
+            diagnostics.append(make_diagnostic("message-type-unknown", subject={"messageId": message_id}))
+        missing_sku = any(
+            component.get("type") == int(ComponentType.BUTTON)
+            and component.get("style") == 6
+            and str(component.get("sku_id", "unknown")) not in preview._sku_presentations
+            for component in walk_components(value["components"])
+        )
+        if missing_sku:
             diagnostics.append(
-                {
-                    "code": "message_type_unknown",
-                    "severity": "warning",
-                    "message": f"Message type {value['type']} is not classified in this preview.",
-                    "message_id": value["id"],
-                    "complete": False,
-                }
+                make_diagnostic("premium-sku-metadata-missing", subject={"messageId": message_id})
             )
-        missing_skus: set[str] = set()
-        for component in walk_components(value["components"]):
-            if component.get("type") != int(ComponentType.BUTTON) or component.get("style") != 6:
-                continue
-            sku_id = str(component.get("sku_id", "unknown"))
-            if sku_id in preview._sku_presentations or sku_id in missing_skus:
-                continue
-            missing_skus.add(sku_id)
+        if any(not sticker["available"] for sticker in value["stickers"]):
             diagnostics.append(
-                {
-                    "code": "premium-sku-metadata-missing",
-                    "severity": "warning",
-                    "message": f"Premium SKU {sku_id} has no caller-supplied offline name or price.",
-                    "complete": False,
-                    "feature": "premium_button",
-                    "message_id": value["id"],
-                    "sku_id": sku_id,
-                    "remediation": (
-                        "Supply sku_presentations with name, price_text, and locale; "
-                        "provide optional icon_url bytes through assets."
-                    ),
-                }
+                make_diagnostic("sticker-asset-unavailable", subject={"messageId": message_id})
             )
-        for sticker in value["stickers"]:
-            if not sticker["available"]:
-                diagnostics.append(
-                    {
-                        "code": "sticker_asset_unavailable",
-                        "severity": "warning",
-                        "message": f"Sticker {sticker['name']} has no available media asset.",
-                        "message_id": value["id"],
-                        "complete": False,
-                    }
-                )
+    diagnostics = list({item["id"]: item for item in diagnostics}.values())
     can_send = channel is not None and allowed and _can_send_message(preview, page, channel)
+    exact_profile = {"width": page.width, "height": page.height}
+    host = {"width": page.host_width, "height": page.host_height}
+    viewport = (
+        {"width": max(240, page.host_width), "height": max(180, page.host_height)}
+        if page.display == "responsive"
+        else exact_profile
+    )
+    constraint = None
+    if page.display == "responsive" and (page.host_width < 240 or page.host_height < 180):
+        constraint = "host_below_minimum"
+    elif page.display == "fixed" and (page.host_width < page.width or page.host_height < page.height):
+        constraint = "host_smaller_than_viewport"
     snapshot = {
+        "runtimeVersion": _RUNTIME_VERSION,
+        "publication": {
+            "publishedAt": page.published_at or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "publishedRevision": page.revision,
+            "reason": page.publication_reason,
+        },
+        "presentation": {
+            "display": page.display,
+            "layout": page.layout,
+            "viewport": viewport,
+            "exactProfile": exact_profile,
+            "host": host,
+            "constraint": constraint,
+        },
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,
         "context": {"id": page.id, "generation": page.generation},
@@ -1473,7 +2054,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         ],
         "viewerId": str(_viewer_id(page.viewer)),
         "channelId": str(page.channel_id),
-        "layout": preview.layout,
+        "layout": page.layout,
         "channel": {
             "id": str(page.channel_id),
             "name": channel.name if channel is not None and allowed else None,
@@ -1489,7 +2070,8 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "targetId": target_id,
         "messages": projected,
         "timeline": list(projected),
-        "messageIndex": [_message_summary(preview, page, item) for item in visible],
+        "messageIndex": message_index,
+        "navigation": navigation,
         "history": history,
         "modal": modal,
         "entities": entities,
@@ -1497,22 +2079,39 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "profile": {
             "theme": "dark",
             "scope": "desktop-dark",
-            "width": preview.width,
-            "height": preview.height,
+            "width": viewport["width"],
+            "height": viewport["height"],
             "locale": preview.locale,
             "timezone": preview.timezone,
             "presentationTime": preview.capture_time.isoformat(),
-            "fontStackConfigured": '"Noto Sans", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans SC", sans-serif',
+            "fontStackConfigured": '"Noto Sans", "Noto Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans SC", sans-serif',
             "fontAssets": [dict(face) for face in _FONT_PROFILE],
             "fontResolution": "unavailable until Chromium platform-font inspection",
         },
         "status": page.status,
         "diagnostics": diagnostics,
-        "lastAction": page.last_action,
+        "lastAction": (
+            {key: value for key, value in page.last_action.items() if key != "result"}
+            if page.last_action is not None
+            else None
+        ),
+        "activity": page.activity,
     }
     preview._reconcile_assets(page)
-    snapshot["assets"] = {asset_id: record.to_wire() for asset_id, record in page.assets.items()}
+    snapshot["assets"] = {}
+    for asset_id, record in page.assets.items():
+        item = record.to_wire()
+        item.pop("diagnostic", None)
+        snapshot["assets"][asset_id] = item
     return snapshot
 
 
-__all__ = ["IdentityRecord", "build_snapshot", "resolve_identity"]
+__all__ = [
+    "IdentityRecord",
+    "build_snapshot",
+    "candidate_control",
+    "query_message_page",
+    "resolve_identity",
+    "validate_candidate_query",
+    "validate_message_query",
+]

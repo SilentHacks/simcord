@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..backend.errors import BackendError, SetupError
+from ._diagnostics import make_diagnostic
 
 if TYPE_CHECKING:
     from . import Preview
@@ -36,6 +37,7 @@ class PreviewServer:
         "/": "index.html",
         "/app.js": "app.js",
         "/components.js": "components.js",
+        "/selects.js": "selects.js",
         "/messages.js": "messages.js",
         "/media.js": "media.js",
         "/text.js": "text.js",
@@ -215,8 +217,10 @@ class PreviewServer:
             raise web.HTTPBadRequest(text="JSON object required")
         try:
             page = self.preview._open_page(body.get("viewer_id"), body.get("target_id"))
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("control-unavailable")}, status=400, headers=self._SECURITY_HEADERS
+            )
         return web.json_response(self.preview._page_payload(page), headers=self._SECURITY_HEADERS)
 
     async def _delete_page(self, request: Any) -> Any:
@@ -225,8 +229,10 @@ class PreviewServer:
             raise web.HTTPUnauthorized()
         try:
             self.preview._close_page(context_id)
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=400, headers=self._SECURITY_HEADERS
+            )
         return web.json_response({"closed": True}, headers=self._SECURITY_HEADERS)
 
     async def _state(self, request: Any) -> Any:
@@ -236,8 +242,10 @@ class PreviewServer:
         try:
             page = self.preview._get_page(context_id)
             payload = self.preview._page_payload(page)
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPGone(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=410, headers=self._SECURITY_HEADERS
+            )
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
     async def _action(self, request: Any) -> Any:
@@ -252,8 +260,10 @@ class PreviewServer:
         # parseable body with a structured result (rejections carry HTTP 200).
         try:
             result = await self.preview._action(context_id, body)
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=400, headers=self._SECURITY_HEADERS
+            )
         return web.json_response(result, headers=self._SECURITY_HEADERS)
 
     async def _multipart_action(self, request: Any) -> dict[str, Any]:
@@ -328,8 +338,10 @@ class PreviewServer:
                 poster=poster,
                 media_time=media_time,
             )
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPNotFound(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("asset-unavailable")}, status=404, headers=self._SECURITY_HEADERS
+            )
         safe_filename = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
         record = self.preview._get_page(context_id).assets.get(request.match_info["asset_id"])
         active_document = bool(record is not None and self.preview._active_document(record, body))

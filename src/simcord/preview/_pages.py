@@ -17,6 +17,7 @@ from ..backend.cdn import CDN_BASE
 from ..backend.errors import BackendError, SetupError
 from ..results import InteractionResult, ResponseMessage
 from ._assets import _Asset, _content_type
+from ._diagnostics import make_diagnostic
 
 if TYPE_CHECKING:
     from ..builders import ChannelHandle
@@ -48,6 +49,21 @@ class _Page:
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
     pinned_attachment_ids: dict[str, str] = field(default_factory=dict)
+    layout: str = "message"
+    display: str = "responsive"
+    width: int = 960
+    height: int = 720
+    host_width: int = 960
+    host_height: int = 720
+    navigation_query: str = ""
+    navigation_cursor: str | None = None
+    candidate_queries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    cursor_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+    published_at: str | None = None
+    publication_reason: str = "initial"
+    activity: list[dict[str, Any]] = field(default_factory=list)
+    pending_receipt_revision: bool = False
+    activity_actions: list[_Action | None] = field(default_factory=list)
     # Resolved at call time: env patches time.monotonic while running, and this
     # module may be imported under an earlier (now dead) env's patch.
     last_activity: float = field(default_factory=lambda: time.monotonic())
@@ -58,8 +74,17 @@ class _Page:
         existing = next((asset for asset, item in self.assets.items() if item.key == key), None)
         if existing is not None:
             record = self.assets[existing]
-            self.referenced_assets.add(existing)
+            previous = (record.digest, record.filename, record.contentType, record.source)
             self._resolve_blob(record, metadata, source)
+            if previous != (record.digest, record.filename, record.contentType, record.source):
+                # A handle binds source bytes/metadata, even when replaced at the same URL.
+                asset = "a_" + secrets.token_urlsafe(12)
+                record.id = asset
+                self.assets[asset] = self.assets.pop(existing)
+                self.referenced_assets.discard(existing)
+                self.referenced_assets.add(asset)
+                return asset
+            self.referenced_assets.add(existing)
             return existing
         asset = "a_" + secrets.token_urlsafe(12)
         filename = str(metadata.get("filename", "asset"))
@@ -144,6 +169,9 @@ class _PageOps:
     env: Env
     channel: ChannelHandle
     layout: str
+    display: str
+    width: int
+    height: int
     viewers: tuple[Any, ...]
     _pages: dict[str, _Page]
     _python: _Page | None
@@ -153,7 +181,7 @@ class _PageOps:
     _closed: bool
     _MAX_PAGES: ClassVar[int]
     _PAGE_LEASE_SECONDS: ClassVar[float]
-    _publish: Callable[[_Page], None]
+    _publish: Callable[..., None]
     _clear_page_assets: Callable[[_Page], None]
     _assert_capture_live: Callable[[_Page], None]
 
@@ -193,47 +221,134 @@ class _PageOps:
                 continue
             if now - page.last_activity > self._PAGE_LEASE_SECONDS:
                 self._pages.pop(page.id, None)
+                self._redact_page_receipts(page)
                 self._clear_page_assets(page)
 
+    @staticmethod
+    def _redact_receipt(receipt: dict[str, Any] | None) -> None:
+        if not isinstance(receipt, dict):
+            return
+        receipt["target"] = None
+        receipt["outcomes"] = []
+        receipt["presentation"] = "access_denied"
+        receipt.pop("result", None)
+        for diagnostic in receipt.get("diagnostics", []):
+            diagnostic.pop("subject", None)
+
+    def _redact_page_receipts(self, page: _Page) -> None:
+        self._redact_receipt(page.last_action)
+        if page.latest_action is not None:
+            page.latest_action.interaction = None
+            page.latest_action.target = None
+            page.latest_action.outcomes.clear()
+            self._redact_receipt(page.latest_action.response)
+        page.activity.clear()
+        page.activity_actions.clear()
+
+    def _receipt_payload(self, page: _Page, receipt: Any, *, allowed: bool) -> Any:
+        if not isinstance(receipt, Mapping):
+            return None
+        safe = json.loads(json.dumps(receipt))
+        safe.pop("result", None)
+        if not allowed:
+            self._redact_receipt(safe)
+            return safe
+
+        def message_is_visible(value: Any) -> bool:
+            try:
+                message = self.env.backend.get_message(page.channel_id, int(value))
+            except (BackendError, TypeError, ValueError):
+                return False
+            return can_access_message(self.env, page.channel_id, message, page.viewer, history=True)
+
+        target = safe.get("target")
+        if isinstance(target, Mapping) and not message_is_visible(target.get("messageId")):
+            safe["target"] = None
+        outcomes = []
+        for item in safe.get("outcomes", []):
+            if not isinstance(item, Mapping):
+                continue
+            outcome = dict(item)
+            if outcome.get("messageId") is not None and not message_is_visible(outcome["messageId"]):
+                outcomes.append({"kind": "unavailable"})
+            else:
+                outcomes.append(outcome)
+        safe["outcomes"] = outcomes
+        return safe
+
     def _page_payload(self, page: _Page) -> dict[str, Any]:
+
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
-            return json.loads(json.dumps(page.pinned_snapshot))
+            payload = json.loads(json.dumps(page.pinned_snapshot))
+            allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
+            payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=allowed)
+            payload["activity"] = (
+                [self._receipt_payload(page, item, allowed=True) for item in page.activity] if allowed else []
+            )
+            return payload
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
         if not allowed:
             if page.status != "access_denied":
                 self._clear_page_assets(page)
                 page.modal = None
                 page.modal_handle = None
+                self._redact_page_receipts(page)
                 page.snapshot.update(
                     {
                         "messageIndex": [],
+                        "navigation": {
+                            "query": "",
+                            "filter": "all",
+                            "hasPrevious": False,
+                            "hasNext": False,
+                            "previousCursor": None,
+                            "nextCursor": None,
+                        },
                         "messages": {},
                         "timeline": [],
                         "entities": {},
                         "modal": None,
                         "candidates": {},
                         "assets": {},
+                        "targetId": None,
+                        "diagnostics": [make_diagnostic("access-denied")],
                     }
                 )
             page.status = "access_denied"
-        # Reads never republish and never clear "stale": they serve the last
-        # published projection with the live status overlaid, redacted on denial.
         payload = json.loads(json.dumps(page.snapshot))
         if allowed:
-            payload["assets"] = {asset_id: record.to_wire() for asset_id, record in page.assets.items()}
-        if not allowed:
+            payload["assets"] = {}
+            for asset_id, record in page.assets.items():
+                item = record.to_wire()
+                item.pop("diagnostic", None)
+                payload["assets"][asset_id] = item
+        else:
             payload.update(
                 {
                     "messageIndex": [],
+                    "navigation": {
+                        "query": "",
+                        "filter": "all",
+                        "hasPrevious": False,
+                        "hasNext": False,
+                        "previousCursor": None,
+                        "nextCursor": None,
+                    },
                     "messages": {},
                     "timeline": [],
                     "entities": {},
                     "modal": None,
                     "candidates": {},
                     "assets": {},
+                    "targetId": None,
+                    "diagnostics": [make_diagnostic("access-denied")],
                 }
             )
+        payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=allowed)
+        payload["activity"] = (
+            [self._receipt_payload(page, item, allowed=True) for item in page.activity] if allowed else []
+        )
         payload["status"] = page.status
         return payload
 
@@ -279,13 +394,19 @@ class _PageOps:
             self.channel.id,
             target,
         )
-        if self.layout == "channel":
+        page.layout = self.layout
+        page.display = self.display
+        page.width = self.width
+        page.height = self.height
+        page.host_width = self.width
+        page.host_height = self.height
+        if page.layout == "channel":
             page.window_end_id = target if target_id is not None else source.window_end_id
         if source.modal is not None and source.modal._interaction.user_id == viewer.id:
             page.modal = source.modal
             page.modal_handle = "m_" + secrets.token_urlsafe(12)
         try:
-            self._publish(page)
+            self._publish(page, reason="initial")
         except BaseException:
             # The page was never registered: drop any blobs its partial
             # snapshot retained so a failed publish leaves nothing behind.
@@ -304,6 +425,7 @@ class _PageOps:
             return
         page = self._pages.pop(context_id, None)
         if page is not None:
+            self._redact_page_receipts(page)
             self._clear_page_assets(page)
 
     def _target_id(self, target_id: Any, viewer: Any = None, *, denied_fallback: bool = False) -> int | None:

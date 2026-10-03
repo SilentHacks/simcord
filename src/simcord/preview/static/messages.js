@@ -180,11 +180,38 @@ function appendFileAttachment(item, attachment, options) {
   item.append(footer);
 }
 
+function disposeUnusedPlayers(players) {
+  players.forEach((player) => {
+    if (!player.isConnected) player._previewMediaPlayer?.dispose?.();
+  });
+}
+
 export function renderMessage(root, message, options = {}) {
   const pendingMedia = options.pendingMedia || [];
   options.pendingMedia = pendingMedia;
+  const reuseScope = message
+    ? JSON.stringify([String(message.id), String(options.contextId ?? ""), String(options.viewerId ?? "")])
+    : null;
+  const reusePlayers = new Map();
+  const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")];
+  const canReuse = reuseScope !== null && root.dataset.mediaReuseScope === reuseScope;
+  oldPlayers.forEach((player) => {
+    if (player._previewMediaPlayer) player._previewMediaPlayer.active = false;
+    if (!canReuse) return;
+    const key = player.dataset.mediaReuseKey;
+    const queue = reusePlayers.get(key) || [];
+    queue.push(player);
+    reusePlayers.set(key, queue);
+  });
   root.replaceChildren();
-  if (!message) return { pendingMedia };
+  if (!message) {
+    delete root.dataset.mediaReuseScope;
+    disposeUnusedPlayers(oldPlayers);
+    return { pendingMedia };
+  }
+  const hadPlayerReuse = Object.hasOwn(options, "mediaPlayerReuse");
+  const previousPlayerReuse = options.mediaPlayerReuse;
+  options.mediaPlayerReuse = reusePlayers;
   options.messageId = String(message.id);
   options.lightboxGroup ||= { items: [] };
   const shortTime = (value) => new Intl.DateTimeFormat(options.locale || "en-US", {
@@ -380,5 +407,9 @@ export function renderMessage(root, message, options = {}) {
     }
     if (toolbar.childElementCount) root.append(toolbar);
   }
+  root.dataset.mediaReuseScope = reuseScope;
+  disposeUnusedPlayers(oldPlayers);
+  if (hadPlayerReuse) options.mediaPlayerReuse = previousPlayerReuse;
+  else delete options.mediaPlayerReuse;
   return { pendingMedia };
 }

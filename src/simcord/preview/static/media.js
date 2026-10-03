@@ -145,52 +145,80 @@ function renderWaveform(host, values) {
   });
 }
 
+function playerCurrent(player) {
+  return player.active && player.wrapper.isConnected;
+}
+
+function updatePlayer(player) {
+  const { wrapper, element, play, seek, mute, volume, options, kind } = player;
+  const label = player.label;
+  wrapper.className = `media-player ${kind}-player ${player.className}`;
+  wrapper.setAttribute("aria-label", `${label} player`);
+  element.setAttribute("aria-label", label);
+  play.setAttribute("aria-label", `${element.ended ? "Replay" : !element.paused ? "Pause" : "Play"} ${label}`);
+  play.textContent = element.ended ? "Replay" : !element.paused ? "Pause" : "Play";
+  seek.setAttribute("aria-label", `Seek ${label}`);
+  mute.textContent = element.muted ? "Unmute" : "Mute";
+  mute.setAttribute("aria-label", `${element.muted ? "Unmute" : "Mute"} ${label}`);
+  volume.setAttribute("aria-label", `Volume ${label}`);
+  volume.value = String(element.volume);
+  if (kind === "video") element.playsInline = true;
+  else renderWaveform(player.waveform, options.assets?.[player.assetId]?.waveform);
+  player.updateTime();
+}
+
 function renderPlayer(media, className, options, label, assetId, kind) {
-  const wrapper = node("section", `media-player ${kind}-player ${className || ""}`);
+  const playerLabel = label || kind;
+  const playerClass = className || "";
+  const mediaTime = options.mediaTime ?? null;
+  const reuseKey = JSON.stringify([assetId, kind, playerClass, mediaTime]);
+  const reused = options.mediaPlayerReuse?.get(reuseKey)?.shift();
+  if (reused?._previewMediaPlayer) {
+    const player = reused._previewMediaPlayer;
+    player.options = options;
+    player.label = playerLabel;
+    player.className = playerClass;
+    player.active = true;
+    updatePlayer(player);
+    return { element: reused, pending: player.pending };
+  }
+
+  const wrapper = node("section", `media-player ${kind}-player ${playerClass}`);
+  wrapper.dataset.mediaReuseKey = reuseKey;
   wrapper.setAttribute("role", "group");
-  wrapper.setAttribute("aria-label", `${label || kind} player`);
+  wrapper.setAttribute("aria-label", `${playerLabel} player`);
   const element = node(kind, "media-player-native");
   element.preload = "metadata";
   element.controls = false;
   if (kind === "video") {
     element.playsInline = true;
-    element.setAttribute("aria-label", label || "Video");
-  } else {
-    element.setAttribute("aria-label", label || "Audio");
   }
+  element.setAttribute("aria-label", playerLabel);
   const waveform = node("div", "media-waveform");
-  if (kind === "audio") renderWaveform(waveform, options.assets?.[assetId]?.waveform);
   const controls = node("div", "media-player-controls");
   const play = node("button", "media-player-button", "Play");
   play.type = "button";
-  play.setAttribute("aria-label", `Play ${label || kind}`);
   const seek = node("input", "media-player-seek");
   seek.type = "range";
   seek.min = "0";
   seek.max = "0";
   seek.step = "0.01";
   seek.value = "0";
-  seek.setAttribute("aria-label", `Seek ${label || kind}`);
   const time = node("span", "media-player-time", "0:00 / 0:00");
   time.setAttribute("aria-live", "off");
   const mute = node("button", "media-player-button", "Mute");
   mute.type = "button";
-  mute.setAttribute("aria-label", `Mute ${label || kind}`);
   const volume = node("input", "media-player-volume");
   volume.type = "range";
   volume.min = "0";
   volume.max = "1";
   volume.step = "0.05";
   volume.value = "1";
-  volume.setAttribute("aria-label", `Volume ${label || kind}`);
   controls.append(play, seek, time, mute, volume);
+  let fullscreen = null;
   if (kind === "video" && document.fullscreenEnabled) {
-    const fullscreen = node("button", "media-player-button", "Fullscreen");
+    fullscreen = node("button", "media-player-button", "Fullscreen");
     fullscreen.type = "button";
-    fullscreen.setAttribute("aria-label", `Fullscreen ${label || kind}`);
-    fullscreen.addEventListener("click", () => {
-      wrapper.requestFullscreen?.().catch((error) => diagnostic(options, "media-fullscreen", label, error));
-    });
     controls.append(fullscreen);
   }
   const status = node("span", "media-player-status", "Loading media…");
@@ -199,7 +227,21 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   if (kind === "audio") wrapper.append(waveform);
   wrapper.append(controls, status);
 
-  const updateTime = () => {
+  const player = {
+    wrapper, element, waveform, controls, play, seek, time, mute, volume, status,
+    options, label: playerLabel, className: playerClass, assetId, kind, mediaTime,
+    active: true, pending: [],
+  };
+  wrapper._previewMediaPlayer = player;
+  player.dispose = () => {
+    player.active = false;
+    element.pause();
+    element.removeAttribute("src");
+    element.removeAttribute("poster");
+    element.load();
+  };
+
+  player.updateTime = () => {
     const duration = Number.isFinite(element.duration) ? element.duration : 0;
     const position = Number.isFinite(element.currentTime) ? element.currentTime : 0;
     seek.max = String(duration);
@@ -208,16 +250,23 @@ function renderPlayer(media, className, options, label, assetId, kind) {
     wrapper.style.setProperty("--media-progress", duration ? `${position / duration * 100}%` : "0%");
   };
   const updatePlay = () => {
-    const playing = !element.paused && !element.ended;
-    play.textContent = element.ended ? "Replay" : playing ? "Pause" : "Play";
-    play.setAttribute("aria-label", `${element.ended ? "Replay" : playing ? "Pause" : "Play"} ${label || kind}`);
+    if (!playerCurrent(player)) return;
+    play.textContent = element.ended ? "Replay" : !element.paused ? "Pause" : "Play";
+    play.setAttribute("aria-label", `${play.textContent} ${player.label}`);
+  };
+  const updateVolume = () => {
+    if (!playerCurrent(player)) return;
+    mute.textContent = element.muted ? "Unmute" : "Mute";
+    mute.setAttribute("aria-label", `${mute.textContent} ${player.label}`);
+    volume.value = String(element.volume);
   };
   play.addEventListener("click", () => {
     if (element.ended) element.currentTime = 0;
     if (element.paused) {
       element.play().catch((error) => {
+        if (!playerCurrent(player)) return;
         status.textContent = "Playback is unavailable";
-        diagnostic(options, "media-playback", label, error);
+        diagnostic(player.options, "media-playback", player.label, error);
       });
     } else element.pause();
   });
@@ -226,63 +275,69 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   });
   mute.addEventListener("click", () => {
     element.muted = !element.muted;
-    mute.textContent = element.muted ? "Unmute" : "Mute";
-    mute.setAttribute("aria-label", `${element.muted ? "Unmute" : "Mute"} ${label || kind}`);
+    updateVolume();
   });
   volume.addEventListener("input", () => {
     element.volume = Number(volume.value);
     if (element.volume > 0) element.muted = false;
-    mute.textContent = element.muted ? "Unmute" : "Mute";
+    updateVolume();
   });
-  ["durationchange", "timeupdate", "seeked"].forEach((name) => element.addEventListener(name, updateTime));
+  if (fullscreen) {
+    fullscreen.addEventListener("click", () => {
+      wrapper.requestFullscreen?.().catch((error) => diagnostic(player.options, "media-fullscreen", player.label, error));
+    });
+  }
+  ["durationchange", "timeupdate", "seeked"].forEach((name) => element.addEventListener(name, player.updateTime));
   ["play", "pause", "ended"].forEach((name) => element.addEventListener(name, updatePlay));
+  element.addEventListener("volumechange", updateVolume);
+  updatePlayer(player);
 
-  const pending = [
-    Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
-      if (!current(options, wrapper)) return;
-      if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("asset is not a local blob URL");
-      const metadata = new Promise((resolve, reject) => {
-        element.addEventListener("loadedmetadata", resolve, { once: true });
-        element.addEventListener("error", () => reject(new Error("browser cannot decode this validated media")), { once: true });
-      });
-      element.src = url;
-      element.load();
-      await metadata;
-      if (!current(options, wrapper)) return;
-      if (options.mediaTime !== null && options.mediaTime !== undefined) {
-        const duration = Number.isFinite(element.duration) ? element.duration : 0;
-        const selected = Math.min(Math.max(0, Number(options.mediaTime) || 0), duration);
-        if (Math.abs(element.currentTime - selected) > 0.01) {
-          const seeked = new Promise((resolve, reject) => {
-            element.addEventListener("seeked", resolve, { once: true });
-            element.addEventListener("error", () => reject(new Error("media seek failed")), { once: true });
-          });
-          element.currentTime = selected;
-          await seeked;
-        }
-        element.pause();
-        options.onMediaCaptureTime?.(assetId, Number(element.currentTime) || 0);
+  player.pending.push(Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
+    if (!playerCurrent(player)) return;
+    if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("asset is not a local blob URL");
+    const metadata = new Promise((resolve, reject) => {
+      element.addEventListener("loadedmetadata", resolve, { once: true });
+      element.addEventListener("error", () => reject(new Error("browser cannot decode this validated media")), { once: true });
+    });
+    element.src = url;
+    element.load();
+    await metadata;
+    if (!playerCurrent(player)) return;
+    if (player.mediaTime !== null) {
+      const duration = Number.isFinite(element.duration) ? element.duration : 0;
+      const selected = Math.min(Math.max(0, Number(player.mediaTime) || 0), duration);
+      if (Math.abs(element.currentTime - selected) > 0.01) {
+        const seeked = new Promise((resolve, reject) => {
+          element.addEventListener("seeked", resolve, { once: true });
+          element.addEventListener("error", () => reject(new Error("media seek failed")), { once: true });
+        });
+        element.currentTime = selected;
+        await seeked;
       }
-      const manifest = options.assets?.[assetId];
-      diagnoseMemoryLimit(options, assetId);
-      if (kind === "audio") renderWaveform(waveform, manifest?.waveform);
-      status.textContent = "";
-      updateTime();
-      updatePlay();
-    }).catch((error) => {
-      if (!current(options, wrapper)) return;
-      diagnostic(options, "media-unavailable", label, error);
-      wrapper.replaceWith(node("div", "media-unavailable", `${label || "Media"} unavailable`));
-    }),
-  ];
+      element.pause();
+      player.options.onMediaCaptureTime?.(assetId, Number(element.currentTime) || 0);
+    }
+    const currentOptions = player.options;
+    const manifest = currentOptions.assets?.[assetId];
+    diagnoseMemoryLimit(currentOptions, assetId);
+    if (kind === "audio") renderWaveform(waveform, manifest?.waveform);
+    status.textContent = "";
+    player.updateTime();
+    updatePlay();
+  }).catch((error) => {
+    if (!playerCurrent(player)) return;
+    diagnostic(player.options, "media-unavailable", player.label, error);
+    player.active = false;
+    wrapper.replaceWith(node("div", "media-unavailable", `${player.label} unavailable`));
+  }));
   if (kind === "video") {
-    pending.push(
+    player.pending.push(
       Promise.resolve(options.loadAsset(assetId, { poster: true })).then((url) => {
-        if (current(options, wrapper) && typeof url === "string" && url.startsWith("blob:")) element.poster = url;
+        if (playerCurrent(player) && typeof url === "string" && url.startsWith("blob:")) element.poster = url;
       }).catch(() => {}),
     );
   }
-  return { element: wrapper, pending };
+  return { element: wrapper, pending: player.pending };
 }
 
 let lottieRuntime;
@@ -504,7 +559,10 @@ export function renderSpoilerMedia(media, className, options, label, stateKey, g
   const result = renderMedia(media, className, options, label, group);
   const key = spoilerKey(media, options, label, stateKey);
   result.element = reveal(result.element, media?.spoiler, options, label, key, result.lightboxItem);
-  if (media?.spoiler) result.element.classList.add("spoiler-media");
+  if (media?.spoiler) {
+    result.element.classList.add("spoiler-media");
+    result.element.classList.toggle("is-compact", className.includes("thumbnail"));
+  }
   return result;
 }
 

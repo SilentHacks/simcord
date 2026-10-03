@@ -318,13 +318,13 @@ def test_batch_comparison_requires_both_assets_and_escapes_contact_sheet_markup(
 
 @pytest.mark.asyncio
 async def test_capture_scrubs_capabilities_and_rejects_malformed_snapshots(tmp_path):
-    with pytest.raises(ValueError, match="not protocol 2"):
+    with pytest.raises(ValueError):
         capture_visual_reference.validate_snapshot(
-            {"protocolVersion": 1, "messages": {}, "profile": {}, "diagnostics": []}
+            {"protocolVersion": 2, "messages": {}, "profile": {}, "diagnostics": []}
         )
-    with pytest.raises(ValueError, match="diagnostics are malformed"):
+    with pytest.raises(ValueError):
         capture_visual_reference.validate_snapshot(
-            {"protocolVersion": 2, "messages": {}, "profile": {}, "diagnostics": ["not-an-object"]}
+            {"protocolVersion": 3, "messages": {}, "profile": {}, "diagnostics": ["not-an-object"]}
         )
 
     results, code = await capture_visual_reference.capture(

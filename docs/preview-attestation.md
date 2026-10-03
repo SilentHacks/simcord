@@ -3,18 +3,46 @@ title: "Preview evidence attestation"
 description: "Reviewed local preview evidence, exact coverage counts, hashes, and outstanding Discord calibration prerequisites."
 ---
 
-# Preview evidence attestation — 2026-09-27 UTC
+# Preview evidence attestation
 
-**Result: local functional verification passed; Discord visual and human accessibility parity are not certified.**
-This is a scrubbed record for renderer commit `820a041fd3edf651e379e2b05ac89663185d01fa`,
-reviewed independently by `IndependentPreviewReviewer` on 2026-09-27. Five actionable
-findings were corrected in that commit; two were rejected as pre-existing viewport
-capture behavior and deliberately local required-select clearing. No human screen-reader
-review or authorized private reference comparison has occurred.
+## Current status — 2026-10-03
+
+**Local implementation verification is recorded; independent review is blocked by the core coverage gate.** The preview
+uses protocol 3 while `pyproject.toml` remains package version `2.2.1`; no package 3.0 release,
+complete resolution of all 21 findings, or release-certification claim is made.
+
+Observed local checks: 888 repository tests passed with six third-party warnings. The added native
+DM reference rejection also passed its focused run. The unchanged core coverage gate fails at
+94.27% against 95%. An untouched `988e4a2` snapshot passed its 877 tests but failed the same
+gate at 94%, with 268 missed statements; current missed statements are 249. The existing
+service-message browser journey now exercises the public fixture API and verifies the actual
+reference destination rather than incidental sentence wording, and a focused boundary check
+rejects foreign fixture identities and native DM references without creating a service message.
+The threshold was not lowered and unrelated core test padding was not added.
+Pyright reported zero errors and Ruff checks passed. Real Chromium exercised guild/DM controls,
+search/access recovery/queued Close, modal entity defaults and callbacks, native player retention,
+adversarial downloaded report privacy, and an executed active-session Python capture recipe.
+The full pinned COLRv1 emoji build renders regional flags; glyph faces were inspected across the
+Unicode text/control corpus with only DejaVu Sans available as a system font. Fresh wheel/sdist
+content checks passed, and the installed wheel outside the checkout completed a modal/edit/PNG
+journey with `complete=true`, no diagnostics, and custom platform font glyphs.
+
+Authorized private Discord transition/pixel measurements and human screen-reader attestation are
+unavailable. These external gates remain blocked; local screenshots and automated ARIA checks
+do not substitute for that evidence. The historical record below is not current certification.
+
+## Historical attestation — 2026-09-27 UTC
+
+**Historical result for the renderer commit below: local functional verification passed; Discord visual
+and human accessibility parity were not certified.** This scrubbed record was for renderer commit
+`820a041fd3edf651e379e2b05ac89663185d01fa`, reviewed independently by `IndependentPreviewReviewer`
+on 2026-09-27. Five actionable findings were corrected in that commit; two were rejected as pre-existing
+viewport capture behavior and deliberately local required-select clearing. No human screen-reader
+review or authorized private reference comparison had occurred for that historical record.
 
 | Artifact / environment | Version or SHA-256 |
 | --- | --- |
-| Snapshot and schema protocol | `2`; `protocol.schema.json` `965c7fbf2021e9e9b1f4420c151248a99f0a3c5db1231e36eb25ddf05e939469` |
+| Historical snapshot/schema protocol | `2`; `protocol.schema.json` `965c7fbf2021e9e9b1f4420c151248a99f0a3c5db1231e36eb25ddf05e939469` |
 | Renderer revision | `static/app.js` `3b0b3e96671e84cc21c622faedd53f957d6d3cf716ce4571dfdd8af0d5cb9401` |
 | Package environment | Linux `6.8.0-90-generic`, Python `3.12.13`, `uv.lock` `4e7dd350ea8e20840a973d7e85f69fb56cfa5df6bc82f498af6c7ffee4ae583a` |
 | Browser | Playwright `1.62.0`, Chromium `151.0.7922.34`, browser executable `0b20b130e7edd9dd51873be867761295fe0cfad490c2b9a64f95bd3cfc08fa71` |

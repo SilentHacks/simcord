@@ -157,10 +157,19 @@ def _append_token(token: Any) -> dict[str, Any] | None:
 def _markdown_parser(policy: Mapping[str, bool | str], context: Mapping[str, Any]) -> Any:
     from markdown_it import MarkdownIt
 
-    parser = MarkdownIt("default", {"html": False, "linkify": False, "typographer": False})
+    parser = MarkdownIt(
+        "default",
+        {"html": False, "linkify": bool(policy["links"]), "typographer": False},
+    )
+    if policy["links"]:
+        parser.enable("linkify")
+        assert parser.linkify is not None
+        parser.linkify.set({"fuzzy_link": False, "fuzzy_email": False, "fuzzy_ip": False})
+        for schema in ("ftp:", "mailto:", "//"):
+            parser.linkify.add(schema, None)
     parser.disable("image")
     if not policy["links"]:
-        parser.disable(["link", "autolink"])
+        parser.disable(["link", "autolink", "linkify"])
     if policy["spoilers"]:
         parser.inline.add_terminator_char("|")
 
@@ -254,7 +263,7 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
     link_open = False
     for token in children:
         kind = getattr(token, "type", "")
-        if kind in {"text", "html_inline"}:
+        if kind in {"text", "text_special", "html_inline"}:
             result.append(_text_token(str(getattr(token, "content", ""))))
             continue
         if kind == "code_inline":
@@ -385,4 +394,60 @@ def markdown_tokens(
     return _blocks(tokens, policy)
 
 
-__all__ = ["markdown_tokens"]
+def markdown_summary(
+    tokens: Iterable[Mapping[str, Any]],
+    max_graphemes: int = 100,
+) -> str:
+    """Flatten safe visible token text, hide spoiler bodies, and preserve whole graphemes."""
+    if type(max_graphemes) is not int or max_graphemes < 0:
+        raise ValueError("max_graphemes must be a non-negative integer")
+
+    parts: list[str] = []
+
+    def visit(items: Iterable[Mapping[str, Any]]) -> None:
+        hidden = 0
+        for token in items:
+            kind = token.get("type")
+            if kind == "spoiler_open":
+                if not hidden:
+                    parts.append("[spoiler]")
+                hidden += 1
+                continue
+            if kind == "spoiler_close":
+                hidden = max(0, hidden - 1)
+                continue
+            if hidden:
+                continue
+            if kind in {"text", "code", "code_block"}:
+                parts.append(str(token.get("content", "")))
+            elif kind in {"mention", "command"}:
+                parts.append(str(token.get("label", "")))
+            elif kind == "emoji":
+                emoji = token.get("emoji")
+                name = emoji.get("name") if isinstance(emoji, Mapping) else None
+                parts.append(f":{name}:" if isinstance(name, str) and name else "[emoji]")
+            elif kind == "timestamp":
+                parts.append("[timestamp]")
+            elif kind == "break":
+                parts.append(" ")
+            elif isinstance(token.get("children"), (list, tuple)):
+                visit(token["children"])
+
+    visit(tokens)
+    text = " ".join("".join(parts).split())
+    if not text or max_graphemes == 0:
+        return ""
+
+    import regex
+
+    clusters: list[str] = []
+    for cluster in regex.finditer(r"\X", text):
+        clusters.append(cluster.group())
+        if len(clusters) > max_graphemes:
+            break
+    if len(clusters) <= max_graphemes:
+        return text
+    return "".join(clusters[: max_graphemes - 1]) + "…"
+
+
+__all__ = ["markdown_summary", "markdown_tokens"]

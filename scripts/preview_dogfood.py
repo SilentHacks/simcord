@@ -4,6 +4,7 @@ Run: uv run python scripts/preview_dogfood.py [--channel | --dm]
 Check: uv run python scripts/preview_dogfood.py --check
 The printed local URL is a capability: do not share it or put it in reports.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,10 +17,10 @@ import discord
 from discord.ext import commands
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import simcord
 from scripts.discord_reference_bot import post_gallery
 from tests.fixtures.preview import catalog
 
+import simcord
 
 
 def check_catalog() -> None:
@@ -37,9 +38,7 @@ def check_catalog() -> None:
     rows = coverage.get("rows")
     if not isinstance(rows, list):
         raise ValueError("coverage rows must be an array")
-    finding_rows = [
-        row for row in rows if isinstance(row, dict) and isinstance(row.get("findingId"), str)
-    ]
+    finding_rows = [row for row in rows if isinstance(row, dict) and isinstance(row.get("findingId"), str)]
     registered = {row["findingId"]: row for row in finding_rows}
     if len(finding_rows) != len(expected) or set(registered) != set(expected):
         raise ValueError("coverage must register every D/U finding exactly once")
@@ -59,10 +58,7 @@ def check_catalog() -> None:
         if row.get("implementationStatus") not in {"partial", "missing"}:
             raise ValueError(f"{scenario['id']} implementation status is not independently recorded")
     payloads = catalog.dogfood_payloads("@dogfood-check")
-    if not any(
-        str(payload.get("content", "")).startswith("DOG-D01 Guild")
-        for payload in payloads
-    ):
+    if not any(str(payload.get("content", "")).startswith("DOG-D01 Guild") for payload in payloads):
         raise ValueError("the dogfood catalog must include the guild D01 modal scenario")
     payloads.append(catalog.dogfood_dm_payload())
     for reference_id in catalog.REFERENCE_IDS:
@@ -74,9 +70,7 @@ def check_catalog() -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local preview dogfood gallery.")
-    parser.add_argument(
-        "--channel", action="store_true", help="show channel history instead of one message"
-    )
+    parser.add_argument("--channel", action="store_true", help="show channel history instead of one message")
     parser.add_argument("--dm", action="store_true", help="open the DM-only D01 UserSelect scenario")
     parser.add_argument("--check", action="store_true", help="validate scenario registration and factories")
     args = parser.parse_args()
@@ -137,6 +131,7 @@ async def main() -> None:
             await preview.show(channel_handle.last_message if args.channel else message_target)
             print(f"PREVIEW_URL={preview.url}", flush=True)
             await preview.wait_closed()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

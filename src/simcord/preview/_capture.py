@@ -15,13 +15,15 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlsplit
 
+from .. import __version__
 from ..actors import MemberActor
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..builders import UserHandle
+from ._diagnostics import make_diagnostic
 from ._pages import _Page
 from ._snapshot import build_snapshot
 
@@ -88,6 +90,9 @@ class PreviewCapture:
     calibration: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     action: Mapping[str, Any] | None = None
     png: bytes | None = field(default=None, repr=False)
+    schema_version: int = 1
+    protocol_version: int = 3
+    runtime_version: str = __version__
 
 
 @dataclass(slots=True)
@@ -210,7 +215,7 @@ class ManagedCapture:
         return {
             "playwrightVersion": str(playwright_version),
             "browserVersion": str(version),
-            "fontStackConfigured": '"Noto Sans", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans SC", sans-serif',
+            "fontStackConfigured": '"Noto Sans", "Noto Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans SC", sans-serif',
             "fontResolution": "unavailable until Chromium platform-font inspection",
             "emojiFallback": "packaged Noto Color Emoji",
             "animationPolicy": "cancel-animations-and-hide-caret",
@@ -227,19 +232,29 @@ class ManagedCapture:
             await cdp.send("CSS.enable")
             document = await cdp.send("DOM.getDocument")
             root_id = int(document["root"]["nodeId"])
-            node = await cdp.send(
-                "DOM.querySelector",
+            nodes = await cdp.send(
+                "DOM.querySelectorAll",
                 {
                     "nodeId": root_id,
-                    "selector": ".message-content, .message-author, .text-display, button",
+                    "selector": "#preview-app .message-author, #preview-app .message-content, "
+                    "#preview-app .text-display, #preview-app .embed-title, #preview-app .embed-description, "
+                    "#preview-app .embed-field-name, #preview-app .embed-field-value, #preview-app button, "
+                    "#preview-app label, #preview-app input, #preview-app textarea, #preview-app .modal-title, "
+                    "#preview-app .control-label, #preview-app .field-description, #preview-app .select-value-label, "
+                    "#preview-app .select-chip-label, #preview-app .reaction-emoji, #preview-app .file-name, "
+                    "#preview-app .file-description, #preview-app .upload-file-name",
                 },
             )
-            node_id = int(node.get("nodeId", 0))
-            if not node_id:
-                return {"available": False, "faces": [], "error": "preview surface is unavailable"}
-            result = await cdp.send("CSS.getPlatformFontsForNode", {"nodeId": node_id})
-            faces = result.get("fonts", [])
-            return {"available": True, "faces": [dict(face) for face in faces if isinstance(face, Mapping)]}
+            faces: list[dict[str, Any]] = []
+            surfaces: list[dict[str, Any]] = []
+            for index, node_id in enumerate(nodes.get("nodeIds", [])):
+                result = await cdp.send("CSS.getPlatformFontsForNode", {"nodeId": node_id})
+                used = [dict(face) for face in result.get("fonts", []) if isinstance(face, Mapping)]
+                if used:
+                    surfaces.append({"index": index, "faces": used})
+                    faces.extend(used)
+            await cdp.detach()
+            return {"available": bool(faces), "faces": faces, "surfaces": surfaces}
         except Exception as exc:  # pragma: no cover - depends on Chromium CDP support
             return {"available": False, "faces": [], "error": str(exc)}
 
@@ -304,6 +319,11 @@ class ManagedCapture:
 
                 self.preview._assert_capture_live(pin.page)
                 status = await self._status(page)
+                if not status.get("authorized") or status.get("transport", {}).get("state") not in {
+                    "healthy",
+                    "recovered",
+                }:
+                    raise SetupError("managed capture requires a healthy authorized read")
                 platform_fonts = await self._platform_fonts(page)
                 runtime_fonts = await page.evaluate(
                     """() => ({
@@ -321,16 +341,7 @@ class ManagedCapture:
                     raise SetupError("managed capture requires a settled action")
                 diagnostics = self._diagnostics(status)
                 if not platform_fonts.get("available"):
-                    diagnostics.append(
-                        {
-                            "code": "font-platform-inspection",
-                            "severity": "error",
-                            "message": platform_fonts.get(
-                                "error", "Chromium platform-font inspection unavailable"
-                            ),
-                            "complete": False,
-                        }
-                    )
+                    diagnostics.append(make_diagnostic("font-platform-inspection"))
                 render_state = status.get("renderState")
                 media_metadata = {
                     "captureTimes": dict(render_state.get("mediaCaptureTimes", {}))
@@ -347,35 +358,61 @@ class ManagedCapture:
 
                 await self._freeze(page)
                 await self._raf(page)
-                if mode == "surface":
-                    selector = ".modal-dialog" if pin.modal_id is not None else ".message-surface"
-                    surface = page.locator(selector)
-                    box = await surface.bounding_box()
-                    if not isinstance(box, Mapping):  # pragma: no cover - bundled DOM contract
-                        raise SetupError("managed capture surface is unavailable")
-                    output_width = math.ceil(float(box.get("width", 0)))
-                    output_height = math.ceil(float(box.get("height", 0)))
-                    output_width, output_height = self._validate_dimensions(output_width, output_height)
-                else:
-                    await page.evaluate(
-                        """() => {
-                            document.getElementById('toolbar')?.setAttribute('hidden', '');
-                            document.getElementById('diagnostics')?.setAttribute('hidden', '');
-                        }"""
-                    )
-                    await self._raf(page)
-                    output_width, output_height = width, height
+                geometry = await page.evaluate(
+                    """({mode, modal, targetId}) => {
+                        const app = document.getElementById('preview-app');
+                        const channel = document.getElementById('channel-layout');
+                        const inChannel = channel && !channel.hidden;
+                        const target = modal ? document.querySelector('.modal-dialog')
+                          : inChannel
+                            ? [...document.querySelectorAll('[data-message-id]')]
+                                .find(element => element.dataset.messageId === targetId)
+                            : document.getElementById('focused-content');
+                        const owner = modal ? app : inChannel
+                          ? document.getElementById('channel-timeline')
+                          : document.getElementById('focused-content') || app;
+                        const scroll = modal ? document.querySelector('.modal-body') || target : owner;
+                        if (!app || !owner || (mode === 'surface' && !target)) return null;
+                        const rect = element => {
+                          const box = element.getBoundingClientRect();
+                          return {x:box.x,y:box.y,width:box.width,height:box.height,
+                            right:box.right,bottom:box.bottom};
+                        };
+                        const viewport = rect(app), bounds = rect(owner);
+                        const content = rect(target || app);
+                        const crop = mode === 'viewport' ? viewport : {
+                          x: Math.max(viewport.x, bounds.x, content.x, 0),
+                          y: Math.max(viewport.y, bounds.y, content.y, 0),
+                          right: Math.min(viewport.right, bounds.right, content.right, innerWidth),
+                          bottom: Math.min(viewport.bottom, bounds.bottom, content.bottom, innerHeight),
+                        };
+                        crop.width = crop.right - crop.x;
+                        crop.height = crop.bottom - crop.y;
+                        return {scope:'visible', logicalViewport:viewport, contentExtent:{
+                          width:Math.max(content.width, scroll?.scrollWidth || 0),
+                          height:Math.max(content.height, scroll?.scrollHeight || 0)},
+                          visibleCrop:crop, scrollOffset:{x:scroll?.scrollLeft || 0,y:scroll?.scrollTop || 0},
+                          overflow:{horizontal:(scroll?.scrollWidth || 0) > (scroll?.clientWidth || 0),
+                            vertical:(scroll?.scrollHeight || 0) > (scroll?.clientHeight || 0)}};
+                    }""",
+                    {"mode": mode, "modal": pin.modal_id is not None, "targetId": pin.target_id},
+                )
+                if not isinstance(geometry, Mapping):
+                    raise SetupError("managed capture surface is unavailable")
+                crop = geometry["visibleCrop"]
+                clip = {
+                    "x": math.ceil(float(crop["x"])),
+                    "y": math.ceil(float(crop["y"])),
+                    "width": math.floor(float(crop["right"])) - math.ceil(float(crop["x"])),
+                    "height": math.floor(float(crop["bottom"])) - math.ceil(float(crop["y"])),
+                }
+                output_width, output_height = self._validate_dimensions(clip["width"], clip["height"])
+                if mode == "viewport" and (output_width, output_height) != (width, height):
+                    raise SetupError("managed capture logical viewport differs from its exact profile")
 
                 temporary_name = f".{destination.name}.simcord-{os.getpid()}-{id(pin):x}.tmp"
                 temporary = parent / temporary_name
-                if mode == "surface":
-                    await surface.screenshot(path=str(temporary), type="png")
-                else:
-                    await page.screenshot(
-                        path=str(temporary),
-                        type="png",
-                        clip={"x": 0, "y": 0, "width": output_width, "height": output_height},
-                    )
+                await page.screenshot(path=str(temporary), type="png", clip=clip)
                 self.preview._assert_capture_live(pin.page)
                 os.replace(temporary, destination)
                 temporary = None
@@ -398,6 +435,7 @@ class ManagedCapture:
                     "profile": profile,
                     "geometry": {
                         "mode": mode,
+                        **geometry,
                         "viewportWidth": width,
                         "viewportHeight": height,
                         "outputWidth": output_width,
@@ -500,7 +538,14 @@ class _CaptureOps:
         visit(snapshot.get("messages", {}).get(str(snapshot.get("targetId"))))
         return {key: value for key, value in found.items() if value}
 
-    def _pin_capture(self, viewer: Any, target: Any, media_time: float) -> CapturePin:
+    def _pin_capture(
+        self,
+        viewer: Any,
+        target: Any,
+        media_time: float,
+        viewport: tuple[int, int],
+        layout: Literal["message", "channel"],
+    ) -> CapturePin:
         if not can_access_channel(self.env, self.channel.id, viewer, history=True):
             raise SetupError("capture viewer cannot access this channel")
         source = cast(_Page, self._python)
@@ -518,6 +563,12 @@ class _CaptureOps:
             generation=source.generation,
             revision=source.revision,
             status=source.status,
+            layout=layout,
+            display="fixed",
+            width=viewport[0],
+            height=viewport[1],
+            host_width=viewport[0],
+            host_height=viewport[1],
         )
         if modal is not None:
             capture_page.modal = modal
@@ -529,12 +580,7 @@ class _CaptureOps:
             if target_id is None and modal is None:
                 snapshot["diagnostics"] = [
                     *snapshot.get("diagnostics", []),
-                    {
-                        "code": "target-unavailable",
-                        "severity": "warning",
-                        "message": "No focused message is available for this capture",
-                        "complete": False,
-                    },
+                    make_diagnostic("target-unavailable"),
                 ]
             capture_page.snapshot = snapshot
             capture_page.pinned_snapshot = deepcopy(snapshot)
@@ -570,6 +616,8 @@ class _CaptureOps:
         mode: str = "surface",
         media_time: float = 0.0,
         allow_incomplete: bool = False,
+        viewport: tuple[int, int] | None = None,
+        layout: Literal["message", "channel"] | None = None,
     ) -> PreviewCapture:
         """Capture one deterministic PNG of the preview, returning a report.
 
@@ -584,6 +632,10 @@ class _CaptureOps:
         viewport). ``allow_incomplete`` permits captures without a focusable
         target. ``media_time`` selects a bounded deterministic frame time, and
         ``media_metadata`` reports effective times and validated codecs.
+        ``viewport`` overrides this capture's exact dimensions without changing
+        session defaults. ``layout`` overrides the Python presentation layout.
+        Surface captures include only the visible intersection with the owning
+        viewport, not all content in a scroll region.
 
         Returns an immutable ``PreviewCapture`` report; ``ready``,
         ``complete`` and ``calibrated`` are independent signals, and ``png``
@@ -591,6 +643,19 @@ class _CaptureOps:
         """
         if mode not in {"surface", "viewport"}:
             raise SetupError("capture mode must be 'surface' or 'viewport'")
+        selected_viewport = viewport
+        if selected_viewport is None:
+            selected_viewport = (cast("Preview", self).width, cast("Preview", self).height)
+        if not isinstance(selected_viewport, tuple) or len(selected_viewport) != 2:
+            raise SetupError("capture viewport must be a (width, height) tuple")
+        selected_viewport = ManagedCapture._validate_dimensions(*selected_viewport)
+        selected_layout = layout
+        if selected_layout is None:
+            selected_layout = (
+                self._python.layout if self._python is not None else cast("Preview", self).layout
+            )
+        if selected_layout not in {"message", "channel"}:
+            raise SetupError("capture layout must be 'message' or 'channel'")
         if not isinstance(allow_incomplete, bool):
             raise SetupError("allow_incomplete must be a boolean")
         if (
@@ -618,7 +683,13 @@ class _CaptureOps:
                     # Earlier publishes may have pruned this page already.
                     if page.id in self._pages and page.pinned_snapshot is None:
                         self._publish(page)
-                pin = self._pin_capture(self._capture_viewer(viewer), target, media_time)
+                pin = self._pin_capture(
+                    self._capture_viewer(viewer),
+                    target,
+                    media_time,
+                    selected_viewport,
+                    cast(Literal["message", "channel"], selected_layout),
+                )
             finally:
                 self.env._end_operation(token)
             self._capture_page = pin.page

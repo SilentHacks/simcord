@@ -147,6 +147,15 @@ Interaction verbs return a richer [`InteractionResult`](api.md#simcord.Interacti
 the full response — `acknowledged`, `deferred`, `ephemeral`, `response`, `followups`,
 `modal` — see [Slash commands](guides/interactions.md).
 
+## Browser preview state
+
+The optional browser Preview has its own authorized structured read contract: protocol 3. A snapshot
+keeps full message projections separate from the bounded `messageIndex` navigation summaries, and
+records page-local publication and typed action receipts. Protocol-2 consumers must migrate explicitly;
+there is no compatibility shim. See the [preview guide](guides/preview.md#structured-snapshots) for
+authorization, bounded queries, capture geometry and the immutable browser status surface.
+
+
 ## Putting it together
 
 ```python

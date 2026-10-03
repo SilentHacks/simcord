@@ -1062,6 +1062,8 @@ class Env:
     def _capture_errors(self) -> None:
         from discord.ext import commands
 
+        _dpy_internals.capture_ui_errors(self.bot, self._record_error)
+
         async def on_command_error(_ctx: Any, error: BaseException) -> None:
             if not isinstance(error, commands.CommandNotFound):
                 self._record_error(error)
@@ -1097,6 +1099,7 @@ class Env:
         *,
         viewers: Sequence[MemberActor | UserHandle],
         layout: Literal["message", "channel"] = "message",
+        display: Literal["responsive", "fixed"] = "responsive",
         width: int = 960,
         height: int = 720,
         locale: str = "en-US",
@@ -1112,8 +1115,11 @@ class Env:
         authorized channel history and a real actor-backed composer. ``channel``
         is the channel the session presents. ``viewers`` is a non-empty
         allowlist of same-Env handles — members for guild channels, the owning
-        ``UserHandle`` for DMs. ``width``/``height`` are positive-int viewport
-        sizes; ``locale`` and ``timezone`` seed the rendered profile.
+        ``UserHandle`` for DMs. Human pages default to ``display="responsive"``,
+        which fits the available workspace. ``display="fixed"`` uses an exact
+        profile without shrinking. ``width``/``height`` configure that profile
+        and managed-capture defaults; browser presentation changes are page-local.
+        ``locale`` and ``timezone`` seed the rendered profile.
         ``assets`` maps otherwise-remote media URLs to ``(filename, bytes)``
         tuples so they render offline. ``sku_presentations`` maps positive SKU
         snowflake strings to exact ``name``/``price_text`` and a supported
@@ -1137,6 +1143,7 @@ class Env:
                 channel,
                 viewers=viewers,
                 layout=layout,
+                display=display,
                 width=width,
                 height=height,
                 locale=locale,

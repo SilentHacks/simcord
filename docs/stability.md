@@ -82,14 +82,14 @@ may evolve under its `protocolVersion` key rather than the package version. Inte
 endpoint names, DOM structure, and CSS classes are implementation details, not general extension
 APIs.
 
-For this 3.0 preview migration, protocol 2 removes protocol-1 `selected` and
-repurposes `messages` from a summary array to full keyed projections; migrate
-picker consumers to `messageIndex`. The [preview migration guide](guides/preview.md#migrating-preview-consumers-to-protocol-2)
-shows actual before/after reads. Entering a Preview now requires the complete
-`simcord[preview]` extra rather than silently losing Markdown/media features;
-the base simulation remains lazy. A surface-mode modal screenshot no longer
-expands scroll content. Modeled system events may now add history entries and
-change `last_message` and event ordering.
+The current preview snapshot and browser action contract is protocol 3, independently versioned from
+the Python package. This checkout's project metadata remains at `2.2.1`; the protocol cutover is not a
+package 3.0 release or a release-certification claim. Protocol-2 consumers must migrate explicitly
+using the [protocol-3 preview guide](guides/preview.md#migrating-preview-consumers-to-protocol-3);
+there is no compatibility adapter or shim. The migration covers bounded navigation and candidate
+pages, typed causal receipts, and versioned browser/capture status. Preview entry still requires the
+complete `simcord[preview]` extra, and a surface-mode modal screenshot does not expand scroll content.
+Modeled system events may add history entries and change `last_message` and event ordering.
 
 `Env.http_requests` is the semver-covered request-observability API. Its
 `HttpLogEntry` fields preserve discord.py transport arguments (`params`, `json`, and

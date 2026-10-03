@@ -8,7 +8,7 @@ import importlib.util
 import json
 import secrets
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
@@ -31,7 +31,7 @@ from ._server import PreviewServer
 from ._snapshot import build_snapshot
 
 _PREVIEW_FONT_MANIFEST = Path(__file__).with_name("static") / "fonts" / "manifest.json"
-_PREVIEW_RUNTIME_MODULES = ("aiohttp", "markdown_it", "PIL")
+_PREVIEW_RUNTIME_MODULES = ("aiohttp", "markdown_it", "linkify_it", "regex", "PIL")
 
 
 @cache
@@ -76,6 +76,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         viewers: tuple[Any, ...],
         *,
         layout: Literal["message", "channel"],
+        display: Literal["responsive", "fixed"],
         width: int,
         height: int,
         locale: str,
@@ -85,6 +86,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         sku_presentations: Mapping[str, Mapping[str, str]] | None = None,
         port: int,
     ) -> None:
+        self.display = display
         self.layout = layout
         self.env = env
         self.channel = channel
@@ -150,10 +152,16 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 raise SetupError("Preview was closed while starting")
             self._python = _Page(self, "python", self.viewers[0], self.channel.id)
             self._python.target_id = self._initial_target(self._python.viewer, self.channel.id)
-            if self.layout == "channel":
+            self._python.layout = self.layout
+            self._python.display = "fixed"
+            self._python.width = self.width
+            self._python.height = self.height
+            self._python.host_width = self.width
+            self._python.host_height = self.height
+            if self._python.layout == "channel":
                 self._python.window_end_id = self._python.target_id
             self._pages[self._python.id] = self._python
-            self._publish(self._python)
+            self._publish(self._python, reason="initial")
             self._unregister_shutdown = self.env._register_pre_shutdown(self.close)
             self._unregister_dispatch = self.env._register_dispatch_observer(self._on_dispatch)
             self._active = True
@@ -174,18 +182,41 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         await self.close()
 
-    def _publish(self, page: _Page) -> None:
+    def _publish(
+        self,
+        page: _Page,
+        *,
+        reason: Literal[
+            "initial", "refresh", "snapshot", "navigation", "query", "presentation", "action", "capture"
+        ] = "action",
+    ) -> None:
         self._prune_expired(keep=page)
         page.revision += 1
+        page.published_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        page.publication_reason = reason
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             page.status = "access_denied"
+            page.modal = None
+            page.modal_handle = None
+            self._redact_page_receipts(page)
+            self._clear_page_assets(page)
         elif page.status != "current":
-            # Every publish is a fresh settled projection: it is the only thing
-            # that clears "stale" and restores revoked access.
             page.status = "current"
+        if page.status != "access_denied":
+            self._refresh_action_receipts(page)
         if page.modal is not None and page.modal._interaction.modal_consumed:
             page.modal = None
             page.modal_handle = None
+        if page.pending_receipt_revision:
+            for receipt in (
+                page.last_action,
+                page.activity[-1] if page.activity else None,
+                page.latest_action.response if page.latest_action is not None else None,
+            ):
+                if isinstance(receipt, dict):
+                    receipt["revision"] = page.revision
+                    receipt["presentation"] = page.status
+            page.pending_receipt_revision = False
         page.snapshot = build_snapshot(self, page)
 
     def _advance_presentation_time(self) -> None:
@@ -229,7 +260,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             page = self._python
             target_id, modal = self._resolve_target(page.viewer, target)
             page.target_id = target_id
-            if self.layout == "channel":
+            if page.layout == "channel":
                 page.window_end_id = target_id
             if modal is not None:
                 page.modal = modal
@@ -237,7 +268,11 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             else:
                 page.modal = None
                 page.modal_handle = None
-            self._publish(page)
+            page.generation += 1
+            page.navigation_query = ""
+            page.navigation_cursor = None
+            page.candidate_queries.clear()
+            self._publish(page, reason="navigation")
         finally:
             self.env._end_operation(token)
 
@@ -251,7 +286,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             self._advance_presentation_time()
             for page in tuple(self._pages.values()):
                 if page.id in self._pages:  # earlier publishes prune expired pages
-                    self._publish(page)
+                    self._publish(page, reason="refresh")
         finally:
             self.env._end_operation(token)
 
@@ -269,7 +304,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         token = self.env._begin_operation("preview.snapshot")
         try:
             await self.env._settle_internal()
-            self._publish(self._python)
+            self._publish(self._python, reason="snapshot")
             return self._page_payload(self._python)
         finally:
             self.env._end_operation(token)
@@ -314,6 +349,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 self._unregister_shutdown()
                 self._unregister_shutdown = None
             for page in tuple(self._pages.values()):
+                self._redact_page_receipts(page)
                 self._clear_page_assets(page)
             self._pages.clear()
             self._pending_page_closes.clear()
@@ -339,6 +375,7 @@ def _validate_preview(
     sku_presentations: Any = None,
     port: Any = None,
     layout: Any = "message",
+    display: Any = "responsive",
 ) -> tuple[
     ChannelHandle,
     tuple[Any, ...],
@@ -348,6 +385,8 @@ def _validate_preview(
 ]:
     if layout not in ("message", "channel"):
         raise SetupError("layout must be 'message' or 'channel'")
+    if display not in ("responsive", "fixed"):
+        raise SetupError("display must be 'responsive' or 'fixed'")
     if not isinstance(channel, ChannelHandle) or channel._env is not env:
         raise SetupError("preview channel must belong to this Env")
     try:
@@ -368,9 +407,7 @@ def _validate_preview(
             raise SetupError("guild previews require members of the selected guild")
         if not can_access_channel(env, channel.id, viewer, history=True):
             raise SetupError("viewer lacks channel and history access")
-    for value, name in ((width, "width"), (height, "height")):
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise SetupError(f"{name} must be a positive integer")
+    ManagedCapture._validate_dimensions(width, height)
     if locale not in Preview._LOCALES:
         raise SetupError(f"unsupported locale {locale!r}")
     try:
@@ -479,7 +516,7 @@ def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
         viewers,
         **{
             key: kwargs[key]
-            for key in ("layout", "width", "height", "locale", "timezone", "presentation_time")
+            for key in ("layout", "display", "width", "height", "locale", "timezone", "presentation_time")
         },
         assets=assets,
         sku_presentations=sku_presentations,
