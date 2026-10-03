@@ -7,18 +7,18 @@ description: "Reviewed local preview evidence, exact coverage counts, hashes, an
 
 ## Current status — 2026-10-03
 
-**Local implementation verification is recorded; independent review is blocked by the core coverage gate.** The preview
+**Local implementation gates pass; independent review is pending.** The preview
 uses protocol 3 while `pyproject.toml` remains package version `2.2.1`; no package 3.0 release,
 complete resolution of all 21 findings, or release-certification claim is made.
 
-Observed local checks: 888 repository tests passed with six third-party warnings. The added native
-DM reference rejection also passed its focused run. The unchanged core coverage gate fails at
-94.27% against 95%. An untouched `988e4a2` snapshot passed its 877 tests but failed the same
-gate at 94%, with 268 missed statements; current missed statements are 249. The existing
-service-message browser journey now exercises the public fixture API and verifies the actual
-reference destination rather than incidental sentence wording, and a focused boundary check
-rejects foreign fixture identities and native DM references without creating a service message.
-The threshold was not lowered and unrelated core test padding was not added.
+Observed local checks: 915 repository tests passed with six third-party warnings; the unchanged
+core coverage report passes its 95% ratchet. An untouched `988e4a2` snapshot had passed 877
+tests but failed that gate at 94%. User-approved behavioral core checks now exercise malformed
+mention/sticker payloads, external sticker authorization, callback rejection without consuming
+acknowledgement, and native service reference scope. They also reproduced a real interaction
+webhook ownership defect: fetch/edit/delete admitted an ordinary channel message. A shared
+ownership guard fixes all three routes; the integrated native boundary journeys pass (51 tests).
+The threshold was not lowered and no exclusions or wiring-only coverage tests were added.
 Pyright reported zero errors and Ruff checks passed. Real Chromium exercised guild/DM controls,
 search/access recovery/queued Close, modal entity defaults and callbacks, native player retention,
 adversarial downloaded report privacy, and an executed active-session Python capture recipe.

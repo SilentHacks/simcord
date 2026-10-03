@@ -1,9 +1,30 @@
 import discord
 import pytest
 from discord.ext import commands
+from discord.http import Route
 
 import simcord
 from simcord.enums import MessageType
+
+
+async def _post_message(env, channel_id, payload):
+    return await env.bot.http.request(
+        Route("POST", "/channels/{channel_id}/messages", channel_id=channel_id),
+        json=payload,
+    )
+
+
+async def _assert_message_rejected(env, channel_id, payload, code):
+    before_ids = tuple(env.backend.messages[channel_id])
+    before_last_message = env.backend.get_channel(channel_id).last_message_id
+    before_creates = sum(entry[:2] == ("GATEWAY", "MESSAGE_CREATE") for entry in env.backend.transcript)
+    with pytest.raises(discord.HTTPException) as exc_info:
+        await _post_message(env, channel_id, payload)
+    assert exc_info.value.code == code
+    assert tuple(env.backend.messages[channel_id]) == before_ids
+    assert env.backend.get_channel(channel_id).last_message_id == before_last_message
+    after_creates = sum(entry[:2] == ("GATEWAY", "MESSAGE_CREATE") for entry in env.backend.transcript)
+    assert after_creates == before_creates
 
 
 async def test_prefix_command_round_trip(env, channel, alice):
@@ -176,6 +197,106 @@ async def test_tts_and_allowed_mentions_are_retained_without_claiming_pings(env,
     assert stored.mention_everyone is False
     assert stored.ping_user_ids == []
     assert stored.ping_role_ids == []
+
+
+@pytest.mark.parametrize(
+    "allowed_mentions",
+    [
+        [],
+        {"parse": [], "unexpected": True},
+        {"parse": "users"},
+        {"parse": [1]},
+        {"parse": ["users", "users"]},
+        {"users": "123"},
+        {"users": [True]},
+        {"users": [0]},
+        {"users": ["0"]},
+        {"users": [1.5]},
+        {"users": ["\u0661"]},
+        {"users": [1, "1"]},
+        {"parse": ["users"], "users": []},
+        {"parse": ["roles"], "roles": ["123"]},
+        {"replied_user": 1},
+    ],
+)
+async def test_invalid_allowed_mentions_reject_without_message(env, channel, allowed_mentions):
+    await _assert_message_rejected(
+        env,
+        channel.id,
+        {"content": "must not be stored", "allowed_mentions": allowed_mentions},
+        50035,
+    )
+
+
+async def test_explicit_allowed_mentions_control_stored_pings_and_native_mentions(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    role = env.guild.create_role("Pingable", mentionable=True)
+    payload = await _post_message(
+        env,
+        channel.id,
+        {
+            "content": f"{alice.mention} {bob.mention} {role.mention} @everyone",
+            "allowed_mentions": {
+                "parse": [],
+                "users": [alice.id],
+                "roles": [str(role.id)],
+                "replied_user": False,
+            },
+        },
+    )
+    message = await env.bot.get_channel(channel.id).fetch_message(int(payload["id"]))
+    stored = env.backend.get_message(channel.id, message.id)
+
+    assert stored.allowed_mentions.users == frozenset({alice.id})
+    assert stored.allowed_mentions.roles == frozenset({role.id})
+    assert stored.ping_user_ids == [alice.id]
+    assert stored.ping_role_ids == [role.id]
+    assert stored.mention_everyone is False
+    assert {member.id for member in message.mentions} == {alice.id, bob.id}
+    assert [mentioned_role.id for mentioned_role in message.role_mentions] == [role.id]
+    assert message.mention_everyone is False
+
+
+@pytest.mark.parametrize("sticker_ids", ["not-an-array", None, [True], [0], [1.5], ["\u0661"]])
+async def test_malformed_sticker_ids_reject_without_message(env, channel, sticker_ids):
+    await _assert_message_rejected(env, channel.id, {"sticker_ids": sticker_ids}, 50035)
+
+
+async def test_sticker_count_duplicates_unknown_and_unavailable_reject_without_message(env, channel):
+    sticker = env.guild.create_sticker("wave")
+    await _assert_message_rejected(env, channel.id, {"sticker_ids": [sticker.id] * 4}, 50035)
+    await _assert_message_rejected(env, channel.id, {"sticker_ids": [str(sticker.id), sticker.id]}, 50035)
+    await _assert_message_rejected(env, channel.id, {"sticker_ids": [sticker.id + 1000]}, 10060)
+
+    sticker.available = False
+    await _assert_message_rejected(env, channel.id, {"sticker_ids": [str(sticker.id)]}, 50035)
+
+
+async def test_external_stickers_require_permission_and_cannot_be_sent_in_dms(env, alice):
+    source = env.create_guild("Sticker source")
+    sticker = source.create_sticker("foreign wave")
+    locked = env.guild.create_text_channel(
+        "no-external-stickers",
+        overwrites={env.guild.default_role: discord.PermissionOverwrite(use_external_stickers=False)},
+    )
+    await _assert_message_rejected(env, locked.id, {"sticker_ids": [str(sticker.id)]}, 50013)
+
+    user = await env.bot.fetch_user(alice.id)
+    dm = await user.create_dm()
+    await _assert_message_rejected(env, dm.id, {"sticker_ids": [str(sticker.id)]}, 50013)
+
+
+async def test_authorized_external_sticker_send_round_trips_guild_identity(env, channel):
+    source = env.create_guild("Sticker source")
+    sticker = source.create_sticker("wave")
+    guild_sticker = await env.bot.get_guild(source.id).fetch_sticker(sticker.id)
+    message = await env.bot.get_channel(channel.id).send("wave", stickers=[guild_sticker])
+
+    stored = env.backend.get_message(channel.id, message.id)
+    assert [(item.id, item.name) for item in message.stickers] == [(sticker.id, "wave")]
+    assert [(item.id, item.name, item.format_type, item.guild_id) for item in stored.stickers] == [
+        (sticker.id, "wave", 1, source.id)
+    ]
 
 
 async def test_guild_sticker_send_round_trips_message_metadata(env, channel):
