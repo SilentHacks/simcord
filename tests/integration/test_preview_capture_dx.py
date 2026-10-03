@@ -328,15 +328,17 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
         Image.new("RGB", size, color).save(output, format="PNG")
         return output.getvalue()
 
+    spoiler_png = png((3, 5), (70, 80, 90))
     await alice.send(
         channel,
         "attachment media",
         attachments=[
             ("landscape.png", png((4, 2), (10, 20, 30))),
             ("portrait.png", png((2, 4), (40, 50, 60))),
-            ("SPOILER_secret.png", png((3, 5), (70, 80, 90))),
+            ("SPOILER_secret.png", spoiler_png),
             ("unsafe.html", b"<script>window.previewInjected = true</script>"),
             ("notes.txt", b"safe text"),
+            ("SPOILER_secret.txt", b"safe spoiler text"),
         ],
     )
     async with env.preview(channel, viewers=[alice]) as preview:
@@ -377,6 +379,24 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
                     == "<script>window.previewInjected = true</script>"
                 )
                 assert await page.get_by_role("button", name="Download unsafe.html").is_enabled()
+                secret_file = page.locator(".attachment:not(.attachment-inline)").filter(
+                    has_text="SPOILER_secret.txt"
+                )
+                assert await secret_file.locator(".spoiler-cover").count() == 1
+                assert await secret_file.locator(".spoiler-content").count() == 1
+                assert await secret_file.locator(".spoiler-content > :first-child").evaluate(
+                    "(element) => element.inert && element.getAttribute('aria-hidden') === 'true'"
+                )
+                assert (
+                    await secret_file.get_by_role("button", name="Download SPOILER_secret.txt").count() == 0
+                )
+                await secret_file.locator(".spoiler-cover").click()
+                preview_button = secret_file.get_by_role("button", name="Preview")
+                await preview_button.click()
+                assert await secret_file.locator(".attachment-preview").text_content() == "safe spoiler text"
+                assert await secret_file.get_by_role(
+                    "button", name="Download SPOILER_secret.txt"
+                ).is_visible()
 
                 opener = page.locator(".attachment-inline .media-lightbox-trigger").nth(0)
                 await opener.click()
@@ -403,11 +423,90 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
                     "(image) => [image.naturalWidth, image.naturalHeight]"
                 ) == [3, 5]
                 await page.keyboard.press("Escape")
+                image_download = page.get_by_role("button", name="Download SPOILER_secret.png")
+                async with page.expect_download() as image_download_info:
+                    await image_download.click()
+                image_downloaded = await image_download_info.value
+                assert await asyncio.to_thread(Path(await image_downloaded.path()).read_bytes) == spoiler_png
                 assert external_requests == []
             finally:
                 await browser.close()
         finally:
             await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_lightbox_excludes_media_inside_spoiler_container(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    view = discord.ui.LayoutView()
+    view.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://public.png")))
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://hidden.png")),
+            spoiler=True,
+        )
+    )
+    message = await env.bot.get_channel(channel.id).send(
+        view=view,
+        files=[
+            discord.File(io.BytesIO(png_bytes()), filename="public.png"),
+            discord.File(io.BytesIO(png_bytes()), filename="hidden.png"),
+        ],
+    )
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                assert await page.locator(".spoiler-cover").is_visible()
+                await page.locator(".component-gallery .media-lightbox-trigger").first.click()
+                lightbox = page.locator("dialog.media-lightbox")
+                await page.wait_for_function("() => document.querySelector('.media-lightbox')?.open")
+                assert await lightbox.locator("button[aria-label='Next image']").is_hidden()
+                assert await lightbox.locator("button[aria-label='Previous image']").is_hidden()
+                assert await page.locator(".spoiler-cover").is_visible()
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_failed_spoiler_media_is_accessible_after_reveal(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    view = discord.ui.LayoutView()
+    view.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://broken.png", spoiler=True)))
+    message = await env.bot.get_channel(channel.id).send(
+        view=view,
+        file=discord.File(io.BytesIO(png_bytes()), filename="broken.png"),
+    )
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.add_init_script(
+                    "HTMLImageElement.prototype.decode = () => Promise.reject(new Error('decode failed'))"
+                )
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                fallback = page.locator(".component-gallery .media-unavailable")
+                assert await fallback.count() == 1
+                assert await fallback.evaluate(
+                    "(element) => element.inert && element.getAttribute('aria-hidden') === 'true'"
+                )
+                await page.locator(".component-gallery .spoiler-cover").click()
+                assert await fallback.evaluate(
+                    "(element) => !element.inert && !element.hasAttribute('aria-hidden')"
+                )
+            finally:
+                await browser.close()
 
 
 @pytest.mark.asyncio
@@ -640,13 +739,15 @@ async def test_browser_video_seek_audio_pause_and_capture_time(env, channel, ali
     from playwright.async_api import async_playwright
 
     fixtures = Path(__file__).parents[1] / "fixtures" / "preview"
+    media_sources = {
+        "still.png": png_bytes(),
+        "video.mp4": (fixtures / "video.mp4").read_bytes(),
+        "voice.ogg": (fixtures / "voice.ogg").read_bytes(),
+    }
     message = await alice.send(
         channel,
         "local media",
-        attachments=[
-            ("video.mp4", (fixtures / "video.mp4").read_bytes()),
-            ("voice.ogg", (fixtures / "voice.ogg").read_bytes()),
-        ],
+        attachments=list(media_sources.items()),
     )
     async with env.preview(channel, viewers=[alice]) as preview:
         await preview.show(message)
@@ -655,6 +756,15 @@ async def test_browser_video_seek_audio_pause_and_capture_time(env, channel, ali
             try:
                 page = await browser.new_page()
                 await page.goto(preview.url)
+                external_requests = []
+                page.on(
+                    "request",
+                    lambda request: (
+                        external_requests.append(request.url)
+                        if not request.url.startswith((preview._origin, "blob:"))
+                        else None
+                    ),
+                )
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
                 video = page.locator("video.media-player-native")
                 audio = page.locator("audio.media-player-native")
@@ -675,6 +785,12 @@ async def test_browser_video_seek_audio_pause_and_capture_time(env, channel, ali
                 )
                 await page.get_by_role("button", name="Pause voice.ogg").click()
                 assert await audio.evaluate("element => element.paused")
+                for filename, original in media_sources.items():
+                    async with page.expect_download() as download_info:
+                        await page.get_by_role("button", name=f"Download {filename}").click()
+                    downloaded = await download_info.value
+                    assert await asyncio.to_thread(Path(await downloaded.path()).read_bytes) == original
+                assert external_requests == []
             finally:
                 await browser.close()
 
@@ -1176,9 +1292,9 @@ async def test_capture_overrides_crop_visible_content_without_mutating_pages(env
         assert (human.layout, human.display, human.width, human.height, human.target_id) == before
         assert (preview.width, preview.height, preview._python.layout) == (640, 700, "message")
         viewport = await preview.screenshot(
-            target=message.id, viewport=(320, 240), layout="channel", mode="viewport"
+            target=message.id, viewport=(100, 100), layout="channel", mode="viewport"
         )
-        assert (viewport.output_width, viewport.output_height) == (320, 240)
+        assert (viewport.output_width, viewport.output_height) == (100, 100)
         assert viewport.geometry["scope"] == "visible"
         assert viewport.png.startswith(b"\x89PNG")
         for invalid in ((True, 240), (320, 0), (32769, 240), (10000, 10000), [320, 240]):

@@ -158,12 +158,17 @@ export function renderSelect(component, path, options) {
   }
   trigger.append(valueDisplay);
   let clear = null;
-  if (!multi && single && single.kind && single.kind !== "string") {
+  if (!multi && selected.length === 1 && (
+    (single?.kind && single.kind !== "string")
+    || minimum <= 0
+    || (options.modalHandle != null && component.required === false)
+  )) {
     clear = node("button", "select-clear");
     clear.type = "button";
     clear.dataset.controlKey = key;
     clear.setAttribute("aria-label", "Clear selection");
     clear.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.4 4 12 10.4 5.6 4 4 5.6 10.4 12 4 18.4 5.6 20 12 13.6 18.4 20 20 18.4 13.6 12 20 5.6 18.4 4Z"/></svg>';
+    clear.disabled = component.disabled === true || identityPending;
     clear.addEventListener("click", () => onClear?.(key, minimum));
     wrap.classList.add("has-clear");
   }
@@ -183,7 +188,7 @@ export function renderSelect(component, path, options) {
   if (activeValue && entries.some((entry) => String(entry.value ?? entry.id ?? "") === activeValue)) {
     trigger.setAttribute("aria-activedescendant", optionId(key, activeValue));
   }
-  // Uncalibrated: singles commit on choice; multis on Enter/close/outside; Escape/blur cancel; modal stays local.
+  // Singles commit on choice; multis on Enter/Apply/trigger-close/outside pointer; Escape/focusout cancel.
   const choose = (value) => {
     onDraft?.(key, value, multi, minimum, maximum, selected, findEntry(value));
     if (!multi) onCommit?.(key, [value]);
@@ -240,8 +245,7 @@ export function renderSelect(component, path, options) {
     if (!popupOpen() || !wrap.isConnected) return;
     setTimeout(() => {
       if (!wrap.isConnected || wrap.contains(document.activeElement)) return;
-      if (multi) onCommit?.(key);
-      else onCancel?.(key);
+      onCancel?.(key);
     }, 0);
   });
   const candidateQuery = () => options.candidateQuery?.(candidateKey) ?? descriptor?.query ?? "";
@@ -272,7 +276,7 @@ export function renderSelect(component, path, options) {
   list.dataset.controlKey = `${key}:options`;
   if (component.type !== TYPE.STRING_SELECT) {
     const tools = node("div", "select-candidate-tools");
-    const searchLabel = node("label", "", "Search options");
+    const searchLabel = node("label", "select-candidate-search-label", "Search options");
     const search = node("input", "select-candidate-search");
     search.type = "search";
     search.maxLength = 128;
@@ -282,6 +286,24 @@ export function renderSelect(component, path, options) {
     searchLabel.append(search);
     search.addEventListener("input", () => {
       options.onCandidateQuery?.(candidateKey, search.value, null, options.modalHandle || null);
+    });
+    search.addEventListener("keydown", (event) => {
+      const available = [...list.querySelectorAll('[role="option"]:not(.is-disabled)')];
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        const index = available.findIndex((item) => item.dataset.value === activeValue);
+        const start = index < 0 ? (event.key === "ArrowUp" ? available.length : -1) : index;
+        const next = Math.max(0, Math.min(available.length - 1, start + (event.key === "ArrowDown" ? 1 : -1)));
+        if (available[next]) options.onNavigate?.(key, available[next].dataset.value);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        const option = available.find((item) => item.dataset.value === activeValue);
+        if (!option) return;
+        choose(option.dataset.value);
+        if (multi) onCommit?.(key);
+      }
     });
     const pages = node("div", "select-candidate-pages");
     const previous = node("button", "", "Previous");
@@ -300,7 +322,10 @@ export function renderSelect(component, path, options) {
         : descriptor?.state === "empty"
           ? "No matching options"
           : `${entries.length} options on this page`;
-    tools.append(searchLabel, pages, node("span", "select-candidate-status", stateLabel));
+    const status = node("span", "select-candidate-status", stateLabel);
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    tools.append(searchLabel, pages, status);
     popup.append(tools);
   }
   const decorateEntity = (option, entry, kind) => {

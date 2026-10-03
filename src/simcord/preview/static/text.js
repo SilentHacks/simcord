@@ -190,13 +190,18 @@ function renderInlineTokens(parent, tokens, options) {
     if (!tag) continue;
     if (!isOpen) { if (stack.length > 1) stack.pop(); continue; }
     const element = document.createElement(tag);
+    const content = name === "spoiler" ? node("span", "markdown-spoiler-content") : element;
     if (name === "spoiler") {
       element.className = "markdown-spoiler";
       element.tabIndex = 0;
       element.setAttribute("role", "button");
       element.setAttribute("aria-label", "Reveal spoiler");
+      content.inert = true;
+      content.setAttribute("aria-hidden", "true");
       const reveal = () => {
         element.classList.add("is-revealed");
+        content.inert = false;
+        content.removeAttribute("aria-hidden");
         element.removeAttribute("role");
         element.removeAttribute("tabindex");
         element.removeAttribute("aria-label");
@@ -205,9 +210,10 @@ function renderInlineTokens(parent, tokens, options) {
       element.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); reveal(); }
       });
+      element.append(content);
     }
     target.append(element);
-    stack.push(element);
+    stack.push(content);
   }
 }
 
@@ -227,10 +233,10 @@ function appendHighlightedOutput(parent, value) {
       index += 7;
       continue;
     }
-    const opening = /^<span class="(hljs-[A-Za-z0-9_.-]+)">/.exec(value.slice(index));
+    const opening = /^<span class="(hljs-[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*)">/.exec(value.slice(index));
     if (opening) {
       const span = document.createElement("span");
-      span.classList.add(opening[1]);
+      for (const className of opening[1].split(" ")) span.classList.add(className);
       stack[stack.length - 1].append(span);
       stack.push(span);
       index += opening[0].length;

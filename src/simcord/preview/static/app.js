@@ -72,6 +72,7 @@ const ui = {
   refresh: $("refresh"),
   close: $("close"),
   backActivity: $("back-activity"),
+  viewActionOutput: $("view-action-output"),
   action: $("action-status"),
 };
 
@@ -100,6 +101,7 @@ const state = {
   lastActionKind: null,
   externalNotice: null,
   pendingAction: null,
+  uncertainAction: null,
   pendingQuery: null,
   queuedQuery: null,
   queuedQueries: new Map(),
@@ -116,6 +118,7 @@ const state = {
   awaitingRevision: null,
   queryResultRevision: null,
   drafts: new Map(),
+  draftVersions: new Map(),
   selectDrafts: new Map(),
   selectStatuses: new Map(),
   candidateIdentities: new Map(),
@@ -225,7 +228,7 @@ function selectStates() {
       item.target?.controlKey === key && item.acknowledgement !== "not_applicable");
     return [key, {
       values, minimum, maximum, optional,
-      valid: (optional && !touched && !values.length) || (values.length >= minimum && values.length <= maximum),
+      valid: (optional && !values.length) || (values.length >= minimum && values.length <= maximum),
       editing: state.dropdown?.key === key, touched,
       pending: state.pendingAction?.controlKey === key,
       commit: receipt ? {
@@ -448,8 +451,8 @@ function updatePickers(snapshot) {
     row.className = "message-row";
     row.dataset.messageId = id;
     row.dataset.controlKey = `message:${id}`;
-    row.disabled = !state.authorized || Boolean(state.pendingAction || state.queuedQueries.size
-      || state.transport.uncertainRequestId || state.pinnedCapture);
+    row.setAttribute("aria-disabled", String(!state.authorized || Boolean(state.pendingAction || state.queuedQueries.size
+      || state.transport.uncertainRequestId || state.pinnedCapture)));
     if (id === targetId) row.setAttribute("aria-current", "page");
 
     const heading = document.createElement("span");
@@ -489,8 +492,14 @@ function updatePickers(snapshot) {
       className: "message-indicator",
       textContent: "Ephemeral",
     }));
+    indicators.append(Object.assign(document.createElement("span"), {
+      className: "message-indicator",
+      textContent: `ID ${id}`,
+    }));
     if (indicators.childElementCount) row.append(indicators);
-    row.addEventListener("click", () => dispatch("focus", { target_id: id }));
+    row.addEventListener("click", () => {
+      if (row.getAttribute("aria-disabled") !== "true") dispatch("focus", { target_id: id });
+    });
     item.append(row);
     ui.message.append(item);
   });
@@ -787,6 +796,7 @@ async function waitReady(generation, pendingMedia) {
     });
   }
   reconcileScrollIntent();
+  if (state.scrollIntent?.policy === "target") state.scrollIntent = captureScrollIntent();
   state.ready = true;
   ui.app.setAttribute("aria-busy", "false");
 }
@@ -1177,7 +1187,7 @@ function updateActionStatus() {
   const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
   ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden;
   ui.message.querySelectorAll(".message-row").forEach((row) => {
-    row.disabled = blocked || Boolean(state.queuedQueries.size) || !state.authorized || state.pinnedCapture;
+    row.setAttribute("aria-disabled", String(blocked || Boolean(state.queuedQueries.size) || !state.authorized || state.pinnedCapture));
   });
   ui.previous.disabled = blocked || !state.snapshot?.navigation?.hasPrevious;
   ui.next.disabled = blocked || !state.snapshot?.navigation?.hasNext;
@@ -1185,6 +1195,10 @@ function updateActionStatus() {
     button.disabled = blocked || !state.dropdown || state.pinnedCapture;
   });
   ui.backActivity.hidden = !state.activityBackStack.length || state.pinnedCapture;
+  const output = (state.lastAction?.outcomes || []).find((outcome) =>
+    ["response", "followup", "message"].includes(outcome.kind) && outcome.messageId);
+  ui.viewActionOutput.hidden = !output || state.pinnedCapture || !state.authorized;
+  ui.viewActionOutput.disabled = blocked;
   const pendingLabel = ({
     browse_messages: "Updating message results…",
     browse_candidates: "Updating options…",
@@ -1500,11 +1514,14 @@ function openDropdown(key, selected, multi, minimum, maximum, highlight, entries
     minimum,
     maximum,
     modal,
+    optional: modal && [...document.querySelectorAll(".preview-select")]
+      .find((item) => item.dataset.controlKey === key)?.dataset.optional === "true",
     highlight: highlight ?? selected[0] ?? firstAvailable?.value ?? firstAvailable?.id ?? null,
   };
   const descriptor = state.snapshot?.candidates?.[key];
   if (descriptor) queueCandidateQuery(key, state.candidateQueries.get(key) ?? descriptor.query ?? "", null, modal ? state.modalHandle : null);
   localRender(true);
+  fitOpenDropdowns(true);
   state.focusKey = key;
   const trigger = [...document.querySelectorAll(".select-trigger")].find(
     (item) => item.dataset.controlKey === key,
@@ -1555,12 +1572,14 @@ function updateDraft(key, value, multi, minimum, maximum, selected, entry) {
   state.selectStatuses.delete(key);
   if (state.dropdown) state.dropdown.highlight = id;
   localRender(true);
+  fitOpenDropdowns(true);
 }
 
 function navigateDropdown(key, highlight) {
   if (state.dropdown?.key !== key) return;
   state.dropdown.highlight = highlight;
   localRender(true);
+  fitOpenDropdowns(true);
 }
 
 function clearSelection(key, minimum = 1) {
@@ -1595,7 +1614,7 @@ function commitDropdown(key) {
     );
     return false;
   }
-  if (values.length < dropdown.minimum || values.length > dropdown.maximum) {
+  if ((values.length < dropdown.minimum && !(dropdown.optional && !values.length)) || values.length > dropdown.maximum) {
     announceInvalidSelection(key, values, dropdown.minimum, dropdown.maximum);
     return false;
   }
@@ -1605,7 +1624,7 @@ function commitDropdown(key) {
   state.dropdown = null;
   const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
   const list = wrap?.querySelector(".select-list");
-  const restoreTrigger = list?.contains(document.activeElement);
+  const restoreTrigger = dropdown.modal || list?.contains(document.activeElement);
   const trigger = wrap?.querySelector(".select-trigger");
   if (list) {
     if (typeof list.hidePopover === "function" && list.matches(":popover-open")) list.hidePopover();
@@ -1701,7 +1720,7 @@ function submitModal(values) {
 
 function renderSnapshot(snapshot, generation, force = false) {
   if (generation !== state.renderGeneration || state.closed) return;
-  if (state.snapshot?.layout === "channel") state.scrollIntent = captureScrollIntent();
+  if (state.snapshot?.layout === "channel" && state.scrollIntent?.policy !== "target") state.scrollIntent = captureScrollIntent();
   state.snapshot = snapshot;
   state.authorized = snapshot.status !== "access_denied";
   if (state.authorized) {
@@ -1864,7 +1883,10 @@ function renderSnapshot(snapshot, generation, force = false) {
       rendered.errorTarget.scrollIntoView({ block: "nearest" });
       rendered.errorTarget.focus({ preventScroll: true });
     } else if (nextHandle && !previousHandle) requestAnimationFrame(() => rendered.focus?.focus());
-    else if (nextHandle) restoreFocus();
+    else if (nextHandle) {
+      fitOpenDropdowns();
+      restoreFocus();
+    }
     else if (previousHandle) {
       if (!restoreFocus(state.modalOpenerFocusKey)) ui.messagesToggle.focus();
     }
@@ -1886,7 +1908,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   if (!nextHandle && !previousHandle) requestAnimationFrame(() => restoreFocus());
 }
 
-function fitOpenDropdowns() {
+function fitOpenDropdowns(scrollHighlighted = false) {
   const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
   const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
   for (const wrap of document.querySelectorAll(".preview-select.is-open")) {
@@ -1919,7 +1941,7 @@ function fitOpenDropdowns() {
     list.style.maxHeight = `${height}px`;
     wrap.classList.toggle("opens-up", opensUp);
     const active = list.querySelector(".select-option.is-highlighted");
-    if (active) {
+    if (active && scrollHighlighted === true) {
       if (active.offsetTop < list.scrollTop) list.scrollTop = active.offsetTop;
       else if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) {
         list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight;
@@ -1928,7 +1950,9 @@ function fitOpenDropdowns() {
   }
 }
 window.addEventListener("resize", fitOpenDropdowns);
-document.addEventListener("scroll", fitOpenDropdowns, true);
+document.addEventListener("scroll", (event) => {
+  if (!(event.target instanceof Element) || !event.target.closest(".select-list")) fitOpenDropdowns();
+}, true);
 
 async function installSnapshot(snapshot, force = false) {
   if (!snapshot || state.closed) return false;
@@ -2035,7 +2059,7 @@ function validateModalValues(modal, values) {
       const text = String(value ?? component.value ?? component.default ?? "");
       const length = Array.from(text).length;
       if (required && !text) return invalid("This field is required.");
-      if (component.min_length !== undefined && length < Number(component.min_length)) {
+      if (text && component.min_length !== undefined && length < Number(component.min_length)) {
         return invalid(`Enter at least ${component.min_length} characters.`);
       }
       if (component.max_length !== undefined && length > Number(component.max_length)) {
@@ -2046,7 +2070,7 @@ function validateModalValues(modal, values) {
       const minimum = Number(component.min_values ?? 1);
       const maximum = Number(component.max_values ?? (type === 22 ? component.options?.length || 1 : 1));
       if (required && selected.length === 0) return invalid("Choose at least one value.");
-      if ((supplied || required) && selected.length < minimum) {
+      if ((selected.length || required) && selected.length < minimum) {
         return invalid(`Choose at least ${minimum} value(s).`);
       }
       if (selected.length > maximum) return invalid(`Choose no more than ${maximum} value(s).`);
@@ -2164,6 +2188,18 @@ function receiptFor(snapshot, requestId) {
     .find((receipt) => receipt?.requestId === requestId) || null;
 }
 
+function completeActionDrafts(action, receipt) {
+  if (!action || receipt.rejected || receipt.settlement !== "settled") return;
+  const { kind, contextId, targetId } = action;
+  const draftKey = kind === "send_message" ? `composer:${contextId}` : `edit:${contextId}:${targetId}`;
+  const unchanged = (state.draftVersions.get(draftKey) || 0) === action.draftVersion;
+  if ((["send_message", "edit_message"].includes(kind) && unchanged) || kind === "delete_message") state.drafts.delete(draftKey);
+  if (kind === "set_poll_votes") state.pollDrafts.delete(`poll:${contextId}:${targetId}`);
+  if (contextId !== state.contextId) return;
+  if ((kind === "send_message" && unchanged) || (kind === "delete_message" && state.replyToId === String(targetId))) state.replyToId = null;
+  if ((kind === "edit_message" && unchanged || kind === "delete_message") && state.editTargetId === String(targetId)) state.editTargetId = null;
+}
+
 function reconcileUncertainAction(snapshot) {
   const requestId = state.transport.uncertainRequestId;
   const receipt = receiptFor(snapshot, requestId);
@@ -2171,6 +2207,9 @@ function reconcileUncertainAction(snapshot) {
     || (typeof receipt?.settlement === "string" && receipt.settlement !== "pending");
   if (receipt && terminal) {
     state.lastAction = receipt;
+    completeActionDrafts(state.uncertainAction, receipt);
+    state.lastActionKind = state.uncertainAction?.kind || state.lastActionKind;
+    state.uncertainAction = null;
     if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
     state.transport.uncertainRequestId = null;
     state.transport.uncertainSequence = null;
@@ -2200,6 +2239,7 @@ function resetInteractionState() {
   state.focusSelection = null;
   state.dropdown = null;
   state.drafts.clear();
+  state.draftVersions.clear();
   state.selectDrafts.clear();
   state.selectStatuses.clear();
   state.candidateIdentities.clear();
@@ -2323,7 +2363,8 @@ async function performAction(kind, extra, queryIntentValue = null) {
     body.target_id = /^message:(\d+):component:/.exec(extra.control_key)?.[1] ?? state.targetId;
   }
   state.pendingAction = {
-    kind, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null,
+    kind, contextId: state.contextId, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null,
+    draftVersion: state.draftVersions.get(kind === "send_message" ? `composer:${state.contextId}` : `edit:${state.contextId}:${body.target_id}`) || 0,
     closeProbe: kind === "close" && state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId
       && Boolean(state.transport.uncertainRequestId),
   };
@@ -2335,6 +2376,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
   try {
     receipt = await requestAction(body);
   } catch (_) {
+    state.uncertainAction = state.pendingAction;
     state.pendingAction = null;
     state.pendingQuery = null;
     noteTransportFailure("action-response-unavailable", requestId, sequence);
@@ -2342,6 +2384,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
     return;
   }
   if (!receipt || typeof receipt !== "object" || receipt.requestId !== requestId) {
+    state.uncertainAction = state.pendingAction;
     state.pendingAction = null;
     state.pendingQuery = null;
     noteTransportFailure("action-receipt-unavailable", requestId, sequence);
@@ -2363,6 +2406,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
     state.transport.uncertainRequestId = null;
     state.transport.uncertainSequence = null;
     state.transport.uncertainCloseAttemptFor = null;
+    state.uncertainAction = null;
     state.transport.state = "recovered";
     state.transport.recoveries += 1;
     state.transport.history.push({ state: "recovered", code: "action-not-admitted-by-close", at: Date.now() });
@@ -2386,21 +2430,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
     updateActionStatus();
     return;
   }
-  if (!queryIntentValue && !receipt.rejected && receipt.settlement === "settled") {
-    if (kind === "send_message") {
-      state.drafts.delete(`composer:${state.contextId}`);
-      state.replyToId = null;
-    } else if (kind === "edit_message") {
-      state.drafts.delete(`edit:${state.contextId}:${extra.target_id}`);
-      if (state.editTargetId === String(extra.target_id)) state.editTargetId = null;
-    } else if (kind === "delete_message") {
-      state.drafts.delete(`edit:${state.contextId}:${extra.target_id}`);
-      if (state.editTargetId === String(extra.target_id)) state.editTargetId = null;
-      if (state.replyToId === String(extra.target_id)) state.replyToId = null;
-    } else if (kind === "set_poll_votes") {
-      state.pollDrafts.delete(`poll:${state.contextId}:${extra.target_id}`);
-    }
-  }
+  if (!queryIntentValue) completeActionDrafts(state.pendingAction, receipt);
   rememberReceipt(receipt);
   try {
     const snapshot = await request("/api/state");
@@ -2423,6 +2453,7 @@ async function performAction(kind, extra, queryIntentValue = null) {
           );
         }
       }
+      state.pendingQuery = null;
       await installSnapshot(snapshot, false);
     }
   } catch (_) {
@@ -2682,6 +2713,8 @@ function updateViewport(field, minimum, maximum) {
     applyProfile();
     return;
   }
+  state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "viewport-invalid");
+  renderDiagnostics();
   ui.display.value = "fixed";
   queuePresentation();
 }
@@ -2726,12 +2759,24 @@ ui.exactForm.addEventListener("submit", (event) => {
   dispatch("focus", { target_id: ui.exactId.value });
 });
 ui.backActivity.addEventListener("click", backActivity);
-async function copyText(value) {
+ui.viewActionOutput.addEventListener("click", () => {
+  const output = (state.lastAction?.outcomes || []).find((outcome) =>
+    ["response", "followup", "message"].includes(outcome.kind) && outcome.messageId);
+  if (output) viewActivityMessage(String(output.messageId), state.lastAction.target);
+});
+async function copyText(value, recovery) {
   try { await navigator.clipboard.writeText(value); ui.captureStatus.textContent = "Copied."; }
-  catch (_) { ui.captureStatus.textContent = "Clipboard unavailable; select the text and copy manually."; }
+  catch (_) { recovery(); }
 }
-ui.copyRecipe.addEventListener("click", () => copyText(ui.captureRecipe.value));
-ui.copyReport.addEventListener("click", () => copyText(JSON.stringify(safeSupportReport(), null, 2)));
+ui.copyRecipe.addEventListener("click", () => copyText(ui.captureRecipe.value, () => {
+  ui.captureRecipe.focus();
+  ui.captureRecipe.select();
+  ui.captureStatus.textContent = "Clipboard unavailable; the private recipe is selected for manual copying.";
+}));
+ui.copyReport.addEventListener("click", () => copyText(JSON.stringify(safeSupportReport(), null, 2), () => {
+  ui.downloadReport.focus();
+  ui.captureStatus.textContent = "Clipboard unavailable; use Download support report for the redacted JSON.";
+}));
 ui.downloadReport.addEventListener("click", () => {
   const report = safeSupportReport();
   if (!report) return;
@@ -2743,6 +2788,7 @@ ui.downloadReport.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 ui.timeline.addEventListener("scroll", () => {
+  if (!state.ready && state.scrollIntent?.policy === "target") return;
   state.scrollIntent = captureScrollIntent();
   if (state.scrollIntent.policy === "bottom") ui.newMessages.hidden = true;
 }, { passive: true });
@@ -2774,6 +2820,8 @@ ui.replyCancel.addEventListener("click", () => {
 });
 ui.composer.addEventListener("input", () => {
   state.drafts.set(ui.composer.dataset.controlKey, ui.composer.value);
+  const key = ui.composer.dataset.controlKey;
+  state.draftVersions.set(key, (state.draftVersions.get(key) || 0) + 1);
   rememberFocus();
 });
 ui.composer.addEventListener("keydown", (event) => {

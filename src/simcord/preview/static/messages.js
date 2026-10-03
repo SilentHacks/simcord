@@ -5,6 +5,8 @@ import {
   downloadButton,
   fileTypeLabel,
   formatFileSize,
+  renderMedia,
+  renderSpoiler,
   renderSpoilerMedia,
 } from "./media.js";
 
@@ -145,6 +147,7 @@ function appendMessageContent(root, message, options, v2) {
 }
 function appendFileAttachment(item, attachment, options) {
   const filename = attachment.filename || "attachment";
+  const content = attachment.spoiler ? node("div") : item;
   const footer = node("div", "attachment-footer");
   const badge = node("span", "file-icon file-type", fileTypeLabel(attachment));
   badge.setAttribute("aria-hidden", "true");
@@ -167,17 +170,26 @@ function appendFileAttachment(item, attachment, options) {
       toggle.setAttribute("aria-expanded", String(!preview.hidden));
       toggle.textContent = preview.hidden ? "Preview" : "Hide preview";
     });
-    item.append(preview);
+    content.append(preview);
     actions.append(toggle);
   }
   const available = Boolean(attachment.asset_id) && attachment.available !== false
     && options.assets?.[attachment.asset_id]?.available !== false && options.loadAsset;
-  if (!available) item.append(node("div", "media-unavailable", `${filename} unavailable`));
+  if (!available) content.append(node("div", "media-unavailable", `${filename} unavailable`));
   const download = downloadButton(attachment, options, filename);
   download.classList.add("attachment-action");
   actions.append(download);
   footer.append(actions);
-  item.append(footer);
+  content.append(footer);
+  if (attachment.spoiler) {
+    item.append(renderSpoiler(
+      content,
+      attachment.spoiler,
+      options,
+      filename,
+      `attachment:${attachment.id || attachment.asset_id || filename}`,
+    ));
+  }
 }
 
 function disposeUnusedPlayers(players) {
@@ -292,15 +304,24 @@ export function renderMessage(root, message, options = {}) {
       const inline = attachment.inline && attachment.asset_id;
       const item = node("li", inline ? "attachment attachment-inline" : "attachment");
       if (inline) {
-        const result = renderSpoilerMedia(
-          attachment,
-          "attachment-image",
-          options,
-          attachment.filename || "Attachment",
-          `attachment:${attachment.id || index}:${attachment.asset_id}`,
-          imageGroup,
-        );
-        item.append(result.element);
+        const filename = attachment.filename || "Attachment";
+        const result = renderMedia(attachment, "attachment-image", options, filename, imageGroup);
+        const content = attachment.spoiler ? node("div") : item;
+        content.append(result.element);
+        const download = downloadButton(attachment, options, filename);
+        download.classList.add("attachment-action");
+        content.append(download);
+        if (attachment.spoiler) {
+          const rendered = renderSpoiler(
+            content,
+            attachment.spoiler,
+            options,
+            filename,
+            `attachment:${attachment.id || index}:${attachment.asset_id}`,
+          );
+          rendered.classList.add("spoiler-media");
+          item.append(rendered);
+        }
         pendingMedia.push(...result.pending);
       } else {
         appendFileAttachment(item, attachment, options);

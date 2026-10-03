@@ -173,6 +173,8 @@ The SimCord workbench stays outside the emulated Discord viewport and managed sc
 - **Inspector** opens Activity, Diagnostics, and Capture tabs. Activity presents operation results
   and links to authorized outputs, with protocol receipts available under **Technical details**.
   Diagnostics show recovery instructions and an actionable warning/error count on the Inspector button.
+  A callback response or follow-up also exposes **View response** in the app bar, without opening
+  the Inspector. Message rows include their local message ID so duplicate summaries remain distinct.
 - **Capture** opens viewport settings: **Fit window**, **Fixed size**, presets, custom dimensions,
   and **Isolate message** or **Conversation** layout. These settings belong to this browser page.
   The managed Python recipe does not inherit live browser drafts or open menus; use a browser
@@ -192,6 +194,11 @@ or outside click commits only when min/max are satisfied. Escape and focus leavi
 the draft. Message choices use the existing callback; modal values stay local until submit. A required
 message clear stays local, and a required modal clear is validated locally before dispatch; invalid
 counts are never sent to the backend.
+
+Optional single selects expose **Clear selection**. Optional modal fields may be left empty or
+cleared even when a minimum length/count applies to nonempty answers; required fields still reject
+empty answers. Entity search supports result navigation and selection without implicitly submitting
+the modal, and keeps search focus when its results update.
 
 These select transitions are an uncalibrated accessible fallback: reference commit/cancel traces are
 blocked, so no Discord search/Apply behavior or per-variant commit parity is claimed. See the
@@ -307,6 +314,10 @@ encoder availability depends on the installed platform build; if required codecs
 unavailable inline rather than silently faked. Interactive audio/video uses native browser playback;
 managed screenshots pause at a deterministic `media_time`.
 
+Each inline attachment also exposes its retained original-byte download, including when inline
+validation fails. Spoiler attachments conceal both content and controls until reveal; the lightbox
+does not navigate into unrevealed item or container spoilers.
+
 Lottie stickers use the pinned, MIT-licensed, expression-free light Canvas runtime shipped locally.
 Expressions, fonts/glyphs, and external or data-URL assets are rejected. SVG and HTML files remain
 download-only; text previews use text nodes, and file cards expose an explicit original-byte download.
@@ -319,6 +330,9 @@ viewport. They currently remain a responsive vertical list rather than a guessed
 `historical-family-attachments_media` measurement row is blocked, with only the single-image
 `ref-11-attachments-idle` capture and no measured count/ratio cases for 2–10 images. This fallback
 does not claim Discord multi-image layout parity; the measured mosaic remains evidence-dependent.
+
+Managed captures honor exact positive viewport dimensions below the human workbench's responsive
+minimum. Small viewports still crop content normally; they do not silently expand the requested size.
 
 All limits below are **Preview resource limits**, not Discord protocol limits. Requests are rejected
 before unbounded buffering; bytes are never silently truncated:

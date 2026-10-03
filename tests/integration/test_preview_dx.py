@@ -479,3 +479,351 @@ async def test_receipts_only_discover_causal_authorized_outputs_and_never_replay
         assert replay_denied["target"] is None
         assert replay_denied["outcomes"] == [] and len(calls) == 1
         assert not preview._page_payload(page)["messageIndex"]
+
+
+@pytest.mark.asyncio
+async def test_preview_modal_entity_search_enter_selects_highlighted_candidate(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    users = {name: env.guild.add_member(env.create_user(name)) for name in ("candidate-028", "candidate-029")}
+    submitted = []
+
+    class SearchForm(discord.ui.Modal, title="Search"):
+        user = discord.ui.Label(
+            text="User",
+            component=discord.ui.UserSelect(
+                custom_id="user",
+                default_values=[
+                    discord.SelectDefaultValue(
+                        id=users["candidate-029"].id,
+                        type=discord.SelectDefaultValueType.user,
+                    )
+                ],
+            ),
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            submitted.append([member.id for member in self.user.component.values])
+            await interaction.response.send_message("selected")
+
+    class OpenSearchForm(discord.ui.View):
+        @discord.ui.button(label="Open form", custom_id="open-search-form")
+        async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await interaction.response.send_modal(SearchForm())
+
+    message = await env.bot.get_channel(channel.id).send("Search", view=OpenSearchForm())
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.get_by_role("button", name="Open form").click()
+                await page.locator(".modal-dialog").wait_for()
+                await page.locator(".modal-field[data-custom-id='user'] .select-trigger").click()
+                search = page.get_by_role("searchbox", name="Search options")
+                assert await page.locator(".select-candidate-status").get_attribute("role") == "status"
+                assert await page.locator(".select-candidate-status").get_attribute("aria-live") == "polite"
+                await search.fill("candidate-028")
+                candidate = page.locator(f'.select-option[data-value="{users["candidate-028"].id}"]')
+                await candidate.wait_for()
+                await page.wait_for_function(
+                    """id => {
+                        const options = document.querySelectorAll('.modal-dialog .select-option');
+                        return options.length === 1 && options[0].dataset.value === id;
+                    }""",
+                    arg=str(users["candidate-028"].id),
+                )
+                assert await search.evaluate("element => element === document.activeElement")
+                await search.press("ArrowDown")
+                await search.press("Enter")
+                await page.wait_for_function(
+                    """name => document.querySelector(
+                      '.modal-field[data-custom-id="user"] .select-trigger'
+                    )?.getAttribute("aria-valuetext") === name""",
+                    arg="candidate-028",
+                )
+                assert submitted == []
+                assert await page.locator(".modal-dialog").count() == 1
+                await page.get_by_role("button", name="Submit").click()
+                await page.locator(".modal-dialog").wait_for(state="detached")
+                await page.wait_for_function(
+                    "() => !window.simcordPreview?.pendingAction "
+                    "&& window.simcordPreview?.lastAction?.settlement === 'settled'"
+                )
+                assert submitted == [[users["candidate-028"].id]]
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_modal_optional_select_clear_focusout_and_disabled_entity(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    locked_user = env.guild.add_member(env.create_user("locked-user"))
+    submitted = []
+
+    class BoundaryForm(discord.ui.Modal, title="Select boundaries"):
+        note = discord.ui.Label(
+            text="Optional note",
+            component=discord.ui.TextInput(custom_id="note", required=False, min_length=3),
+        )
+        single = discord.ui.Label(
+            text="Optional destination",
+            component=discord.ui.Select(
+                custom_id="single",
+                required=False,
+                min_values=0,
+                max_values=1,
+                options=[discord.SelectOption(label="Moon Base", value="moon", default=True)],
+            ),
+        )
+        multi = discord.ui.Label(
+            text="Destinations",
+            component=discord.ui.Select(
+                custom_id="multi",
+                min_values=1,
+                max_values=2,
+                options=[
+                    discord.SelectOption(label="Forest Camp", value="forest", default=True),
+                    discord.SelectOption(label="Moon Base", value="moon"),
+                ],
+            ),
+        )
+        locked = discord.ui.Label(
+            text="Locked user",
+            component=discord.ui.UserSelect(
+                custom_id="locked",
+                required=False,
+                min_values=0,
+                max_values=1,
+                disabled=True,
+                default_values=[
+                    discord.SelectDefaultValue(
+                        id=locked_user.id,
+                        type=discord.SelectDefaultValueType.user,
+                    )
+                ],
+            ),
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            submitted.append(
+                {
+                    "note": self.note.component.value,
+                    "single": self.single.component.values,
+                    "multi": self.multi.component.values,
+                    "locked": [member.id for member in self.locked.component.values],
+                }
+            )
+            await interaction.response.send_message("submitted")
+
+    class OpenBoundaryForm(discord.ui.View):
+        @discord.ui.button(label="Open form", custom_id="open-boundary-form")
+        async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await interaction.response.send_modal(BoundaryForm())
+
+    message = await env.bot.get_channel(channel.id).send("Boundaries", view=OpenBoundaryForm())
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.get_by_role("button", name="Open form").click()
+                await page.locator(".modal-dialog").wait_for()
+
+                single = page.locator(".modal-field[data-custom-id='single']")
+                assert await single.locator(".select-trigger").get_attribute("aria-valuetext") == "Moon Base"
+                await single.get_by_role("button", name="Clear selection").click()
+                assert (
+                    await single.locator(".select-trigger").get_attribute("aria-valuetext")
+                    == "Select an option"
+                )
+
+                locked = page.locator(".modal-field[data-custom-id='locked']")
+                clear_locked = locked.get_by_role("button", name="Clear selection")
+                await clear_locked.wait_for()
+                assert await clear_locked.is_disabled()
+                assert (
+                    await locked.locator(".select-trigger").get_attribute("aria-valuetext") == "locked-user"
+                )
+
+                multi = page.locator(".modal-field[data-custom-id='multi']")
+                trigger = multi.locator(".select-trigger")
+                await trigger.click()
+                await trigger.press("ArrowDown")
+                await trigger.press("Space")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.wait_for_function(
+                    "() => document.querySelector("
+                    "'.modal-field[data-custom-id=\"multi\"] .select-trigger'"
+                    ")?.getAttribute('aria-expanded') === 'false'"
+                )
+                assert await multi.locator(".select-trigger").get_attribute("aria-valuetext") == "Forest Camp"
+
+                await trigger.click()
+                await trigger.press("ArrowDown")
+                await trigger.press("Space")
+                await page.locator("input[name='note']").click()
+                note = page.locator("input[name='note']")
+                await note.fill("abc")
+                await note.fill("")
+                assert (
+                    await multi.locator(".select-trigger").get_attribute("aria-valuetext")
+                    == "Forest Camp, Moon Base"
+                )
+
+                await page.get_by_role("button", name="Submit").click()
+                await page.locator(".modal-dialog").wait_for(state="detached")
+                await page.wait_for_function(
+                    "() => !window.simcordPreview?.pendingAction "
+                    "&& window.simcordPreview?.lastAction?.settlement === 'settled'"
+                )
+                assert submitted == [
+                    {
+                        "note": "",
+                        "single": [],
+                        "multi": ["forest", "moon"],
+                        "locked": [locked_user.id],
+                    }
+                ]
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_modal_optional_multivalues_clear_to_empty_but_required_stays_invalid(
+    env, channel, alice
+):
+    from playwright.async_api import async_playwright
+
+    candidate = env.guild.add_member(env.create_user("optional-candidate"))
+    submitted = []
+
+    class MultiForm(discord.ui.Modal, title="Optional values"):
+        entity = discord.ui.Label(
+            text="Optional users",
+            component=discord.ui.UserSelect(
+                custom_id="entity",
+                required=False,
+                min_values=1,
+                max_values=2,
+            ),
+        )
+        checks = discord.ui.Label(
+            text="Optional checks",
+            component=discord.ui.CheckboxGroup(
+                custom_id="checks",
+                options=[
+                    discord.CheckboxGroupOption(label="One", value="one"),
+                    discord.CheckboxGroupOption(label="Two", value="two"),
+                ],
+                required=False,
+                min_values=1,
+                max_values=2,
+            ),
+        )
+        upload = discord.ui.Label(
+            text="Optional files",
+            component=discord.ui.FileUpload(
+                custom_id="upload",
+                required=False,
+                min_values=1,
+                max_values=2,
+            ),
+        )
+        required = discord.ui.Label(
+            text="Required choices",
+            component=discord.ui.Select(
+                custom_id="required",
+                min_values=1,
+                max_values=2,
+                options=[
+                    discord.SelectOption(label="Required choice", value="required", default=True),
+                    discord.SelectOption(label="Other choice", value="other"),
+                ],
+            ),
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            submitted.append(
+                {
+                    "entity": [member.id for member in self.entity.component.values],
+                    "checks": self.checks.component.values,
+                    "upload": [file.filename for file in self.upload.component.values],
+                    "required": self.required.component.values,
+                }
+            )
+            await interaction.response.send_message("submitted")
+
+    class OpenMultiForm(discord.ui.View):
+        @discord.ui.button(label="Open form", custom_id="open-multi-form")
+        async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await interaction.response.send_modal(MultiForm())
+
+    message = await env.bot.get_channel(channel.id).send("Optional values", view=OpenMultiForm())
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.get_by_role("button", name="Open form").click()
+                await page.locator(".modal-dialog").wait_for()
+
+                required = page.locator(".modal-field[data-custom-id='required']")
+                await required.locator(".select-trigger").click()
+                await required.locator('.select-option[data-value="required"]').click()
+                await required.locator(".select-apply").click()
+                await required.locator('.select-option[data-value="required"]').wait_for()
+                assert await required.locator(".select-trigger").get_attribute("aria-invalid") == "true"
+                await required.locator('.select-option[data-value="required"]').click()
+                await required.locator(".select-apply").click()
+
+                entity = page.locator(".modal-field[data-custom-id='entity']")
+                await entity.locator(".select-trigger").click()
+                search = entity.locator(".select-candidate-search")
+                await search.fill("optional-candidate")
+                await entity.locator(f'.select-option[data-value="{candidate.id}"]').wait_for()
+                await entity.locator(f'.select-option[data-value="{candidate.id}"]').click()
+                await entity.locator(".select-apply").click()
+                await entity.locator(".select-trigger").click()
+                search = entity.locator(".select-candidate-search")
+                await search.fill("optional-candidate")
+                await entity.locator(f'.select-option[data-value="{candidate.id}"]').wait_for()
+                await entity.locator(f'.select-option[data-value="{candidate.id}"]').click()
+                await entity.locator(".select-apply").click()
+                cleared = await entity.locator(".select-trigger").evaluate(
+                    "element => window.simcordPreview.selectStates[element.dataset.controlKey]"
+                )
+                assert cleared["values"] == []
+                assert cleared["valid"] is True
+
+                checks = page.locator(".modal-field[data-custom-id='checks']")
+                checkbox = checks.locator('input[type="checkbox"]').first
+                await checkbox.click()
+                await checks.locator('input[type="checkbox"]').first.click()
+                upload = page.locator(".modal-field[data-custom-id='upload']")
+                await upload.locator('input[type="file"]').set_input_files(
+                    {"name": "clear.txt", "mimeType": "text/plain", "buffer": b"content"}
+                )
+                await upload.get_by_role("button", name="Remove clear.txt").click()
+
+                await page.get_by_role("button", name="Submit").click()
+                await page.locator(".modal-dialog").wait_for(state="detached")
+                await page.wait_for_function(
+                    "() => !window.simcordPreview?.pendingAction "
+                    "&& window.simcordPreview?.lastAction?.settlement === 'settled'"
+                )
+                assert submitted == [{"entity": [], "checks": [], "upload": [], "required": ["required"]}]
+            finally:
+                await browser.close()

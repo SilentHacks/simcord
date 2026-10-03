@@ -98,10 +98,10 @@ function getLightbox() {
   });
   lightbox = {
     open(group, selected, trigger) {
-      items = group.items.filter(({ image: candidate, hidden }) => (
+      items = group.items.filter(({ image: candidate }) => (
         candidate.isConnected
         && candidate.src.startsWith("blob:")
-        && !hidden
+        && !candidate.closest(".spoiler-content:not(.is-revealed)")
       ));
       index = items.indexOf(selected);
       if (index < 0) return;
@@ -469,7 +469,7 @@ export function renderMedia(media, className, options, label, group = options.li
     image.height = height;
   }
   trigger.append(image);
-  const entry = { image, label: image.alt, hidden: false };
+  const entry = { image, label: image.alt };
   const lightboxGroup = group || { items: [] };
   lightboxGroup.items.push(entry);
   trigger.addEventListener("click", () => {
@@ -516,20 +516,19 @@ export function renderMedia(media, className, options, label, group = options.li
     if (trigger.hasAttribute("aria-hidden")) unavailable.setAttribute("aria-hidden", "true");
     trigger.replaceWith(unavailable);
   })];
-  return { element: trigger, pending, lightboxItem: entry };
+  return { element: trigger, pending };
 }
 
 function spoilerKey(media, options, label, stateKey) {
   return [options.contextId || "", options.messageId || options.scope || "", stateKey || label, media.asset_id || ""].join(":");
 }
 
-function reveal(element, spoiler, options, label, key, lightboxItem) {
+function reveal(element, spoiler, options, label, key) {
   if (!spoiler) return element;
   const wrapper = node("div", "spoiler-content");
   wrapper.append(element);
   const state = options.spoilerState;
   const revealed = Boolean(state?.has(key));
-  if (lightboxItem) lightboxItem.hidden = !revealed;
   if (!revealed) {
     element.inert = true;
     element.setAttribute("aria-hidden", "true");
@@ -537,10 +536,12 @@ function reveal(element, spoiler, options, label, key, lightboxItem) {
     cover.type = "button";
     cover.setAttribute("aria-label", `Reveal ${label} spoiler`);
     cover.addEventListener("click", () => {
-      if (lightboxItem) lightboxItem.hidden = false;
       state?.add(key);
-      element.inert = false;
-      element.removeAttribute("aria-hidden");
+      const content = wrapper.firstElementChild;
+      if (content) {
+        content.inert = false;
+        content.removeAttribute("aria-hidden");
+      }
       wrapper.classList.add("is-revealed");
       cover.remove();
     });
@@ -558,7 +559,7 @@ export function renderSpoiler(element, spoiler, options, label, key) {
 export function renderSpoilerMedia(media, className, options, label, stateKey, group = options.lightboxGroup) {
   const result = renderMedia(media, className, options, label, group);
   const key = spoilerKey(media, options, label, stateKey);
-  result.element = reveal(result.element, media?.spoiler, options, label, key, result.lightboxItem);
+  result.element = reveal(result.element, media?.spoiler, options, label, key);
   if (media?.spoiler) {
     result.element.classList.add("spoiler-media");
     result.element.classList.toggle("is-compact", className.includes("thumbnail"));
@@ -594,14 +595,14 @@ export function downloadButton(file, options, label = file?.filename || "attachm
   button.addEventListener("click", async () => {
     try {
       const url = await options.loadAsset(assetId, { download: true });
-      if (!url || !current(options)) return;
+      if (!url || !current(options, button)) return;
       const link = node("a");
       link.href = url;
       link.download = String(file.filename || label).replace(/[\\/\r\n]/g, "_");
       link.rel = "noopener noreferrer";
       link.click();
     } catch (error) {
-      if (current(options)) diagnostic(options, "file-unavailable", label, error);
+      if (current(options, button)) diagnostic(options, "file-unavailable", label, error);
     }
   });
   return button;

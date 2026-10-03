@@ -425,3 +425,128 @@ async def test_channel_composer_sends_replies_and_preserves_live_dom_state(env, 
                 await browser.close()
         finally:
             await playwright.stop()
+
+
+@pytest.mark.asyncio
+async def test_dropdown_scroll_reaches_last_option(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    class Choices(discord.ui.View):
+        @discord.ui.select(options=[discord.SelectOption(label=f"Choice {index}") for index in range(25)])
+        async def choose(self, interaction, select):
+            await interaction.response.send_message(select.values[0])
+
+    message = await env.bot.get_channel(channel.id).send("Long choices", view=Choices())
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                await page.locator(".select-trigger").click()
+                popup = page.locator(".select-list")
+                bottom = await popup.evaluate(
+                    "element => { element.scrollTop = element.scrollHeight; return element.scrollTop; }"
+                )
+                await page.evaluate(
+                    "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+                )
+                assert await popup.evaluate("element => element.scrollTop") == bottom
+                await page.get_by_role("option", name="Choice 24", exact=True).click()
+                await page.wait_for_function(
+                    "() => !window.simcordPreview.pendingAction && window.simcordPreview.lastAction?.settlement === 'settled'"
+                )
+                assert channel.last_message.content == "Choice 24"
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_search_target_stays_visible_and_keyboard_row_keeps_focus(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    bot_channel = env.bot.get_channel(channel.id)
+    target = await bot_channel.send("Unique old target")
+    for index in range(55):
+        await bot_channel.send(f"History {index}\n" + "A tall history line\n" * 8)
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 1280, "height": 900})
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                await page.locator("#message-search").fill("Unique old target")
+                await page.locator("#message-search").press("Enter")
+                row = page.locator(f".message-row[data-message-id='{target.id}']")
+                await row.wait_for()
+                await page.wait_for_function("() => !window.simcordPreview.pendingAction")
+                await row.focus()
+                await row.press("Enter")
+                await page.wait_for_function(
+                    "id => window.simcordPreview.targetId === id && window.simcordPreview.ready && !window.simcordPreview.pendingAction",
+                    arg=str(target.id),
+                )
+                assert (
+                    await page.evaluate("() => document.activeElement.dataset.controlKey")
+                    == f"message:{target.id}"
+                )
+                bounds = await page.locator(f".channel-message[data-message-id='{target.id}']").evaluate(
+                    """element => {
+                        const target = element.getBoundingClientRect();
+                        const timeline = document.getElementById('channel-timeline').getBoundingClientRect();
+                        return {top: target.top, bottom: target.bottom, visibleTop: timeline.top, visibleBottom: timeline.bottom};
+                    }"""
+                )
+                assert bounds["visibleTop"] <= bounds["top"] < bounds["visibleBottom"]
+                assert bounds["bottom"] <= bounds["visibleBottom"] + 1
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer_draft", ["", "Keep this next draft"])
+async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, alice, newer_draft):
+    from playwright.async_api import async_playwright
+
+    await env.bot.get_channel(channel.id).send("Conversation")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                submissions = []
+                delivered = asyncio.Event()
+                release = asyncio.Event()
+
+                async def lose_send_receipt(route):
+                    if route.request.post_data_json.get("kind") == "send_message":
+                        submissions.append(route.request.post_data_json["request_id"])
+                        await route.fetch()
+                        delivered.set()
+                        await release.wait()
+                        await route.abort("failed")
+                    else:
+                        await route.continue_()
+
+                await page.route("**/api/action", lose_send_receipt)
+                composer = page.get_by_role("textbox", name="Message")
+                await composer.fill("Send exactly once")
+                await page.get_by_role("button", name="Send").click()
+                await delivered.wait()
+                if newer_draft:
+                    await composer.fill(newer_draft)
+                release.set()
+                await page.wait_for_function(
+                    "id => window.simcordPreview?.lastAction?.requestId === id && window.simcordPreview.lastAction.settlement === 'settled' && !window.simcordPreview.pendingAction",
+                    arg=submissions[0],
+                )
+                assert channel.last_message.content == "Send exactly once"
+                assert await composer.input_value() == newer_draft
+                assert len(submissions) == 1
+            finally:
+                await browser.close()

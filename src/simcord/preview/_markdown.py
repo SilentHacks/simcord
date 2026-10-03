@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -300,6 +301,64 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
     return result
 
 
+_INLINE_OPEN_TO_CLOSE = {
+    "strong_open": "strong_close",
+    "em_open": "em_close",
+    "s_open": "s_close",
+    "link_open": "link_close",
+}
+_INLINE_CLOSE_TO_OPEN = {close: open for open, close in _INLINE_OPEN_TO_CLOSE.items()}
+
+
+def _inline_blocks(children: Iterable[Any], policy: Mapping[str, bool | str]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    active: list[Any] = []
+    line: list[Any] = []
+    inherited: list[Any] = []
+    previous_subtext = False
+
+    def emit_line() -> None:
+        nonlocal previous_subtext
+        source = list(line)
+        subtext = (
+            bool(policy["subtext"])
+            and bool(source)
+            and getattr(source[0], "type", "") == "text"
+            and str(getattr(source[0], "content", "")).startswith("-# ")
+        )
+        if subtext:
+            marker = copy.copy(source[0])
+            marker.content = str(marker.content)[3:]
+            source[0] = marker
+
+        tokens = [copy.copy(token) for token in inherited]
+        tokens.extend(source)
+        for opened in reversed(active):
+            closed = copy.copy(opened)
+            closed.type = _INLINE_OPEN_TO_CLOSE[getattr(opened, "type", "")]
+            tokens.append(closed)
+        if blocks and not previous_subtext and not subtext:
+            blocks.append({"type": "inline", "children": [{"type": "break"}]})
+        blocks.append({"type": "subtext" if subtext else "inline", "children": _inline(tokens)})
+        previous_subtext = subtext
+
+    for token in children:
+        kind = getattr(token, "type", "")
+        if kind in {"softbreak", "hardbreak"}:
+            emit_line()
+            line.clear()
+            inherited = list(active)
+            continue
+        line.append(token)
+        if kind in _INLINE_OPEN_TO_CLOSE:
+            active.append(token)
+        elif kind in _INLINE_CLOSE_TO_OPEN and active:
+            if getattr(active[-1], "type", "") == _INLINE_CLOSE_TO_OPEN[kind]:
+                active.pop()
+    emit_line()
+    return blocks
+
+
 def _blocks(tokens: Iterable[Any], policy: Mapping[str, bool | str]) -> list[dict[str, Any]]:
     root: list[dict[str, Any]] = []
     stack: list[list[dict[str, Any]]] = [root]
@@ -307,12 +366,7 @@ def _blocks(tokens: Iterable[Any], policy: Mapping[str, bool | str]) -> list[dic
         kind = getattr(token, "type", "")
         nesting = int(getattr(token, "nesting", 0) or 0)
         if kind == "inline":
-            children = list(getattr(token, "children", ()) or ())
-            content = str(getattr(token, "content", ""))
-            subtext = bool(policy["subtext"]) and content.startswith("-# ")
-            if subtext and children and getattr(children[0], "type", "") == "text":
-                children[0].content = str(children[0].content)[3:]
-            stack[-1].append({"type": "subtext" if subtext else "inline", "children": _inline(children)})
+            stack[-1].extend(_inline_blocks(getattr(token, "children", ()) or (), policy))
         elif kind in {"code_block", "fence"}:
             info = str(getattr(token, "info", "") or "").strip()
             block: dict[str, Any] = {"type": "code_block", "content": str(getattr(token, "content", ""))}
@@ -429,6 +483,10 @@ def markdown_summary(
             elif kind == "timestamp":
                 parts.append("[timestamp]")
             elif kind == "break":
+                parts.append(" ")
+            elif kind == "subtext":
+                parts.append(" ")
+                visit(token["children"])
                 parts.append(" ")
             elif isinstance(token.get("children"), (list, tuple)):
                 visit(token["children"])

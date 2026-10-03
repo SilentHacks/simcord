@@ -78,7 +78,7 @@
   --discord-control: #2e2f35;
   --discord-hover: #3e3f45;
   --discord-text: #f2f3f5;
-  --discord-muted: #949ba4;
+  --discord-muted: #949ca4;
   --discord-subtle: #b5bac1;
   --discord-border: #45474e;
   --discord-brand: #5865f2;
@@ -301,9 +301,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   border-radius: 7px;
   text-align: left;
 }
-.message-row:hover:not(:disabled) { background: #35373d; }
+.message-row:hover:not([aria-disabled="true"]) { background: #35373d; }
 .message-row[aria-current="page"] { color: var(--discord-text); background: #404249; box-shadow: inset 2px 0 var(--discord-brand); }
-.message-row:disabled { cursor: not-allowed; opacity: .52; }
+.message-row[aria-disabled="true"] { cursor: not-allowed; opacity: .52; }
 .message-row-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
 .message-row-author { overflow: hidden; color: var(--discord-text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .message-row-time { flex: 0 0 auto; color: var(--discord-muted); font-size: 10px; }
@@ -405,6 +405,12 @@ body[data-managed-capture="true"] .drawer-scrim { display: none !important; }
 body[data-managed-capture="true"] .preview-workspace { display: flex; }
 body[data-managed-capture="true"] .preview-stage { overflow: hidden; }
 body[data-managed-capture="true"] .preview-helper { display: none !important; }
+html:has(body[data-managed-capture="true"] .preview-app.presentation-fixed),
+body[data-managed-capture="true"]:has(.preview-app.presentation-fixed) { min-width: 0; }
+body[data-managed-capture="true"] .preview-app.presentation-fixed {
+  min-width: 0;
+  min-height: 0;
+}
 @media (forced-colors: active) {
   :focus-visible, .focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 }
@@ -682,6 +688,14 @@ body[data-managed-capture="true"] .preview-helper { display: none !important; }
   background: var(--subtle-surface);
   border-radius: 3px;
 }
+.markdown-spoiler:not(.is-revealed) .markdown-spoiler-content,
+.markdown-spoiler:not(.is-revealed) .markdown-spoiler-content *,
+.markdown-spoiler:not(.is-revealed) .markdown-spoiler-content::before,
+.markdown-spoiler:not(.is-revealed) .markdown-spoiler-content::after,
+.markdown-spoiler:not(.is-revealed) .markdown-spoiler-content *::before,
+.markdown-spoiler:not(.is-revealed) .markdown-spoiler-content *::after {
+  visibility: hidden !important;
+}
 .markdown-spoiler.is-revealed { color: inherit; background: var(--subtle-surface); }
 
 .embed-card {
@@ -918,7 +932,7 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
 }
 .media-player-native { display: block; width: 100%; max-height: min(55vh, 420px); background: #111214; }
 .audio-player .media-player-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.media-player-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.media-player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .media-player-button {
   min-height: 32px;
   padding: 4px 10px;
@@ -1139,6 +1153,58 @@ img.embed-image { display: block; width: 100%; max-height: 280px; border-radius:
   border: 1px solid var(--component-border);
   border-radius: 8px;
   box-shadow: 0 8px 16px #0008;
+}
+.select-candidate-tools {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  padding: 6px 8px;
+  background: var(--list-surface);
+  border-bottom: 1px solid var(--component-border);
+}
+.select-candidate-tools > label,
+.select-candidate-search-label {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--discord-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.select-candidate-tools > label input,
+.select-candidate-search-label input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 3px 7px;
+  color: var(--discord-text);
+  background: var(--discord-bg);
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+}
+.select-candidate-pages {
+  display: flex;
+  grid-column: 1;
+  grid-row: 2;
+  align-items: center;
+  gap: 4px;
+}
+.select-candidate-pages button { min-height: 26px; padding: 2px 8px; font-size: 11px; }
+.select-candidate-status {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  color: var(--discord-subtle);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: right;
+  white-space: nowrap;
 }
 .select-list[hidden] { display: none; }
 .preview-select.opens-up .select-list { box-shadow: 0 -8px 16px #0008; }

@@ -659,7 +659,7 @@ def _modal_leaf(
             raise SetupError(f"Required modal control {custom_id!r} cannot be empty")
         minimum = component.get("min_length")
         maximum = component.get("max_length")
-        if minimum is not None and len(value) < minimum:
+        if minimum is not None and (value or required) and len(value) < minimum:
             raise SetupError(f"Text input {custom_id!r} is shorter than min_length={minimum}")
         if maximum is not None and len(value) > maximum:
             raise SetupError(f"Text input {custom_id!r} exceeds max_length={maximum}")
@@ -670,7 +670,7 @@ def _modal_leaf(
         lo, hi = _modal_bounds(component, default_min=1, default_max=1, maximum_limit=25)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
-        if (supplied or required) and not lo <= len(chosen) <= hi:
+        if chosen and not lo <= len(chosen) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} values")
         if typ == ComponentType.STRING_SELECT:
             if not all(isinstance(item, str) for item in chosen):
@@ -690,7 +690,7 @@ def _modal_leaf(
         lo, hi = _modal_bounds(component, default_min=1, default_max=1, maximum_limit=10)
         if required and not files:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
-        if (supplied or required) and not lo <= len(files) <= hi:
+        if files and not lo <= len(files) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} files")
         data["values"] = []
         for filename, blob in files:
@@ -719,7 +719,7 @@ def _modal_leaf(
         _ensure_unique(chosen)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
-        if (supplied or required) and not lo <= len(chosen) <= hi:
+        if chosen and not lo <= len(chosen) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} values")
         if not all(isinstance(item, str) for item in chosen):
             raise SetupError(f"CheckboxGroup {custom_id!r} expects string values")

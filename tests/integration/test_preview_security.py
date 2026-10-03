@@ -16,7 +16,7 @@ from PIL import Image
 from preview_helpers import gif_bytes, png_bytes, preview_headers, target_message
 
 from simcord.backend.cdn import CDN_BASE
-from simcord.preview._markdown import markdown_tokens
+from simcord.preview._markdown import markdown_summary, markdown_tokens
 
 
 def _walk_tokens(value):
@@ -221,13 +221,15 @@ def test_preview_markdown_timestamp_styles_are_preserved():
 
 
 @pytest.mark.asyncio
-async def test_preview_renders_timestamps_highlight_and_inert_html_in_browser(env, channel, alice):
+async def test_preview_renders_markdown_spoilers_highlight_and_inert_html_in_browser(env, channel, alice):
     from playwright.async_api import async_playwright
 
     styles = "tTdDfFR"
     content = (
         " ".join(f"<t:1700000000:{style}>" for style in styles)
-        + "\n```python\nprint('<script>')\n```\n<script>window.previewInjected = true</script>"
+        + "\nfirst\n-# quiet line\nthird"
+        + "\n||[masked](https://example.test) `inline secret`||"
+        + "\n```python\ndef hello():\n    return 1\n```\n<script>window.previewInjected = true</script>"
     )
     await env.bot.get_channel(channel.id).send(content)
     async with env.preview(channel, viewers=[alice], layout="channel") as preview:
@@ -241,7 +243,42 @@ async def test_preview_renders_timestamps_highlight_and_inert_html_in_browser(en
                 assert await page.locator("time.discord-timestamp").evaluate_all(
                     "elements => elements.every(element => Boolean(element.title))"
                 )
-                assert await page.locator(".code-block .hljs-built_in").count() > 0
+                subtext = page.locator(".message-content .markdown-subtext")
+                assert await subtext.all_text_contents() == ["quiet line"]
+                assert "-# quiet line" not in await page.locator(".message-content").inner_text()
+                code = page.locator(".code-block code")
+                assert await code.text_content() == "def hello():\n    return 1\n"
+                assert await code.locator(".hljs-title.function_").count() > 0
+                spoiler = page.locator(".markdown-spoiler")
+                spoiler_content = spoiler.locator(".markdown-spoiler-content")
+                link = spoiler_content.locator("a.markdown-link")
+                inline_code = spoiler_content.locator("code.inline-code")
+                assert await spoiler_content.evaluate(
+                    "element => element.inert && element.getAttribute('aria-hidden') === 'true'"
+                )
+                assert await spoiler_content.evaluate(
+                    "element => getComputedStyle(element).visibility === 'hidden'"
+                )
+                assert await inline_code.text_content() == "inline secret"
+                assert not await link.evaluate(
+                    "element => { element.focus(); return document.activeElement === element; }"
+                )
+                await spoiler.focus()
+                await page.keyboard.press("Enter")
+                assert await spoiler.evaluate("element => element.classList.contains('is-revealed')")
+                assert not await spoiler_content.evaluate(
+                    "element => element.inert || element.hasAttribute('aria-hidden')"
+                )
+                assert await link.get_attribute("href") == "https://example.test/"
+                assert await link.get_attribute("target") == "_blank"
+                assert await link.get_attribute("rel") == "noopener noreferrer"
+                assert await link.evaluate("element => getComputedStyle(element).visibility !== 'hidden'")
+                assert await inline_code.evaluate(
+                    "element => getComputedStyle(element).visibility !== 'hidden'"
+                )
+                assert await link.evaluate(
+                    "element => { element.focus(); return document.activeElement === element; }"
+                )
                 assert not await page.evaluate("() => window.previewInjected")
                 assert await page.locator(".message-content script").count() == 0
             finally:
@@ -296,7 +333,7 @@ def test_preview_markdown_links_breaks_styles_and_spoilers():
         "[safe](https://example.test) [mail](mailto:test@example.test) "
         "[bad](javascript:alert(1))  \nhard **bold** ~~strike~~ __underline__ ||secret||",
     )
-    children = tokens[0]["children"][0]["children"]
+    children = list(_walk_tokens(tokens))
     links = [item for item in children if item.get("type") == "link_open"]
     assert [item["href"] for item in links] == ["https://example.test", "mailto:test@example.test"]
     assert any(item.get("type") == "break" for item in children)
@@ -312,6 +349,31 @@ def test_preview_markdown_links_breaks_styles_and_spoilers():
         "spoiler_close",
     } <= kinds
     assert "secret" in str(tokens)
+
+
+def test_preview_subtext_marker_applies_per_line_across_boundaries():
+    cases = (
+        ("first\n-# second\nthird", ["second"]),
+        ("-# first\nsecond", ["first"]),
+        ("-# first\n-# second", ["first", "second"]),
+        ("first\n\n-# second", ["second"]),
+        ("first\r\n-# second\r\nthird", ["second"]),
+    )
+    for source, expected in cases:
+        tokens = markdown_tokens(source)
+        subtexts = [
+            "".join(
+                child.get("content", "") for child in block.get("children", []) if child.get("type") == "text"
+            )
+            for block in _walk_tokens(tokens)
+            if block.get("type") == "subtext"
+        ]
+        assert subtexts == expected
+        visible = "".join(
+            token.get("content", "") for token in _walk_tokens(tokens) if token.get("type") == "text"
+        )
+        assert "-#" not in visible
+    assert markdown_summary(markdown_tokens("-# first\nsecond")) == "first second"
 
 
 def test_preview_markdown_non_text_is_safe_plain_text():

@@ -12,6 +12,7 @@ import datetime as dt
 import io
 import struct
 import zlib
+from pathlib import Path
 
 import discord
 
@@ -27,7 +28,14 @@ REFERENCE_IDS = (
 )
 
 
-def _png(width: int, height: int, top: tuple[int, int, int], bottom: tuple[int, int, int]) -> bytes:
+def _png(
+    width: int,
+    height: int,
+    top: tuple[int, int, int],
+    bottom: tuple[int, int, int],
+    *,
+    compression_level: int = zlib.Z_DEFAULT_COMPRESSION,
+) -> bytes:
     """Create a deterministic RGB gradient PNG without another dependency."""
 
     def chunk(kind: bytes, data: bytes) -> bytes:
@@ -42,13 +50,54 @@ def _png(width: int, height: int, top: tuple[int, int, int], bottom: tuple[int, 
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IDAT", zlib.compress(rows, level=compression_level))
         + chunk(b"IEND", b"")
     )
 
 
 def _image_file(filename: str, top: tuple[int, int, int], bottom: tuple[int, int, int]) -> discord.File:
     return discord.File(io.BytesIO(_png(640, 360, top, bottom)), filename=filename)
+
+
+def _fixture_file(filename: str, *, source: str | None = None) -> discord.File:
+    data = Path(__file__).with_name(source or filename).read_bytes()
+    return discord.File(io.BytesIO(data), filename=filename)
+
+
+def dogfood_emoji_png() -> bytes:
+    return _png(64, 64, (255, 188, 66), (155, 52, 114))
+
+
+def dogfood_animated_gif() -> bytes:
+    return bytes.fromhex(
+        "474946383961 0100 0100 80 00 00 ff0000 0000ff "
+        "21ff0b 4e45545343415045322e30 0301 0000 00 "
+        "21f90400 0a00 0000 2c00000000 0100 0100 00 02 02 4401 00 "
+        "21f90400 0a00 0000 2c00000000 0100 0100 00 02 02 4c01 00 3b"
+    )
+
+
+def dogfood_animated_png() -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", binascii.crc32(kind + data))
+
+    image_header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    red = zlib.compress(b"\0\xff\0\0")
+    blue = zlib.compress(b"\0\0\0\xff")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", image_header)
+        + chunk(b"acTL", struct.pack(">II", 2, 0))
+        + chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 1, 1, 0, 0, 1, 10, 0, 0))
+        + chunk(b"IDAT", red)
+        + chunk(b"fcTL", struct.pack(">IIIIIHHBB", 1, 1, 1, 0, 0, 1, 10, 0, 0))
+        + chunk(b"fdAT", struct.pack(">I", 2) + blue)
+        + chunk(b"IEND", b"")
+    )
+
+
+def dogfood_oversized_spoiler_png() -> bytes:
+    return _png(2000, 1800, (30, 80, 140), (210, 120, 40), compression_level=0)
 
 
 async def _acknowledge(interaction: discord.Interaction) -> None:
@@ -161,13 +210,14 @@ class TextModal(discord.ui.Modal, title="REF-51-TEXT-MODAL"):
         ),
     )
     feedback = discord.ui.Label(
-        text="Feedback",
-        description="Optional longer response.",
+        text="Optional feedback (3+ characters when supplied)",
+        description="Leave empty or enter at least 3 characters.",
         component=discord.ui.TextInput(
             custom_id="reference:feedback",
             style=discord.TextStyle.paragraph,
             placeholder="Tell us what you think…",
             required=False,
+            min_length=3,
             max_length=4000,
         ),
     )
@@ -268,14 +318,14 @@ class StringSelectVariantModal(discord.ui.Modal, title="REF-52-STRING-SELECT-VAR
         ),
     )
     optional_single = discord.ui.Label(
-        text="Optional single destination",
+        text="Optional single destination (starts at Moon Base)",
         component=discord.ui.Select(
             custom_id="reference:modal-select-single-optional",
             min_values=0,
             max_values=1,
             required=False,
             options=[
-                discord.SelectOption(label="Moon Base", value="moon"),
+                discord.SelectOption(label="Moon Base", value="moon", default=True),
                 discord.SelectOption(label="Forest Camp", value="forest"),
             ],
         ),
@@ -510,7 +560,8 @@ def _layout_view() -> tuple[discord.ui.LayoutView, list[discord.File]]:
     view = discord.ui.LayoutView(timeout=None)
     view.add_item(
         discord.ui.TextDisplay(
-            "## REF-40-V2-LAYOUT-MEDIA\nCapture the complete message and each interactive state."
+            "## REF-40-V2-LAYOUT-MEDIA\nCapture the complete message and each interactive state.\n"
+            "DOG-V2-01 Public gallery beside a gallery in the spoiler container."
         )
     )
     accessory = discord.ui.Button(
@@ -548,7 +599,8 @@ def _layout_view() -> tuple[discord.ui.LayoutView, list[discord.File]]:
     view.add_item(
         discord.ui.MediaGallery(
             discord.MediaGalleryItem(
-                "attachment://ref-gallery-wide.png", description="Wide blue reference image"
+                "attachment://ref-gallery-wide.png",
+                description="DOG-V2-01 Public gallery image",
             ),
             discord.MediaGalleryItem(
                 "attachment://ref-gallery-spoiler.png",
@@ -560,13 +612,23 @@ def _layout_view() -> tuple[discord.ui.LayoutView, list[discord.File]]:
     view.add_item(discord.ui.File("attachment://ref-document.txt"))
     view.add_item(
         discord.ui.Container(
-            discord.ui.TextDisplay("REF-41-CONTAINER-SPOILER\nReveal this container."), spoiler=True
+            discord.ui.TextDisplay(
+                "REF-41-CONTAINER-SPOILER\nDOG-V2-01 Hidden gallery; reveal this container."
+            ),
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(
+                    "attachment://ref-gallery-container-hidden.png",
+                    description="DOG-V2-01 Image inside spoiler container",
+                )
+            ),
+            spoiler=True,
         )
     )
     files = [
         _image_file("ref-v2-thumbnail.png", (88, 101, 242), (70, 35, 110)),
         _image_file("ref-gallery-wide.png", (0, 170, 255), (0, 55, 110)),
         _image_file("ref-gallery-spoiler.png", (255, 170, 0), (145, 45, 20)),
+        _image_file("ref-gallery-container-hidden.png", (130, 70, 210), (20, 40, 70)),
         discord.File(io.BytesIO(b"SimCord visual reference fixture\n"), filename="ref-document.txt"),
     ]
     return view, files
@@ -664,7 +726,14 @@ def close_payload(payload: dict[str, object]) -> None:
 
 
 class DogfoodChoices(discord.ui.View):
-    def __init__(self, *, custom_id: str, minimum: int = 1, maximum: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        custom_id: str,
+        minimum: int = 1,
+        maximum: int = 1,
+        default_first: bool = False,
+    ) -> None:
         super().__init__(timeout=None)
         select = discord.ui.Select(
             custom_id=custom_id,
@@ -676,6 +745,7 @@ class DogfoodChoices(discord.ui.View):
                     label=f"Region {number}",
                     value=str(number),
                     description=f"Deployment destination {number}",
+                    default=default_first and number == 0,
                 )
                 for number in range(25)
             ],
@@ -686,6 +756,21 @@ class DogfoodChoices(discord.ui.View):
             await interaction.followup.send(f"Selected: {select.values}", ephemeral=True)
 
         select.callback = picked
+        self.add_item(select)
+
+
+class DogfoodDisabledEntityDefaultView(discord.ui.View):
+    def __init__(self, user_id: int) -> None:
+        super().__init__(timeout=None)
+        select = discord.ui.UserSelect(
+            custom_id="dogfood:disabled-entity-default",
+            placeholder="Disabled UserSelect with Alice's authorized default",
+            min_values=0,
+            max_values=1,
+            disabled=True,
+            default_values=[discord.SelectDefaultValue(id=user_id, type=discord.SelectDefaultValueType.user)],
+        )
+        select.callback = _acknowledge
         self.add_item(select)
 
 
@@ -700,6 +785,33 @@ class DogfoodLongMessageView(discord.ui.View):
     )
     async def tail(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_message("DOG-05 final control reached.", ephemeral=True)
+
+
+class DogfoodCallbackView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="DOG-CB-01 Raise callback failure",
+        style=discord.ButtonStyle.danger,
+        custom_id="dogfood:callback-failure",
+    )
+    async def fail(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        raise RuntimeError("DOG-CB-01 intentional callback failure")
+
+
+class DogfoodDeferredView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="DOG-CB-02 Defer and follow up",
+        style=discord.ButtonStyle.primary,
+        custom_id="dogfood:deferred-followup",
+    )
+    async def deferred_followup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send("DOG-CB-02 deferred follow-up completed.", ephemeral=True)
 
 
 DOGFOOD_SCENARIOS = (
@@ -875,7 +987,12 @@ DOGFOOD_SCENARIOS = (
 )
 
 
-def dogfood_payloads(viewer_mention: str) -> list[dict[str, object]]:
+def dogfood_payloads(
+    viewer_mention: str,
+    *,
+    custom_emoji: str | None = None,
+    animated_emoji: str | None = None,
+) -> list[dict[str, object]]:
     """Build the local stress demos and finding-specific browser walkthrough cards."""
     markdown = (
         "DOG-01 Markdown\n# Heading\n## Smaller\n### Smallest\n-# Quiet subtext\n"
@@ -885,8 +1002,29 @@ def dogfood_payloads(viewer_mention: str) -> list[dict[str, object]]:
         "```python\nprint('hello')\n```\n:smile: 😀\n"
         "Latin العربية עברית 中文 नमस्ते 👩🏽‍💻 👍🏽 🇺🇳 1️⃣ ♥︎ ♥️\n" + viewer_mention
     )
+    formatted_spoilers = (
+        "DOG-MD-01 Formatted spoiler concealment\n"
+        "Bare URL: ||https://example.com/private||\n"
+        "Masked link: ||[hidden docs](https://example.com/docs)||\n"
+        "Inline code: ||`token-sentinel`||\n"
+        + (f"Custom emoji: ||{custom_emoji}||\n" if custom_emoji else "")
+    )
     payloads: list[dict[str, object]] = [
         {"content": markdown},
+        {"content": formatted_spoilers},
+        {
+            "content": (
+                "DOG-MD-02 Later-line subtext boundary\n"
+                "First paragraph\n-# only this later line is subtext\nthird line stays normal\n\n"
+                "-# first subtext line\n-# second subtext line"
+            )
+        },
+        {
+            "content": (
+                "DOG-MD-03 Highlighted multiline Python declaration\n"
+                "```python\ndef hello():\n    return 1\n```"
+            )
+        },
         {
             "content": "DOG-02 Single select, 25 choices",
             "view": DogfoodChoices(custom_id="dogfood:single-select"),
@@ -896,16 +1034,31 @@ def dogfood_payloads(viewer_mention: str) -> list[dict[str, object]]:
             "view": DogfoodChoices(custom_id="dogfood:multi-required-select", minimum=1, maximum=2),
         },
         {
-            "content": "DOG-04 Optional single select, 25 choices",
-            "view": DogfoodChoices(custom_id="dogfood:single-optional-select", minimum=0, maximum=1),
+            "content": "DOG-04 Optional single select, default Region 0; 25 choices",
+            "view": DogfoodChoices(
+                custom_id="dogfood:single-optional-select", minimum=0, maximum=1, default_first=True
+            ),
         },
         {
             "content": "DOG-03 Multi select, 25 choices, requires two",
             "view": DogfoodChoices(custom_id="dogfood:multi-min2-select", minimum=2, maximum=3),
         },
         {
-            "content": "DOG-04 Optional multi select",
-            "view": DogfoodChoices(custom_id="dogfood:multi-optional-select", minimum=0, maximum=2),
+            "content": "DOG-04 Optional multi select, default Region 0",
+            "view": DogfoodChoices(
+                custom_id="dogfood:multi-optional-select",
+                minimum=0,
+                maximum=2,
+                default_first=True,
+            ),
+        },
+        {
+            "content": "DOG-CB-01 Callback failure; activate the button to exercise the error path.",
+            "view": DogfoodCallbackView(),
+        },
+        {
+            "content": "DOG-CB-02 Deferred response followed by an ephemeral follow-up.",
+            "view": DogfoodDeferredView(),
         },
         {
             "content": "DOG-05 Long content\n" + "Long message line, inspect scrolling and clipping.\n" * 32,
@@ -919,6 +1072,55 @@ def dogfood_payloads(viewer_mention: str) -> list[dict[str, object]]:
                 _image_file("SPOILER_secret.png", (240, 100, 30), (30, 60, 90)),
                 discord.File(io.BytesIO(b"dogfood download\n"), filename="notes.txt"),
             ],
+        },
+        {
+            "content": "DOG-MEDIA-01 Image, playable audio/video, ordinary file, and original downloads.",
+            "files": [
+                _image_file("dogfood-image.png", (35, 165, 90), (20, 80, 130)),
+                _fixture_file("video.mp4"),
+                _fixture_file("voice.ogg"),
+                discord.File(io.BytesIO(b"DOG-MEDIA-01 downloadable notes\n"), filename="notes.txt"),
+            ],
+        },
+        {
+            "content": "DOG-MEDIA-02 Spoiler image, audio, video, and text-file attachments.",
+            "files": [
+                _image_file("SPOILER_media-image.png", (240, 100, 30), (30, 60, 90)),
+                _fixture_file("SPOILER_video.mp4", source="video.mp4"),
+                _fixture_file("SPOILER_voice.ogg", source="voice.ogg"),
+                discord.File(io.BytesIO(b"DOG-MEDIA-02 hidden notes\n"), filename="SPOILER_notes.txt"),
+            ],
+        },
+        {
+            "content": "DOG-MEDIA-03 Corrupt spoiler image; reveal its unavailable fallback.",
+            "files": [discord.File(io.BytesIO(b"not a valid PNG image"), filename="SPOILER_broken.png")],
+        },
+        {
+            "content": (
+                "DOG-MEDIA-04 Animated GIF and APNG attachments"
+                + (f"; authorized animated custom emoji: {animated_emoji}" if animated_emoji else "")
+                + "."
+            ),
+            "files": [
+                discord.File(io.BytesIO(dogfood_animated_gif()), filename="dogfood-animated.gif"),
+                discord.File(io.BytesIO(dogfood_animated_png()), filename="dogfood-animated.png"),
+            ],
+        },
+        {
+            "content": "DOG-MEDIA-06 Oversized spoiler PNG; reveal fallback and download retained original.",
+            "files": [
+                discord.File(
+                    io.BytesIO(dogfood_oversized_spoiler_png()),
+                    filename="SPOILER_oversized.png",
+                )
+            ],
+        },
+        {
+            "content": (
+                "**REF-50-MODALS**\nOpen each modal. Capture empty, focus, filled, validation, "
+                "selection/upload, and button-focus states."
+            ),
+            "view": ModalGallery(),
         },
         {
             "content": (
