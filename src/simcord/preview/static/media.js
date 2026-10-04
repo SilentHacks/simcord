@@ -59,6 +59,7 @@ function getLightbox() {
   let zoomed = false;
   let observer = null;
   let stage = null;
+  let drawGeneration = 0;
   const sizeImage = () => {
     const source = items[index]?.image;
     if (!source) return;
@@ -91,11 +92,13 @@ function getLightbox() {
   const draw = () => {
     const item = items[index];
     if (!item) return;
+    const generation = ++drawGeneration;
+    const isCurrent = () => dialog.open && generation === drawGeneration;
     image.src = item.image.src;
     image.alt = item.label;
     identity.replaceChildren();
     if (item.author) {
-      const avatar = renderIdentityAvatar(item.author, item.options, "media-lightbox-avatar");
+      const avatar = renderIdentityAvatar(item.author, { ...item.options, isCurrent }, "media-lightbox-avatar");
       const copy = node("div");
       copy.append(node("strong", "", item.author.name || "Unknown author"));
       const badge = item.author.kind === "application" ? "APP" : item.author.webhook ? "WEBHOOK" : item.author.bot ? "BOT" : null;
@@ -117,14 +120,13 @@ function getLightbox() {
     original.rel = "noopener noreferrer";
     original.append(icon("external"));
     // Only validated raster media enters this viewer; never open arbitrary file previews.
-    const selected = item;
     Promise.resolve(item.options.loadAsset(item.media.asset_id, { download: true })).then((url) => {
-      if (dialog.open && items[index] === selected && typeof url === "string" && url.startsWith("blob:")) {
+      if (isCurrent() && typeof url === "string" && url.startsWith("blob:")) {
         original.href = url;
         actions.append(original);
       }
     }).catch((error) => {
-      if (dialog.open && items[index] === selected) diagnostic(item.options, "file-unavailable", item.label, error);
+      if (isCurrent()) diagnostic(item.options, "file-unavailable", item.label, error);
     });
     const multiple = items.length > 1;
     previous.hidden = !multiple;
@@ -140,6 +142,7 @@ function getLightbox() {
     draw();
   };
   const restore = () => {
+    drawGeneration += 1;
     observer?.disconnect();
     observer = null;
     stage?.removeEventListener("scroll", place);

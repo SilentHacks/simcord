@@ -326,16 +326,28 @@ async def test_image_viewer_zoom_scope_and_deleted_asset_cleanup(env, channel, a
     output = io.BytesIO()
     Image.new("RGB", (1600, 1000), (20, 60, 90)).save(output, format="PNG")
     message = await alice.send(channel, "viewer", attachments=[("large.png", output.getvalue())])
-    async with env.preview(channel, viewers=[alice]) as preview, async_playwright() as playwright:
+    avatar_url = f"{CDN_BASE}/embed/avatars/{(alice.id >> 22) % 6}.png"
+    async with (
+        env.preview(channel, viewers=[alice], assets={avatar_url: ("avatar.png", png_bytes())}) as preview,
+        async_playwright() as playwright,
+    ):
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": 1000, "height": 700})
             await page.goto(preview.url)
             await page.wait_for_function("() => window.simcordPreview?.ready")
+            await page.get_by_role("button", name="Refresh preview").click()
+            await page.wait_for_function(
+                "() => window.simcordPreview?.ready && !window.simcordPreview.pendingAction"
+            )
             opener = page.get_by_role("button", name="Open large.png in image preview")
             await opener.click()
             viewer = page.get_by_role("dialog", name="Image preview")
             assert await viewer.locator(".media-lightbox-identity strong").inner_text() == alice.name
+            await page.wait_for_function(
+                "() => document.querySelector('.media-lightbox-avatar img')?.naturalWidth > 0",
+                timeout=3000,
+            )
             assert await viewer.bounding_box() == await page.locator("#preview-app").bounding_box()
             frame = viewer.get_by_role("region")
             await viewer.get_by_role("button", name="Zoom image").click()
@@ -358,6 +370,42 @@ async def test_image_viewer_zoom_scope_and_deleted_asset_cleanup(env, channel, a
             assert await page.locator(".media-lightbox-image").get_attribute("src") is None
             assert await page.locator(".media-lightbox a[href]").count() == 0
         finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_image_viewer_original_link_survives_pending_navigation(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    await alice.send(channel, "two images", attachments=[("a.png", png_bytes()), ("b.png", png_bytes())])
+    release = asyncio.Event()
+
+    async def delay_original(route):
+        if route.request.url.endswith("?download=1"):
+            await release.wait()
+        await route.continue_()
+
+    async with env.preview(channel, viewers=[alice]) as preview, async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.route("**/api/assets/**", delay_original)
+            await page.goto(preview.url)
+            await page.wait_for_function("() => window.simcordPreview?.ready")
+            await page.get_by_role("button", name="Open a.png in image preview").click()
+            viewer = page.get_by_role("dialog", name="Image preview")
+            await viewer.get_by_role("button", name="Next image").click()
+            await viewer.get_by_role("button", name="Next image").click()
+            release.set()
+            original = viewer.get_by_role("link", name="Open original image")
+            await original.first.wait_for()
+            assert await viewer.locator(".media-lightbox-image").get_attribute("alt") == "a.png"
+            assert await original.count() == 1
+            assert (await original.get_attribute("href")).startswith("blob:")
+        finally:
+            release.set()
+            await page.unroute_all(behavior="wait")
             await browser.close()
 
 
