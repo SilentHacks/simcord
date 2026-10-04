@@ -866,7 +866,7 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
   filter: none;
 }
 .spoiler-content { position: relative; }
-.spoiler-content:not(.spoiler-media):not(.is-revealed) > :first-child { visibility: hidden; }
+.spoiler-content:not(.is-revealed) > :first-child:not(.media-lightbox-trigger) { visibility: hidden; }
 .spoiler-content > .spoiler-cover {
   position: absolute;
   inset: 0;

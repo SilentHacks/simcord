@@ -497,8 +497,9 @@ async def test_embed_media_preserves_aspect_and_gallery_spoiler_retains_obscured
         catalog.close_payload(gallery_payload)
 
 
+@pytest.mark.parametrize("layout", ["channel", "message"])
 @pytest.mark.asyncio
-async def test_channel_entity_menu_finishes_loading_and_shows_search_results(env, channel, alice):
+async def test_entity_menu_finishes_loading_and_shows_search_results(env, channel, alice, layout):
     pytest.importorskip("playwright")
     from playwright.async_api import async_playwright
 
@@ -507,7 +508,7 @@ async def test_channel_entity_menu_finishes_loading_and_shows_search_results(env
     payload = catalog.gallery_payload("REF-31-ENTITY-SELECTS")
     try:
         message = await env.bot.get_channel(channel.id).send(**payload)
-        async with env.preview(channel, viewers=[alice], layout="channel", width=889, height=780) as preview:
+        async with env.preview(channel, viewers=[alice], layout=layout, width=889, height=780) as preview:
             await preview.show(message)
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch()
@@ -519,7 +520,8 @@ async def test_channel_entity_menu_finishes_loading_and_shows_search_results(env
                     menu = page.locator('.select-list:popover-open [role="listbox"]')
                     await page.wait_for_function(
                         "() => document.querySelector('.select-list:popover-open [role=listbox]')"
-                        "?.getAttribute('aria-busy') === 'false'"
+                        "?.getAttribute('aria-busy') === 'false'",
+                        timeout=5000,
                     )
                     await (
                         page.locator(".select-candidate-search")

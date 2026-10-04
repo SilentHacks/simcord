@@ -523,6 +523,11 @@ async def test_preview_modal_entity_search_enter_selects_highlighted_candidate(e
                 await page.get_by_role("button", name="Open form").click()
                 await page.locator(".modal-dialog").wait_for()
                 await page.locator(".modal-field[data-custom-id='user'] .select-trigger").click()
+                await page.wait_for_function(
+                    "() => document.querySelector('.select-list:popover-open [role=listbox]')"
+                    "?.getAttribute('aria-busy') === 'false'",
+                    timeout=5000,
+                )
                 search = page.get_by_role("searchbox", name="Search options")
                 assert await page.locator(".select-candidate-status").get_attribute("role") == "status"
                 assert await page.locator(".select-candidate-status").get_attribute("aria-live") == "polite"

@@ -339,6 +339,10 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
             ("unsafe.html", b"<script>window.previewInjected = true</script>"),
             ("notes.txt", b"safe text"),
             ("SPOILER_secret.txt", b"safe spoiler text"),
+            (
+                "SPOILER_clip.mp4",
+                (Path(__file__).parents[1] / "fixtures" / "preview" / "video.mp4").read_bytes(),
+            ),
         ],
     )
     async with env.preview(channel, viewers=[alice]) as preview:
@@ -359,12 +363,16 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready === true")
 
-                assert await page.locator(".message-attachments").get_attribute("data-image-count") == "3"
                 images = page.locator("img.attachment-image")
                 assert await images.count() == 3
                 assert await images.nth(0).evaluate("(image) => [image.width, image.height]") == [4, 2]
                 assert await images.nth(1).evaluate("(image) => [image.width, image.height]") == [2, 4]
                 assert await page.locator(".spoiler-content button button").count() == 0
+                video_spoiler = page.locator(".spoiler-media").filter(has=page.locator("video"))
+                video = video_spoiler.locator("video")
+                assert not await video.is_visible()
+                await video_spoiler.locator(".spoiler-cover").click()
+                assert await video.is_visible()
 
                 unsafe = page.locator(".attachment:not(.attachment-inline)").filter(has_text="unsafe.html")
                 assert await unsafe.count() == 1

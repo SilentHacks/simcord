@@ -1782,6 +1782,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   }
   applyProfile();
   updatePickers(snapshot);
+  const openKey = state.dropdown?.key;
   const pendingMedia = [];
   if (snapshot.layout === "channel") {
     pendingMedia.push(...renderChannelTimeline(snapshot, generation, previousTargetId, force));
@@ -1791,7 +1792,8 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.dayNodes.clear();
     const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
     const selectedKey = selected ? String(selected.id) : null;
-    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}`;
+    const loading = Boolean(openKey?.startsWith(`message:${selectedKey}:`) && candidateLoading(openKey));
+    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}`;
     const shouldRenderMessage =
       force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
     if (shouldRenderMessage) {
@@ -1806,7 +1808,8 @@ function renderSnapshot(snapshot, generation, force = false) {
     }
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
-  const modalKey = snapshot.modal ? `${fingerprint(snapshot.modal)}:${state.candidateFingerprints.get(`modal:${snapshot.modal.handle}`) || ""}` : "";
+  const modalLoading = Boolean(openKey?.startsWith(`modal:${snapshot.modal?.handle}:`) && candidateLoading(openKey));
+  const modalKey = snapshot.modal ? `${fingerprint(snapshot.modal)}:${state.candidateFingerprints.get(`modal:${snapshot.modal.handle}`) || ""}:${modalLoading}` : "";
   if (modal && state.modalErrorHandle !== modal.handle) {
     clearModalValidation();
     state.modalErrorHandle = modal.handle;
