@@ -151,6 +151,8 @@ semantics. Role assignments/counts, full candidate pools and original predecesso
 remain unattested. Source-order predecessors are reconstructed from the producing bot's
 canonical catalog, with that distinction recorded. Actual PNG dimensions and fractional
 browser bounds are retained; no screenshot is resized or padded to make comparisons pass.
+The local viewer owns the replay guild to avoid adding a synthetic person to entity menus;
+this is a local fixture choice, not evidence of source ownership or permissions.
 
 ### Targeted modal follow-up
 

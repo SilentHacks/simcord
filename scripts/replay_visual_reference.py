@@ -401,13 +401,13 @@ async def _replay_one(
             allowed_mentions=discord.AllowedMentions.none(),
         )
         async with simcord.run(bot) as env:
-            guild = env.create_guild("reference-replay")
-            channel_names = scene.get("channels", [])
-            channel = guild.create_text_channel(channel_names[0] if channel_names else "reference-gallery")
             viewer_label = scene.get("viewerLabel")
             if not isinstance(viewer_label, str) or not viewer_label:
                 raise ValueError("observed invoking-viewer identity is unavailable")
-            viewer = env.create_user(viewer_label, global_name=viewer_label)
+            viewer = env.create_user(str(scene.get("viewerUsername", viewer_label)), global_name=viewer_label)
+            guild = env.create_guild("reference-replay", owner=viewer)
+            channel_names = scene.get("channels", [])
+            channel = guild.create_text_channel(channel_names[0] if channel_names else "reference-gallery")
             viewer_member = guild.add_member(viewer)
             for role in scene.get("roles", []):
                 if isinstance(role, Mapping) and isinstance(role.get("label"), str):
@@ -615,6 +615,7 @@ async def _replay_one(
                             "sceneDifferences": [
                                 "source author is represented by SimCord bot member; exact source avatar bytes are unavailable",
                                 "role-to-member assignments and permissions are unobserved; roles are not assigned speculatively",
+                                "local viewer is the replay guild owner to avoid inventing another visible candidate; source ownership is unobserved",
                                 "source channel's own private name is unavailable; first observed channel candidate is used as the local replay target",
                                 *(
                                     ["source predecessor exists but its payload/sidecar was not supplied"]
