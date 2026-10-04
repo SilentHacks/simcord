@@ -42,6 +42,8 @@ Wait for the “Synced /visual_references” message. **Manually** invoke `/visu
 
 The bot now uses the same `gallery_payload()` factories as the SimCord capture runner. Mention normalization substitutes `@simcord-viewer` for the invoking user; these hashes are **new local input hashes**, not historical ledger hashes or a claim about Discord's complete wire representation.
 
+For exports, the bot fetches its own guild member once through the official bot API, so guild nicknames and guild avatars are recorded even without guild intents. Keep the bot's display identity stable during the batch.
+
 **Leave terminal A and the bot running** throughout interaction capture, or callbacks and modal launchers will stop responding. One output directory is one gallery invocation. To post again, stop the bot and restart with a fresh directory such as `bot-batch-02`; never overwrite an earlier batch.
 
 ## 3. Open the dedicated manual-capture browser

@@ -414,3 +414,32 @@ def test_capture_cli_fixture_selection_and_exit_status_are_deterministic(tmp_pat
         == 2
     )
     assert calls == [["historical.ref.00.index.idle"]]
+
+
+@pytest.mark.asyncio
+async def test_export_preserves_uncached_bot_guild_nickname(tmp_path):
+    import discord
+    from discord.ext import commands
+
+    post_gallery = _load_script("discord_reference_bot", "discord_reference_bot.py").post_gallery
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    async with simcord.run(bot) as env:
+        guild = env.create_guild("Reference calibration")
+        channel = guild.create_text_channel("own-fixtures")
+        viewer = guild.add_member(env.create_user("reference-viewer"))
+        remote_guild = await bot.fetch_guild(guild.id)
+        assert bot.user is not None
+        member = await remote_guild.fetch_member(bot.user.id)
+        await member.edit(nick="Calibration Guild Nick")
+        target = await bot.fetch_channel(channel.id)
+        assert isinstance(target, discord.TextChannel)
+        remote_viewer = await remote_guild.fetch_member(viewer.id)
+        output = tmp_path / "bot-batch"
+
+        await post_gallery(target, remote_viewer, None, output_dir=output)
+
+        manifest = json.loads((output / "bot-fixtures.json").read_text(encoding="utf-8"))
+        embed = next(
+            record for record in manifest["fixtures"] if record["referenceId"] == "REF-10-LEGACY-EMBED"
+        )
+        assert embed["author"]["displayName"] == "Calibration Guild Nick"

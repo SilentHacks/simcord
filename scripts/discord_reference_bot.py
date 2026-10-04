@@ -96,6 +96,7 @@ async def post_gallery(
     output_dir: Path | None = None,
 ) -> None:
     records = []
+    author = None
     if output_dir is not None:
         await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=False)
         await asyncio.to_thread((output_dir / "assets").mkdir)
@@ -109,16 +110,20 @@ async def post_gallery(
                 )
             message = await channel.send(**payload)
             if record is not None:
+                if author is None:
+                    if message.guild is None:
+                        raise ValueError("Fixture provenance export requires a guild channel")
+                    author = await message.guild.fetch_member(message.author.id)
                 record.update(
                     {
                         "messageId": str(message.id),
                         "channelId": str(message.channel.id),
                         "createdAt": message.created_at.isoformat(),
                         "author": {
-                            "id": str(message.author.id),
-                            "username": message.author.name,
-                            "displayName": message.author.display_name,
-                            "avatarUrl": str(message.author.display_avatar.url),
+                            "id": str(author.id),
+                            "username": author.name,
+                            "displayName": author.display_name,
+                            "avatarUrl": str(author.display_avatar.url),
                         },
                         "previousMessageId": records[-1]["messageId"] if records else None,
                     }
