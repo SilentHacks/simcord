@@ -108,7 +108,16 @@ async def test_channel_controls_dispatch_to_their_own_message(env, channel, alic
                 await page.wait_for_function("() => Boolean(window.simcordPreview?.pendingAction)")
                 pending = await page.evaluate("() => window.simcordPreview.pendingAction")
                 assert "private draft" not in str(pending)
+                assert await first_panel.get_by_role("button", name="Ping").is_disabled()
+                await first_panel.get_by_role("button", name="Ping").focus()
+                assert await first_panel.get_by_role("button", name="Ping").evaluate(
+                    "button => button === document.activeElement"
+                )
                 release.set()
+                await page.wait_for_function(
+                    "() => !window.simcordPreview?.pendingAction && !window.simcordPreview?.awaitingRevision"
+                )
+                assert await first_panel.get_by_role("button", name="Ping").is_enabled()
             finally:
                 await browser.close()
 

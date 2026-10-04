@@ -1193,6 +1193,10 @@ function updateActionStatus() {
   const waiting = Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision;
   const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
   ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden;
+  // Keep callback buttons focusable so closing a modal can still restore its opener.
+  document.querySelectorAll("button.component-button:not(.button-style-5):not(.button-style-6)").forEach((button) => {
+    button.setAttribute("aria-disabled", String(blocked || button.disabled));
+  });
   ui.message.querySelectorAll(".message-row").forEach((row) => {
     row.setAttribute("aria-disabled", String(blocked || Boolean(state.queuedQueries.size) || !state.authorized || state.pinnedCapture));
   });
