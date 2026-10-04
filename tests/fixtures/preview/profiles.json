@@ -82,6 +82,57 @@
       "animationPolicy": "unknown",
       "referencePackHash": null,
       "fixtureHashSource": "coverage.json row historicalCapture.sha256"
+    },
+    {
+      "id": "discord-ash-calibration-1280x780",
+      "theme": "ash",
+      "viewport": {
+        "width": 1280,
+        "height": 780
+      },
+      "locale": "en-GB",
+      "timezone": "Europe/London",
+      "deviceScaleFactor": 1,
+      "zoom": 1,
+      "fontScale": "user-attested-16px; effective glyph size unverified",
+      "motion": "animations-off (user-attested)",
+      "browser": "Chrome 151",
+      "clientBuild": "stable 627798 (01ad173)",
+      "observedAt": "2026-10-04",
+      "provenance": "Observed capture-session profile and user attestations; calibration handoff pack is observed-unreviewed and is not certification.",
+      "referencePackKey": "calibration-batch-01",
+      "os": "macOS 27.0.1 arm64 (observed)",
+      "fontIdentity": "gg sans declared; actual glyph usage/fallback unverified",
+      "emojiFallback": "unknown",
+      "reducedMotion": false,
+      "density": "Default reported; Cozy unconfirmed",
+      "animationPolicy": "animations off (attested); reducedMotion=false observed",
+      "referencePackHash": "fcf4ad0fa3bb6afae4755f09dbd3f45087e0a29878922164fd5615c4b561786a",
+      "fixtureHashSource": "reference-pack.json references[].normalizedPayloadHash",
+      "observed": {
+        "os": "macOS 27.0.1 arm64",
+        "browser": "Chrome 151",
+        "deviceScaleFactor": 1,
+        "viewport": "1280x780 CSS pixels",
+        "locale": "en-GB",
+        "timezone": "Europe/London",
+        "reducedMotion": false
+      },
+      "userAttested": {
+        "clientBuild": "stable 627798 (01ad173)",
+        "clientLocale": "English",
+        "fontSize": "16px",
+        "animationsOff": true
+      },
+      "unknown": {
+        "density": "Default reported; Cozy unconfirmed",
+        "effectiveFontRendering": "Declared fonts do not establish glyph usage or fallback",
+        "emojiFallback": "not established",
+        "modalCallbacksAndSubmittedValues": "not established",
+        "liveModalTimeoutCause": "unknown"
+      },
+      "evidenceStatus": "observed-unreviewed",
+      "calibrated": false
     }
   ],
   "referenceProfileRequirements": [

@@ -55,7 +55,7 @@ export function renderSelect(component, path, options) {
   const candidateKey = component.control_key || key;
   const descriptor = candidates?.[candidateKey];
   const entries = optionEntries(component, descriptor);
-  const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
+  const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2 21 6v6c0 6-9 10-9 10S3 18 3 12V6zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
   const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
   const entityIcon = (entry, kind) => {
     const icon = node("span", "entity-icon");
@@ -258,8 +258,10 @@ export function renderSelect(component, path, options) {
     const guidance = node("div", "select-guidance");
     guidance.setAttribute("role", "status");
     guidance.setAttribute("aria-live", "polite");
+    const selectionStatus = options.selectionStatus?.(key);
     guidance.textContent = identityPending ? "Checking access to saved selections."
-      : options.selectionStatus?.(key) || `${selected.length} selected. Choose ${minimum}–${maximum} options.`;
+      : selectionStatus || `${selected.length} selected. Choose ${minimum}–${maximum} options.`;
+    guidance.hidden = scope.startsWith("message") && !identityPending && !selectionStatus;
     guidance.id = `select-guidance-${safeId(key)}`;
     trigger.setAttribute("aria-describedby", guidance.id);
     wrap.append(guidance);
@@ -272,6 +274,7 @@ export function renderSelect(component, path, options) {
   list.id = `listbox-${safeId(key)}`;
   list.setAttribute("role", "listbox");
   list.setAttribute("aria-multiselectable", String(multi));
+  list.setAttribute("aria-busy", String(Boolean(options.candidateLoading?.(candidateKey) || descriptor?.state === "loading")));
   list.setAttribute("aria-labelledby", trigger.id);
   list.dataset.controlKey = `${key}:options`;
   if (component.type !== TYPE.STRING_SELECT) {
@@ -340,10 +343,7 @@ export function renderSelect(component, path, options) {
       return;
     }
     if (kind === "role") {
-      const color = Number(entry.color ?? 0) >>> 0;
-      const swatch = node("span", "entity-role-swatch");
-      swatch.style.background = color ? `#${color.toString(16).padStart(6, "0")}` : "#f2f3f5";
-      label.append(swatch, node("span", "entity-name entity-dim", entry.label ?? entry.name ?? ""));
+      label.append(node("span", "entity-name entity-dim", entry.label ?? entry.name ?? ""));
       const count = node("span", "entity-count");
       count.insertAdjacentHTML("beforeend", PERSON_SVG);
       count.append(document.createTextNode(String(entry.members ?? 0)));

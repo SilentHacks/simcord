@@ -443,3 +443,96 @@ async def test_export_preserves_uncached_bot_guild_nickname(tmp_path):
             record for record in manifest["fixtures"] if record["referenceId"] == "REF-10-LEGACY-EMBED"
         )
         assert embed["author"]["displayName"] == "Calibration Guild Nick"
+
+
+@pytest.mark.asyncio
+async def test_embed_media_preserves_aspect_and_gallery_spoiler_retains_obscured_pixels(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    catalog = capture_visual_reference._load_catalog()
+    bot_channel = env.bot.get_channel(channel.id)
+    embed_payload = catalog.gallery_payload("REF-10-LEGACY-EMBED")
+    gallery_payload = catalog.gallery_payload("REF-40-V2-LAYOUT-MEDIA")
+    try:
+        embed_message = await bot_channel.send(**embed_payload)
+        gallery_message = await bot_channel.send(**gallery_payload)
+        async with env.preview(channel, viewers=[alice], width=960, height=900) as preview:
+            await preview.show(embed_message)
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch()
+                try:
+                    page = await browser.new_page(viewport={"width": 1200, "height": 1050})
+                    await page.goto(preview.url)
+                    await capture_visual_reference._ready(page)
+                    dimensions = await page.locator("img.embed-thumbnail, img.embed-image").evaluate_all(
+                        "images => images.map(image => ({width: image.getBoundingClientRect().width,"
+                        "height: image.getBoundingClientRect().height,"
+                        "ratio: image.naturalWidth / image.naturalHeight}))"
+                    )
+                    for image in dimensions:
+                        assert abs(image["width"] / image["height"] - image["ratio"]) < 0.01
+                    thumbnail = await page.locator("img.embed-thumbnail").bounding_box()
+                    fields = await page.locator(".embed-fields").bounding_box()
+                    assert thumbnail is not None and fields is not None
+                    assert fields["x"] + fields["width"] <= thumbnail["x"]
+
+                    await preview.show(gallery_message)
+                    await page.reload()
+                    await capture_visual_reference._ready(page)
+                    hidden = page.locator(".component-gallery .spoiler-media").first
+                    pixels = await hidden.screenshot()
+                    with Image.open(io.BytesIO(pixels)) as image:
+                        red, green, blue = image.convert("RGB").getpixel(
+                            (image.width // 4, image.height // 4)
+                        )
+                    assert red > green > blue  # Obscured orange pixels, not an opaque grey placeholder.
+                    assert (
+                        await hidden.locator(".media-lightbox-trigger").get_attribute("aria-hidden") == "true"
+                    )
+                finally:
+                    await browser.close()
+    finally:
+        catalog.close_payload(embed_payload)
+        catalog.close_payload(gallery_payload)
+
+
+@pytest.mark.asyncio
+async def test_channel_entity_menu_finishes_loading_and_shows_search_results(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    catalog = capture_visual_reference._load_catalog()
+    role = env.guild.create_role("Calibration Operator")
+    payload = catalog.gallery_payload("REF-31-ENTITY-SELECTS")
+    try:
+        message = await env.bot.get_channel(channel.id).send(**payload)
+        async with env.preview(channel, viewers=[alice], layout="channel", width=889, height=780) as preview:
+            await preview.show(message)
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch()
+                try:
+                    page = await browser.new_page(viewport={"width": 1280, "height": 900})
+                    await page.goto(preview.url)
+                    await capture_visual_reference._ready(page)
+                    await page.get_by_role("combobox", name="Choose a role", exact=True).click()
+                    menu = page.locator('.select-list:popover-open [role="listbox"]')
+                    await page.wait_for_function(
+                        "() => document.querySelector('.select-list:popover-open [role=listbox]')"
+                        "?.getAttribute('aria-busy') === 'false'"
+                    )
+                    await (
+                        page.locator(".select-candidate-search")
+                        .filter(visible=True)
+                        .fill("Calibration Operator")
+                    )
+                    await page.wait_for_function(
+                        "() => document.querySelector('.select-list:popover-open [role=listbox]')"
+                        "?.querySelectorAll('[role=option]').length === 1"
+                    )
+                    assert await menu.get_by_role("option").get_attribute("data-value") == str(role.id)
+                    assert await menu.get_attribute("aria-busy") == "false"
+                finally:
+                    await browser.close()
+    finally:
+        catalog.close_payload(payload)

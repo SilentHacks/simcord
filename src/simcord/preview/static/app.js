@@ -1126,7 +1126,9 @@ function renderChannelTimeline(snapshot, generation, previousTargetId, force = f
       record = { element, fingerprint: "" };
       state.messageNodes.set(id, record);
     }
-    const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}`;
+    const openKey = state.dropdown?.key;
+    const loading = Boolean(openKey?.startsWith(`message:${id}:`) && candidateLoading(openKey));
+    const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}`;
     if (force || record.fingerprint !== value) {
       record.fingerprint = value;
       clearRenderDiagnostics(`message:${id}`);
@@ -1539,7 +1541,7 @@ function announceSelectStatus(key, fingerprint, message) {
   state.selectStatuses.set(key, { fingerprint, message });
   const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
   const status = wrap?.querySelector(".select-guidance");
-  if (status) status.textContent = message;
+  if (status) { status.textContent = message; status.hidden = false; }
 }
 
 function announceInvalidSelection(key, values, minimum, maximum) {

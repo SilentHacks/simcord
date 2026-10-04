@@ -210,7 +210,7 @@ class TextModal(discord.ui.Modal, title="REF-51-TEXT-MODAL"):
         ),
     )
     feedback = discord.ui.Label(
-        text="Optional feedback (3+ characters when supplied)",
+        text="Optional feedback",
         description="Leave empty or enter at least 3 characters.",
         component=discord.ui.TextInput(
             custom_id="reference:feedback",

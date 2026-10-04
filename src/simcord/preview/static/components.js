@@ -319,7 +319,7 @@ function renderEmbed(embed, index, options) {
       }
     });
     flushInline();
-    card.append(fields);
+    text.append(fields);
   }
 
   for (const [kind, media] of [["image", embed.image], ["video", embed.video]]) {
