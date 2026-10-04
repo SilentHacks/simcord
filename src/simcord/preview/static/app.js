@@ -1,6 +1,7 @@
 import { renderModal } from "./components.js";
 import { renderMessage } from "./messages.js";
 import { closeLightbox } from "./media.js";
+import { icon } from "./dom.js";
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -75,6 +76,10 @@ const ui = {
   viewActionOutput: $("view-action-output"),
   action: $("action-status"),
 };
+
+for (const [id, name] of [["messages-toggle", "messages"], ["refresh", "refresh"], ["capture-open", "capture"], ["inspector-toggle", "inspector"]]) {
+  $(id).prepend(icon(name));
+}
 
 const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
 const inspectorPanels = {
@@ -496,6 +501,9 @@ function updatePickers(snapshot) {
       className: "message-indicator",
       textContent: `ID ${id}`,
     }));
+    const metadata = [...indicators.children].map((element) => element.textContent).join(" · ");
+    row.setAttribute("aria-label", [[...heading.children].map((element) => element.textContent).join(" "), row.querySelector(".message-row-excerpt").textContent, metadata].join(" · "));
+    row.title = metadata;
     if (indicators.childElementCount) row.append(indicators);
     row.addEventListener("click", () => {
       if (row.getAttribute("aria-disabled") !== "true") dispatch("focus", { target_id: id });
@@ -532,6 +540,12 @@ function updatePickers(snapshot) {
   ui.pickerEmpty.textContent = "No visible messages.";
   updateComposer(snapshot);
 }
+
+function resizeComposer() {
+  if (ui.composerForm.hidden) return;
+  ui.composer.style.height = "auto";
+  ui.composer.style.height = `${Math.min(160, Math.max(44, ui.composer.scrollHeight))}px`;
+}
 function updateComposer(snapshot) {
   if (snapshot.layout !== "channel") return;
   const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
@@ -541,7 +555,14 @@ function updateComposer(snapshot) {
   if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
   if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
   ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
-  ui.send.textContent = state.editTargetId ? "Save" : "Send";
+  const sendLabel = state.editTargetId ? "Save" : "Send";
+  ui.send.setAttribute("aria-label", sendLabel);
+  ui.send.title = `${sendLabel} message (Enter)`;
+  if (ui.send.dataset.mode !== sendLabel) {
+    ui.send.replaceChildren(icon(state.editTargetId ? "check" : "send"));
+    ui.send.dataset.mode = sendLabel;
+  }
+  resizeComposer();
   const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
   ui.composer.placeholder = state.editTargetId ? "Edit message" : `Message #${channelName}`;
   const messageRows = state.authorized ? snapshot.messageIndex || [] : [];
@@ -1876,7 +1897,7 @@ function renderSnapshot(snapshot, generation, force = false) {
         clearModalValidation();
         state.modalDrafts.set(key, files);
         state.modalTouched.add(key);
-        localRender(false);
+        localRender(true);
       },
       onCancel: () => {
         state.dropdown = null;
@@ -2838,10 +2859,11 @@ ui.composer.addEventListener("input", () => {
   state.drafts.set(ui.composer.dataset.controlKey, ui.composer.value);
   const key = ui.composer.dataset.controlKey;
   state.draftVersions.set(key, (state.draftVersions.get(key) || 0) + 1);
+  resizeComposer();
   rememberFocus();
 });
 ui.composer.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     ui.composerForm.requestSubmit();
   }

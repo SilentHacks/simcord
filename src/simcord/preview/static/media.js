@@ -1,4 +1,4 @@
-import { node } from "./dom.js";
+import { icon, iconButton, node, renderIdentityAvatar } from "./dom.js";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 let lightbox;
@@ -30,37 +30,109 @@ function getLightbox() {
   if (lightbox) return lightbox;
   const dialog = node("dialog", "media-lightbox");
   dialog.setAttribute("aria-label", "Image preview");
+  const heading = node("header", "media-lightbox-header");
+  const identity = node("div", "media-lightbox-identity");
+  const controls = node("div", "media-lightbox-controls");
+  const zoom = iconButton("zoom", "Zoom image", "media-lightbox-control");
+  const actions = node("div", "media-lightbox-actions");
+  const close = iconButton("close", "Close image preview", "media-lightbox-control");
+  controls.append(zoom, actions, close);
+  heading.append(identity, controls);
   const frame = node("div", "media-lightbox-frame");
+  frame.tabIndex = 0;
+  frame.setAttribute("role", "region");
+  frame.setAttribute("aria-label", "Image; use arrow keys to pan when zoomed");
+  const canvas = node("div", "media-lightbox-canvas");
   const image = node("img", "media-lightbox-image");
+  canvas.append(image);
+  frame.append(canvas);
   const position = node("p", "media-lightbox-position");
   position.setAttribute("aria-live", "polite");
-  const controls = node("div", "media-lightbox-controls");
-  const previous = node("button", "media-lightbox-control", "Previous");
-  previous.type = "button";
-  previous.setAttribute("aria-label", "Previous image");
-  const close = node("button", "media-lightbox-control", "Close");
-  close.type = "button";
-  close.setAttribute("aria-label", "Close image preview");
-  const next = node("button", "media-lightbox-control", "Next");
-  next.type = "button";
-  next.setAttribute("aria-label", "Next image");
-  controls.append(previous, close, next);
-  frame.append(image);
-  dialog.append(frame, position, controls);
+  const previous = iconButton("left", "Previous image", "media-lightbox-control media-lightbox-previous");
+  const next = iconButton("right", "Next image", "media-lightbox-control media-lightbox-next");
+  dialog.append(heading, frame, previous, next, position);
   document.body.append(dialog);
 
   let items = [];
   let index = 0;
   let opener = null;
+  let zoomed = false;
+  let observer = null;
+  let stage = null;
+  const sizeImage = () => {
+    const source = items[index]?.image;
+    if (!source) return;
+    const ratio = source.naturalWidth / source.naturalHeight;
+    const fit = Math.min(source.naturalWidth, frame.clientWidth, frame.clientHeight * ratio);
+    const width = zoomed ? Math.max(source.naturalWidth, fit * 2) : fit;
+    image.style.width = `${width}px`;
+    image.style.height = `${width / ratio}px`;
+    canvas.style.width = zoomed ? `${width}px` : "100%";
+    canvas.style.height = zoomed ? `${width / ratio}px` : "100%";
+    zoom.setAttribute("aria-pressed", String(zoomed));
+    zoom.setAttribute("aria-label", zoomed ? "Fit image" : "Zoom image");
+    zoom.title = zoomed ? "Fit image" : "Zoom image";
+    zoom.replaceChildren(icon(zoomed ? "fit" : "zoom"));
+    frame.classList.toggle("is-zoomed", zoomed);
+  };
+  const place = () => {
+    const app = opener?.closest(".preview-app");
+    if (!app?.isConnected) { dialog.close(); return; }
+    const rect = app.getBoundingClientRect();
+    const host = stage.getBoundingClientRect();
+    const left = Math.max(0, rect.left, host.left);
+    const top = Math.max(0, rect.top, host.top);
+    const right = Math.min(innerWidth, rect.right, host.right);
+    const bottom = Math.min(innerHeight, rect.bottom, host.bottom);
+    if (right <= left || bottom <= top) { dialog.close(); return; }
+    Object.assign(dialog.style, { left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px` });
+    sizeImage();
+  };
   const draw = () => {
     const item = items[index];
     if (!item) return;
     image.src = item.image.src;
     image.alt = item.label;
+    identity.replaceChildren();
+    if (item.author) {
+      const avatar = renderIdentityAvatar(item.author, item.options, "media-lightbox-avatar");
+      const copy = node("div");
+      copy.append(node("strong", "", item.author.name || "Unknown author"));
+      const badge = item.author.kind === "application" ? "APP" : item.author.webhook ? "WEBHOOK" : item.author.bot ? "BOT" : null;
+      if (badge) copy.append(node("span", "message-app-badge", badge));
+      if (item.timestamp) {
+        const time = node("time", "", new Intl.DateTimeFormat(item.options.locale || "en-US", {
+          timeZone: item.options.timezone || "UTC", hour: "2-digit", minute: "2-digit",
+        }).format(new Date(item.timestamp)));
+        time.dateTime = item.timestamp;
+        copy.append(time);
+      }
+      identity.append(avatar.element, copy);
+    }
+    actions.replaceChildren(downloadButton(item.media, item.options, item.label));
+    const original = node("a", "media-lightbox-control");
+    original.setAttribute("aria-label", "Open original image");
+    original.title = "Open original image";
+    original.target = "_blank";
+    original.rel = "noopener noreferrer";
+    original.append(icon("external"));
+    // Only validated raster media enters this viewer; never open arbitrary file previews.
+    const selected = item;
+    Promise.resolve(item.options.loadAsset(item.media.asset_id, { download: true })).then((url) => {
+      if (dialog.open && items[index] === selected && typeof url === "string" && url.startsWith("blob:")) {
+        original.href = url;
+        actions.append(original);
+      }
+    }).catch((error) => {
+      if (dialog.open && items[index] === selected) diagnostic(item.options, "file-unavailable", item.label, error);
+    });
     const multiple = items.length > 1;
     previous.hidden = !multiple;
     next.hidden = !multiple;
     position.textContent = multiple ? `${index + 1} of ${items.length}` : "";
+    zoomed = false;
+    sizeImage();
+    frame.scrollTo(0, 0);
   };
   const move = (step) => {
     if (items.length < 2) return;
@@ -68,32 +140,57 @@ function getLightbox() {
     draw();
   };
   const restore = () => {
+    observer?.disconnect();
+    observer = null;
+    stage?.removeEventListener("scroll", place);
+    window.removeEventListener("resize", place);
     image.removeAttribute("src");
     image.alt = "";
+    identity.replaceChildren();
+    actions.replaceChildren();
     items = [];
     index = 0;
+    drag = null;
     const target = opener;
     opener = null;
+    stage = null;
     if (target?.isConnected) target.focus({ preventScroll: true });
   };
   previous.addEventListener("click", () => move(-1));
   next.addEventListener("click", () => move(1));
-  close.addEventListener("click", () => dialog.close());
-  dialog.addEventListener("cancel", (event) => {
-    event.preventDefault();
-    dialog.close();
+  zoom.addEventListener("click", () => {
+    zoomed = !zoomed;
+    sizeImage();
+    frame.scrollTo(Math.max(0, (canvas.offsetWidth - frame.clientWidth) / 2), Math.max(0, (canvas.offsetHeight - frame.clientHeight) / 2));
+    frame.focus({ preventScroll: true });
   });
+  close.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", restore);
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog || (!zoomed && (event.target === frame || event.target === canvas))) dialog.close();
   });
+  let drag = null;
+  frame.addEventListener("pointerdown", (event) => {
+    if (!zoomed || event.button !== 0) return;
+    drag = { x: event.clientX, y: event.clientY, left: frame.scrollLeft, top: frame.scrollTop };
+    frame.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  frame.addEventListener("pointermove", (event) => {
+    if (drag) frame.scrollTo(drag.left + drag.x - event.clientX, drag.top + drag.y - event.clientY);
+  });
+  frame.addEventListener("pointerup", () => { drag = null; });
+  frame.addEventListener("pointercancel", () => { drag = null; });
+  image.draggable = false;
   dialog.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft" && items.length > 1) {
+    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+    if (!direction) return;
+    if (zoomed && !event.altKey) {
       event.preventDefault();
-      move(-1);
-    } else if (event.key === "ArrowRight" && items.length > 1) {
+      frame.scrollBy(direction[0] * 80, direction[1] * 80);
+    } else if (items.length > 1 && direction[0]) {
       event.preventDefault();
-      move(1);
+      move(direction[0]);
     }
   });
   lightbox = {
@@ -106,9 +203,18 @@ function getLightbox() {
       index = items.indexOf(selected);
       if (index < 0) return;
       opener = trigger;
-      draw();
+      stage = trigger.closest(".preview-stage");
+      if (!stage) return;
       if (!dialog.open) dialog.showModal();
-      close.focus();
+      place();
+      if (!dialog.open) return;
+      draw();
+      observer = new ResizeObserver(place);
+      observer.observe(trigger.closest(".preview-app"));
+      observer.observe(stage);
+      stage.addEventListener("scroll", place, { passive: true });
+      window.addEventListener("resize", place);
+      close.focus({ preventScroll: true });
     },
     close() {
       if (dialog.open) dialog.close();
@@ -469,7 +575,7 @@ export function renderMedia(media, className, options, label, group = options.li
     image.height = height;
   }
   trigger.append(image);
-  const entry = { image, label: image.alt };
+  const entry = { image, label: image.alt, media: { ...media, asset_id: assetId }, author: options.messageAuthor, timestamp: options.messageTimestamp, options };
   const lightboxGroup = group || { items: [] };
   lightboxGroup.items.push(entry);
   trigger.addEventListener("click", () => {
@@ -583,9 +689,7 @@ export function fileTypeLabel(file) {
 }
 
 export function downloadButton(file, options, label = file?.filename || "attachment") {
-  const button = node("button", "file-download", "Download");
-  button.type = "button";
-  button.setAttribute("aria-label", `Download ${label}`);
+  const button = iconButton("download", `Download ${label}`, "file-download");
   const assetId = typeof file?.asset_id === "string" ? file.asset_id : null;
   if (!assetId || file.available === false || options.assets?.[assetId]?.available === false || !options.loadAsset) {
     button.disabled = true;

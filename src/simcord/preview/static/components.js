@@ -1,4 +1,4 @@
-import { node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { icon, iconButton, node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { appendEmojiValue, appendMarkdownOrText } from "./text.js";
 import { SELECT_TYPES, optionDefaults, optionEntries, renderSelect, selectedIds } from "./selects.js";
 import {
@@ -100,7 +100,7 @@ function renderButton(component, path, options) {
     if (href) {
       const link = node("a", `component-button button-style-${style} link-button`);
       const external = node("span", "external-link-icon");
-      external.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10 5V3H5.5A2.5 2.5 0 0 0 3 5.5v13A2.5 2.5 0 0 0 5.5 21h13a2.5 2.5 0 0 0 2.5-2.5V14h-2v4.5a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13a.5.5 0 0 1 .5-.5H10zm4-2v2h3.59l-6.3 6.29 1.42 1.42 6.29-6.3V10h2V3h-5z"/></svg>';
+      external.append(icon("external"));
       link.append(...button.childNodes, external);
       if (component.disabled === true) {
         link.classList.add("is-disabled");
@@ -560,7 +560,6 @@ function modalControl(component, path, labelText, options) {
           const next = [...(options.drafts.get(key) || [])];
           next.splice(index, 1);
           options.onFiles?.(key, next);
-          redraw();
         });
         row.append(remove);
         list.append(row);
@@ -568,7 +567,6 @@ function modalControl(component, path, labelText, options) {
     };
     const addFiles = (files) => {
       if (files.length) options.onFiles?.(key, [...(options.drafts.get(key) || []), ...files]);
-      redraw();
     };
     const dropzone = node("label", "upload-dropzone");
     const prompt = node("span", "upload-prompt", "Drop files here or ");
@@ -615,10 +613,7 @@ export function renderModal(root, modal, options = {}) {
   options.pendingMedia?.push(...identity.pending);
   const title = node("h2", "modal-title", modal.title || "Dialog");
   title.id = "modal-title";
-  const close = node("button", "modal-close");
-  close.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.4 4 12 10.4 5.6 4 4 5.6 10.4 12 4 18.4 5.6 20 12 13.6 18.4 20 20 18.4 13.6 12 20 5.6z"/></svg>';
-  close.type = "button";
-  close.setAttribute("aria-label", "Close modal");
+  const close = iconButton("close", "Close modal", "modal-close");
   close.addEventListener("click", () => options.onCancel?.());
   heading.append(identity.element, title, close);
   dialog.append(heading);

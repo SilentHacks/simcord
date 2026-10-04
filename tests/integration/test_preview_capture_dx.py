@@ -317,6 +317,51 @@ async def test_browser_suppressed_embed_keeps_message_and_its_attachment(env, ch
 
 
 @pytest.mark.asyncio
+async def test_image_viewer_zoom_scope_and_deleted_asset_cleanup(env, channel, alice):
+    pytest.importorskip("playwright")
+    pytest.importorskip("PIL")
+    from PIL import Image
+    from playwright.async_api import async_playwright
+
+    output = io.BytesIO()
+    Image.new("RGB", (1600, 1000), (20, 60, 90)).save(output, format="PNG")
+    message = await alice.send(channel, "viewer", attachments=[("large.png", output.getvalue())])
+    async with env.preview(channel, viewers=[alice]) as preview, async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 1000, "height": 700})
+            await page.goto(preview.url)
+            await page.wait_for_function("() => window.simcordPreview?.ready")
+            opener = page.get_by_role("button", name="Open large.png in image preview")
+            await opener.click()
+            viewer = page.get_by_role("dialog", name="Image preview")
+            assert await viewer.locator(".media-lightbox-identity strong").inner_text() == alice.name
+            assert await viewer.bounding_box() == await page.locator("#preview-app").bounding_box()
+            frame = viewer.get_by_role("region")
+            await viewer.get_by_role("button", name="Zoom image").click()
+            before = await frame.evaluate("element => element.scrollLeft")
+            await page.keyboard.press("ArrowRight")
+            assert await frame.evaluate("element => element.scrollLeft") > before
+            await page.keyboard.press("ArrowDown")
+            assert await frame.evaluate("element => element.scrollTop") > 0
+            await viewer.get_by_role("button", name="Fit image").click()
+            assert await frame.evaluate("element => element.scrollWidth === element.clientWidth")
+            await page.keyboard.press("Escape")
+            assert await opener.evaluate("element => element === document.activeElement")
+            await opener.click()
+            await page.wait_for_function(
+                "() => document.querySelector('.media-lightbox-actions a')?.href.startsWith('blob:')"
+            )
+            await alice.delete(message)
+            await preview.refresh()
+            await page.wait_for_function("() => !document.querySelector('.media-lightbox').open")
+            assert await page.locator(".media-lightbox-image").get_attribute("src") is None
+            assert await page.locator(".media-lightbox a[href]").count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(env, channel, alice):
     pytest.importorskip("playwright")
     pytest.importorskip("PIL")
@@ -376,12 +421,9 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
 
                 unsafe = page.locator(".attachment:not(.attachment-inline)").filter(has_text="unsafe.html")
                 assert await unsafe.count() == 1
-                assert await unsafe.locator("script, iframe, object, embed, svg").count() == 0
-                preview_button = unsafe.get_by_role("button", name="Preview")
-                assert await preview_button.is_enabled()
-                assert await unsafe.locator(".attachment-size").inner_text() == "1 KB"
-                await preview_button.click()
-                assert await preview_button.get_attribute("aria-expanded") == "true"
+                assert await unsafe.locator("script, iframe, object, embed").count() == 0
+                assert await unsafe.locator(".attachment-preview").is_visible()
+                assert await page.evaluate("() => window.previewInjected") is None
                 assert (
                     await unsafe.locator(".attachment-preview").text_content()
                     == "<script>window.previewInjected = true</script>"
@@ -399,8 +441,6 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
                     await secret_file.get_by_role("button", name="Download SPOILER_secret.txt").count() == 0
                 )
                 await secret_file.locator(".spoiler-cover").click()
-                preview_button = secret_file.get_by_role("button", name="Preview")
-                await preview_button.click()
                 assert await secret_file.locator(".attachment-preview").text_content() == "safe spoiler text"
                 assert await secret_file.get_by_role(
                     "button", name="Download SPOILER_secret.txt"
@@ -410,7 +450,7 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
                 await opener.click()
                 lightbox = page.locator("dialog.media-lightbox")
                 await page.wait_for_function("() => document.querySelector('.media-lightbox')?.open")
-                view = lightbox.locator("img")
+                view = lightbox.locator(".media-lightbox-image")
                 assert await view.evaluate("(image) => [image.naturalWidth, image.naturalHeight]") == [4, 2]
                 await page.keyboard.press("ArrowRight")
                 assert await view.evaluate("(image) => [image.naturalWidth, image.naturalHeight]") == [2, 4]
@@ -427,7 +467,7 @@ async def test_browser_attachment_dimensions_spoilers_files_and_local_lightbox(e
                 assert await spoiler.locator(".spoiler-cover").count() == 0
                 await spoiler.locator(".media-lightbox-trigger").click()
                 await page.wait_for_function("() => document.querySelector('.media-lightbox')?.open")
-                assert await lightbox.locator("img").evaluate(
+                assert await lightbox.locator(".media-lightbox-image").evaluate(
                     "(image) => [image.naturalWidth, image.naturalHeight]"
                 ) == [3, 5]
                 await page.keyboard.press("Escape")

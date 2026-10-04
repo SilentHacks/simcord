@@ -335,6 +335,42 @@ async def test_channel_select_draft_cancel_and_apply_dispatch_real_callback(env,
 
 
 @pytest.mark.asyncio
+async def test_composer_enter_preserves_multiline_and_ime_input(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    await env.bot.get_channel(channel.id).send("Start")
+    async with (
+        env.preview(channel, viewers=[alice], layout="channel") as preview,
+        async_playwright() as playwright,
+    ):
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.goto(preview.url)
+            await page.wait_for_function("() => window.simcordPreview?.ready")
+            composer = page.get_by_role("textbox", name="Message")
+            await composer.fill("first")
+            await composer.press("Shift+Enter")
+            await page.keyboard.type("second")
+            expected = "first\nsecond"
+            assert await composer.input_value() == expected
+            before = channel.last_message.id
+            await composer.dispatch_event("keydown", {"key": "Enter", "isComposing": True, "keyCode": 229})
+            assert channel.last_message.id == before
+            assert await composer.input_value() == expected
+            await composer.press("Enter")
+            await page.wait_for_function(
+                "() => window.simcordPreview?.lastAction?.dispatch === 'dispatched' && !window.simcordPreview.pendingAction"
+            )
+            assert channel.last_message.content == expected
+            assert channel.last_message.author.id == alice.id
+            assert await composer.input_value() == ""
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_channel_composer_sends_replies_and_preserves_live_dom_state(env, channel, alice):
     from playwright.async_api import async_playwright
 

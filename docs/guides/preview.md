@@ -174,11 +174,16 @@ The SimCord workbench stays outside the emulated Discord viewport and managed sc
   and links to authorized outputs, with protocol receipts available under **Technical details**.
   Diagnostics show recovery instructions and an actionable warning/error count on the Inspector button.
   A callback response or follow-up also exposes **View response** in the app bar, without opening
-  the Inspector. Message rows include their local message ID so duplicate summaries remain distinct.
+  the Inspector. Message rows keep author/time and local IDs in their accessible labels;
+  hover for technical metadata or use **Jump to message ID** to distinguish duplicate summaries.
 - **Capture** opens viewport settings: **Fit window**, **Fixed size**, presets, custom dimensions,
   and **Isolate message** or **Conversation** layout. These settings belong to this browser page.
   The managed Python recipe does not inherit live browser drafts or open menus; use a browser
   screenshot tool to capture those transient states.
+
+The restrained toolbar and developer panels use independent workbench styles; the channel,
+components, composer, and media viewer retain their own Discord-like presentation. No decorative
+server/member navigation or unsupported picker controls are added.
 
 Tab/Shift+Tab navigates the workbench, arrow keys/Home/End switch inspector tabs, and Escape closes
 an open inspector. Narrow-screen drawers isolate the background while open. Modal dialogs isolate
@@ -223,6 +228,7 @@ The modal dialog stays within its preview viewport and scrolls its body; changin
 expands it. The modal family's exact geometry and validation/select transition traces remain
 uncertified because the available reference window has no comparable crop measurements and no
 authorized interaction trace. See the [parity matrix](../parity-matrix.md).
+File selections remain visible and removable when a chooser completes after the modal redraws.
 
 In channel layout, history paging and message sends are admitted against the current publication.
 The composer is available only when the selected viewer has send permission; replies are one level
@@ -231,6 +237,9 @@ response is reconciled from its settled receipt without replaying the send or di
 typing, even if polling already displayed the sent message. Rejected or confirmed failed sends
 retain the draft for correction. The bot receives the ordinary actor message event, and replies it
 creates appear after a new publication.
+The composer grows with its draft up to a bounded scrolling height. Enter sends (or saves an edit);
+Shift+Enter inserts a newline. Enter during IME composition never sends. Its icon button provides
+the same action with an accessible Send/Save label.
 
 ## Text, code and emoji
 
@@ -321,15 +330,20 @@ unavailable inline rather than silently faked. Interactive audio/video uses nati
 managed screenshots pause at a deterministic `media_time`.
 
 Each inline attachment also exposes its retained original-byte download, including when inline
-validation fails. Spoiler attachments conceal both content and controls until reveal; the lightbox
-does not navigate into unrevealed item or container spoilers.
+validation fails. Image download icons appear on hover or keyboard focus, and remain visible on
+touch devices. Spoiler attachments conceal content and controls until reveal; the viewer never
+navigates into unrevealed item or container spoilers.
 
 Lottie stickers use the pinned, MIT-licensed, expression-free light Canvas runtime shipped locally.
 Expressions, fonts/glyphs, and external or data-URL assets are rejected. SVG and HTML files remain
-download-only; text previews use text nodes, and file cards expose an explicit original-byte download.
-The accessible image lightbox uses only already-loaded local blob URLs; Escape closes it, arrow keys
-navigate its loaded image group, and close restores focus to the opener. It makes no remote media
-request. File size labels round up to KB or MB.
+download-only; authorized bounded text previews use text nodes and start expanded above the
+filename/size footer. The code icon toggles that preview; the download icon serves original bytes.
+The image viewer uses already-loaded local blob images and darkens only the emulated viewport.
+It shows the authorized author/time and offers Zoom/Fit, original-byte Download, and Open original.
+Arrow keys navigate the loaded image group while fitted; when zoomed they pan (Alt+Left/Right
+navigates images). Drag, touch, and scrolling also pan. Escape or the close icon returns focus to
+the opener without moving history. The native modal makes the still-visible workbench inert.
+No remote media is fetched. File size labels round up to KB or MB.
 
 Attachment images keep their validated intrinsic ratio and are bounded to the message column and
 viewport. They currently remain a responsive vertical list rather than a guessed mosaic: the local

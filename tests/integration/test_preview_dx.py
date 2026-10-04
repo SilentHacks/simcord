@@ -818,9 +818,19 @@ async def test_preview_modal_optional_multivalues_clear_to_empty_but_required_st
                 await checkbox.click()
                 await checks.locator('input[type="checkbox"]').first.click()
                 upload = page.locator(".modal-field[data-custom-id='upload']")
-                await upload.locator('input[type="file"]').set_input_files(
-                    {"name": "clear.txt", "mimeType": "text/plain", "buffer": b"content"}
+                # A file chooser can complete after an asynchronous modal redraw.
+                pending_input = await upload.locator('input[type="file"]').evaluate_handle("input => input")
+                await required.locator(".select-trigger").click()
+                await required.locator(".select-cancel").click()
+                await pending_input.evaluate(
+                    """input => {
+                        const files = new DataTransfer();
+                        files.items.add(new File(['content'], 'clear.txt', {type: 'text/plain'}));
+                        input.files = files.files;
+                        input.dispatchEvent(new Event('change', {bubbles: true}));
+                    }"""
                 )
+                await pending_input.dispose()
                 await upload.get_by_role("button", name="Remove clear.txt").click()
 
                 await page.get_by_role("button", name="Submit").click()

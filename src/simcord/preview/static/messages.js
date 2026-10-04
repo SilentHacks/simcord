@@ -1,4 +1,4 @@
-import { applyRoleColor, node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { applyRoleColor, iconButton, node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { isEmojiOnly, appendEmojiValue, appendMarkdownOrText } from "./text.js";
 import { renderEmbed, renderNode } from "./components.js";
 import {
@@ -156,22 +156,23 @@ function appendFileAttachment(item, attachment, options) {
   const size = formatFileSize(attachment.size);
   if (size) info.append(node("small", "attachment-size", size));
   if (attachment.description) info.append(node("small", "file-description", attachment.description));
-  footer.append(badge, info);
+  footer.append(info);
 
   const actions = node("span", "attachment-actions");
   if (typeof attachment.preview === "string" && attachment.preview.length) {
     const preview = node("pre", "attachment-preview", attachment.preview);
-    preview.hidden = true;
-    const toggle = node("button", "attachment-action attachment-preview-toggle", "Preview");
-    toggle.type = "button";
-    toggle.setAttribute("aria-expanded", "false");
+    preview.tabIndex = 0;
+    preview.setAttribute("aria-label", `Contents of ${filename}`);
+    const toggle = iconButton("code", `Toggle preview of ${filename}`, "attachment-action attachment-preview-toggle");
+    toggle.setAttribute("aria-expanded", "true");
     toggle.addEventListener("click", () => {
       preview.hidden = !preview.hidden;
       toggle.setAttribute("aria-expanded", String(!preview.hidden));
-      toggle.textContent = preview.hidden ? "Preview" : "Hide preview";
     });
     content.append(preview);
     actions.append(toggle);
+  } else {
+    footer.prepend(badge);
   }
   const available = Boolean(attachment.asset_id) && attachment.available !== false
     && options.assets?.[attachment.asset_id]?.available !== false && options.loadAsset;
@@ -225,6 +226,8 @@ export function renderMessage(root, message, options = {}) {
   const previousPlayerReuse = options.mediaPlayerReuse;
   options.mediaPlayerReuse = reusePlayers;
   options.messageId = String(message.id);
+  options.messageAuthor = message.author;
+  options.messageTimestamp = message.timestamp;
   options.lightboxGroup ||= { items: [] };
   const shortTime = (value) => new Intl.DateTimeFormat(options.locale || "en-US", {
     timeZone: options.timezone || "UTC",
@@ -306,11 +309,13 @@ export function renderMessage(root, message, options = {}) {
       if (inline) {
         const filename = attachment.filename || "Attachment";
         const result = renderMedia(attachment, "attachment-image", options, filename, imageGroup);
-        const content = attachment.spoiler ? node("div") : item;
+        const content = node("div", "attachment-media");
         content.append(result.element);
+        const actions = node("div", "attachment-media-actions");
         const download = downloadButton(attachment, options, filename);
         download.classList.add("attachment-action");
-        content.append(download);
+        actions.append(download);
+        content.append(actions);
         if (attachment.spoiler) {
           const rendered = renderSpoiler(
             content,
@@ -321,6 +326,8 @@ export function renderMessage(root, message, options = {}) {
           );
           rendered.classList.add("spoiler-media");
           item.append(rendered);
+        } else {
+          item.append(content);
         }
         pendingMedia.push(...result.pending);
       } else {
@@ -414,8 +421,7 @@ export function renderMessage(root, message, options = {}) {
     toolbar.setAttribute("aria-label", `Actions for ${message.author?.name || "message"}`);
     const addAction = (key, label, callback) => {
       if (typeof callback !== "function") return;
-      const button = node("button", "message-action-button", label);
-      button.type = "button";
+      const button = iconButton(key, label, "message-action-button");
       button.dataset.controlKey = `message:${message.id}:action:${key}`;
       button.addEventListener("click", () => callback(message));
       toolbar.append(button);

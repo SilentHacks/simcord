@@ -1126,6 +1126,18 @@ def dogfood_payloads(
             ),
             "view": DogfoodModalGallery(),
         },
+        {
+            "content": (
+                "DOG-UI-01 Conversation and media walkthrough\n"
+                "REF-11: text-file content starts visible; toggle its code icon, then restore it. "
+                "Open the image: check author/time, Zoom, arrow-key or drag panning, Fit, "
+                "original-byte Download, Open original, and Escape focus return. "
+                "Unrevealed spoilers must not appear in image navigation.\n"
+                "Composer: Shift+Enter inserts a newline; Enter sends. IME Enter must finish "
+                "composition without sending. Open/close developer tools while drafting; "
+                "the draft and history position must survive. These are local checks, not parity certification."
+            ),
+        },
     ]
     payloads.extend(
         {

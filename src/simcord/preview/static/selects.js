@@ -381,6 +381,7 @@ export function renderSelect(component, path, options) {
     const actions = node("div", "select-draft-actions preview-helper");
     actions.setAttribute("role", "group");
     actions.setAttribute("aria-label", "SimCord selection draft actions");
+    actions.setAttribute("data-workbench", "");
     actions.append(node("span", "", "SimCord selection draft"));
     const apply = node("button", "select-apply", "Apply");
     apply.type = "button";
