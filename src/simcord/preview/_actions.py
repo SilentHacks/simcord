@@ -499,10 +499,7 @@ class _ActionOps:
 
             return run_browse_messages
         if kind == "browse_candidates":
-            from ._snapshot import (
-                candidate_control,
-                validate_candidate_query,
-            )
+            from ._snapshot import validate_candidate_query
 
             if page.status != "current" or not can_access_channel(
                 self.env, page.channel_id, page.viewer, history=True
@@ -510,10 +507,14 @@ class _ActionOps:
                 raise SetupError("viewer cannot access current channel history")
             control_key = body.get("control_key")
             query, cursor_value, modal_handle = validate_candidate_query(
-                page, control_key, body.get("modal_handle"), body.get("query"), body.get("cursor")
+                cast("Preview", self),
+                page,
+                control_key,
+                body.get("modal_handle"),
+                body.get("query"),
+                body.get("cursor"),
             )
             control_key = cast(str, control_key)
-            candidate_control(cast("Preview", self), page, control_key, modal_handle)
             selected_values = body.get("selected_values")
             if selected_values is not None and (
                 not isinstance(selected_values, list)

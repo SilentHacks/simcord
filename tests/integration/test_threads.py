@@ -13,6 +13,39 @@ async def _make_thread(env, name="discussion"):
     return thread
 
 
+@pytest.mark.parametrize("source", ["channel", "message", "forum"])
+async def test_new_thread_dispatches_creation_and_updates_forum_parent(env, source):
+    created, joined = [], []
+
+    async def on_create(thread):
+        created.append(thread.id)
+
+    async def on_join(thread):
+        joined.append(thread.id)
+
+    env.bot.add_listener(on_create, "on_thread_create")
+    env.bot.add_listener(on_join, "on_thread_join")
+    parent = (
+        env.guild.create_forum_channel("posts")
+        if source == "forum"
+        else env.guild.create_text_channel("threads")
+    )
+    await env.settle()
+    cached = env.bot.get_channel(parent.id)
+    if source == "forum":
+        thread = (await cached.create_thread(name="new post", content="first post")).thread
+    elif source == "message":
+        message = await cached.send("start discussion")
+        thread = await message.create_thread(name="discussion")
+    else:
+        thread = await cached.create_thread(name="discussion", type=discord.ChannelType.public_thread)
+    await env.settle()
+    assert created == [thread.id]
+    assert joined == []
+    if source == "forum":
+        assert cached.last_message_id == thread.id
+
+
 async def test_create_thread_adds_owner_as_member(env):
     thread = await _make_thread(env)
     members = await thread.fetch_members()

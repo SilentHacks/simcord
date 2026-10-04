@@ -1231,6 +1231,7 @@ def _candidate_scope(control_key: str, modal_handle: str | None) -> str:
 
 
 def validate_candidate_query(
+    preview: Preview,
     page: _Page,
     control_key: Any,
     modal_handle: Any,
@@ -1247,7 +1248,7 @@ def validate_candidate_query(
         raise _QueryError("control-unavailable")
     normalized = _normalize_query(query)
     handle = modal_handle
-    _read_cursor(
+    cursor_state = _read_cursor(
         page,
         cursor,
         _candidate_scope(control_key, handle),
@@ -1255,6 +1256,16 @@ def validate_candidate_query(
         "candidate-label-id",
         1,
     )
+    component, handle = candidate_control(preview, page, control_key, handle)
+    if cursor_state is not None:
+        entity_id = cursor_state["position"][0]
+        kind = _ENTITY_TYPES[int(component["type"])]
+        if not any(
+            item["id"] == entity_id
+            and (not normalized or normalized in _normal_text(item["label"]) or normalized in item["id"])
+            for item in _candidate_source(preview, page, component, kind)
+        ):
+            raise _QueryError("stale-cursor")
     return normalized, cursor, handle
 
 
@@ -1723,7 +1734,12 @@ def _candidate_descriptor(
     }
 
 
-def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _candidates(
+    preview: Preview,
+    page: _Page,
+    components: list[dict[str, Any]],
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for component in walk_components(components):
         try:
@@ -1738,9 +1754,26 @@ def _candidates(preview: Preview, page: _Page, components: list[dict[str, Any]])
             if page.modal_handle is not None and control_key.startswith(f"modal:{page.modal_handle}:")
             else None
         )
-        result[control_key] = _candidate_descriptor(
-            preview, page, component, control_key, modal_handle=modal_handle
-        )
+        try:
+            result[control_key] = _candidate_descriptor(
+                preview, page, component, control_key, modal_handle=modal_handle
+            )
+        except _QueryError as exc:
+            if exc.code != "stale-cursor":
+                raise
+            page.candidate_queries[control_key]["cursor"] = None
+            result[control_key] = _candidate_descriptor(
+                preview, page, component, control_key, modal_handle=modal_handle
+            )
+            diagnostics.append(
+                make_diagnostic(
+                    "stale-cursor",
+                    state="recovered",
+                    subject={"messageId": control_key.split(":", 2)[1], "controlKey": control_key}
+                    if modal_handle is None
+                    else None,
+                )
+            )
         component.pop("default_values", None)
     page.candidate_queries = {key: value for key, value in page.candidate_queries.items() if key in result}
     return result
@@ -1957,6 +1990,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             diagnostics.append(
                 make_diagnostic("sticker-asset-unavailable", subject={"messageId": message_id})
             )
+    candidates = _candidates(preview, page, candidate_components, diagnostics) if allowed else {}
     diagnostics = list({item["id"]: item for item in diagnostics}.values())
     can_send = channel is not None and allowed and _can_send_message(preview, page, channel)
     exact_profile = {"width": page.width, "height": page.height}
@@ -2019,7 +2053,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "history": history,
         "modal": modal,
         "entities": entities,
-        "candidates": _candidates(preview, page, candidate_components) if allowed else {},
+        "candidates": candidates,
         "profile": {
             "theme": "dark",
             "scope": "desktop-dark",

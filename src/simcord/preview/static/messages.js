@@ -383,6 +383,7 @@ export function renderMessage(root, message, options = {}) {
         appendEmojiValue(choice, answer.emoji, options, "Poll emoji");
         choice.append(document.createTextNode(" "));
       }
+      choice.append(document.createTextNode(String(answer.text ?? "")));
       if (canVote) {
         choice.type = "button";
         choice.dataset.controlKey = `message:${message.id}:poll:${answerId}`;

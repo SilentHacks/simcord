@@ -1865,6 +1865,8 @@ function renderSnapshot(snapshot, generation, force = false) {
       validationError: state.modalError,
       scrollTop,
       locale: state.profile.locale,
+      timezone: state.profile.timezone,
+      mediaTime: state.profile.mediaTime,
       presentationTime: state.profile.presentationTime,
       pendingMedia,
       isCurrent: () => generation === state.renderGeneration,

@@ -230,7 +230,8 @@ class ChannelMixin(BackendBase):
         self.channels[thread.id] = thread
         self.messages.setdefault(thread.id, {})
         guild.thread_ids.append(thread.id)
-        payload = serializers.channel_payload(self, thread)
+        payload = cast("dict[str, Any]", serializers.channel_payload(self, thread))
+        payload["newly_created"] = True
         self.emit("THREAD_CREATE", payload)
         cast("Backend", self).create_system_message(
             parent_id,

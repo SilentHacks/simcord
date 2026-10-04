@@ -12,3 +12,7 @@ manifest instead of a second inventory.
 
 Keep browser readiness false while actions or page intents are pending, including resize
 reconfiguration, so consumers do not interact with a render about to be replaced.
+
+Restore newly-created thread event routing and forum parent updates. Render poll answer text as
+accessible voting choices. Reject lost candidate cursor anchors before admission and recover retained
+queries on publication. Apply the selected timezone and deterministic emoji capture time to modal text.

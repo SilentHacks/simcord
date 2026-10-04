@@ -290,3 +290,27 @@ async def test_user_handle_message_actions_work_in_direct_messages(env, alice):
         voted = await _action(preview, page, "set_poll_votes", 1, prompt.id, answer_ids=["1"])
         assert voted["settlement"] == "settled"
         assert voted["acknowledgement"] == "not_applicable"
+
+
+@pytest.mark.asyncio
+async def test_poll_choices_have_accessible_text_and_submit_the_named_answer(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    message = env.backend.create_message(channel.id, env.backend.bot_user.id, "Choose lunch", poll=_poll(env))
+    await env.settle()
+    async with env.preview(channel, viewers=[alice]) as preview:
+        async with async_playwright() as api:
+            browser = await api.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                poll = page.locator(".message-poll")
+                assert await poll.get_by_role("button", name="Pizza", exact=True).count() == 1
+                await poll.get_by_role("button", name="Sushi", exact=True).click()
+                await poll.get_by_role("button", name="Vote", exact=True).click()
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                assert env.backend.get_message(channel.id, message.id).poll.votes == {2: {alice.id}}
+            finally:
+                await browser.close()

@@ -1502,3 +1502,59 @@ async def test_browser_search_recovers_access_and_queues_close(env, channel, ali
                 assert await page.locator("#focused-content").inner_text() == ""
             finally:
                 await browser.close()
+
+
+@pytest.mark.parametrize("surface", ["timezone", "animated"])
+@pytest.mark.asyncio
+async def test_modal_text_uses_profile_timezone_and_frozen_emoji(env, channel, alice, surface):
+    pytest.importorskip("playwright")
+    from PIL import Image
+    from playwright.async_api import async_playwright
+
+    emoji = env.guild.create_emoji("modal_dancer", animated=True)
+    gif = io.BytesIO()
+    Image.new("RGB", (1, 1), "red").save(
+        gif,
+        format="GIF",
+        save_all=True,
+        append_images=[Image.new("RGB", (1, 1), "blue")],
+        duration=60_000,
+        loop=0,
+    )
+    view = discord.ui.View(timeout=None)
+    button = discord.ui.Button(label="Open media modal", custom_id="media-modal")
+
+    async def open_modal(interaction):
+        modal = discord.ui.Modal(title="Profile-aware modal")
+        modal.add_item(discord.ui.TextDisplay(f"<t:1767225600:T> <a:modal_dancer:{emoji.id}>"))
+        await interaction.response.send_modal(modal)
+
+    button.callback = open_modal
+    view.add_item(button)
+    message = await env.bot.get_channel(channel.id).send(view=view)
+    async with env.preview(
+        channel,
+        viewers=[alice],
+        timezone="Pacific/Honolulu",
+        assets={f"{CDN_BASE}/emojis/{emoji.id}.gif": ("modal.gif", gif.getvalue())},
+    ) as preview:
+        await preview.show(message)
+        if surface == "timezone":
+            async with async_playwright() as api:
+                browser = await api.chromium.launch()
+                try:
+                    page = await browser.new_page()
+                    await page.goto(preview.url)
+                    await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                    await page.get_by_role("button", name="Open media modal", exact=True).click()
+                    dialog = page.get_by_role("dialog", name="Profile-aware modal", exact=True)
+                    await dialog.wait_for(state="visible")
+                    assert await dialog.get_by_text("2:00:00 PM", exact=True).count() == 1
+                finally:
+                    await browser.close()
+        else:
+            opened = await alice.click(message)
+            capture = await preview.screenshot(target=opened, media_time=60.1)
+            assert capture.complete and capture.png is not None
+            with Image.open(io.BytesIO(capture.png)).convert("RGB") as image:
+                assert any(color == (0, 0, 255) for _, color in image.getcolors(image.width * image.height))

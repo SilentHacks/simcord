@@ -481,6 +481,10 @@ normalization, and return no more than 50 rows. Numeric snowflakes perform exact
 deleted IDs produce the same empty page and unavailable navigation shape. Cursors are opaque and bound
 to the page generation, query, scope and stable ordering.
 
+Entity cursors also require a live, query-matching anchor. A stale incoming anchor is rejected
+before sequence admission. If an anchor disappears or stops matching during a later publication,
+its retained query restarts at the first page and reports a recovered `stale-cursor` diagnostic.
+
 `candidates` is keyed by scoped `control_key`; each descriptor separates independently authorized
 `selected` identities from at most 50 `entries`, and reports type, filter, state, query and cursors.
 `browse_candidates` queries one currently authorized control (and `modal_handle` for modal controls).

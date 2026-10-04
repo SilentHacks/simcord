@@ -302,6 +302,76 @@ async def test_unicode_candidate_cursor_uses_compact_position(env, channel, alic
         }
 
 
+@pytest.mark.parametrize("kind", ["users", "roles", "channels"])
+@pytest.mark.parametrize("change", ["remove", "rename"])
+@pytest.mark.asyncio
+async def test_candidate_cursor_recovers_lost_live_anchor(env, channel, alice, kind, change):
+    if kind == "users":
+        for index in range(55):
+            env.guild.add_member(env.create_user(f"cursor-{index:02}"))
+        select = discord.ui.UserSelect(custom_id="cursor")
+    elif kind == "roles":
+        for index in range(55):
+            env.guild.create_role(f"cursor-{index:02}")
+        select = discord.ui.RoleSelect(custom_id="cursor")
+    else:
+        for index in range(55):
+            env.guild.create_text_channel(f"cursor-{index:02}")
+        select = discord.ui.ChannelSelect(custom_id="cursor")
+    await env.settle()
+    view = discord.ui.View(timeout=None)
+    view.add_item(select)
+    message = await env.bot.get_channel(channel.id).send(view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        page = preview._python
+        key = control_key(preview._page_payload(page), "cursor")
+
+        async def browse(sequence, cursor=None):
+            return await preview._action(
+                page.id,
+                action_body(
+                    page,
+                    "browse_candidates",
+                    sequence,
+                    control_key=key,
+                    modal_handle=None,
+                    query="cursor-",
+                    cursor=cursor,
+                ),
+            )
+
+        first = (await browse(1))["result"]["candidate"]
+        cursor = first["nextCursor"]
+        anchor_id = int(first["entries"][-1]["id"])
+        await browse(2, cursor)
+        cached_guild = env.bot.get_guild(env.guild.id)
+        if kind == "users":
+            anchor = cached_guild.get_member(anchor_id)
+            if change == "remove":
+                await anchor.kick()
+            else:
+                await anchor.edit(nick="outside the query")
+        else:
+            anchor = cached_guild.get_role(anchor_id) if kind == "roles" else env.bot.get_channel(anchor_id)
+            if change == "remove":
+                await anchor.delete()
+            else:
+                await anchor.edit(name="outside the query")
+        await preview.refresh()
+        refreshed = preview._page_payload(page)
+        candidate = refreshed["candidates"][key]
+        assert candidate["hasPrevious"] is False
+        assert str(anchor_id) not in {row["id"] for row in candidate["entries"]}
+        assert any(
+            item["code"] == "stale-cursor" and item["state"] == "recovered"
+            for item in refreshed["diagnostics"]
+        )
+        rejected = await browse(3, cursor)
+        assert rejected["rejected"] and rejected["diagnostics"][0]["code"] == "stale-cursor"
+        assert page.last_sequence == 2
+
+
 @pytest.mark.asyncio
 async def test_navigation_is_bounded_query_scoped_and_preserved_on_resize(env, channel, alice):
     cached = env.bot.get_channel(channel.id)
