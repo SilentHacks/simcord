@@ -640,12 +640,7 @@ def gallery_payload(
     viewer_mention: str = "@simcord-viewer",
     sku_id: int | None = None,
 ) -> dict[str, object]:
-    """Build one of the labelled gallery messages for local capture worlds.
-
-    The payloads intentionally mirror ``scripts.discord_reference_bot``.  The
-    capture runner uses this small factory rather than importing the bot
-    process, so a world can be created and torn down in one command.
-    """
+    """Build one labelled message for both the official bot and local capture worlds."""
     if reference_id == "REF-00-INDEX":
         return {
             "content": (

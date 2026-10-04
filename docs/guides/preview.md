@@ -604,6 +604,11 @@ still supports its offline check:
 python scripts/discord_reference_bot.py --check
 ```
 
+For a fresh human-operated Discord capture batch, use the
+[local calibration kit](discord-visual-calibration.md) and its
+[local-agent handoff](discord-calibration-handoff.md). It exports exact bot fixture assets,
+records observed provenance, and keeps Discord actions manual.
+
 `tests/fixtures/preview/coverage.json` is the single evidence ledger. Its rows retain fixture
 recipes, canonical payload hashes, aliases, crop/profile metadata, expected outcomes, and separate
 reference/implementation/comparison statuses. Profiles, state-transition recipes, and measured

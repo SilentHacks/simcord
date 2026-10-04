@@ -66,6 +66,8 @@ nav:
       - Fixtures & configuration: guides/fixtures.md
       - Errors & diagnostics: guides/diagnostics.md
       - Component preview & screenshots: guides/preview.md
+      - Local Discord visual calibration: guides/discord-visual-calibration.md
+      - Local calibration agent handoff: guides/discord-calibration-handoff.md
   - Recipes: cookbook.md
   - Reference:
       - API reference: api.md
