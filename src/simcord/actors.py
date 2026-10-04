@@ -87,6 +87,7 @@ class MemberActor:
             reference=reference,
             attachments=attachment_payloads,
         )
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.send")
         return to_discord_message(self._env, message)
 
@@ -95,6 +96,7 @@ class MemberActor:
         if stored.author_id != self.id:
             raise SetupError("Users can only edit their own messages")
         self._env.backend.edit_message(stored.channel_id, stored.id, {"content": content})
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.edit")
 
     async def delete(self, message: MessageLike) -> None:
@@ -104,6 +106,7 @@ class MemberActor:
                 self.guild.id, self.id, stored.channel_id, "manage_messages"
             )
         self._env.backend.delete_message(stored.channel_id, stored.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.delete")
 
     async def set_pinned(self, message: MessageLike, pinned: bool) -> None:
@@ -112,6 +115,7 @@ class MemberActor:
             raise SetupError("pinned must be a boolean")
         self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "manage_messages")
         self._env.backend.set_pinned(stored.channel_id, stored.id, pinned, actor_id=self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.set_pinned")
 
     async def typing(self, channel: ChannelHandle) -> None:
@@ -132,11 +136,13 @@ class MemberActor:
         stored = self._message(message)
         self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, True)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.react")
 
     async def unreact(self, message: MessageLike, emoji: str) -> None:
         stored = self._message(message)
         self._env.backend.remove_reaction(stored.channel_id, stored.id, emoji, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.unreact")
 
     async def set_reaction(self, message: MessageLike, emoji: str, *, reacted: bool) -> None:
@@ -144,6 +150,7 @@ class MemberActor:
         if reacted:
             self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.set_reaction")
 
     async def send_dm(self, content: str = "", **kwargs: Any) -> discord.Message:
@@ -312,18 +319,21 @@ class MemberActor:
     async def set_poll_votes(self, message: MessageLike, *, answers: Sequence[int]) -> None:
         stored = self._message(message)
         self._env.backend.set_poll_votes(stored.channel_id, stored.id, answers, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.set_poll_votes")
 
     async def vote(self, message: MessageLike, *, answer: int) -> None:
         """Cast (or move) this user's vote to ``answer`` (a 1-based answer id)."""
         stored = self._message(message)
         self._env.backend.add_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.vote")
 
     async def remove_vote(self, message: MessageLike, *, answer: int) -> None:
         """Retract this user's vote for ``answer``."""
         stored = self._message(message)
         self._env.backend.remove_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.remove_vote")
 
     # ------------------------------------------------------------------ voice

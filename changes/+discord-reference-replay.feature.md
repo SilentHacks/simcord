@@ -5,3 +5,8 @@ Correct shared embed thumbnail/field layout and image aspect, two-item gallery g
 Shorten the reference text-modal feedback label to meet Discord's 45-character limit. Verify the real offline bot-to-modal dispatch and document the narrow live bot-log/recapture follow-up; offline success does not establish the live timeout cause.
 
 Keep non-image spoiler media concealed until reveal, and clear entity listbox loading state after unchanged queries in channel, message and modal layouts. Mark callback buttons unavailable while an action or its publication is pending, retaining their keyboard focus and declared disabled state.
+
+Validate fresh exporter packs with dynamic inventories and an optional externally supplied archive
+fingerprint, without inheriting historical visual judgments. Replay documented select and V2 states
+with explicit crop recipes, retain honest evidence gaps as dogfood status evolves, and correct the
+optional single-select modal label so the real launcher acknowledges and opens it.

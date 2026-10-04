@@ -35,7 +35,7 @@ _PREVIEW_RUNTIME_MODULES = ("aiohttp", "markdown_it", "linkify_it", "regex", "PI
 
 
 @cache
-def _require_preview_runtime() -> None:
+def _require_preview_runtime() -> tuple[Mapping[str, Any], ...]:
     missing = [module for module in _PREVIEW_RUNTIME_MODULES if importlib.util.find_spec(module) is None]
     if missing:
         names = ", ".join(missing)
@@ -50,6 +50,19 @@ def _require_preview_runtime() -> None:
             path = _PREVIEW_FONT_MANIFEST.parent / filename
             if hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
                 raise ValueError(filename)
+        return tuple(
+            MappingProxyType(
+                {
+                    "family": item["family"],
+                    "style": item["style"],
+                    "weight": item["weights"],
+                    "filename": item["filename"],
+                    "sha256": item["sha256"],
+                    "scripts": tuple(item["scripts"]),
+                }
+            )
+            for item in fonts
+        )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise SetupError(
             "Preview typography assets are missing or corrupt; reinstall with `pip install simcord[preview]`."

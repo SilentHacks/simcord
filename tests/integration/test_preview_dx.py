@@ -229,6 +229,80 @@ async def test_preview_localhost_origin_allowed(env, channel, alice):
 
 
 @pytest.mark.asyncio
+async def test_maximum_unicode_message_query_cursors_round_trip(env, channel, alice):
+    query = "😀" * 80
+    cached = env.bot.get_channel(channel.id)
+    for index in range(51):
+        await cached.send(f"{query} result {index}")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        first = await preview._action(page.id, action_body(page, "browse_messages", 1, query=query))
+        navigation = first["result"]["navigation"]
+        assert len(first["result"]["messageIndex"]) == 50
+        assert len(navigation["nextCursor"]) <= 1024
+        last = await preview._action(
+            page.id,
+            action_body(page, "browse_messages", 2, query=query, cursor=navigation["nextCursor"]),
+        )
+        assert len(last["result"]["messageIndex"]) == 1
+        previous = last["result"]["navigation"]["previousCursor"]
+        assert previous
+        back = await preview._action(
+            page.id, action_body(page, "browse_messages", 3, query=query, cursor=previous)
+        )
+        assert len(back["result"]["messageIndex"]) == 50
+        tampered = navigation["nextCursor"][:-1] + ("A" if navigation["nextCursor"][-1] != "A" else "B")
+        invalid = await preview._action(
+            page.id, action_body(page, "browse_messages", 4, query=query, cursor=tampered)
+        )
+        assert invalid["rejected"]
+
+
+@pytest.mark.asyncio
+async def test_unicode_candidate_cursor_uses_compact_position(env, channel, alice):
+    query = "😀" * 80
+    users = [env.guild.add_member(env.create_user(f"{query}{'x' * 1024}-{index:02}")) for index in range(55)]
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.UserSelect(custom_id="unicode-candidates"))
+    message = await env.bot.get_channel(channel.id).send("candidates", view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        page = preview._python
+        payload = preview._page_payload(page)
+        key = control_key(payload, "unicode-candidates")
+
+        def browse(sequence, cursor=None):
+            return preview._action(
+                page.id,
+                action_body(
+                    page,
+                    "browse_candidates",
+                    sequence,
+                    control_key=key,
+                    modal_handle=None,
+                    query=query,
+                    cursor=cursor,
+                ),
+            )
+
+        first = await browse(1)
+        descriptor = first["result"]["candidate"]
+        assert len(descriptor["entries"]) == 50
+        assert len(descriptor["entries"][0]["label"]) > 1024
+        cursor = descriptor["nextCursor"]
+        assert cursor and len(cursor) <= 1024
+        second = await browse(2, cursor)
+        assert len(second["result"]["candidate"]["entries"]) == 5
+        previous = second["result"]["candidate"]["previousCursor"]
+        assert previous
+        back = await browse(3, previous)
+        assert len(back["result"]["candidate"]["entries"]) == 50
+        assert {row["id"] for row in back["result"]["candidate"]["entries"]} == {
+            str(user.id) for user in users[:50]
+        }
+
+
+@pytest.mark.asyncio
 async def test_navigation_is_bounded_query_scoped_and_preserved_on_resize(env, channel, alice):
     cached = env.bot.get_channel(channel.id)
     history_target = None

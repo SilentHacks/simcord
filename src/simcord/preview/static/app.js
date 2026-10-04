@@ -171,7 +171,7 @@ const state = {
   activityBackStack: [],
   activityReturnKey: null,
   diagnosticFilter: "all",
-  lastCaptureRecipe: "",
+
   captureViewport: null,
   resizeObserver: null,
   scrollIntent: null,
@@ -277,7 +277,7 @@ function statusObject() {
     pendingAction: state.pendingAction && !state.authorized
       ? { ...clone(state.pendingAction), controlKey: null, targetId: null } : clone(state.pendingAction),
     pendingQuery: state.authorized ? clone(state.pendingQuery) : null,
-    ready: state.ready,
+    ready: state.ready && !state.pendingAction && !Object.keys(state.queuedPageIntents).length,
     awaitingRevision: state.awaitingRevision,
     queryResultRevision: state.queryResultRevision,
     geometry: (() => {
@@ -1387,7 +1387,6 @@ function updateCaptureRecipe(dimensions = null) {
     `# Live-page checkpoint: ready, revision ${state.publishedRevision}, renderGeneration ${state.renderGeneration}; inspect pendingAction/lastAction.`,
     `capture = await preview.screenshot(viewer=${viewer}, target=${target}, viewport=(${Number(viewport.width)}, ${Number(viewport.height)}), layout="${layout}", mode="viewport", media_time=0)`,
   ].filter(Boolean).join("\n");
-  state.lastCaptureRecipe = ui.captureRecipe.value;
   ui.copyRecipe.disabled = false;
   ui.copyReport.disabled = !safeSupportReport();
 }

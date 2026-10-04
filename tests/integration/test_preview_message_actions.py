@@ -1,3 +1,5 @@
+import asyncio
+
 import discord
 import pytest
 from preview_helpers import action_body
@@ -25,6 +27,38 @@ async def _action(preview, page, kind, sequence, target_id, **fields):
         **fields,
     )
     return await preview._action(page.id, body)
+
+
+@pytest.mark.asyncio
+async def test_preview_send_timeout_records_mutation_and_replay_is_safe(env, channel, alice):
+    started, release = asyncio.Event(), asyncio.Event()
+    env.settle_timeout = 0.05
+
+    @env.bot.listen("on_message")
+    async def hold_send(message):
+        if message.content == "held send":
+            started.set()
+            await release.wait()
+
+    async with env.preview(channel, layout="channel", viewers=[alice]) as preview:
+        page = preview._python
+        body = action_body(page, "send_message", 1, content="held send")
+        receipt = await preview._action(page.id, body)
+        assert started.is_set()
+        assert receipt["settlement"] == "timeout"
+        assert receipt["dispatch"] == "dispatched"
+        assert receipt["uncertain"] is True
+        assert page.status == "stale"
+
+        assert [message.content for message in env.backend.messages[channel.id].values()].count(
+            "held send"
+        ) == 1
+        assert await preview._action(page.id, body) == receipt
+        assert [message.content for message in env.backend.messages[channel.id].values()].count(
+            "held send"
+        ) == 1
+        release.set()
+        await env.settle()
 
 
 @pytest.mark.asyncio
@@ -99,6 +133,8 @@ async def test_preview_reaction_actions_are_desired_idempotent_and_permission_gu
         assert projection["reactions"][0]["can_toggle"] is False
         denied = await _action(preview, page, "set_reaction", 1, denied_message.id, emoji="🔥", reacted=True)
         assert denied["settlement"] == "failed"
+        assert denied["dispatch"] == "not_dispatched"
+        assert denied["uncertain"] is False
         assert denied["acknowledgement"] == "not_applicable"
         assert (
             alice.id not in env.backend.get_message(locked.id, denied_message.id).reaction_for("🔥").user_ids

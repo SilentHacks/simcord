@@ -88,6 +88,7 @@ class _Action:
     interaction: Interaction | None = None
     correlation: str = field(default_factory=lambda: "c_" + secrets.token_urlsafe(12))
     target: dict[str, str | None] | None = None
+    dispatched: bool = False
     uncertain: bool = False
     outcomes: list[dict[str, Any]] = field(default_factory=list)
 
@@ -159,6 +160,11 @@ class _ActionOps:
         task = asyncio.current_task()
         if self._active_action is not None and task is self._active_task:
             self._active_action.interaction = interaction
+            self._active_action.dispatched = True
+
+    def _mark_action_dispatched(self) -> None:
+        if self._active_action is not None and asyncio.current_task() is self._active_task:
+            self._active_action.dispatched = True
 
     def _publish_message_pages(self, *, reason: str = "action") -> None:
         for page in tuple(self._pages.values()):
@@ -217,7 +223,6 @@ class _ActionOps:
         self,
         page: _Page,
         code: str,
-        message: str,
         *,
         request_id: Any = None,
         sequence: Any = None,
@@ -295,40 +300,21 @@ class _ActionOps:
     async def _action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
         page = self._get_page(context_id)
         if not isinstance(body, Mapping):
-            return self._reject(page, "bad-envelope", "action must be an object")
+            return self._reject(page, "bad-envelope")
         if body.get("protocol_version") != 3:
-            return self._reject(page, "unsupported-protocol", "protocol 3 is required")
+            return self._reject(page, "unsupported-protocol")
         sequence = body.get("sequence")
         request_id = body.get("request_id")
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
-            return self._reject(
-                page, "bad-envelope", "sequence must be a positive integer", request_id=request_id
-            )
+            return self._reject(page, "bad-envelope", request_id=request_id)
         if not isinstance(request_id, str) or not request_id:
-            return self._reject(
-                page,
-                "bad-envelope",
-                "request_id must be a non-empty string",
-                sequence=sequence,
-            )
+            return self._reject(page, "bad-envelope", sequence=sequence)
         generation = body.get("generation")
         if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-            return self._reject(
-                page,
-                "bad-envelope",
-                "generation must be a positive integer",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "bad-envelope", request_id=request_id, sequence=sequence)
         bot_generation = body.get("bot_generation")
         if not isinstance(bot_generation, int) or isinstance(bot_generation, bool) or bot_generation < 1:
-            return self._reject(
-                page,
-                "bad-envelope",
-                "bot_generation must be a positive integer",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "bad-envelope", request_id=request_id, sequence=sequence)
         fingerprint = hashlib.sha256(
             json.dumps(dict(body), sort_keys=True, separators=(",", ":"), default=str).encode()
         ).hexdigest()
@@ -336,20 +322,14 @@ class _ActionOps:
         if sequence <= page.last_sequence:
             if sequence == page.last_sequence and latest is not None and latest.request_id == request_id:
                 if latest.fingerprint != fingerprint:
-                    return self._reject(
-                        page,
-                        "conflicting-request",
-                        "request conflicts with the admitted sequence",
-                        request_id=request_id,
-                        sequence=sequence,
-                    )
+                    return self._reject(page, "conflicting-request", request_id=request_id, sequence=sequence)
                 if latest.response is None:
                     return self._result(
                         page,
                         request_id=latest.request_id,
                         sequence=latest.sequence,
                         rejected=False,
-                        dispatch="pending",
+                        dispatch="dispatched" if latest.dispatched else "pending",
                         acknowledgement="pending",
                         settlement="pending",
                         diagnostics=[],
@@ -359,50 +339,18 @@ class _ActionOps:
                         outcomes=latest.outcomes,
                     )
                 return self._replay_response(page, latest)
-            return self._reject(
-                page,
-                "stale-sequence",
-                "action sequence is stale",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "stale-sequence", request_id=request_id, sequence=sequence)
         if sequence != page.last_sequence + 1:
-            return self._reject(
-                page,
-                "sequence-gap",
-                "action sequence has a gap",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "sequence-gap", request_id=request_id, sequence=sequence)
         if self._active_action is not None:
-            return self._reject(
-                page,
-                "busy",
-                "Preview is busy with another action",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "busy", request_id=request_id, sequence=sequence)
         if generation != page.generation:
-            return self._reject(
-                page,
-                "stale-context",
-                "preview context generation is stale",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "stale-context", request_id=request_id, sequence=sequence)
         if bot_generation != self.env._generation:
-            return self._reject(
-                page,
-                "stale-generation",
-                "bot generation is stale",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "stale-generation", request_id=request_id, sequence=sequence)
         kind = body.get("kind")
         if not isinstance(kind, str) or kind not in self._ACTION_KINDS:
-            return self._reject(
-                page, "unknown-kind", "unknown preview action", request_id=request_id, sequence=sequence
-            )
+            return self._reject(page, "unknown-kind", request_id=request_id, sequence=sequence)
         if kind in self._REVISION_KINDS:
             published_revision = body.get("published_revision")
             if (
@@ -410,13 +358,7 @@ class _ActionOps:
                 or not isinstance(published_revision, int)
                 or published_revision != page.revision
             ):
-                return self._reject(
-                    page,
-                    "stale-revision",
-                    "published revision is stale",
-                    request_id=request_id,
-                    sequence=sequence,
-                )
+                return self._reject(page, "stale-revision", request_id=request_id, sequence=sequence)
         if kind in {
             "click",
             "select",
@@ -426,13 +368,7 @@ class _ActionOps:
             "set_poll_votes",
             "set_pinned",
         } and (isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))):
-            return self._reject(
-                page,
-                "target-unavailable",
-                "authorized target is unavailable",
-                request_id=request_id,
-                sequence=sequence,
-            )
+            return self._reject(page, "target-unavailable", request_id=request_id, sequence=sequence)
         token = self.env._begin_operation("preview.action")
         try:
             # Kind, control resolution, and values are validated before the
@@ -445,7 +381,6 @@ class _ActionOps:
                 return self._reject(
                     page,
                     exc.code if isinstance(exc, _QueryError) else "validation-failed",
-                    "action validation failed",
                     request_id=request_id,
                     sequence=sequence,
                 )
@@ -764,7 +699,7 @@ class _ActionOps:
                     raise SetupError("message was not accepted by the channel") from exc
                 action.target = {"messageId": str(response.id), "controlKey": None}
                 action.outcomes = [{"kind": "message", "messageId": str(response.id)}]
-                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                result = self._finish_action(page, action, "settled", cursor)
                 self._publish_message_pages()
                 return result
 
@@ -813,7 +748,7 @@ class _ActionOps:
             async def run_edit(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.edit(ResponseMessage(self.env, message), content)
                 action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                result = self._finish_action(page, action, "settled", cursor)
                 self._publish_message_pages()
                 return result
 
@@ -825,7 +760,7 @@ class _ActionOps:
             async def run_delete(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.delete(ResponseMessage(self.env, message))
                 action.outcomes = [{"kind": "no_output"}]
-                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                result = self._finish_action(page, action, "settled", cursor)
                 self._publish_message_pages()
                 return result
 
@@ -841,7 +776,7 @@ class _ActionOps:
             async def run_reaction(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.set_reaction(ResponseMessage(self.env, message), emoji, reacted=reacted)
                 action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                result = self._finish_action(page, action, "settled", cursor)
                 self._publish_message_pages()
                 return result
 
@@ -867,7 +802,7 @@ class _ActionOps:
             async def run_poll(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.set_poll_votes(ResponseMessage(self.env, message), answers=answers)
                 action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                result = self._finish_action(page, action, "settled", cursor)
                 self._publish_message_pages()
                 return result
 
@@ -880,7 +815,7 @@ class _ActionOps:
             async def run_pin(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.set_pinned(ResponseMessage(self.env, message), pinned)
                 action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor, non_interaction=True)
+                result = self._finish_action(page, action, "settled", cursor)
                 self._publish_message_pages()
                 return result
 
@@ -1148,7 +1083,6 @@ class _ActionOps:
         error: BaseException | None = None,
         *,
         interaction: Interaction | None = None,
-        non_interaction: bool = False,
     ) -> dict[str, Any]:
         interaction = interaction or action.interaction
         errors = self.env.errors_since(cursor)
@@ -1161,7 +1095,8 @@ class _ActionOps:
             diagnostics.append(make_diagnostic("action-timeout", correlation=action.correlation))
         elif settlement == "cancelled":
             diagnostics.append(make_diagnostic("action-cancelled", correlation=action.correlation))
-        dispatch = "dispatched" if interaction is not None or non_interaction else "not_dispatched"
+        action.dispatched = action.dispatched or interaction is not None
+        dispatch = "dispatched" if action.dispatched else "not_dispatched"
         ack = (
             "not_applicable"
             if action.kind not in {"click", "select", "modal_submit"} and interaction is None

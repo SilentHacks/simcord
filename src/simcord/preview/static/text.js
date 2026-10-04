@@ -58,7 +58,11 @@ export function appendEmojiValue(parent, emoji, options = {}, label = "Custom em
   }
   const image = node("img", "custom-emoji");
   image.alt = String(emoji.name || label || "Custom emoji");
-  const pending = Promise.resolve(options.loadAsset(assetId, { download: emoji.animated === true }))
+  const capture = emoji.animated === true && options.mediaTime !== null && options.mediaTime !== undefined;
+  const pending = Promise.resolve(options.loadAsset(
+    assetId,
+    capture ? { capture: true, mediaTime: options.mediaTime } : {},
+  ))
     .then((url) => {
       if (!image.isConnected && options.isCurrent && !options.isCurrent()) return;
       image.src = url;

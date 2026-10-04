@@ -83,9 +83,8 @@ async def test_preview_avatar_authorization_copied_url_and_replacement(env, chan
         from PIL import Image
 
         replacement = io.BytesIO()
-        Image.new("RGBA", (2, 2), (60, 40, 20, 255)).save(replacement, format="PNG")
+        Image.new("RGBA", (3, 1), (20, 80, 220, 255)).save(replacement, format="PNG")
         replacement_bytes = replacement.getvalue()
-        assert len(replacement_bytes) == len(original)
         env.backend.cdn._blobs[first.attachments[0].url] = replacement_bytes
         response = await client.get(preview._origin + f"/api/assets/{asset_id}", headers=headers)
         assert response.status == 404
@@ -100,6 +99,14 @@ async def test_preview_avatar_authorization_copied_url_and_replacement(env, chan
         )
         assert response.status == 200
         assert await response.read() == replacement_bytes
+        replacement_record = preview._python.assets[replacement_id]
+        assert replacement_record.validated is False
+        assert replacement_record.capture is None
+        assert replacement_record.poster is None
+        assert replacement_record.captureTime is None and replacement_record.captureBytes == 0
+        await preview._prepare_asset("python", replacement_id)
+        refreshed_asset = preview._page_payload(preview._python)["assets"][replacement_id]
+        assert (refreshed_asset["displayWidth"], refreshed_asset["displayHeight"]) == (3, 1)
         retained = preview._retained_media_bytes
         await preview.refresh()
         assert (

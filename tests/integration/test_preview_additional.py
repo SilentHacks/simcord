@@ -423,6 +423,9 @@ async def test_preview_action_busy_cancellation_and_pending_replay(env, channel,
         )
         task = asyncio.create_task(preview._action("python", body))
         await asyncio.sleep(0)
+        pending = await preview._action("python", body)
+        assert pending["settlement"] == "pending"
+        assert pending["dispatch"] == "dispatched"
         busy = await preview._action(
             "python",
             action_body(

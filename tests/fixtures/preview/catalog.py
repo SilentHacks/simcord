@@ -318,7 +318,8 @@ class StringSelectVariantModal(discord.ui.Modal, title="REF-52-STRING-SELECT-VAR
         ),
     )
     optional_single = discord.ui.Label(
-        text="Optional single destination (starts at Moon Base)",
+        text="Optional single destination",
+        description="Starts at Moon Base",
         component=discord.ui.Select(
             custom_id="reference:modal-select-single-optional",
             min_values=0,

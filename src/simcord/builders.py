@@ -91,6 +91,7 @@ class UserHandle:
         """DM the bot as this user."""
         channel = self._env.backend.get_dm_channel(self.id)
         message = self._env.backend.create_message(channel.id, self.id, content, **kwargs)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
 
@@ -101,6 +102,7 @@ class UserHandle:
         if stored.author_id != self.id:
             raise SetupError("Users can only edit their own messages")
         self._env.backend.edit_message(stored.channel_id, stored.id, {"content": content})
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="USER.edit")
 
     async def delete(self, message: Any) -> None:
@@ -110,6 +112,7 @@ class UserHandle:
         if stored.author_id != self.id:
             raise SetupError("Users can only delete their own DM messages")
         self._env.backend.delete_message(stored.channel_id, stored.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="USER.delete")
 
     async def set_reaction(self, message: Any, emoji: str, *, reacted: bool) -> None:
@@ -117,6 +120,7 @@ class UserHandle:
 
         stored = _visible_message(self, message)
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="USER.set_reaction")
 
     async def set_poll_votes(self, message: Any, *, answers: Sequence[int]) -> None:
@@ -124,6 +128,7 @@ class UserHandle:
 
         stored = _visible_message(self, message)
         self._env.backend.set_poll_votes(stored.channel_id, stored.id, answers, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="USER.set_poll_votes")
 
     async def click(

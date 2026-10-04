@@ -232,6 +232,11 @@ class Env:
             self._operation_task = None
             self._operation_label = None
 
+    def _mark_mutation(self) -> None:
+        if self._operation_task is not None and self._operation_task is _current_task():
+            if self._preview is not None:
+                self._preview._mark_action_dispatched()
+
     async def start(self) -> None:
         token = self._begin_operation("start")
         try:

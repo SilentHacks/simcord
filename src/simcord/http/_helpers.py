@@ -189,7 +189,9 @@ def bot_message(
     apply_identity = webhook_execute and webhook_id is not None
     if webhook_execute:
         reject = {**_WEBHOOK_REJECTED, "sticker_ids": "Webhook.send does not support stickers offline."}
-        handled = (*_MESSAGE_HANDLED, "username", "avatar_url") if apply_identity else _MESSAGE_HANDLED
+        handled = tuple(field for field in _MESSAGE_HANDLED if field not in reject)
+        if apply_identity:
+            handled = (*handled, "username", "avatar_url")
         ignore = (*_MESSAGE_IGNORED, *_WEBHOOK_IGNORED) + (
             () if apply_identity else ("username", "avatar_url")
         )

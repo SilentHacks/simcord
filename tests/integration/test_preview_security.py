@@ -373,6 +373,20 @@ def test_preview_markdown_links_breaks_styles_and_spoilers():
     assert "secret" in str(tokens)
 
 
+def test_preview_markdown_spoilers_respect_parsed_code_and_escaped_pipes():
+    source = "||before `a||b` after||"
+    tokens = markdown_tokens(source)
+    children = list(_walk_tokens(tokens))
+
+    assert any(token.get("type") == "code" and token.get("content") == "a||b" for token in children)
+    assert markdown_summary(tokens) == "[spoiler]"
+    escaped = markdown_tokens(r"\||literal||")
+    assert not any(token.get("type", "").startswith("spoiler_") for token in _walk_tokens(escaped))
+    incomplete = markdown_tokens("||incomplete")
+    assert markdown_summary(incomplete) == "||incomplete"
+    assert not any(token.get("type", "").startswith("spoiler_") for token in _walk_tokens(incomplete))
+
+
 def test_preview_subtext_marker_applies_per_line_across_boundaries():
     formatted = "||**normal first\r\n-# small middle\r\nnormal last**||"
     cases = (
@@ -446,6 +460,38 @@ async def test_pages_body_over_limit_is_rejected(env, channel, alice):
             data=oversized,
         )
         assert response.status == 413
+
+
+@pytest.mark.asyncio
+async def test_access_revocation_redacts_cached_projection_without_refresh(env, channel, alice):
+    message = await env.bot.get_channel(channel.id).send("private history")
+    async with env.preview(channel, viewers=[alice]) as preview, ClientSession() as client:
+        await preview.show(message)
+        cached_channel = env.bot.get_channel(channel.id)
+        await cached_channel.edit(topic="private topic")
+        await preview.refresh()
+        await cached_channel.set_permissions(
+            env.bot.get_guild(env.guild.id).get_member(alice.id), view_channel=False
+        )
+        response = await client.get(
+            preview._origin + "/api/state", headers=preview_headers(preview, "python")
+        )
+        assert response.status == 200
+        payload = await response.json()
+        assert payload["status"] == "access_denied"
+        assert payload["channel"]["topic"] is None
+        assert payload["channel"]["canSendMessages"] is False
+        assert payload["history"] == {
+            "hasBefore": False,
+            "hasAfter": False,
+            "windowStartId": None,
+            "windowEndId": None,
+        }
+        assert payload["messageIndex"] == [] and payload["messages"] == {}
+        assert payload["navigation"]["hasPrevious"] is False
+        assert payload["navigation"]["hasNext"] is False
+        assert payload["targetId"] is None
+        assert payload["assets"] == {} and payload["modal"] is None and payload["candidates"] == {}
 
 
 @pytest.mark.asyncio

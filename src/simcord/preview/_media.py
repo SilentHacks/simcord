@@ -29,6 +29,10 @@ class MediaError(ValueError):
     """Media is unsupported, unsafe, or exceeds a Preview resource limit."""
 
 
+class _TransientMediaError(MediaError):
+    """Worker failures are retryable and must not poison the content verdict cache."""
+
+
 @dataclass(frozen=True, slots=True)
 class MediaInfo:
     format: str
@@ -646,7 +650,7 @@ def _read_result(stdout: bytes, original: bytes) -> MediaInfo:
     except MediaError:
         raise
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError, struct.error) as exc:
-        raise MediaError("media worker returned an invalid result") from exc
+        raise _TransientMediaError("media worker returned an invalid result") from exc
 
 
 def _worker_payload(info: MediaInfo, original: bytes) -> tuple[dict[str, Any], tuple[bytes, ...]]:
@@ -699,17 +703,17 @@ class MediaWorker:
                     request = struct.pack("!dQ", -1.0 if media_time is None else media_time, len(blob)) + blob
                     stdout, _ = await process.communicate(request)
                     if process.returncode != 0:
-                        raise MediaError("media worker exited before producing a validated result")
+                        raise _TransientMediaError("media worker exited before producing a validated result")
                     info = _read_result(stdout, blob)
                     if key not in self._released:
                         self._cache.pop(key, None)
                     return info
         except TimeoutError as exc:
-            error = MediaError("media worker exceeded the 30 second deadline and was terminated")
-            if key not in self._released:
-                self._cache[key] = error
+            error = _TransientMediaError("media worker exceeded the 30 second deadline and was terminated")
             raise error from exc
         except asyncio.CancelledError:
+            raise
+        except _TransientMediaError:
             raise
         except MediaError as exc:
             if key not in self._released:

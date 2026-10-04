@@ -897,6 +897,40 @@ async def test_browser_video_seek_audio_pause_and_capture_time(env, channel, ali
 
 
 @pytest.mark.asyncio
+async def test_screenshot_captures_animated_custom_emoji_at_media_time(env, channel, alice):
+    pytest.importorskip("playwright")
+    emoji = env.guild.create_emoji("dancer", animated=True)
+    original = gif_bytes()
+    message = await alice.send(channel, f"<a:dancer:{emoji.id}>")
+    url = f"{CDN_BASE}/emojis/{emoji.id}.gif"
+    async with env.preview(channel, viewers=[alice], assets={url: ("dancer.gif", original)}) as preview:
+        await preview.show(message)
+        first = await preview.screenshot(media_time=0.1)
+        second = await preview.screenshot(media_time=0.1)
+        assert len(first.media_metadata["captureTimes"]) == 1
+        asset_id = next(iter(first.media_metadata["captureTimes"]))
+        assert first.complete is True and second.complete is True
+        assert first.media_metadata["captureTimes"][asset_id] == 0.1
+        assert first.media_metadata["assets"][asset_id]["effectiveMediaTime"] == 0.1
+        assert first.png is not None and first.png == second.png
+
+
+@pytest.mark.asyncio
+async def test_screenshot_rejects_oversized_animated_emoji(tmp_path, env, channel, alice):
+    pytest.importorskip("playwright")
+    emoji = env.guild.create_emoji("oversized", animated=True)
+    gif = gif_bytes()
+    original = gif + b"\0" * (10 * 1024 * 1024 + 1 - len(gif))
+    message = await alice.send(channel, f"<a:oversized:{emoji.id}>")
+    url = f"{CDN_BASE}/emojis/{emoji.id}.gif"
+    async with env.preview(channel, viewers=[alice], assets={url: ("oversized.gif", original)}) as preview:
+        await preview.show(message)
+        capture = await preview.screenshot(tmp_path / "oversized.png", allow_incomplete=True, media_time=0.1)
+        assert capture.complete is False
+        assert capture.diagnostics
+
+
+@pytest.mark.asyncio
 async def test_browser_lottie_sticker_renders_offline_frames(env, channel, alice):
     from playwright.async_api import async_playwright
 

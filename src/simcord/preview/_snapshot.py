@@ -50,72 +50,6 @@ _ENTITY_TYPES = {
     int(ComponentType.CHANNEL_SELECT): "channels",
     int(ComponentType.MENTIONABLE_SELECT): "mentionables",
 }
-_FONT_PROFILE = (
-    {
-        "family": "Noto Sans",
-        "style": "normal",
-        "weight": "100 900",
-        "filename": "noto-sans-latin-v2.015.ttf",
-        "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
-        "scripts": ["Latin", "Greek", "Cyrillic", "Vietnamese"],
-    },
-    {
-        "family": "Noto Sans",
-        "style": "italic",
-        "weight": "100 900",
-        "filename": "noto-sans-latin-italic-v2.015.ttf",
-        "sha256": "58e6e0ebd1931b29a365aa2d3e2ee9a9e831a3af7cf3ad1462d4e72154f0b291",
-        "scripts": ["Latin", "Greek", "Cyrillic", "Vietnamese"],
-    },
-    {
-        "family": "Noto Sans Mono",
-        "style": "normal",
-        "weight": "100 900",
-        "filename": "noto-sans-mono-v2.014.ttf",
-        "sha256": "2cb2adb378a8f574213e23df697050b83c54c27df465a2015552740b2769a081",
-        "scripts": ["Latin", "Greek", "Cyrillic", "Vietnamese"],
-    },
-    {
-        "family": "Noto Color Emoji",
-        "style": "normal",
-        "weight": "400",
-        "filename": "noto-color-emoji-v2.051.ttf",
-        "sha256": "b8e25ea68db82f9e4d0aee921f4420be2be39887bd5c893a2ad98710531f9d0c",
-        "scripts": ["Emoji ZWJ", "skin-tone modifiers", "variation selectors", "regional-indicator flags"],
-    },
-    {
-        "family": "Noto Sans Arabic",
-        "style": "normal",
-        "weight": "100 900",
-        "filename": "noto-sans-arabic-v2.012.ttf",
-        "sha256": "63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e",
-        "scripts": ["Arabic"],
-    },
-    {
-        "family": "Noto Sans Hebrew",
-        "style": "normal",
-        "weight": "100 900",
-        "filename": "noto-sans-hebrew-v3.001.ttf",
-        "sha256": "7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88",
-        "scripts": ["Hebrew"],
-    },
-    {
-        "family": "Noto Sans Devanagari",
-        "style": "normal",
-        "weight": "100 900",
-        "filename": "noto-sans-devanagari-v2.007.ttf",
-        "sha256": "14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e",
-        "scripts": ["Devanagari"],
-    },
-    {
-        "family": "Noto Sans SC",
-        "style": "normal",
-        "weight": "100 900",
-        "filename": "noto-sans-sc-v2.004.ttf",
-        "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
-        "scripts": ["Simplified Chinese (Han)"],
-    },
-)
 
 
 def _clean(value: Any, *, drop_urls: bool = False) -> Any:
@@ -1230,16 +1164,16 @@ def _make_cursor(
     direction: str,
     position: tuple[Any, ...],
 ) -> str:
+    binding = hashlib.sha256(
+        json.dumps([scope, query, order], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
     raw = json.dumps(
         {
             "generation": page.generation,
-            "scope": scope,
-            "query": query,
-            "order": order,
+            "binding": binding,
             "direction": direction,
             "position": [str(value) for value in position],
         },
-        sort_keys=True,
         separators=(",", ":"),
     ).encode()
     signature = hmac.new(page.cursor_secret, raw, hashlib.sha256).digest()
@@ -1271,9 +1205,10 @@ def _read_cursor(
         or isinstance(value.get("generation"), bool)
         or not isinstance(value.get("generation"), int)
         or value.get("generation") != page.generation
-        or value.get("scope") != scope
-        or value.get("query") != query
-        or value.get("order") != order
+        or value.get("binding")
+        != hashlib.sha256(
+            json.dumps([scope, query, order], ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
         or value.get("direction") not in {"before", "after"}
         or not isinstance(value.get("position"), list)
         or len(value["position"]) != position_length
@@ -1318,7 +1253,7 @@ def validate_candidate_query(
         _candidate_scope(control_key, handle),
         normalized,
         "candidate-label-id",
-        2,
+        1,
     )
     return normalized, cursor, handle
 
@@ -1459,14 +1394,19 @@ def _paginate(
     cursor: Any,
     *,
     position_length: int,
-    position_parser: Callable[[list[str]], tuple[Any, ...]],
+    position_parser: Callable[[list[str]], Any],
+    resolve_position: Callable[[Any, Iterable[Any]], tuple[Any, ...] | None] | None = None,
+    cursor_position: Callable[[Any], tuple[Any, ...]] | None = None,
 ) -> tuple[list[Any], bool, bool, str | None, str | None]:
     cursor_state = _read_cursor(page, cursor, scope, query, order, position_length)
     direction = cursor_state["direction"] if cursor_state is not None else None
     pivot = position_parser(cursor_state["position"]) if cursor_state is not None else None
+    if cursor_state is not None and resolve_position is not None:
+        pivot = resolve_position(pivot, source())
+        if pivot is None:
+            raise _QueryError("stale-cursor")
     has_previous = False
     has_next = False
-
     if direction == "after":
 
         def after_pivot() -> Iterable[Any]:
@@ -1499,11 +1439,27 @@ def _paginate(
         matches = heapq.nsmallest(51, source(), key=key)
         rows = matches[:50]
         has_next = len(matches) > 50
-
     if not rows:
         return [], False, False, None, None
-    previous = _make_cursor(page, scope, query, order, "before", key(rows[0])) if has_previous else None
-    following = _make_cursor(page, scope, query, order, "after", key(rows[-1])) if has_next else None
+    previous = (
+        _make_cursor(
+            page, scope, query, order, "before", cursor_position(rows[0]) if cursor_position else key(rows[0])
+        )
+        if has_previous
+        else None
+    )
+    following = (
+        _make_cursor(
+            page,
+            scope,
+            query,
+            order,
+            "after",
+            cursor_position(rows[-1]) if cursor_position else key(rows[-1]),
+        )
+        if has_next
+        else None
+    )
     return rows, has_previous, has_next, previous, following
 
 
@@ -1584,19 +1540,6 @@ def _message_navigation(
     )
 
 
-def query_message_page(preview: Preview, page: _Page) -> dict[str, Any]:
-    preview.env.backend.get_channel(page.channel_id)
-    visible = [
-        item
-        for item in sorted(
-            preview.env.backend.messages.get(page.channel_id, {}).values(), key=lambda item: item.id
-        )
-        if can_access_message(preview.env, page.channel_id, item, page.viewer, history=True)
-    ]
-    rows, navigation = _message_navigation(preview, page, visible)
-    return {"navigation": navigation, "messageIndex": rows}
-
-
 def _candidate_filter(component: Mapping[str, Any]) -> dict[str, list[int]] | None:
     values = component.get("channel_types")
     if not isinstance(values, list) or not values:
@@ -1657,8 +1600,8 @@ def _candidate_key(item: Mapping[str, Any]) -> tuple[str, str]:
     return (_normal_text(item["label"]), str(item["id"]))
 
 
-def _candidate_position(value: list[str]) -> tuple[str, str]:
-    return (value[0], value[1])
+def _candidate_position(value: list[str]) -> str:
+    return value[0]
 
 
 def _candidate_wire(
@@ -1751,8 +1694,12 @@ def _candidate_descriptor(
         source,
         _candidate_key,
         cursor,
-        position_length=2,
+        position_length=1,
         position_parser=_candidate_position,
+        resolve_position=lambda entity_id, items: next(
+            (_candidate_key(item) for item in items if item["id"] == entity_id), None
+        ),
+        cursor_position=lambda item: (str(item["id"]),),
     )
     entries = [_candidate_wire(preview, page, component, item) for item in rows]
     return {
@@ -1838,17 +1785,6 @@ def candidate_control(
             if valid and not component.get("disabled"):
                 return component, modal_handle if scope == "modal" else None
     raise _QueryError("control-unavailable")
-
-
-__all__ = [
-    "IdentityRecord",
-    "build_snapshot",
-    "candidate_control",
-    "query_message_page",
-    "resolve_identity",
-    "validate_candidate_query",
-    "validate_message_query",
-]
 
 
 def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
@@ -2035,6 +1971,9 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         constraint = "host_below_minimum"
     elif page.display == "fixed" and (page.host_width < page.width or page.host_height < page.height):
         constraint = "host_smaller_than_viewport"
+    from . import _require_preview_runtime
+
+    font_assets = [{**face, "scripts": list(face["scripts"])} for face in _require_preview_runtime()]
     snapshot = {
         "runtimeVersion": _RUNTIME_VERSION,
         "publication": {
@@ -2090,7 +2029,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "timezone": preview.timezone,
             "presentationTime": preview.capture_time.isoformat(),
             "fontStackConfigured": '"Noto Sans", "Noto Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans SC", sans-serif',
-            "fontAssets": [dict(face) for face in _FONT_PROFILE],
+            "fontAssets": font_assets,
             "fontResolution": "unavailable until Chromium platform-font inspection",
         },
         "status": page.status,
@@ -2108,6 +2047,11 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         item = record.to_wire()
         item.pop("diagnostic", None)
         snapshot["assets"][asset_id] = item
+    if not allowed:
+        from ._pages import _PageOps
+
+        snapshot["status"] = "access_denied"
+        _PageOps._denied_payload(snapshot)
     return snapshot
 
 
@@ -2115,7 +2059,6 @@ __all__ = [
     "IdentityRecord",
     "build_snapshot",
     "candidate_control",
-    "query_message_page",
     "resolve_identity",
     "validate_candidate_query",
     "validate_message_query",

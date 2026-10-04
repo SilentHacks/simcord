@@ -41,6 +41,27 @@ def test_wheel_contains_pinned_fonts_and_ofl_notices() -> None:
 
 
 @pytest.mark.asyncio
+async def test_corrupt_font_manifest_fails_with_install_guidance(env, channel, alice, monkeypatch, tmp_path):
+    import simcord.preview as preview_module
+    from simcord.backend.errors import SetupError
+
+    item = dict(_manifest()["fonts"][0])
+    item.pop("style")
+    filename = item["filename"]
+    (tmp_path / filename).write_bytes(_FONT_DIR.joinpath(filename).read_bytes())
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"fonts": [item]}), encoding="utf-8")
+    monkeypatch.setattr(preview_module, "_PREVIEW_FONT_MANIFEST", manifest)
+    preview_module._require_preview_runtime.cache_clear()
+    try:
+        with pytest.raises(SetupError, match="typography assets are missing or corrupt"):
+            async with env.preview(channel, viewers=[alice]):
+                pass
+    finally:
+        preview_module._require_preview_runtime.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_font_routes_are_explicit_and_same_origin(env, channel, alice) -> None:
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:
@@ -59,6 +80,20 @@ async def test_font_routes_are_explicit_and_same_origin(env, channel, alice) -> 
             assert missing.status == 404
             traversal = await client.get(f"{preview._origin}/fonts/%2e%2e/_server.py", headers={"Host": host})
             assert traversal.status in {404, 400}
+
+
+@pytest.mark.asyncio
+async def test_font_snapshot_is_detached_from_cached_manifest(env, channel, alice) -> None:
+    await alice.slash(channel, "panel")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._python
+        first = preview._page_payload(page)["profile"]["fontAssets"]
+        assert "weight" in first[0] and "weights" not in first[0]
+        first[0]["family"] = "mutated"
+        first[0]["scripts"].append("mutated")
+        second = preview._page_payload(page)["profile"]["fontAssets"]
+        assert second[0]["family"] == "Noto Sans"
+        assert "mutated" not in second[0]["scripts"]
 
 
 @pytest.mark.asyncio

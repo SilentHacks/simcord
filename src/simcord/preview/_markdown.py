@@ -172,28 +172,15 @@ def _markdown_parser(policy: Mapping[str, bool | str], context: Mapping[str, Any
     parser.disable("image")
     if not policy["links"]:
         parser.disable(["link", "autolink", "linkify"])
-    if policy["spoilers"]:
-        parser.inline.add_terminator_char("|")
+    parser.inline.add_terminator_char("|")
 
-    def spoiler_rule(state: Any, silent: bool) -> bool:
+    def spoiler_delimiter_rule(state: Any, silent: bool) -> bool:
         if not policy["spoilers"] or state.src[state.pos : state.pos + 2] != "||":
             return False
-        end = state.src.find("||", state.pos + 2)
-        while end >= 0:
-            escapes = 0
-            cursor = end - 1
-            while cursor >= state.pos and state.src[cursor] == "\\":
-                escapes += 1
-                cursor -= 1
-            if escapes % 2 == 0:
-                break
-            end = state.src.find("||", end + 2)
-        if end < 0:
-            return False
         if not silent:
-            token = state.push("discord_spoiler", "span", 0)
-            token.children = state.md.inline.parse(state.src[state.pos + 2 : end], state.md, state.env, [])
-        state.pos = end + 2
+            token = state.push("discord_spoiler_delimiter", "", 0)
+            token.content = "||"
+        state.pos += 2
         return True
 
     def semantic_rule(state: Any, silent: bool) -> bool:
@@ -253,9 +240,8 @@ def _markdown_parser(policy: Mapping[str, bool | str], context: Mapping[str, Any
                 return True
         return False
 
-    # Code spans are parsed before entering their contents; escaped punctuation
-    # is consumed before the next position can be recognized as a reference.
-    parser.inline.ruler.before("text", "discord_spoiler", spoiler_rule)
+    # MarkdownIt consumes code spans and escaped punctuation before this rule.
+    parser.inline.ruler.before("text", "discord_spoiler_delimiter", spoiler_delimiter_rule)
     parser.inline.ruler.before("text", "discord_semantic", semantic_rule)
     return parser
 
@@ -278,11 +264,6 @@ def _inline(children: Iterable[Any]) -> list[dict[str, Any]]:
                     "group": (getattr(token, "meta", None) or {}).get("group"),
                 }
             )
-            continue
-        if kind == "discord_spoiler":
-            result.append({"type": "spoiler_open"})
-            result.extend(_inline(getattr(token, "children", ()) or ()))
-            result.append({"type": "spoiler_close"})
             continue
         if semantic := _append_token(token):
             result.append(semantic)
@@ -332,19 +313,38 @@ def _inline_blocks(
     previous_subtext = False
 
     def flatten_spoilers(tokens: Iterable[Any]) -> Iterable[Any]:
-        for token in tokens:
-            if getattr(token, "type", "") != "discord_spoiler" or not policy["subtext"]:
-                yield token
+        source = list(tokens)
+        pairs: dict[int, int] = {}
+        pending: int | None = None
+        for index, token in enumerate(source):
+            if getattr(token, "type", "") != "discord_spoiler_delimiter":
                 continue
-            group = f"spoiler-{next(spoiler_groups)}"
-            opened = copy.copy(token)
-            opened.type = "discord_spoiler_open"
-            opened.meta = {"group": group}
-            yield opened
-            yield from flatten_spoilers(getattr(token, "children", ()) or ())
-            closed = copy.copy(opened)
-            closed.type = "discord_spoiler_close"
-            yield closed
+            if pending is None:
+                pending = index
+            else:
+                pairs[pending] = index
+                pairs[index] = pending
+                pending = None
+
+        groups: dict[int, str] = {}
+        if policy["subtext"]:
+            for opening, closing in pairs.items():
+                if opening < closing:
+                    group = f"spoiler-{next(spoiler_groups)}"
+                    groups[opening] = groups[closing] = group
+        for index, token in enumerate(source):
+            if getattr(token, "type", "") != "discord_spoiler_delimiter":
+                yield token
+            elif index in pairs:
+                marker = copy.copy(token)
+                marker.type = "discord_spoiler_open" if index < pairs[index] else "discord_spoiler_close"
+                marker.meta = {"group": groups[index]} if policy["subtext"] else {}
+                yield marker
+            else:
+                marker = copy.copy(token)
+                marker.type = "text"
+                marker.content = "||"
+                yield marker
 
     def emit_line() -> None:
         nonlocal previous_subtext

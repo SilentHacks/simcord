@@ -109,7 +109,7 @@ def _image(fmt: str, size: tuple[int, int] = (2, 2), frames: int = 1) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_preview_media_worker_validates_limits_and_lifecycle():
+async def test_preview_media_worker_validates_limits_and_lifecycle(monkeypatch):
     worker = MediaWorker()
     valid = await worker.validate("valid", _image("PNG"))
     assert (valid.format, valid.width, valid.height, valid.frames) == ("PNG", 2, 2, 1)
@@ -137,6 +137,17 @@ async def test_preview_media_worker_validates_limits_and_lifecycle():
         await worker.validate("bmp", _image("BMP"))
     with pytest.raises(MediaError, match="10 MiB"):
         await worker.validate("huge", b"x" * (10 * 1024 * 1024 + 1))
+
+    worker._lock = asyncio.Lock()
+    await worker._lock.acquire()
+    try:
+        with monkeypatch.context() as deadline_patch:
+            deadline_patch.setattr("simcord.preview._media.WORKER_DEADLINE_SECONDS", 0.01)
+            with pytest.raises(MediaError, match="deadline"):
+                await worker.validate("retry", _image("PNG"))
+    finally:
+        worker._lock.release()
+    assert (await worker.validate("retry", _image("PNG"))).format == "PNG"
     animation = _image("GIF", frames=101)
     info = await worker.validate("animated", animation, media_time=0)
     second = await worker.validate("animated", animation, media_time=0.1)

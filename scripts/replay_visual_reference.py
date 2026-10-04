@@ -99,19 +99,38 @@ def _payload_matches(
         raise
 
 
-def _select_label(fixture_id: str) -> str | None:
-    if "ref-30-string-select" in fixture_id:
-        return "Choose up to two destinations"
-    for fragment, label in (
-        ("user-open", "Choose a user"),
-        ("user-selected", "Choose a user"),
-        ("role-open", "Choose a role"),
-        ("mentionable-open", "Choose a user or role"),
-        ("channel-open", "Choose a text channel"),
-    ):
-        if fragment in fixture_id:
-            return label
-    return None
+def _select_label(fixture: Mapping[str, Any], state: str) -> str | None:
+    payload = fixture.get("normalizedPayload")
+    if not isinstance(payload, Mapping):
+        return None
+
+    def components(value: Any):
+        if isinstance(value, Mapping):
+            if value.get("type") in {3, 5, 6, 7, 8} and isinstance(value.get("placeholder"), str):
+                yield value
+            for child in value.values():
+                yield from components(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from components(child)
+
+    selects = [item for item in components(payload.get("components", [])) if not item.get("disabled")]
+    reference_id = str(fixture.get("referenceId", ""))
+    if reference_id == "REF-30-STRING-SELECT":
+        match = next((item for item in selects if item.get("type") == 3), None)
+    elif reference_id == "REF-31-ENTITY-SELECTS":
+        kind = state.split("-", 1)[0]
+        match = next(
+            (
+                item
+                for item in selects
+                if isinstance(item.get("custom_id"), str) and item["custom_id"].rsplit(":", 1)[-1] == kind
+            ),
+            None,
+        )
+    else:
+        return None
+    return match.get("placeholder") if match else None
 
 
 def _history_chain(
@@ -149,16 +168,36 @@ async def _ready(page: Any) -> None:
 
 
 async def _capture_scope(
-    page: Any, row: Mapping[str, Any], state: str, message: Any, following_id: str | None
+    page: Any, row: Mapping[str, Any], state: str, message: Any
 ) -> tuple[bytes, dict[str, Any], str]:
     fixture = row["fixture"]
     reference_id = str(fixture.get("referenceId", ""))
     target = page.locator(f'article[data-message-id="{message.id}"]')
-    if reference_id == "REF-40-V2-LAYOUT-MEDIA":
-        selector = (
-            ".component-container" if state == "idle-top-expedition-container" else ".component-gallery"
-        )
-        scope = target.locator(selector).first
+    if state in {"text-empty", "text-focus", "text-validation", "text-filled"}:
+        modal = page.get_by_role("dialog", name="REF-51-TEXT-MODAL", exact=True)
+        if await modal.count() != 1 or not await modal.is_visible():
+            raise ValueError("text modal has no visible capture scope")
+        geometry = await modal.bounding_box()
+        if geometry is None:
+            raise ValueError("text modal has no natural geometry")
+        return await modal.screenshot(), geometry, '[role="dialog"][aria-label="REF-51-TEXT-MODAL"]'
+    if state in {"closed", "escape-cancel"}:
+        label = _select_label(fixture, state)
+        if label:
+            control = target.get_by_role("combobox", name=label, exact=True)
+            box = await control.bounding_box()
+            if box is None:
+                raise ValueError("closed select control has no natural geometry")
+            return await page.screenshot(clip=box), box, f'[role="combobox"][aria-label="{label}"]'
+    if reference_id == "REF-40-V2-LAYOUT-MEDIA" and state in {
+        "idle-top",
+        "idle-media",
+        "spoiler-revealed",
+    }:
+        selector = ".component-container" if state == "idle-top" else ".component-gallery:visible"
+        scope = target.locator(selector)
+        if state == "idle-top":
+            scope = scope.filter(has=page.get_by_role("heading", name="Expedition status", exact=True))
         if await scope.count() != 1 or not await scope.is_visible():
             raise ValueError(f"named V2 section {selector} is unavailable")
         geometry = await scope.evaluate("""el => {
@@ -167,19 +206,20 @@ async def _capture_scope(
         }""")
         return await scope.screenshot(), geometry, f'article[data-message-id="{message.id}"] {selector}'
     if state == "user-selected":
-        control = page.get_by_role("combobox", name="Choose a user", exact=True)
+        label = _select_label(fixture, state)
+        control = target.get_by_role("combobox", name=label, exact=True)
         box = await control.bounding_box()
         if box is None:
             raise ValueError("selected invoking-user control has no natural geometry")
-        return await page.screenshot(clip=box), box, '[role="combobox"][aria-label="Choose a user"]'
-    if "open" in state or state in {"open-recapture", "two-selected"}:
+        return await page.screenshot(clip=box), box, f'[role="combobox"][aria-label="{label}"]'
+    if state in {"open", "two-selected"} or state.endswith("-open"):
         listbox = page.get_by_role("listbox")
         if await listbox.count() != 1 or not await listbox.is_visible():
             raise ValueError("state requires the native visible select listbox")
-        label = _select_label(str(row["fixtureId"]))
+        label = _select_label(fixture, state)
         if not label:
-            raise ValueError("select capture has no evidence-derived accessible label")
-        control = page.get_by_role("combobox", name=label, exact=True)
+            raise ValueError("select capture has no fixture-derived accessible label")
+        control = target.get_by_role("combobox", name=label, exact=True)
         control_box = await control.bounding_box()
         menu_box = await page.locator(".select-list:popover-open").bounding_box()
         if control_box is None or menu_box is None:
@@ -188,18 +228,11 @@ async def _capture_scope(
         top = min(control_box["y"], menu_box["y"])
         right = max(control_box["x"] + control_box["width"], menu_box["x"] + menu_box["width"])
         bottom = max(control_box["y"] + control_box["height"], menu_box["y"] + menu_box["height"])
-        if str(fixture.get("referenceId", "")) == "REF-30-STRING-SELECT":
-            message_box = await target.bounding_box()
-            if message_box:
-                left = min(left, message_box["x"])
-                top = min(top, message_box["y"])
-                right = max(right, message_box["x"] + message_box["width"])
-                bottom = max(bottom, message_box["y"] + message_box["height"])
         viewport = await page.evaluate("() => ({width: innerWidth, height: innerHeight})")
-        left, top = max(0, left), max(0, top)
-        right, bottom = min(right, viewport["width"]), min(bottom, viewport["height"])
+        if left < 0 or top < 0 or right > viewport["width"] or bottom > viewport["height"]:
+            raise ValueError("complete select/menu capture is outside the browser viewport")
         if right <= left or bottom <= top:
-            raise ValueError("select/menu/context intersection is outside the browser viewport")
+            raise ValueError("select/menu capture has no natural geometry")
         clip = {"x": left, "y": top, "width": right - left, "height": bottom - top}
         return await page.screenshot(clip=clip), clip, '.select-list:popover-open [role="listbox"]'
     if await target.count() != 1 or not await target.is_visible():
@@ -238,13 +271,46 @@ async def _platform_fonts(page: Any, selector: str) -> dict[str, Any]:
         return {"available": False, "reason": str(exc)}
 
 
-async def _act(page: Any, row: Mapping[str, Any], state: str, scene: Mapping[str, Any]) -> str:
-    fixture_id = str(row["fixtureId"])
-    label = _select_label(fixture_id)
-    if state in {"idle", "idle-top-expedition-container", "idle-media-two-image-gallery"}:
-        return "none"
+async def _act(page: Any, row: Mapping[str, Any], state: str, scene: Mapping[str, Any], message: Any) -> str:
+    fixture = row["fixture"]
+    target = page.locator(f'article[data-message-id="{message.id}"]')
+    reference_id = str(fixture.get("referenceId", ""))
+    if state in {"text-empty", "text-focus", "text-validation", "text-filled"}:
+        if reference_id != "REF-50-MODALS":
+            raise ValueError("text-modal recipe requires the modal fixture")
+        await target.get_by_role("button", name="Open text modal", exact=True).click()
+        await _ready(page)
+        modal = page.get_by_role("dialog", name="REF-51-TEXT-MODAL", exact=True)
+        await modal.wait_for(state="visible")
+        name = modal.get_by_role("textbox", name=re.compile(r"^Display name(?:\s*\*)?$"))
+        feedback = modal.get_by_role("textbox", name="Optional feedback", exact=True)
+        if state == "text-focus":
+            await name.focus()
+        elif state == "text-validation":
+            await modal.get_by_role("button", name="Submit", exact=True).click()
+            await page.wait_for_function(
+                "() => document.querySelector('[role=dialog] [aria-invalid=true]') !== null"
+            )
+        elif state == "text-filled":
+            values = scene.get("textModalValues")
+            if not isinstance(values, Mapping) or any(
+                not isinstance(values.get(key), str) for key in ("reference:name", "reference:feedback")
+            ):
+                raise ValueError("text-filled requires explicitly observed textModalValues for both fields")
+            await name.fill(values["reference:name"])
+            await feedback.fill(values["reference:feedback"])
+        await _ready(page)
+        return f"opened the real text-modal callback and prepared {state}; submission outcome unclaimed"
+    if state in {"idle", "idle-top", "idle-media", "closed"}:
+        if state == "closed":
+            label = _select_label(fixture, state)
+            if not label or await target.get_by_role("combobox", name=label, exact=True).count() != 1:
+                raise ValueError("closed select state has no unique fixture control")
+            if await page.get_by_role("listbox").count():
+                raise ValueError("closed select state unexpectedly has an open listbox")
+        return "none; captured the requested closed/idle presentation"
     if state in {"primary-hover", "primary-focus"}:
-        button = page.get_by_role("button", name="Primary", exact=True)
+        button = target.get_by_role("button", name="Primary", exact=True)
         if await button.count() != 1:
             raise ValueError("primary button not uniquely available")
         if state.endswith("hover"):
@@ -258,14 +324,11 @@ async def _act(page: Any, row: Mapping[str, Any], state: str, scene: Mapping[str
         if not await button.evaluate("el => el.matches(':focus-visible')"):
             raise ValueError("primary button did not receive visible keyboard focus")
         return "focus:Primary"
-    if (
-        state in {"open-recapture", "two-selected", "escape-outcome", "user-selected"}
-        or state.endswith("-open")
-        or state == "channel-open-visible-section"
-    ):
+    if state in {"open", "two-selected", "escape-cancel", "user-selected"} or state.endswith("-open"):
+        label = _select_label(fixture, state)
         if not label:
-            raise ValueError(f"no select control label for {fixture_id}")
-        control = page.get_by_role("combobox", name=label, exact=True)
+            raise ValueError(f"no supported select control for {reference_id}/{state}")
+        control = target.get_by_role("combobox", name=label, exact=True)
         if await control.count() != 1:
             raise ValueError(f"select control {label!r} not uniquely available")
         await control.click()
@@ -273,73 +336,62 @@ async def _act(page: Any, row: Mapping[str, Any], state: str, scene: Mapping[str
         listbox = page.get_by_role("listbox")
         if await listbox.count() != 1 or not await listbox.is_visible():
             raise ValueError("select menu did not open")
-
-        async def ensure_selected(option_label: str, selected: bool) -> None:
-            nonlocal listbox
-            options = listbox.get_by_role("option")
-            matches = []
-            for index in range(await options.count()):
-                option = options.nth(index)
-                if option_label in (await option.inner_text()).strip():
-                    matches.append(option)
-            if len(matches) != 1:
-                raise ValueError(f"expected one option labelled {option_label!r}, found {len(matches)}")
-            option = matches[0]
-            currently_selected = await option.get_attribute("aria-selected") == "true"
-            if currently_selected == selected:
-                return
-            await option.click()
-            await _ready(page)
-            if not await listbox.is_visible():
-                await control.click()
-                await _ready(page)
-                listbox = page.get_by_role("listbox")
-                if not await listbox.is_visible():
-                    raise ValueError("select menu did not reopen after an option change")
-
-        if state == "open-recapture":
-            await ensure_selected("Forest Camp", True)
-            return "open; Forest Camp remains the only selected option"
         if state == "two-selected":
-            await ensure_selected("Moon Base", True)
-            await ensure_selected("Forest Camp", True)
-            await ensure_selected("Ocean Lab", False)
-            return "open with Moon Base and Forest Camp selected"
-        if state == "escape-outcome":
-            await ensure_selected("Forest Camp", False)
-            await ensure_selected("Moon Base", True)
-            await page.get_by_role("button", name="Apply", exact=True).click()
-            await _ready(page)
-            await control.click()
-            await _ready(page)
+            selected_labels = scene.get("stringSelectLabels")
+            if (
+                not isinstance(selected_labels, list)
+                or len(selected_labels) != 2
+                or any(not isinstance(value, str) or not value for value in selected_labels)
+                or len(set(selected_labels)) != 2
+            ):
+                raise ValueError("two-selected requires two explicitly observed stringSelectLabels")
+            options = listbox.get_by_role("option")
+            labels = [
+                await options.nth(index).locator(".option-label").inner_text()
+                for index in range(await options.count())
+            ]
+            if any(labels.count(value) != 1 for value in selected_labels):
+                raise ValueError("observed selected labels are not uniquely available")
+            for selected in (False, True):
+                for index, option_label in enumerate(labels):
+                    if (option_label in selected_labels) != selected:
+                        continue
+                    option = options.nth(index)
+                    if (await option.get_attribute("aria-selected") == "true") != selected:
+                        await option.click()
+                        await _ready(page)
+            if not await listbox.is_visible():
+                raise ValueError("multi-select menu did not remain open")
+            return f"open with observed selections: {', '.join(selected_labels)}"
+        if state == "escape-cancel":
             await page.keyboard.press("Escape")
             await _ready(page)
-            visible = (await control.inner_text()).strip()
-            if "Moon Base" not in visible or "Forest Camp" in visible:
-                raise ValueError("Escape did not leave the observed Moon Base-only selection visible")
-            return "SimCord Apply confirms Moon Base; reopen then Escape preserves it; source callback phase unknown"
+            if await listbox.is_visible():
+                raise ValueError("Escape did not close the select menu")
+            return "opened then Escape-cancelled the current menu; source callback semantics unclaimed"
         if state == "user-selected":
             viewer_label = scene.get("viewerLabel")
             if not isinstance(viewer_label, str) or not viewer_label:
                 raise ValueError("observed invoking-viewer label is unavailable")
-            await ensure_selected(viewer_label, True)
-            if await listbox.is_visible():
-                await page.keyboard.press("Escape")
-                await _ready(page)
-            visible = (await control.inner_text()).strip()
-            if viewer_label not in visible:
-                raise ValueError("the invoking viewer was not visibly selected")
+            options = listbox.get_by_role("option").filter(
+                has=page.locator(".entity-name", has_text=re.compile(f"^{re.escape(viewer_label)}$"))
+            )
+            if await options.count() != 1:
+                raise ValueError("observed invoking-viewer option is unavailable")
+            await options.click()
+            await _ready(page)
+            await control.filter(has_text=viewer_label).wait_for(state="visible", timeout=10_000)
             return "invoking viewer selected by exact observed label; callback receipt unknown"
         return f"open:{label}"
-    if state == "spoiler-revealed-orange-gallery-item":
-        gallery = page.locator("article.message-surface .component-gallery").first
+    if state == "spoiler-revealed":
+        gallery = target.locator(".component-gallery:visible")
         if await gallery.count() != 1:
-            raise ValueError("the V2 two-item gallery section is unavailable")
+            raise ValueError("the V2 gallery section is unavailable")
         reveal = gallery.get_by_role("button", name=re.compile("Reveal .* spoiler", re.I))
         if await reveal.count() != 1:
-            raise ValueError("the second gallery item's spoiler reveal control is unavailable")
+            raise ValueError("spoiler reveal control is unavailable")
         await reveal.click()
-        return "revealed second gallery item only"
+        return "revealed gallery spoiler through the live preview control"
     raise ValueError(f"state has no evidence-supported interaction recipe: {state}")
 
 
@@ -376,24 +428,35 @@ async def _replay_one(
     reference_png = reference_dir / name
     if not reference_png.is_file():
         return {"capture": name, "status": "blocked", "reason": "reference PNG missing"}
+    profile = sidecar.get("profile")
+    observed = profile.get("observed") if isinstance(profile, Mapping) else None
+    presentation = scene.get("presentation")
+    if not isinstance(presentation, Mapping) or any(
+        type(presentation.get(key)) is not int or presentation[key] <= 0 for key in ("width", "height")
+    ):
+        return {
+            "capture": name,
+            "status": "blocked",
+            "reason": "scene requires measured presentation.width and height",
+        }
+    if not isinstance(observed, Mapping) or any(
+        type(observed.get(key)) is not int or observed[key] <= 0 for key in ("width", "height")
+    ):
+        return {"capture": name, "status": "blocked", "reason": "source browser viewport is unobserved"}
+    if (
+        type(observed.get("deviceScaleFactor")) not in {int, float}
+        or observed["deviceScaleFactor"] != 1
+        or type(observed.get("reducedMotion")) is not bool
+    ):
+        return {"capture": name, "status": "blocked", "reason": "source scale-1/motion profile is unobserved"}
+    if any(not isinstance(observed.get(key), str) or not observed[key] for key in ("locale", "timezone")):
+        return {"capture": name, "status": "blocked", "reason": "source locale/timezone is unobserved"}
     payload, reason = _payload_matches(fixture, catalog, reference_dir)
     if reason:
         return {"capture": name, "status": "blocked", "reason": reason}
     state = str(sidecar.get("state", "unknown"))
     history, missing_predecessor = _history_chain(sidecar, history_records)
     target_source_id = str(fixture.get("messageId", ""))
-    following_context = None
-    if str(fixture.get("referenceId", "")).startswith("REF-31-ENTITY-SELECTS"):
-        following_context = next(
-            (
-                record
-                for record in history_records
-                if isinstance(record.get("fixture"), Mapping)
-                and record["fixture"].get("previousMessageId") == target_source_id
-                and record["fixture"].get("referenceId") == "REF-40-V2-LAYOUT-MEDIA"
-            ),
-            None,
-        )
     try:
         bot = commands.Bot(
             command_prefix=commands.when_mentioned,
@@ -514,11 +577,11 @@ async def _replay_one(
                 channel,
                 viewers=[viewer_member],
                 layout="channel",
-                width=889,
-                height=780,
+                width=presentation["width"],
+                height=presentation["height"],
                 display="fixed",
-                locale="en-GB",
-                timezone="Europe/London",
+                locale=observed["locale"],
+                timezone=observed["timezone"],
             ) as preview:
                 await preview.show(message)
                 from playwright.async_api import async_playwright
@@ -526,11 +589,11 @@ async def _replay_one(
                 async with async_playwright() as playwright:
                     browser = await playwright.chromium.launch()
                     context = await browser.new_context(
-                        viewport={"width": 1280, "height": 780},
+                        viewport={"width": observed["width"], "height": observed["height"]},
                         device_scale_factor=1,
-                        reduced_motion="no-preference",
-                        locale="en-GB",
-                        timezone_id="Europe/London",
+                        reduced_motion="reduce" if observed["reducedMotion"] else "no-preference",
+                        locale=observed["locale"],
+                        timezone_id=observed["timezone"],
                     )
                     page = await context.new_page()
                     try:
@@ -540,29 +603,10 @@ async def _replay_one(
                         await target_row.evaluate(
                             "el => el.scrollIntoView({block: 'start', behavior: 'instant'})"
                         )
-                        action = await _act(page, sidecar, state, scene)
-                        following_local_id = None
-                        if following_context is not None:
-                            following_fixture = following_context.get("fixture", {})
-                            following_local = local_messages.get(str(following_fixture.get("messageId", "")))
-                            following_local_id = (
-                                str(following_local.id) if following_local is not None else None
-                            )
+                        action = await _act(page, sidecar, state, scene, message)
                         capture_bytes, geometry, selector = await _capture_scope(
-                            page, sidecar, state, message, following_local_id
+                            page, sidecar, state, message
                         )
-                        following_context_in_crop = False
-                        if following_local_id is not None:
-                            context_box = await page.locator(
-                                f'article[data-message-id="{following_local_id}"]'
-                            ).bounding_box()
-                            if context_box is not None:
-                                following_context_in_crop = (
-                                    context_box["x"] < geometry["x"] + geometry["width"]
-                                    and context_box["x"] + context_box["width"] > geometry["x"]
-                                    and context_box["y"] < geometry["y"] + geometry["height"]
-                                    and context_box["y"] + context_box["height"] > geometry["y"]
-                                )
                         font_info = await _platform_fonts(page, selector)
                         browser_profile = await page.evaluate("""() => ({
                           viewport:{width:innerWidth,height:innerHeight},
@@ -597,8 +641,6 @@ async def _replay_one(
                             if missing_predecessor
                             else None,
                             "additionalContextMessagesUnavailable": missing_context,
-                            "followingReference40Context": following_context is not None,
-                            "followingContextIncludedInCrop": following_context_in_crop,
                             "sourceBrowserProfile": sidecar.get("profile"),
                             "observedCreatedAt": fixture.get("createdAt"),
                             "replayedCreatedAt": timestamp,
@@ -649,7 +691,10 @@ async def _replay_one(
                                 "sourceGlyphUsageUnverified": True,
                             },
                             "candidateBrowserProfile": browser_profile,
-                            "candidateLogicalViewport": {"width": 889, "height": 780},
+                            "candidateLogicalViewport": {
+                                "width": presentation["width"],
+                                "height": presentation["height"],
+                            },
                             "avatarEvidence": "source avatar URL is remote; no matching local avatar bytes supplied; default avatar used",
                             "localIdentity": {
                                 "authorDisplayFromEvidence": True,
@@ -719,7 +764,6 @@ async def replay(
     }
     sidecar_names = {record["name"] for record in records if isinstance(record.get("name"), str)}
     inventory = {
-        "handoffStatedCount": 16,
         "manifestReferenceCount": len(manifest_references),
         "sidecarCount": len(sidecars),
         "manifestReferencesWithoutSidecars": sorted(manifest_names - sidecar_names),

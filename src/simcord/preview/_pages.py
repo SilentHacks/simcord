@@ -73,19 +73,60 @@ class _Page:
     ) -> str:
         existing = next((asset for asset, item in self.assets.items() if item.key == key), None)
         if existing is not None:
-            record = self.assets[existing]
-            previous = (record.digest, record.filename, record.contentType, record.source)
-            self._resolve_blob(record, metadata, source)
-            if previous != (record.digest, record.filename, record.contentType, record.source):
-                # A handle binds source bytes/metadata, even when replaced at the same URL.
-                asset = "a_" + secrets.token_urlsafe(12)
-                record.id = asset
-                self.assets[asset] = self.assets.pop(existing)
-                self.referenced_assets.discard(existing)
-                self.referenced_assets.add(asset)
-                return asset
-            self.referenced_assets.add(existing)
-            return existing
+            old = self.assets[existing]
+            filename = str(metadata.get("filename", old.filename))
+            content_type = str(metadata.get("content_type") or "application/octet-stream")
+            if content_type == "application/octet-stream":
+                content_type = _content_type(
+                    filename if filename != "asset" else str(metadata.get("url", ""))
+                )
+            replacement = _Asset(
+                id=existing,
+                filename=filename,
+                contentType=content_type,
+                key=key,
+                source=source,
+            )
+            self._resolve_blob(replacement, metadata, source)
+            old_released = False
+            if replacement.diagnostic == "session media budget exceeded" and old.digest is not None:
+                self.preview._release_asset_record(old)
+                old_released = True
+                replacement = _Asset(
+                    id=existing,
+                    filename=filename,
+                    contentType=content_type,
+                    key=key,
+                    source=source,
+                )
+                self._resolve_blob(replacement, metadata, source)
+            if (
+                old.digest,
+                old.filename,
+                old.contentType,
+                old.source,
+            ) == (
+                replacement.digest,
+                replacement.filename,
+                replacement.contentType,
+                replacement.source,
+            ):
+                if not old_released:
+                    self.preview._release_asset_record(replacement)
+                    self.assets[existing] = old
+                else:
+                    self.assets[existing] = replacement
+                self.referenced_assets.add(existing)
+                return existing
+            # A handle binds source bytes/metadata, including unavailable transitions.
+            asset = "a_" + secrets.token_urlsafe(12)
+            if not old_released:
+                self.preview._release_asset_record(old)
+            replacement.id = asset
+            self.assets.pop(existing)
+            self.assets[asset] = replacement
+            self.referenced_assets.add(asset)
+            return asset
         asset = "a_" + secrets.token_urlsafe(12)
         filename = str(metadata.get("filename", "asset"))
         content_type = str(metadata.get("content_type") or "application/octet-stream")
@@ -276,16 +317,53 @@ class _PageOps:
         safe["outcomes"] = outcomes
         return safe
 
+    @staticmethod
+    def _denied_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        payload.update(
+            messageIndex=[],
+            navigation={
+                "query": "",
+                "filter": "all",
+                "hasPrevious": False,
+                "hasNext": False,
+                "previousCursor": None,
+                "nextCursor": None,
+            },
+            messages={},
+            timeline=[],
+            entities={},
+            modal=None,
+            candidates={},
+            assets={},
+            targetId=None,
+            history={
+                "hasBefore": False,
+                "hasAfter": False,
+                "windowStartId": None,
+                "windowEndId": None,
+            },
+            diagnostics=[make_diagnostic("access-denied")],
+        )
+        if isinstance(payload.get("channel"), dict):
+            payload["channel"].update(name=None, guildId=None, type=None, topic=None, canSendMessages=False)
+        payload["status"] = "access_denied"
+        payload["lastAction"] = None
+        payload["activity"] = []
+        return payload
+
     def _page_payload(self, page: _Page) -> dict[str, Any]:
 
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
             payload = json.loads(json.dumps(page.pinned_snapshot))
             allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
-            payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=allowed)
-            payload["activity"] = (
-                [self._receipt_payload(page, item, allowed=True) for item in page.activity] if allowed else []
-            )
+            if allowed:
+                payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=True)
+                payload["activity"] = [
+                    self._receipt_payload(page, item, allowed=True) for item in page.activity
+                ]
+            else:
+                self._denied_payload(payload)
             return payload
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
         if not allowed:
@@ -294,27 +372,6 @@ class _PageOps:
                 page.modal = None
                 page.modal_handle = None
                 self._redact_page_receipts(page)
-                page.snapshot.update(
-                    {
-                        "messageIndex": [],
-                        "navigation": {
-                            "query": "",
-                            "filter": "all",
-                            "hasPrevious": False,
-                            "hasNext": False,
-                            "previousCursor": None,
-                            "nextCursor": None,
-                        },
-                        "messages": {},
-                        "timeline": [],
-                        "entities": {},
-                        "modal": None,
-                        "candidates": {},
-                        "assets": {},
-                        "targetId": None,
-                        "diagnostics": [make_diagnostic("access-denied")],
-                    }
-                )
             page.status = "access_denied"
         payload = json.loads(json.dumps(page.snapshot))
         if allowed:
@@ -324,31 +381,10 @@ class _PageOps:
                 item.pop("diagnostic", None)
                 payload["assets"][asset_id] = item
         else:
-            payload.update(
-                {
-                    "messageIndex": [],
-                    "navigation": {
-                        "query": "",
-                        "filter": "all",
-                        "hasPrevious": False,
-                        "hasNext": False,
-                        "previousCursor": None,
-                        "nextCursor": None,
-                    },
-                    "messages": {},
-                    "timeline": [],
-                    "entities": {},
-                    "modal": None,
-                    "candidates": {},
-                    "assets": {},
-                    "targetId": None,
-                    "diagnostics": [make_diagnostic("access-denied")],
-                }
-            )
-        payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=allowed)
-        payload["activity"] = (
-            [self._receipt_payload(page, item, allowed=True) for item in page.activity] if allowed else []
-        )
+            self._denied_payload(payload)
+        if allowed:
+            payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=True)
+            payload["activity"] = [self._receipt_payload(page, item, allowed=True) for item in page.activity]
         payload["status"] = page.status
         return payload
 

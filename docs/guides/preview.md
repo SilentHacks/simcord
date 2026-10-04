@@ -27,7 +27,7 @@ python -m pip install "simcord[preview]"
 ```
 
 The `preview` extra supplies `aiohttp`, `markdown-it-py`, `linkify-it-py`, `regex`, Pillow, and PyAV.
-`markdown-it-py` parses link-enabled Markdown; `linkify-it-py` recognizes links for the safe absolute
+`markdown-it-py>=4.1` parses link-enabled Markdown; `linkify-it-py` recognizes links for the safe absolute
 HTTP(S)-only linkifier, and `regex` keeps summary truncation on grapheme boundaries. The text helpers
 remain lazy and are not imported by `import simcord`. Installing the extra does not launch a browser.
 For managed PNG capture, install Playwright and its pinned browser explicitly:
@@ -41,10 +41,10 @@ playwright install --with-deps chromium
 containers; plain `playwright install chromium` suffices where those dependencies already exist.
 
 `import simcord` and ordinary tests do not import these optional runtimes, read preview assets,
-start a server, or download a browser. Entering a Preview now **requires** the complete `preview`
-extra and packaged fonts; missing dependencies fail early with a `simcord[preview]` install
-instruction instead of silently degrading Markdown or media. This is a breaking change from the
-older partial-preview behavior. Calling `preview.screenshot(...)` without Playwright or its browser
+start a server, or download a browser. Entering a Preview checks its text/HTTP/raster runtimes
+and packaged fonts; missing resources fail early with a `simcord[preview]` install instruction.
+PyAV is checked when audio/video decoding is requested; missing codecs make that media unavailable
+inline rather than changing its behavior silently. Calling `preview.screenshot(...)` without Playwright or its browser
 gives a direct `install simcord[screenshot]` / `playwright install --with-deps chromium` error.
 
 ## Start and stop a session
@@ -256,6 +256,7 @@ trigger remote fetches or previews.
 Message and Text Display subtext (`-# ` at line start) applies only to that line, including inside
 multiline spoilers. Revealing one fragment reveals the other lines of the same spoiler, without
 revealing adjacent spoilers.
+Spoiler delimiters follow parsed code-span and escape boundaries, and summaries conceal the entire group.
 
 Fenced code preserves its language label. Highlighting uses the pinned Highlight.js 11.11.1 ESM
 build from `@highlightjs/cdn-assets` with these explicit grammars: Bash, C++, C#, CSS, diff,
@@ -294,7 +295,8 @@ page-authorized IDs and browser blob URLs; they are revoked on page replacement,
 close. Authorization is rechecked when bytes are served: the viewer must still have channel and
 history access, the owning message must still be visible, and the attachment must still be present,
 so deleting a message or removing an attachment immediately invalidates its assets. Asset IDs stay
-stable across publications while the underlying asset remains referenced. Missing bytes show a
+stable across publications while their source bytes and identity remain unchanged. Replacing the
+source rotates its handle and discards derived posters and capture frames. Missing bytes show a
 labeled unavailable tile and make a capture incomplete unless `allow_incomplete=True`.
 
 ## Premium button presentations
@@ -320,6 +322,9 @@ video streams. Media over 10 MiB remains downloadable but is not decoded inline.
 retained source bytes; `displayReady` remains false until validation succeeds. Valid still images are
 EXIF-oriented, metadata-stripped PNGs. Animated raster originals stay animated for interactive browser
 playback; captures select a deterministic frame at `media_time` and serve a static PNG.
+Animated custom emoji use the same bounded inline validation and deterministic capture path.
+Transient worker scheduling/process failures do not become permanent content-rejection verdicts;
+a later explicit request can try again without automatic retries.
 
 Audio/video sources remain downloadable separately from display transcodes and static video captures.
 The validator preserves WebM with VP8/VP9 video and optional Opus/Vorbis audio, and Ogg Opus audio;
@@ -397,8 +402,10 @@ version 1, protocol version 3) for agents and capture tooling:
 
 `ready` belongs to the current local `renderGeneration`. It becomes true only after the displayed
 settled projection, DOM, fonts, authorized media, validated display dimensions (or explicit diagnostics),
-and two animation frames are ready. It does not mean the callback succeeded, the output is
-complete, or the capture is calibrated. `publishedRevision` is a settled publication;
+and two animation frames are ready, with no action or page intent still pending. In particular,
+resize/profile reconfiguration must finish before capture tooling treats the surface as ready.
+It does not mean the callback succeeded, the output is complete, or the capture is calibrated.
+`publishedRevision` is a settled publication;
 `contextGeneration` changes on viewer or focus changes;
 `botGeneration` changes on restart; render generations also cover local changes such
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render
@@ -439,6 +446,10 @@ the activity ledger holds at most 20 receipts and no message bodies, and referen
 on every read. Diagnostics use catalog-owned codes and remediation, never raw request or exception
 text. Inspect the receipt and refresh after failures; never retry a consumed sequence to make a
 screenshot look successful.
+Actor dispatch is recorded at the successful backend mutation, before settlement. A later timeout
+or cancellation reports a dispatched, uncertain operation; refreshing and replaying its receipt
+must not repeat the mutation. Denied reads clear channel topics, history boundaries and send capability,
+including when permission is revoked between publications.
 
 ## Structured snapshots
 

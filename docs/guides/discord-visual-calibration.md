@@ -118,21 +118,26 @@ uv run python scripts/validate_discord_reference_pack.py --archive /path/to/cali
 
 The default extracted location is
 `.discord-reference-captures/calibration-batch-01/reference`; use `--reference` for another
-location. The validator checks all 40 files, full sidecar equality, payload/asset hashes and
-crop bounds. Its ignored `acceptance-report.json` and `.txt` distinguish the 16 useful visible
-states/sections from behavioral and provenance gaps, and keep supplemental observations
-separate from original traces.
+location, and `--output` for reports outside that default directory. The validator consumes the
+version-1 exporter schema and derives its image, sidecar and asset inventory from the pack.
+It checks exact archive/extracted bytes, full sidecar equality, payload/asset hashes and crop bounds.
+Supply `--expected-sha256` with an independently received archive fingerprint when verifying identity.
+Its ignored `acceptance-report.json` and `.txt` report structural validation only: captures remain
+unreviewed and uncalibrated until a separate visual/accessibility review establishes more.
 
-The new `discord-ash-calibration-1280x780` profile records Ash, 1280×780, scale 1,
-observed en-GB/Europe-London and user-attested build/font/language settings. Default density
-does not establish Cozy; loaded font declarations do not establish glyph usage. Historical
-profiles and measurements are not re-labelled or overwritten.
+The historical `discord-ash-calibration-1280x780` profile records Ash, 1280×780, scale 1,
+observed en-GB/Europe-London and user-attested build/font/language settings. It is not a default
+for fresh evidence. Default density does not establish Cozy, and font declarations do not establish
+glyph usage. Historical measurements and investigations are not re-labelled or overwritten.
 
 Replay only against a fresh ignored output directory:
 
 The separate, ignored `replay-scene.json` sits beside the reference directory. It records
 visually observed viewer/role/channel labels, rendered role-icon colors and explicit unknowns;
 it is not part of the immutable original archive. Use `--scene` to supply it elsewhere.
+Its `presentation.width` and `presentation.height` must be measured positive pixel dimensions.
+Browser viewport, scale, motion, locale and timezone come from the capture's observed profile,
+not a historical batch default. Missing measurements block replay.
 
 ```bash
 uv run python scripts/replay_visual_reference.py --reference-dir .discord-reference-captures/calibration-batch-01/reference --scene .discord-reference-captures/calibration-batch-01/replay-scene.json --output-dir .discord-reference-captures/calibration-batch-01/replay
@@ -144,17 +149,22 @@ Native SimCord interactions exercise the served UI; they never operate a real Di
 Keep missing avatar/font bytes, platform differences, unobserved permissions and callback
 timing explicit. A diagnostic pixel match is not behavioral certification.
 The live replay deliberately retains SimCord draft/search/paging controls; they are reported
-as simulator-only presentation gaps, not hidden through capture-specific CSS. For the
-Escape-outcome diagnostic, SimCord Apply confirms Moon Base before reopening/Escape;
-this reproduces the visible result without claiming the source's callback phase or cancel
-semantics. Role assignments/counts, full candidate pools and original predecessor sidecars
+as simulator-only presentation gaps, not hidden through capture-specific CSS. Replay supports the
+documented select open/closed/selection states, `escape-cancel`, `idle-top`, `idle-media`,
+`spoiler-revealed`, and `text-empty`, `text-focus`, `text-validation`, `text-filled`.
+`two-selected` requires two distinct observed `stringSelectLabels`; `user-selected` uses
+the observed `viewerLabel`. `text-filled` requires explicit `textModalValues` strings for
+`reference:name` and `reference:feedback`; values are never invented.
+Recipes select controls from fixture metadata and use explicit message, menu, V2-section or
+modal crops; unsupported states and clipped menus are blocked. Escape closes the current
+menu without manufacturing a source callback outcome. Role assignments/counts, full candidate pools and original predecessor sidecars
 remain unattested. Source-order predecessors are reconstructed from the producing bot's
 canonical catalog, with that distinction recorded. Actual PNG dimensions and fractional
 browser bounds are retained; no screenshot is resized or padded to make comparisons pass.
 The local viewer owns the replay guild to avoid adding a synthetic person to entity menus;
 this is a local fixture choice, not evidence of source ownership or permissions.
 
-### Targeted modal follow-up
+### Historical targeted modal follow-up
 
 The producing text-modal feedback label exceeded the
 [45-character Label limit](https://docs.discord.com/developers/components/reference#label).
