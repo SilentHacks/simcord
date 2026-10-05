@@ -28,6 +28,54 @@ async def test_preview_snapshot_matches_packaged_schema(env, channel, alice):
 
 
 @pytest.mark.asyncio
+async def test_action_schema_covers_queries_without_weakening_runtime_admission(env, channel, alice):
+    schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/actionRequest", "$defs": schema["$defs"]})
+    panel = await alice.slash(channel, "panel")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._python
+        snapshot = await preview.snapshot()
+        malformed = action_body(
+            page,
+            "click",
+            1,
+            published_revision=page.revision,
+            control_key=control_key(snapshot, "persistent:ping"),
+        )
+        malformed.pop("target_id")
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(malformed)
+        rejected = await preview._action(page.id, malformed)
+        assert rejected["rejected"] and page.last_sequence == 0
+
+        query = action_body(
+            page,
+            "browse_messages",
+            1,
+            query="Panel",
+            filter="all",
+            published_revision=page.revision,
+            extension_metadata={"allowed": True},
+        )
+        validator.validate(query)
+        found = await preview._action(page.id, query)
+        assert [row["id"] for row in found["result"]["messageIndex"]] == [str(panel.response.id)]
+
+        click = action_body(
+            page,
+            "click",
+            2,
+            published_revision=page.revision,
+            target_id=str(panel.response.id),
+            control_key=control_key(snapshot, "persistent:ping"),
+        )
+        validator.validate(click)
+        accepted = await preview._action(page.id, click)
+        assert not accepted["rejected"]
+        assert channel.last_message.content == "pong"
+
+
+@pytest.mark.asyncio
 async def test_v2_text_display_summary_hides_spoilers_but_searches_visible_text(env, channel, alice):
     secret = "unrevealed-review-secret"
     view = discord.ui.LayoutView()

@@ -63,6 +63,22 @@ assert result.ephemeral
 assert result.response.content == f"Banned {target.mention}: spam"
 ```
 
+### Live handles, detached payloads
+
+Results remain **live handles**: reading them again reflects later original-response edits
+and followups. Each mutable payload read returns a detached nested snapshot, including
+components, embeds, full message payloads, modal payloads and autocomplete choices.
+Editing a returned snapshot does not edit Discord state, and subsequent backend changes
+do not rewrite a previously returned snapshot. Lists and dictionaries keep their shapes;
+absent modal/autocomplete payloads remain `None`, and empty choices remain `[]`.
+
+Modal submission always uses the backend's canonical modal, not edits to a detached
+`result.modal` snapshot. Make real changes through bot response/edit/followup APIs.
+
+These semantics are unconditional in 3.0; remove the temporary 2.3
+`future_behavior` option. See [Errors & diagnostics](diagnostics.md) for the
+matching error-acknowledgement transition.
+
 ## The interaction lifecycle is real
 
 The full lifecycle behaves as on Discord:

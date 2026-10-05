@@ -210,6 +210,7 @@ class ChannelMixin(BackendBase):
         auto_archive_duration: int = 1440,
         message_id: int | None = None,
         applied_tags: Iterable[int] = (),
+        broadcast: bool = True,
     ) -> Channel:
         parent = self.get_channel(parent_id)
         guild = self.get_guild(parent.guild_id)  # type: ignore[arg-type]
@@ -230,17 +231,21 @@ class ChannelMixin(BackendBase):
         self.channels[thread.id] = thread
         self.messages.setdefault(thread.id, {})
         guild.thread_ids.append(thread.id)
+        if broadcast:
+            self.announce_thread_create(thread)
+            cast("Backend", self).create_system_message(
+                parent_id,
+                MessageType.THREAD_CREATED,
+                owner_id,
+                target_channel_id=thread.id,
+                referenced_message_id=message_id,
+            )
+        return thread
+
+    def announce_thread_create(self, thread: Channel) -> None:
         payload = cast("dict[str, Any]", serializers.channel_payload(self, thread))
         payload["newly_created"] = True
         self.emit("THREAD_CREATE", payload)
-        cast("Backend", self).create_system_message(
-            parent_id,
-            MessageType.THREAD_CREATED,
-            owner_id,
-            target_channel_id=thread.id,
-            referenced_message_id=message_id,
-        )
-        return thread
 
     # ------------------------------------------------------- stage instances
 

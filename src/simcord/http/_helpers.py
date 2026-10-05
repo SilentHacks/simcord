@@ -181,7 +181,31 @@ def bot_message(
     body: dict[str, Any] | None = None,
     webhook_execute: bool = False,
 ) -> Message:
-    """Create a message from a request body, authored by the bot or a webhook."""
+    """Prepare a complete message before storing uploads or publishing it."""
+    ctx.backend.get_channel(channel_id)
+    prepared = prepare_bot_message(
+        ctx,
+        channel_id,
+        author_id=author_id,
+        interaction=interaction,
+        webhook_id=webhook_id,
+        body=body,
+        webhook_execute=webhook_execute,
+    )
+    return commit_bot_message(ctx, channel_id, prepared)
+
+
+def prepare_bot_message(
+    ctx: RequestContext,
+    channel_id: int,
+    *,
+    author_id: int | None = None,
+    interaction: Interaction | None = None,
+    webhook_id: int | None = None,
+    body: dict[str, Any] | None = None,
+    webhook_execute: bool = False,
+) -> tuple[dict[str, Any], list[bytes]]:
+    """Validate all fields and read all uploads without changing backend state."""
     backend = ctx.backend
     handled = _MESSAGE_HANDLED
     ignore = _MESSAGE_IGNORED
@@ -235,66 +259,79 @@ def bot_message(
         elif interaction.command_type in {AppCommandType.USER, AppCommandType.MESSAGE}:
             message_type = MessageType.CONTEXT_MENU_COMMAND
     reference = body.get("message_reference")
-    if reference:
-        reference = {
-            "channel_id": str(reference.get("channel_id", channel_id)),
-            "message_id": str(reference["message_id"]),
-        }
-    embeds = body.get("embeds") or ([body["embed"]] if body.get("embed") else [])
-    _validate_embeds(embeds)
+    if reference is not None:
+        if not isinstance(reference, dict) or "message_id" not in reference:
+            raise errors.invalid_form_body("message_reference requires a message_id")
+        try:
+            reference = {
+                key: str(int(str(reference[key]))) for key in ("channel_id", "message_id") if key in reference
+            }
+        except (TypeError, ValueError) as exc:
+            raise errors.invalid_form_body("message_reference identifiers must be integers") from exc
+    embeds = body.get("embeds") if "embeds" in body else ([body["embed"]] if body.get("embed") else [])
+    if embeds is None:
+        embeds = []
     poll = poll_from_wire(backend, body["poll"]) if body.get("poll") else None
-    components = body.get("components") or []
+    uploads = _preview_uploads(ctx)
     try:
-        preview_components = resolve_attachment_references(components, _preview_uploads(ctx))
-        validate_message_state(
-            preview_components,
+        components = validate_message_state(
+            body.get("components") if body.get("components") is not None else [],
             flags=flags,
             content=body.get("content"),
             embeds=embeds,
             poll=poll,
             stickers=sticker_items,
+            attachments=uploads,
+            require_nonempty=True,
         )
+        resolve_attachment_references(components, uploads)
     except (ComponentValidationError, TypeError, ValueError) as exc:
-        detail = exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
-        raise errors.invalid_form_body(str(detail)) from exc
-    uploads = ctx.store_files(channel_id)
-    try:
-        components = resolve_attachment_references(components, uploads)
-    except ComponentValidationError as exc:
         raise errors.invalid_form_body(str(exc)) from exc
-    return backend.create_message(
-        channel_id,
-        author_id if author_id is not None else backend.bot_user.id,
-        body.get("content"),
-        embeds=embeds,
-        components=components,
-        attachments=uploads,
-        stickers=sticker_items,
-        flags=flags,
-        tts=tts,
-        allowed_mentions=mention_policy,
-        reference=reference,
-        interaction_metadata=interaction_metadata,
-        webhook_id=webhook_id,
-        author_name=author_name,
-        author_avatar=author_avatar,
-        poll=poll,
-        message_type=message_type,
-        broadcast=not flags & EPHEMERAL_FLAG,
-    )
+    fields = {
+        "author_id": author_id if author_id is not None else backend.bot_user.id,
+        "content": body.get("content"),
+        "embeds": embeds,
+        "components": components,
+        "stickers": sticker_items,
+        "flags": flags,
+        "tts": tts,
+        "allowed_mentions": mention_policy,
+        "reference": reference,
+        "interaction_metadata": interaction_metadata,
+        "webhook_id": webhook_id,
+        "author_name": author_name,
+        "author_avatar": author_avatar,
+        "poll": poll,
+        "message_type": message_type,
+        "broadcast": not flags & EPHEMERAL_FLAG,
+    }
+    return fields, [file.fp.read() for file in ctx.files]
 
 
-def _validate_embeds(embeds: list[dict[str, Any]]) -> None:
-    if len(embeds) > 10:
-        raise errors.invalid_form_body("embeds: Must be 10 or fewer in length")
-    for embed in embeds:
-        total = len(embed.get("title") or "") + len(embed.get("description") or "")
-        for fld in embed.get("fields") or []:
-            total += len(fld.get("name") or "") + len(fld.get("value") or "")
-        total += len((embed.get("footer") or {}).get("text") or "")
-        total += len((embed.get("author") or {}).get("name") or "")
-        if total > 6000:
-            raise errors.invalid_form_body("embeds: total size of embeds exceeds 6000 characters")
+def commit_bot_message(
+    ctx: RequestContext,
+    channel_id: int,
+    prepared: tuple[dict[str, Any], list[bytes]],
+    *,
+    broadcast: bool | None = None,
+) -> Message:
+    fields, upload_data = prepared
+    attachments = [
+        ctx.backend.cdn.store_attachment(
+            ctx.backend.snowflake(), channel_id, file.filename, data, file.description
+        )
+        for file, data in zip(ctx.files, upload_data, strict=True)
+    ]
+    fields = {
+        **fields,
+        "attachments": attachments,
+        "components": resolve_attachment_references(fields["components"], attachments),
+    }
+    if fields["reference"] is not None:
+        fields["reference"] = {"channel_id": str(channel_id), **fields["reference"]}
+    if broadcast is not None:
+        fields["broadcast"] = broadcast
+    return ctx.backend.create_message(channel_id, **fields)
 
 
 def _preview_uploads(ctx: RequestContext) -> list[dict[str, Any]]:
@@ -312,10 +349,10 @@ def _preview_uploads(ctx: RequestContext) -> list[dict[str, Any]]:
     ]
 
 
-def _store_upload(ctx: RequestContext, channel_id: int, index: int) -> dict[str, Any]:
+def _store_upload(ctx: RequestContext, channel_id: int, index: int, data: bytes) -> dict[str, Any]:
     file = ctx.files[index]
     return ctx.backend.cdn.store_attachment(
-        ctx.backend.snowflake(), channel_id, file.filename, file.fp.read(), file.description
+        ctx.backend.snowflake(), channel_id, file.filename, data, file.description
     )
 
 
@@ -325,16 +362,17 @@ def _validate_edit_state(
     components: list[dict[str, Any]],
     *,
     flags: int,
-) -> None:
+) -> list[dict[str, Any]]:
     current_content = message.content if message is not None else None
     current_embeds = message.embeds if message is not None else []
     try:
-        _validate_embeds(fields.get("embeds", current_embeds) or [])
-        validate_message_state(
+        return validate_message_state(
             components,
             flags=flags,
             content=fields.get("content", current_content),
-            embeds=fields.get("embeds", current_embeds) or [],
+            embeds=fields.get("embeds", current_embeds)
+            if fields.get("embeds", current_embeds) is not None
+            else [],
             poll=message.poll if message is not None else None,
             stickers=message.stickers if message is not None else None,
             previous_flags=message.flags if message is not None else 0,
@@ -402,12 +440,10 @@ def message_edit_changes(
         upload_indices = list(range(len(preview_uploads)))
 
     current_components = message.components if message is not None else []
-    effective_components = fields.get("components", current_components) or []
+    effective_components = fields.get("components", current_components)
+    if effective_components is None:
+        effective_components = []
     preview_attachments = fields.get("attachments", current_attachments)
-    try:
-        preview_components = resolve_attachment_references(effective_components, preview_attachments)
-    except ComponentValidationError as exc:
-        raise errors.invalid_form_body(str(exc)) from exc
     try:
         flags = (
             int(fields["flags"])
@@ -416,12 +452,19 @@ def message_edit_changes(
         )
     except (TypeError, ValueError) as exc:
         raise errors.invalid_form_body("flags must be an integer") from exc
-    _validate_edit_state(message, fields, preview_components, flags=flags)
+    effective_components = _validate_edit_state(message, fields, effective_components, flags=flags)
+    try:
+        resolve_attachment_references(effective_components, preview_attachments)
+    except ComponentValidationError as exc:
+        raise errors.invalid_form_body(str(exc)) from exc
+    if "components" in fields:
+        fields["components"] = effective_components
 
     if upload_indices:
+        upload_data = {index: ctx.files[index].fp.read() for index in dict.fromkeys(upload_indices)}
         stored_by_index = {
-            index: _store_upload(ctx, message.channel_id if message is not None else 0, index)
-            for index in set(upload_indices)
+            index: _store_upload(ctx, message.channel_id if message is not None else 0, index, data)
+            for index, data in upload_data.items()
         }
         fields["attachments"] = [
             stored_by_index[index] if index is not None else attachment

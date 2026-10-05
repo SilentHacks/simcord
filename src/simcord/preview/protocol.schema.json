@@ -181,7 +181,28 @@
       "allOf": [{
         "if": { "properties": { "kind": { "enum": ["click", "select", "modal_submit", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "browse_messages", "browse_candidates", "configure_presentation"] } } },
         "then": { "required": ["published_revision"] }
-      }]
+      }, {
+        "if": { "properties": { "kind": { "enum": ["click", "select", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned"] } } },
+        "then": { "required": ["target_id"], "properties": { "target_id": { "type": ["string", "integer"] } } }
+      }],
+      "oneOf": [
+        { "properties": { "kind": { "const": "click" }, "control_key": { "type": "string" } }, "required": ["control_key"] },
+        { "properties": { "kind": { "const": "select" }, "control_key": { "type": "string" }, "values": { "type": "array", "items": { "type": "string" } } }, "required": ["control_key", "values"] },
+        { "properties": { "kind": { "const": "modal_submit" }, "modal_handle": { "type": "string" }, "values": { "type": "object" } }, "required": ["modal_handle", "values"] },
+        { "properties": { "kind": { "const": "viewer" }, "viewer_id": { "type": ["string", "integer"] } }, "required": ["viewer_id"] },
+        { "properties": { "kind": { "const": "focus" } } },
+        { "properties": { "kind": { "enum": ["refresh", "close"] } } },
+        { "properties": { "kind": { "const": "history" }, "direction": { "enum": ["older", "newer", "latest"] } }, "required": ["direction"] },
+        { "properties": { "kind": { "const": "send_message" }, "content": { "type": "string", "minLength": 1, "maxLength": 2000 }, "reply_to_id": { "type": ["string", "integer", "null"] } }, "required": ["content"] },
+        { "properties": { "kind": { "const": "edit_message" }, "content": { "type": "string", "maxLength": 2000 } }, "required": ["content"] },
+        { "properties": { "kind": { "const": "delete_message" }, "confirmed": { "const": true } }, "required": ["confirmed"] },
+        { "properties": { "kind": { "const": "set_reaction" }, "emoji": { "type": "string", "minLength": 1 }, "reacted": { "type": "boolean" } }, "required": ["emoji", "reacted"] },
+        { "properties": { "kind": { "const": "set_poll_votes" }, "answer_ids": { "type": "array", "uniqueItems": true, "items": { "type": ["string", "integer"] } } }, "required": ["answer_ids"] },
+        { "properties": { "kind": { "const": "set_pinned" }, "pinned": { "type": "boolean" } }, "required": ["pinned"] },
+        { "properties": { "kind": { "const": "browse_messages" }, "query": { "type": "string", "maxLength": 128 }, "filter": { "const": "all" }, "cursor": { "type": ["string", "null"] } }, "required": ["query", "filter"] },
+        { "properties": { "kind": { "const": "browse_candidates" }, "control_key": { "type": "string", "minLength": 1, "maxLength": 256 }, "query": { "type": "string", "maxLength": 128 }, "cursor": { "type": ["string", "null"] }, "modal_handle": { "type": ["string", "null"] } }, "required": ["control_key", "query"] },
+        { "properties": { "kind": { "const": "configure_presentation" }, "layout": { "enum": ["message", "channel"] }, "display": { "enum": ["responsive", "fixed"] }, "width": { "type": "integer", "minimum": 1, "maximum": 32768 }, "height": { "type": "integer", "minimum": 1, "maximum": 32768 }, "host_width": { "type": "integer", "minimum": 1, "maximum": 32768 }, "host_height": { "type": "integer", "minimum": 1, "maximum": 32768 } }, "required": ["layout", "display", "width", "height", "host_width", "host_height"] }
+      ]
     },
     "queryActionResult": {
       "oneOf": [

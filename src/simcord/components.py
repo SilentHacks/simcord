@@ -552,6 +552,45 @@ def validate_components(components: Any, *, flags: int = 0) -> list[dict[str, An
     return normalized
 
 
+def validate_embeds(embeds: Any) -> None:
+    """Check Discord's per-field and combined embed limits without trimming storage."""
+    if not isinstance(embeds, list):
+        raise ComponentValidationError("embeds must be an array")
+    if len(embeds) > 10:
+        raise ComponentValidationError("embeds: Must be 10 or fewer in length")
+    total = 0
+    for index, embed in enumerate(embeds):
+        if not isinstance(embed, Mapping):
+            raise ComponentValidationError(f"embeds[{index}] must be an object")
+        fields = embed.get("fields") if embed.get("fields") is not None else []
+        if not isinstance(fields, list) or len(fields) > 25:
+            raise ComponentValidationError(f"embeds[{index}].fields: Must be 25 or fewer in length")
+        texts = [("title", embed.get("title"), 256), ("description", embed.get("description"), 4096)]
+        for field_index, field in enumerate(fields):
+            if not isinstance(field, Mapping):
+                raise ComponentValidationError(f"embeds[{index}].fields[{field_index}] must be an object")
+            texts.extend(
+                (f"fields[{field_index}].{key}", field.get(key), limit)
+                for key, limit in (("name", 256), ("value", 1024))
+            )
+        for key, text_key, limit in (("footer", "text", 2048), ("author", "name", 256)):
+            section = embed.get(key) if embed.get(key) is not None else {}
+            if not isinstance(section, Mapping):
+                raise ComponentValidationError(f"embeds[{index}].{key} must be an object")
+            texts.append((f"{key}.{text_key}", section.get(text_key), limit))
+        for path, text, limit in texts:
+            if text is None:
+                continue
+            if not isinstance(text, str):
+                raise ComponentValidationError(f"embeds[{index}].{path} must be a string")
+            length = len(text.strip())
+            if length > limit:
+                raise ComponentValidationError(f"embeds[{index}].{path}: Must be {limit} or fewer characters")
+            total += length
+    if total > 6000:
+        raise ComponentValidationError("embeds: total size of embeds exceeds 6000 characters")
+
+
 def validate_message_state(
     components: Any,
     *,
@@ -561,11 +600,12 @@ def validate_message_state(
     poll: Any = None,
     stickers: Any = None,
     previous_flags: int = 0,
+    attachments: Any = None,
+    require_nonempty: bool = False,
 ) -> list[dict[str, Any]]:
     if content is not None and (not isinstance(content, str) or len(content) > 2000):
         raise _fail("", "content must be a string of 2000 or fewer characters")
-    if not isinstance(embeds, list):
-        raise _fail("", "embeds must be an array")
+    validate_embeds(embeds)
     v2 = bool(int(flags) & COMPONENTS_V2_FLAG)
     if int(previous_flags) & COMPONENTS_V2_FLAG and not v2:
         raise _fail("", "the components_v2 flag cannot be removed")
@@ -573,6 +613,10 @@ def validate_message_state(
         raise _fail("", "components_v2 messages require at least one component")
     if v2 and ((content or "") or embeds or poll is not None or stickers):
         raise _fail("", "components_v2 messages cannot contain content, embeds, polls, or stickers")
+    if require_nonempty and not (
+        (content or "").strip() or embeds or components or attachments or stickers or poll is not None
+    ):
+        raise ComponentValidationError("Cannot send an empty message")
     return validate_components(components, flags=int(flags))
 
 

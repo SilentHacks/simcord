@@ -106,7 +106,7 @@ class Env:
         self.backend = Backend()
         self._errors: list[BaseException] = []
         self._error_ids: set[int] = set()
-        self._errors_inspected = False
+        self._errors_acknowledged = 0
         self._guilds: list[GuildHandle] = []
         self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
         self._callbacks: list[_CallbackRecord] = []
@@ -1060,9 +1060,9 @@ class Env:
 
     @property
     def errors(self) -> list[BaseException]:
-        """Errors the bot raised; reading marks them inspected."""
-        self._errors_inspected = True
-        return self._errors
+        """Return a shallow snapshot and acknowledge only the currently captured prefix."""
+        self._errors_acknowledged = self.error_cursor
+        return list(self._errors)
 
     def _capture_errors(self) -> None:
         from discord.ext import commands
@@ -1295,9 +1295,14 @@ class Env:
         fails). Call this to assert the bot ran cleanly: it raises an
         ``ExceptionGroup`` of everything captured — even a single error — and
         does nothing if there were none.
+        This acknowledges only the current prefix, so errors captured later
+        still fail teardown.
         """
-        self._errors_inspected = True
-        captured = list(self._errors)
+        self._raise_errors_since(0)
+
+    def _raise_errors_since(self, cursor: int) -> None:
+        captured = self.errors_since(cursor)
+        self._errors_acknowledged = self.error_cursor
         if not captured:
             return
         message = f"bot raised {len(captured)} error(s) during the test"
@@ -1371,10 +1376,10 @@ def _summarize(payload: Any, limit: int = 140) -> str:
 class run:
     """``async with simcord.run(bot) as env:`` — attach, fake-login, READY.
 
-    On exit, if the bot raised errors the test never inspected (via
-    ``env.errors`` or ``env.raise_errors()``), they are re-raised as an
-    ``ExceptionGroup`` so bot bugs cannot pass silently. Opt out with
-    ``simcord.run(bot, check_errors=False)``.
+    On exit, uninspected bot errors are re-raised as an ``ExceptionGroup``.
+    Error inspection acknowledges only the current prefix. Result handles stay
+    live, while individual mutable payload reads are detached snapshots.
+    Disable teardown checking with ``simcord.run(bot, check_errors=False)``.
     """
 
     def __init__(self, bot: discord.Client, **options: Any) -> None:
@@ -1388,5 +1393,5 @@ class run:
         env = self._env
         await env.shutdown()
         # Don't mask an exception already propagating out of the test body.
-        if exc_type is None and env.check_errors and not env._errors_inspected:
-            env.raise_errors()
+        if exc_type is None and env.check_errors:
+            env._raise_errors_since(env._errors_acknowledged)

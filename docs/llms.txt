@@ -51,7 +51,7 @@ The tested bot must be constructible without calling `bot.run()`. Provide a pyte
   shim. Read `window.simcordPreview` as immutable schema 1 / protocol 3 status; readiness, completion,
   publication, transport, actual visibility and projected IDs are separate. Never share private
   snapshots, recipes, captures, capability URLs or reference images; Copy/Download support reports
-  use an allowlist. Discord measurements and human screen-reader gates remain blocked.
+  use an allowlist. Preview is not calibration/accessibility-certified; 3.0 releases with an explicit maintainer evidence-gate waiver.
 
 ## Migrating from 1.x
 

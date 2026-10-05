@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -20,7 +21,7 @@ def to_discord_message(env: Env, message: Message) -> discord.Message:
 
     state = get_state(env.bot)
     channel = env.bot.get_channel(message.channel_id)
-    payload = serializers.message_payload(env.backend, message)
+    payload = deepcopy(serializers.message_payload(env.backend, message))
     return discord.Message(state=state, channel=channel, data=payload)  # type: ignore[arg-type]
 
 
@@ -45,11 +46,11 @@ class ResponseMessage:
 
     @property
     def embeds(self) -> list[discord.Embed]:
-        return [discord.Embed.from_dict(e) for e in self._message.embeds]
+        return [discord.Embed.from_dict(e) for e in deepcopy(self._message.embeds)]
 
     @property
     def components(self) -> list[dict[str, Any]]:
-        return list(self._message.components)
+        return deepcopy(self._message.components)
 
     @property
     def flags(self) -> discord.MessageFlags:
@@ -59,7 +60,7 @@ class ResponseMessage:
     @property
     def attachments(self) -> list[discord.Attachment]:
         """Uploaded files as the same ``discord.Attachment`` objects as a message."""
-        return self.message.attachments
+        return to_discord_message(self._env, self._message).attachments
 
     @property
     def ephemeral(self) -> bool:
@@ -95,11 +96,11 @@ class InteractionResult:
     @property
     def modal(self) -> dict[str, Any] | None:
         """The raw modal payload, if the bot responded with a modal."""
-        return self._interaction.modal
+        return deepcopy(self._interaction.modal)
 
     @property
     def autocomplete_choices(self) -> list[dict[str, Any]] | None:
-        return self._interaction.autocomplete_choices
+        return deepcopy(self._interaction.autocomplete_choices)
 
     @property
     def response(self) -> ResponseMessage | None:

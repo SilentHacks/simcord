@@ -9,7 +9,6 @@ channels), then delivered as authentic gateway events.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import wraps
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -18,7 +17,7 @@ from . import interactions as _interactions
 from .backend import serializers
 from .backend.access import can_access_channel, can_access_message
 from .backend.errors import SetupError
-from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
+from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle, _guard_builder_operation
 from .components import validate_modal, walk_components
 from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
 from .results import InteractionResult, ResponseMessage, to_discord_message
@@ -890,18 +889,6 @@ async def _dispatch_actor_interaction(
     return InteractionResult(actor._env, record)
 
 
-def _guard_actor_operation(method: Any) -> Any:
-    @wraps(method)
-    async def guarded(self: MemberActor, *args: Any, **kwargs: Any) -> Any:
-        token = self._env._begin_operation(method.__name__)
-        try:
-            return await method(self, *args, **kwargs)
-        finally:
-            self._env._end_operation(token)
-
-    return guarded
-
-
 for _operation_name in (
     "send",
     "edit",
@@ -927,4 +914,4 @@ for _operation_name in (
     "subscribe_event",
     "unsubscribe_event",
 ):
-    setattr(MemberActor, _operation_name, _guard_actor_operation(getattr(MemberActor, _operation_name)))
+    setattr(MemberActor, _operation_name, _guard_builder_operation(getattr(MemberActor, _operation_name)))

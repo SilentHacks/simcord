@@ -549,6 +549,12 @@ An action envelope includes `protocol_version: 3`, `generation`, `bot_generation
 with only the requested page. The `protocol.schema.json` file also defines the immutable browser-status
 and allowlisted support-report shapes; there is no diagnostics/report upload endpoint.
 
+
+The packaged schema describes all 17 action kinds at `#/$defs/actionRequest`.
+Unknown extension metadata remains accepted. Schema validity does not establish
+authorization, freshness, control availability, or replay admission; runtime checks
+remain authoritative. Modal file bytes use multipart transport rather than JSON.
+
 ## Channel layout, publication time, and system history
 
 Use `layout="channel"` to see the authorized history window and composer rather than only the
@@ -563,7 +569,7 @@ the browser clock:
 ```python
 async with env.preview(channel, viewers=[alice], layout="channel") as preview:
     before = await preview.snapshot()
-    env.advance_time(3600)
+    await env.advance_time(3600)
     await preview.refresh()
     after = await preview.snapshot()
     assert before["profile"]["presentationTime"] != after["profile"]["presentationTime"]
@@ -591,6 +597,9 @@ message mutations republish every open authorized page. Reaction projections exp
 and the viewer's own reaction state; poll projections expose answer counts, percentages, expiry,
 and the viewer's selections, never voter lists. Failed actions retain recoverable drafts; refresh
 the page after a stale or failed result rather than replaying the consumed request.
+
+
+## Screenshot profiles, modes, and reports
 
 `preview.screenshot(path, ...)` settles and pins the requested viewer/target before releasing the
 Env operation guard. It returns an immutable, versioned `PreviewCapture`, not just a path:

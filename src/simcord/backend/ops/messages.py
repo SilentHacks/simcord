@@ -107,6 +107,8 @@ class MessageMixin(BackendBase):
                 embeds=embed_value,
                 poll=poll,
                 stickers=sticker_value,
+                attachments=attachments,
+                require_nonempty=True,
             )
         except (ComponentValidationError, TypeError, ValueError) as exc:
             raise _component_error(
@@ -156,14 +158,7 @@ class MessageMixin(BackendBase):
         if channel.is_thread:
             channel.message_count += 1
         if broadcast:
-            payload = dict(serializers.message_payload(self, message))
-            if channel.guild_id is not None:
-                guild = self.guilds[channel.guild_id]
-                if author_id in guild.members:
-                    payload["member"] = serializers.member_payload(
-                        self, guild, guild.members[author_id], with_user=False
-                    )
-            self.emit("MESSAGE_CREATE", payload)
+            self.announce_message_create(message)
         return message
 
     def _mention_state(
@@ -264,6 +259,17 @@ class MessageMixin(BackendBase):
             system_metadata=metadata,
         )
 
+    def announce_message_create(self, message: Message) -> None:
+        channel = self.get_channel(message.channel_id)
+        payload = dict(serializers.message_payload(self, message))
+        if channel.guild_id is not None:
+            guild = self.guilds[channel.guild_id]
+            if message.author_id in guild.members:
+                payload["member"] = serializers.member_payload(
+                    self, guild, guild.members[message.author_id], with_user=False
+                )
+        self.emit("MESSAGE_CREATE", payload)
+
     def edit_message(self, channel_id: int, message_id: int, fields: dict[str, Any]) -> Message:
         message = self.get_message(channel_id, message_id)
         channel = self.get_channel(channel_id)
@@ -271,9 +277,11 @@ class MessageMixin(BackendBase):
         embeds = fields["embeds"] if "embeds" in fields else message.embeds
         components = fields["components"] if "components" in fields else message.components
         attachments = fields["attachments"] if "attachments" in fields else message.attachments
-        flags = int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
         policy = fields.get("allowed_mentions", message.allowed_mentions)
         try:
+            flags = (
+                int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
+            )
             normalized_components = validate_message_state(
                 [] if components is None else components,
                 flags=flags,

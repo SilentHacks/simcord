@@ -44,13 +44,14 @@ def interaction_callback(ctx: RequestContext) -> Any:
     elif callback_type == CallbackType.DEFERRED_UPDATE_MESSAGE:
         record.defer_update()
     elif callback_type == CallbackType.UPDATE_MESSAGE:
-        if record.source_message_id is not None:
-            existing = backend.get_message(record.channel_id, record.source_message_id)
-            message = backend.edit_message(
-                record.channel_id,
-                record.source_message_id,
-                message_edit_changes(ctx, existing, body=data),
-            )
+        if record.source_message_id is None:
+            raise errors.invalid_form_body("UPDATE_MESSAGE requires a source message")
+        existing = backend.get_message(record.channel_id, record.source_message_id)
+        message = backend.edit_message(
+            record.channel_id,
+            record.source_message_id,
+            message_edit_changes(ctx, existing, body=data),
+        )
         record.update_source(record.source_message_id)
     elif callback_type == CallbackType.MODAL:
         try:

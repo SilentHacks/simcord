@@ -11,9 +11,16 @@ SimCord 3.0 uses preview protocol 3. Protocol-2 consumers must use the
 [migration guide](guides/preview.md#migrating-preview-consumers-to-protocol-3);
 there is no compatibility shim.
 
-Authorized private Discord transition/pixel measurements and human screen-reader
-attestation remain unavailable. These external release gates are blocked; local
-screenshots and automated ARIA checks do not substitute for that evidence.
+On 2026-10-05, the maintainer approved the current preview after human review and
+explicitly authorized releasing 3.0 with documented evidence limitations, waiving
+the outstanding external preview-evidence publication gates and consumer migration
+validation. This approval is not Discord calibration or screen-reader certification.
+
+A local 16-capture reference pack passed structural acceptance, but its report
+labels the evidence uncalibrated. Reviewed replay comparisons still include
+dimension mismatches; no dated modal/select/reaction/poll screen-reader attestation
+is recorded. These remain known limitations, not passing comparisons.
+Private images, identities and raw reports remain outside published artifacts.
 The dated historical record below is not certification of the current release.
 
 ## Historical attestation — 2026-09-27 UTC
@@ -59,8 +66,8 @@ visible keyboard focus intentionally differs; media, avatars and SKU icons requi
 explicit authorized offline bytes; external provider/commerce services, account
 navigation, login and native-mobile behavior are out of scope. Media decoding,
 page count and screenshot raster have bounded limits; platform codec support varies,
-and the worker memory ceiling is Linux-only. Unmeasured transitions, unknown client
-provenance and human modal/select/reaction/poll screen-reader smoke are release blockers.
+and the worker memory ceiling is Linux-only. Unmeasured transitions, incomplete client
+provenance and missing screen-reader attestation remain evidence gaps under the release waiver.
 
 **Commands exercised:** `uv run pytest -q --tb=short` (867 passed, six
 third-party deprecation warnings, after review fixes);

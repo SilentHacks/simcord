@@ -1,6 +1,6 @@
 ---
 title: "Stability & versioning"
-description: "What SimCord's public API covers, what stays internal, and how versioning works for the 2.0 release."
+description: "SimCord's public API, semantic versioning, and the compatible 2.3 migration bridge for 3.0."
 ---
 
 # Stability & versioning
@@ -31,9 +31,8 @@ own supervisor.
 
 SimCord follows [semantic versioning](https://semver.org/). The
 **public API** below is covered by that promise: no breaking change to it without
-a major version bump. The 2.0 release keeps this contract while changing
-settlement ownership as described above. CI continues to enforce honest parity,
-coverage, and offline-performance checks.
+a major version bump. Historical 2.0 settlement changes are described above.
+CI continues to enforce honest parity, coverage, and offline-performance checks.
 
 The fuzzer proves that across every route whose body is a field set — message
 send and edits, webhook execute, bulk delete, and the rest — an unrecognised
@@ -125,6 +124,34 @@ verified in CI, so they cannot quietly drift as discord.py evolves.
 
 These exception types are part of the public API precisely so your tests can
 assert on them.
+
+## Migrating from 2.3 to 3.0
+
+The error and result contracts available through `future_behavior=True` in 2.3
+are unconditional in 3.0. Remove `future_behavior` from `simcord.run(...)` and
+`@pytest.mark.simcord(...)`; the temporary option and legacy behavior are gone.
+
+- Reading `env.errors` acknowledges only the currently captured prefix and returns
+  a list snapshot. Later errors, including shutdown errors, still fail teardown.
+  Exception objects and tracebacks are preserved. Explicit `raise_errors()` checks
+  the entire history; preview diagnostics never acknowledge errors.
+- Result handles remain live, but mutable payloads are detached on each read.
+  Saved payloads no longer follow edits, and mutating them cannot change the world.
+  Read the handle again after a genuine edit or followup.
+
+Do not rely on saved error lists or payloads staying live. Keep a result handle and
+read it again after changes; inspect newly captured errors after each expected failure.
+See the [diagnostics guide](guides/diagnostics.md) and
+[interaction guide](guides/interactions.md) for details.
+
+The compatible correctness fixes reject previously accepted invalid messages and
+prevent rejected forum requests from publishing partial state. Tests depending on
+invalid Discord payloads must change; nullable edits remain supported.
+Independent startup budgets and `strict_sync=False` remain supported.
+
+This release retains preview protocol 2. The protocol-3 work and its additional
+action kinds remain on the separate 3.0 development line. No Discord visual
+calibration or human accessibility sign-off is implied by local automated checks.
 
 ## Deprecation policy
 
