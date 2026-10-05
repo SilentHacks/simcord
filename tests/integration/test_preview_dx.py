@@ -27,6 +27,50 @@ async def test_preview_snapshot_matches_packaged_schema(env, channel, alice):
 
 
 @pytest.mark.asyncio
+async def test_action_schema_preserves_admission_and_focus_defaults(env, channel, alice):
+    schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/action", "$defs": schema["$defs"]})
+    result = await alice.slash(channel, "panel")
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._python
+        snapshot = await preview.snapshot()
+        envelope = {
+            "sequence": 1,
+            "request_id": "schema-click",
+            "generation": page.generation,
+            "bot_generation": env._generation,
+            "kind": "click",
+            "published_revision": page.revision,
+            "target_id": result.response.id,
+            "control_key": control_key(snapshot, "persistent:ping"),
+            "extension_metadata": {"allowed": True},
+        }
+        validator.validate(envelope)
+        for field in ("target_id", "control_key", "published_revision"):
+            invalid = {key: value for key, value in envelope.items() if key != field}
+            with pytest.raises(jsonschema.ValidationError):
+                validator.validate(invalid)
+            rejected = await preview._action(page.id, invalid)
+            assert rejected["rejected"]
+            assert page.last_sequence == 0
+        accepted = await preview._action(page.id, envelope)
+        assert not accepted["rejected"]
+        assert channel.last_message.content == "pong"
+
+        focus = {
+            "kind": "focus",
+            "sequence": 2,
+            "request_id": "schema-focus",
+            "generation": page.generation,
+            "bot_generation": env._generation,
+        }
+        validator.validate(focus)
+        accepted = await preview._action(page.id, focus)
+        assert not accepted["rejected"]
+        assert env.backend.get_message(channel.id, page.target_id).content == "pong"
+
+
+@pytest.mark.asyncio
 async def test_preview_snapshot_returns_detached_projection(env, channel, alice):
     await alice.slash(channel, "panel")
     async with env.preview(channel, viewers=[alice]) as preview:

@@ -317,9 +317,9 @@ def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[Any]:
         if getattr(callback, "__module__", "") == "asyncio.tasks" and getattr(
             callback, "__qualname__", ""
         ).endswith("shield.<locals>._outer_done_callback"):
-            for cell in callback.__closure__ or ():
+            for name, cell in zip(callback.__code__.co_freevars, callback.__closure__ or (), strict=True):
                 value = cell.cell_contents
-                if isinstance(value, asyncio.Future):
+                if name == "inner" and isinstance(value, asyncio.Future):
                     found.append(value)
 
     wait_codes = {

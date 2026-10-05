@@ -96,9 +96,17 @@ Both `simcord.run(bot, **options)` and the underlying `Env` accept these keyword
 | --- | --- | --- |
 | `strict_sync` | `True` | Unsynced app commands can't be invoked — invoking one fails the test, catching forgotten `tree.sync()` calls. Set `False` to auto-register unsynced commands for isolated unit tests. |
 | `check_errors` | `True` | At teardown, errors the bot raised but the test never inspected are re-raised as an `ExceptionGroup`, so bot bugs can't pass silently. Set `False` to opt out. |
+| `future_behavior` | `False` | Temporary 2.3 bridge: shallow error snapshots with prefix acknowledgement, and detached mutable result payload snapshots. Must be a bool. In 3.0 the flag is removed and these semantics become the defaults. |
 | `approved_intents` | all | Simulates developer-portal privileged-intent toggles. |
 | `shard_count` | client setting | Supplies the Get Gateway Bot recommendation when an `AutoShardedClient` does not configure `shard_count` itself. |
 | `settle_timeout` | `5.0` seconds | Default maximum time for joining runnable bot work; a direct settle `timeout=` overrides it. |
+
+`settle_timeout` does not change startup's fixed five-second READY settlement budget.
+Restart drains existing work using `settle_timeout`, then gets a fresh fixed five-second
+READY budget and a separate fixed five-second guild-replay budget. These budgets do not
+bound login or `setup_hook`. `strict_sync=False` remains an independent opt-out; the
+migration bridge does not change command registration.
+
 External waits must be scoped with `await env.external_wait(awaitable, reason="...")`; unknown waits time out. Overlapping actor, builder, lifecycle, and time-control operations reject before mutation. Teardown cancels bot-owned work but leaves caller-owned tasks alive.
 
 ```python
@@ -160,6 +168,12 @@ async def test_command_logic_in_isolation(simcord_env):
     # this env auto-registers unsynced commands; other tests stay strict
     ...
 ```
+
+To opt into the 3.0 observation behavior for a plugin fixture, use
+`@pytest.mark.simcord(future_behavior=True)`. The same flag works in a wrapper fixture
+with `simcord.run(bot, future_behavior=True)`. Legacy `env.errors` and mutable result
+payload reads emit `DeprecationWarning` with this migration guidance; startup and scalar
+result reads do not.
 
 For an override shared by many tests, drive `simcord.run` yourself in a small wrapper fixture
 instead:

@@ -121,9 +121,16 @@ Full treatment in [Errors & diagnostics](diagnostics.md).
 
 ## Validation limits
 
-Real Discord limits are enforced with real error codes. Message content over 2000
-characters, or embeds totalling over 6000 characters, raise `discord.HTTPException` with
-code `50035` — exactly as in production:
+Message creation and edits share validation across bot HTTP requests, actor helpers and
+the backend. Content is limited to 2000 characters. Messages may contain at most 10
+embeds, with at most 6000 text characters **across all embeds combined**. Individual
+embed limits are title 256, description 4096, 25 fields, field name 256, field value
+1024, footer text 2048 and author name 256. Leading and trailing whitespace in each
+embed text field is excluded from these counts; stored text is unchanged. Counts use
+Python's Unicode `len`, as in earlier 2.x releases.
+
+Invalid bot requests raise `discord.HTTPException` with code `50035`; actor/backend
+calls raise `simcord.BackendError` with the same code:
 
 ```python
 async def test_rejects_oversized(simcord_env):
@@ -132,6 +139,25 @@ async def test_rejects_oversized(simcord_env):
         await some_path_that_sends_too_much()
     assert exc.value.code == 50035
 ```
+
+Some invalid messages previously accepted by SimCord now fail, including embeds whose
+combined text exceeds 6000 characters and oversized individual embed fields. New user
+and bot messages must contain content, an attachment, an embed, components or a poll;
+content-free messages with one of those payloads remain supported. Partial edits and
+explicit `None` values can clear fields, including leaving an existing message empty.
+System messages and empty interaction deferrals are not treated as empty message sends.
+Stickers remain explicitly unsupported offline.
+Interaction message responses validate before acknowledgement; a rejected response
+can be retried. Updating an interaction's source message requires an actual source
+message (a component interaction or a modal opened from one).
+
+Forum posts prepare the entire starter message and read all uploaded files before
+creating a thread or storing CDN objects. Validation or upload-read failures leave no
+thread, starter message or gateway event behind. Subscribers to `THREAD_CREATE` and
+`MESSAGE_CREATE` see the complete thread, starter and parent state. Upload preparation
+does consume file streams: if a later upload read fails, earlier streams have already
+been read and must be rewound or replaced before retrying. This boundary does not
+include arbitrary subscriber exceptions after gateway publication begins.
 
 ## Next
 

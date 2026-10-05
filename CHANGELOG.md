@@ -4,6 +4,23 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 2.3.0 (2026-10-05)
+
+### Features
+
+- Add the temporary `future_behavior=False` migration bridge in SimCord 2.3. Opt in with `simcord.run(bot, future_behavior=True)` or the pytest marker to acknowledge only the current error prefix and detach nested mutable result observations. Legacy live error lists, lifetime acknowledgement and payload aliasing remain the defaults, with targeted deprecation warnings. SimCord 3.0 removes the flag and makes the opt-in semantics the defaults. Startup/restart READY and restart guild-replay settlement retain their independent five-second budgets.
+
+### Bug fixes
+
+- Describe all seven existing protocol-2 preview actions in the packaged schema, including required targets/controls and envelope fields. Preserve focus defaults, unknown metadata, multipart modal uploads, and runtime authorization/replay checks. Reuse the existing builder operation guard for actors without changing ownership or permissions.
+- Share message validation across HTTP, actors and backend creation/editing: enforce the 10-embed count, combined 6000-character limit and individual embed text/field limits, excluding surrounding whitespace without changing stored text. Reject empty new user/bot messages while retaining attachment-, embed-, component- and poll-only sends, nullable/partial edits and empty interaction deferrals. Previously accepted invalid messages now fail with code 50035, and invalid interaction responses do not consume acknowledgement.
+  Interaction update callbacks without a source message now fail before acknowledgement instead of silently succeeding.
+
+  Prepare forum starter fields, components and every upload read before creating thread/message/CDN state, then publish the existing ordered events only after thread, starter and parent state are complete. Validation or upload-read failures no longer leave orphan posts or gateway events. Preparation consumes upload streams; an earlier successfully read stream must be rewound or replaced if a later read fails. Subscriber exceptions after publication begins are outside this atomicity boundary.
+  Starter reference identifiers are also validated before publication, preventing malformed references from corrupting the forum's previous last-post pointer.
+- Recognize shielded Discord waits on Python 3.14.8 without treating the caller captured by asyncio's cancellation cleanup as an additional dependency.
+
+
 ## 2.2.1 (2026-09-24)
 
 ### Bug fixes

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -14,6 +16,17 @@ if TYPE_CHECKING:
     from .env import Env
 
 
+def _warn_legacy_payload(env: Env) -> None:
+    if not env.future_behavior:
+        warnings.warn(
+            "SimCord 2.3 legacy result payloads can alias backend state. Use "
+            "simcord.run(bot, future_behavior=True) for detached payload snapshots, "
+            "which become the default in 3.0 when the flag is removed.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+
 def to_discord_message(env: Env, message: Message) -> discord.Message:
     """Build a real ``discord.Message`` (bound to the bot's state) from backend state."""
     from ._dpy_internals import get_state
@@ -21,6 +34,8 @@ def to_discord_message(env: Env, message: Message) -> discord.Message:
     state = get_state(env.bot)
     channel = env.bot.get_channel(message.channel_id)
     payload = serializers.message_payload(env.backend, message)
+    if env.future_behavior:
+        payload = deepcopy(payload)
     return discord.Message(state=state, channel=channel, data=payload)  # type: ignore[arg-type]
 
 
@@ -45,10 +60,17 @@ class ResponseMessage:
 
     @property
     def embeds(self) -> list[discord.Embed]:
-        return [discord.Embed.from_dict(e) for e in self._message.embeds]
+        _warn_legacy_payload(self._env)
+        embeds = self._message.embeds
+        if self._env.future_behavior:
+            embeds = deepcopy(embeds)
+        return [discord.Embed.from_dict(e) for e in embeds]
 
     @property
     def components(self) -> list[dict[str, Any]]:
+        _warn_legacy_payload(self._env)
+        if self._env.future_behavior:
+            return deepcopy(self._message.components)
         return list(self._message.components)
 
     @property
@@ -59,7 +81,8 @@ class ResponseMessage:
     @property
     def attachments(self) -> list[discord.Attachment]:
         """Uploaded files as the same ``discord.Attachment`` objects as a message."""
-        return self.message.attachments
+        _warn_legacy_payload(self._env)
+        return to_discord_message(self._env, self._message).attachments
 
     @property
     def ephemeral(self) -> bool:
@@ -67,6 +90,7 @@ class ResponseMessage:
 
     @property
     def message(self) -> discord.Message:
+        _warn_legacy_payload(self._env)
         return to_discord_message(self._env, self._message)
 
     def __repr__(self) -> str:
@@ -95,11 +119,21 @@ class InteractionResult:
     @property
     def modal(self) -> dict[str, Any] | None:
         """The raw modal payload, if the bot responded with a modal."""
-        return self._interaction.modal
+        payload = self._interaction.modal
+        if self._env.future_behavior:
+            return deepcopy(payload)
+        if payload is not None:
+            _warn_legacy_payload(self._env)
+        return payload
 
     @property
     def autocomplete_choices(self) -> list[dict[str, Any]] | None:
-        return self._interaction.autocomplete_choices
+        payload = self._interaction.autocomplete_choices
+        if self._env.future_behavior:
+            return deepcopy(payload)
+        if payload is not None:
+            _warn_legacy_payload(self._env)
+        return payload
 
     @property
     def response(self) -> ResponseMessage | None:

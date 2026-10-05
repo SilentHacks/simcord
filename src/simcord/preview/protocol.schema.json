@@ -51,6 +51,64 @@
     "lastAction": { "type": ["object", "null"] }
   },
   "$defs": {
+    "action": {
+      "type": "object",
+      "description": "Protocol-2 action envelope; validate via #/$defs/action. Unknown metadata is accepted. Runtime checks authorization, revisions, controls and admission. Modal file bytes use multipart transport, not JSON.",
+      "required": ["kind", "sequence", "request_id", "generation", "bot_generation"],
+      "properties": {
+        "kind": { "type": "string" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "request_id": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "bot_generation": { "type": "integer", "minimum": 1 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": { "const": "click" },
+            "target_id": { "$ref": "#/$defs/actionIdentifier" },
+            "control_key": { "type": "string" },
+            "published_revision": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["target_id", "control_key", "published_revision"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "select" },
+            "target_id": { "$ref": "#/$defs/actionIdentifier" },
+            "control_key": { "type": "string" },
+            "published_revision": { "type": "integer", "minimum": 0 },
+            "values": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["target_id", "control_key", "published_revision", "values"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "modal_submit" },
+            "modal_handle": { "type": "string" },
+            "published_revision": { "type": "integer", "minimum": 0 },
+            "values": { "type": "object" }
+          },
+          "required": ["modal_handle", "published_revision", "values"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "viewer" },
+            "viewer_id": { "$ref": "#/$defs/actionIdentifier" }
+          },
+          "required": ["viewer_id"]
+        },
+        {
+          "description": "Omitting target_id (or null) focuses the initial visible target; runtime resolves supplied identifiers.",
+          "properties": {
+            "kind": { "const": "focus" },
+            "target_id": { "type": ["string", "number", "boolean", "null"] }
+          }
+        },
+        { "properties": { "kind": { "enum": ["refresh", "close"] } } }
+      ]
+    },
+    "actionIdentifier": { "type": ["string", "integer"] },
     "identity": { "type": "object", "required": ["id", "name"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "name": { "type": "string" } } },
     "asset": { "type": "object", "required": ["id", "filename", "contentType", "available"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "filename": { "type": "string" }, "contentType": { "type": "string" }, "available": { "type": "boolean" }, "bytes": { "type": "integer", "minimum": 0 }, "diagnostic": { "type": ["string", "null"] } } },
     "diagnostic": { "type": "object", "required": ["code", "severity", "message", "complete"], "additionalProperties": true, "properties": { "code": { "type": "string" }, "severity": { "type": "string" }, "message": { "type": "string" }, "complete": { "type": "boolean" }, "path": { "type": ["string", "null"] }, "feature": { "type": ["string", "null"] }, "fixtureId": { "type": ["string", "null"] }, "remediation": { "type": ["string", "null"] } } },
