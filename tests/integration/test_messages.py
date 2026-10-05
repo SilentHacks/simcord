@@ -326,3 +326,28 @@ async def test_pin_and_thread_system_messages_are_typed_and_single(env, channel)
     assert len(thread_notices) == 1
     thread_model = env.backend.get_message(channel.id, thread_notices[0].id)
     assert thread_model.system_metadata.channel_id == message.id
+
+
+async def test_service_messages_have_native_recipients_references_and_names(env, channel, alice):
+    source = await env.bot.get_channel(channel.id).send("source")
+    for kind in (MessageType.RECIPIENT_ADD, MessageType.RECIPIENT_REMOVE):
+        message = env.guild.create_system_message(channel, kind, author=alice, recipient=alice)
+        assert [user.id for user in message.mentions] == [alice.id]
+        assert alice.name in message.system_content
+    for kind in (MessageType.PINS_ADD, MessageType.THREAD_STARTER_MESSAGE):
+        message = env.guild.create_system_message(channel, kind, author=alice, referenced_message=source)
+        assert message.reference.resolved.id == source.id
+        if kind == MessageType.THREAD_STARTER_MESSAGE:
+            assert message.system_content == "source"
+
+
+async def test_generated_service_messages_preserve_native_names(env, channel):
+    source = await env.bot.get_channel(channel.id).send("source")
+    await env.bot.get_channel(channel.id).edit(name="renamed")
+    renamed = next(item for item in channel.history() if item.type.value == MessageType.CHANNEL_NAME_CHANGE)
+    native = await env.bot.get_channel(channel.id).fetch_message(renamed.id)
+    assert native.content == "renamed" and "**renamed**" in native.system_content
+    await source.create_thread(name="discussion")
+    thread = next(item for item in channel.history() if item.type.value == MessageType.THREAD_CREATED)
+    native = await env.bot.get_channel(channel.id).fetch_message(thread.id)
+    assert native.content == "discussion" and "**discussion**" in native.system_content

@@ -766,11 +766,16 @@ def _message_projection(
             MessageType.THREAD_CREATED: "thread",
             MessageType.THREAD_STARTER_MESSAGE: "thread",
         }.get(message_kind, "system")
+        system_text = message.content or ""
+        if message_kind == MessageType.CHANNEL_NAME_CHANGE:
+            system_text = f"changed this channel's name: {system_text}."
+        elif message_kind == MessageType.THREAD_CREATED:
+            system_text = f"started a thread: {system_text}."
         system: dict[str, Any] = {
             "kind": type_info["name"],
             "icon": icon,
-            "text": message.content or "",
-            "text_tokens": markdown_tokens(message.content or "", "system"),
+            "text": system_text,
+            "text_tokens": markdown_tokens(system_text, "system"),
             "author": author,
         }
         metadata = message.system_metadata

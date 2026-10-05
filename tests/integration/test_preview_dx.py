@@ -13,6 +13,21 @@ import simcord
 
 
 @pytest.mark.asyncio
+async def test_composer_send_survives_deleted_focus(env, channel, alice):
+    source = await alice.send(channel, "old focus")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        page = preview._python
+        await preview.snapshot()
+        await alice.delete(source)
+        receipt = await preview._action(
+            page.id,
+            action_body(page, "send_message", 1, target_id=str(source.id), content="still send"),
+        )
+        assert receipt["settlement"] == "settled"
+        assert channel.last_message.content == "still send"
+
+
+@pytest.mark.asyncio
 async def test_preview_snapshot_matches_packaged_schema(env, channel, alice):
     schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
     validator = jsonschema.Draft202012Validator(schema)

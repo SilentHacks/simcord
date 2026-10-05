@@ -289,11 +289,18 @@ def message_payload(
     }
     if channel.guild_id is not None:
         payload["guild_id"] = str(channel.guild_id)
-    if message.reference is not None:
-        payload["message_reference"] = dict(message.reference)
-        referenced = backend.messages.get(int(message.reference["channel_id"]), {}).get(
-            int(message.reference["message_id"])
-        )
+    metadata = message.system_metadata
+    if metadata is not None and metadata.recipient_id is not None:
+        payload["mentions"] = [user_payload(backend.users[metadata.recipient_id])]
+    reference = message.reference
+    if metadata is not None and metadata.referenced_message_id is not None:
+        reference = {
+            "channel_id": str(metadata.referenced_channel_id or message.channel_id),
+            "message_id": str(metadata.referenced_message_id),
+        }
+    if reference is not None:
+        payload["message_reference"] = dict(reference)
+        referenced = backend.messages.get(int(reference["channel_id"]), {}).get(int(reference["message_id"]))
         if referenced is not None:
             payload["referenced_message"] = message_payload(backend, referenced)
     if message.interaction_metadata is not None:

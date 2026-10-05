@@ -385,7 +385,16 @@ class _ActionOps:
                     sequence=sequence,
                 )
             action = _Action(sequence, request_id, fingerprint, kind)
-            if isinstance(body.get("target_id"), (str, int)) and not isinstance(body.get("target_id"), bool):
+            if kind in {
+                "click",
+                "select",
+                "focus",
+                "edit_message",
+                "delete_message",
+                "set_reaction",
+                "set_poll_votes",
+                "set_pinned",
+            } and isinstance(body.get("target_id"), (str, int)):
                 target_id = self._target_id(body.get("target_id"), page.viewer)
                 if target_id is not None:
                     control_key = body.get("control_key")

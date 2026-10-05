@@ -56,6 +56,7 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 ### Bug fixes
 
+- Resolve receipt targets only for target-dependent preview actions, so deleting a stale focused message does not block an unrelated composer send. Native service messages now expose their recipients and referenced messages, and channel/thread notifications carry their actual names while preview presentation remains separate.
 - Legacy embed previews now compose mixed field runs, thumbnails, images, author/footer metadata, timestamps, and provider attribution without a fixed thumbnail reservation. Embed media plays only from authorized offline bytes; external-only media remains unavailable, suppressed embeds leave message content and attachments visible, and reference geometry stays blocked pending measurements. ([#12](https://github.com/SilentHacks/simcord/issues/12))
 - V2 galleries now use a responsive intrinsic-ratio grid, retain image descriptions as alt text, support keyboard spoiler reveal, and render zero/nonzero container accents correctly. Browser coverage exercises 1-, 3-, and 10-item galleries, narrow width, and component/media suppression and reuse; backend validation tests reject unknown type 20 and illegal V2 message compositions.
 

@@ -251,10 +251,15 @@ class MessageMixin(BackendBase):
             referenced_channel_id=reference_channel_id if referenced_message_id is not None else None,
             referenced_message_id=referenced_message_id,
         )
+        content = _SYSTEM_CONTENT[kind]
+        if kind == MessageType.CHANNEL_NAME_CHANGE:
+            content = (target_channel or channel).name or ""
+        elif kind == MessageType.THREAD_CREATED and target_channel is not None:
+            content = target_channel.name or ""
         return self.create_message(
             channel_id,
             author_id,
-            _SYSTEM_CONTENT[kind],
+            content,
             message_type=kind,
             system_metadata=metadata,
         )
