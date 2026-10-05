@@ -4,6 +4,22 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.0.1 (2026-10-05)
+
+### Bug fixes
+
+- Keep channel-message avatars, text width and wrapping invariant when focus changes; avoid prematurely truncating short channel names, including beside long topics. Separate author groups from compact continuations, tighten initial date-divider placement, enlarge standalone emoji, and soften body-text contrast while retaining the licensed Noto fonts. Format message headers and day dividers using the configured locale and timezone. Managed captures continue to exclude developer controls; these improvements do not certify Discord visual parity.
+- Match preview poll cards to Discord's single-select and multi-select layouts, including selection indicators, full-row percentage fills, vote counts, time remaining, disabled voting, results navigation, and vote removal. Countdown labels update on refresh, and narrow cards reflow results without clipping. Preview polls continue to use the bundled offline text and emoji fonts.
+
+### Documentation
+
+- Showcase the real offline Preview in the README with Components V2 containers, sections, thumbnails and media galleries, rich embed edits, interactive button states, a booking modal, Discord-style poll voting, and spoiler reveal. Include a render gallery and a reproducible browser recorder using scenery-only artwork; the demo establishes functional behavior, not Discord pixel-parity certification.
+
+### Miscellaneous
+
+- Publish SimCord 3.0 as 3.0.1, the first supported 3.0 release. The mistakenly published 3.0.0 remains yanked on PyPI; its distribution filenames cannot be reused. This release includes the 3.0 features and breaking migrations documented below, together with the latest preview layout and poll fixes.
+
+
 ## 3.0.0 (2026-10-05)
 
 ### Features

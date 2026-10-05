@@ -1,1 +1,0 @@
-Match preview poll cards to Discord's single-select and multi-select layouts, including selection indicators, full-row percentage fills, vote counts, time remaining, disabled voting, results navigation, and vote removal. Countdown labels update on refresh, and narrow cards reflow results without clipping. Preview polls continue to use the bundled offline text and emoji fonts.

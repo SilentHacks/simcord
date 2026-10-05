@@ -36,6 +36,8 @@ async def test_ping(simcord_env):
 **Your bot's real callbacks, in a local browser.** Explore Components V2 layouts and
 rich embeds, click buttons, submit a modal, and vote in a poll — entirely offline, without a Discord token.
 
+[See screenshots of supported renderers](#preview-render-gallery).
+
 The [bundled example bot](https://github.com/SilentHacks/simcord/tree/master/examples) is executable, tested, and covers prefix commands,
 slash commands, permissions, cooldowns, modals, buttons, and persistent views.
 
@@ -199,6 +201,25 @@ exposing `acknowledged`, `deferred`, `ephemeral`, `response`, `followups` and `m
 permissions, role hierarchy, intents and audit logs are modelled too. The
 [parity matrix](https://simcord.readthedocs.io/en/latest/parity-matrix/) records exactly what's
 implemented.
+
+## Preview render gallery
+
+Real screenshots from SimCord's local Preview, using actual `discord.py` messages and components.
+
+| Supported rendering | Screenshot |
+| --- | --- |
+| **Buttons** — styles, links, emoji and disabled states | [<img src="docs/assets/preview/buttons.png" width="420" alt="Primary, secondary, success, danger, link, disabled and emoji buttons">](docs/assets/preview/buttons.png) |
+| **Embeds** — author, fields, thumbnail, image and footer | [<img src="docs/assets/preview/embeds.png" width="420" alt="Rich embed with Markdown, inline fields, thumbnail, image and timestamped footer">](docs/assets/preview/embeds.png) |
+| **Select menus** — options, descriptions, emoji and multi-selection | [<img src="docs/assets/preview/selects.png" width="420" alt="Open destination select with emoji, descriptions and a selected option">](docs/assets/preview/selects.png) |
+| **Entity selectors** — users, roles, mentionables and channels | [<img src="docs/assets/preview/entities.png" width="420" alt="User, role, mentionable and text-channel select controls">](docs/assets/preview/entities.png) |
+| **Modals** — short and paragraph text inputs | [<img src="docs/assets/preview/modals.png" width="420" alt="Feedback modal with populated name and comment inputs, Cancel and Submit buttons">](docs/assets/preview/modals.png) |
+| **Markdown & mentions** — formatting, links, spoilers and code | [<img src="docs/assets/preview/markdown.png" width="420" alt="Formatted message with mention, link, concealed spoiler, quote and highlighted Python code">](docs/assets/preview/markdown.png) |
+| **Images & files** — inline media, text previews and downloads | [<img src="docs/assets/preview/attachments.png" width="420" alt="Inline image and text attachment with preview and download controls">](docs/assets/preview/attachments.png) |
+| **Components V2** — containers, sections, separators and accessories | [<img src="docs/assets/preview/layouts.png" width="420" alt="Accented component container with heading, separator, section and accessory buttons">](docs/assets/preview/layouts.png) |
+| **Polls** — answer choices, voting and results | [<img src="docs/assets/preview/polls.png" width="420" alt="Three-answer poll with emoji, vote counts, percentages and result bars">](docs/assets/preview/polls.png) |
+| **Replies & reactions** — referenced messages and reaction counts | [<img src="docs/assets/preview/replies.png" width="420" alt="Reply to a bot message with checkmark and celebration reactions">](docs/assets/preview/replies.png) |
+
+See the [Preview guide](https://simcord.readthedocs.io/en/latest/guides/preview/) for setup, callbacks, media limitations and deterministic capture.
 
 ## Configuration & diagnostics
 
