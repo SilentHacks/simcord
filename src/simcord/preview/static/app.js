@@ -1174,7 +1174,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId, force = f
     }
     const openKey = state.dropdown?.key;
     const loading = Boolean(openKey?.startsWith(`message:${id}:`) && candidateLoading(openKey));
-    const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}`;
+    const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}:${message.poll ? state.profile.presentationTime : ""}`;
     if (force || record.fingerprint !== value) {
       record.fingerprint = value;
       clearRenderDiagnostics(`message:${id}`);
@@ -1848,7 +1848,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
     const selectedKey = selected ? String(selected.id) : null;
     const loading = Boolean(openKey?.startsWith(`message:${selectedKey}:`) && candidateLoading(openKey));
-    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}`;
+    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}:${selected?.poll ? state.profile.presentationTime : ""}`;
     const shouldRenderMessage =
       force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
     if (shouldRenderMessage) {

@@ -530,7 +530,7 @@ body[data-managed-capture="true"] .preview-app.presentation-fixed {
 .reaction-chip:hover:not(:disabled) { background: var(--discord-hover); }
 .reaction-emoji, .unicode-emoji { font-family: var(--preview-font-emoji); }
 .reaction-count { font-size: 12px; }
-.message-poll { max-width: 472px; padding: 16px 16px 20px; background: #383940; border: 1px solid #44454c; border-radius: 8px; }
+.message-poll { container-name: poll; container-type: inline-size; max-width: 472px; padding: 16px 16px 20px; background: #383940; border: 1px solid #44454c; border-radius: 8px; }
 .poll-question { margin: 0 0 4px; color: var(--discord-text); font-size: 16px; font-weight: 600; line-height: 22px; }
 .poll-instruction { margin-bottom: 8px; color: #abacb4; font-size: 14px; line-height: 20px; }
 .poll-answer { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 50px; margin-top: 8px; padding: 12px 16px; overflow: hidden; color: var(--discord-text); background: #3e3f46; border: 1px solid transparent; border-radius: 8px; text-align: left; font-size: 14px; font-weight: 600; line-height: 24px; }
@@ -564,6 +564,10 @@ button.poll-answer:hover { background: #44454d; }
 .poll-actions .poll-show-results { padding-inline: 0; background: transparent; }
 .poll-actions .poll-secondary { background: #44454d; }
 .poll-actions button:hover:not(:disabled) { filter: brightness(1.08); }
+@container poll (max-width: 260px) {
+  .poll-answer { flex-wrap: wrap; padding-inline: 8px; }
+  .poll-answer:has(.poll-answer-percentage) .poll-answer-label { flex-basis: 100%; }
+}
 .thread-summary { display: inline-flex; align-items: center; gap: 8px; margin: 4px 0 4px 72px; padding: 5px 8px; color: var(--link-text); background: #5865f21a; border-radius: 4px; font-size: 13px; }
 .thread-archived { color: var(--discord-muted); font-size: 11px; }
 .message-surface {
