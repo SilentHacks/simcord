@@ -13,7 +13,7 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 ### Documentation
 
-- Showcase the real offline Preview in the README with Components V2 containers, sections, thumbnails and media galleries, rich embed edits, interactive button states, a booking modal, Discord-style poll voting, and spoiler reveal. Include a render gallery and a reproducible browser recorder using scenery-only artwork; the demo establishes functional behavior, not Discord pixel-parity certification.
+- Showcase the real offline Preview in the README with Components V2 containers, sections, thumbnails and media galleries, rich embed edits, interactive button states, a booking modal, Discord-style poll voting, and spoiler reveal. Include a render gallery and a reproducible browser recorder using scenery-only artwork, with absolute asset URLs so the showcase also renders on PyPI; the demo establishes functional behavior, not Discord pixel-parity certification.
 
 ### Miscellaneous
 
