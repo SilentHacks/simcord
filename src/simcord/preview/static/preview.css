@@ -457,7 +457,7 @@ body[data-managed-capture="true"] .preview-app.presentation-fixed {
 .channel-hash { color: var(--discord-muted); font-size: 24px; font-weight: 400; }
 .channel-heading { display: flex; flex: 1; min-width: 0; align-items: center; gap: 16px; }
 .channel-heading h1 { flex: 0 1 auto; min-width: 0; overflow: hidden; max-width: 100%; margin: 0; font-size: 16px; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
-.channel-topic { overflow: hidden; margin: 0; padding-left: 16px; border-left: 1px solid var(--discord-border); color: var(--discord-muted); font-size: 13px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.channel-topic { flex: 1; min-width: 0; overflow: hidden; margin: 0; padding-left: 16px; border-left: 1px solid var(--discord-border); color: var(--discord-muted); font-size: 13px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .channel-timeline { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .channel-message-list { padding: 12px 0; }
 .channel-message {

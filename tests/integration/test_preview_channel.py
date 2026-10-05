@@ -606,7 +606,7 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
 async def test_channel_focus_preserves_message_geometry_and_group_spacing(env, alice):
     from playwright.async_api import async_playwright
 
-    channel = env.guild.create_text_channel("general")
+    channel = env.guild.create_text_channel("general", topic="Long channel context. " * 40)
     first = await alice.send(channel, "Wrapping stays stable when selecting this message. " * 12)
     await alice.send(channel, "A continuation by the same author.")
     await env.bot.get_channel(channel.id).send("A new author group.")
