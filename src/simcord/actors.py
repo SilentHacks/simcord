@@ -208,7 +208,7 @@ class MemberActor:
         """Invoke a synced slash command (use spaces for subcommands: "config set")."""
         self._check(channel, "use_application_commands")
         root, leaf, nesting = self._resolve_command(name)
-        leaf_options, resolved = _interactions.build_options(self, name, leaf, options)
+        leaf_options, resolved = _interactions.build_options(self, name, leaf, options, channel_id=channel.id)
         data: dict[str, Any] = {
             "id": root["id"],
             "name": root["name"],
@@ -259,7 +259,9 @@ class MemberActor:
     ) -> list[dict[str, Any]]:
         """Type into an autocomplete option; returns the choices the bot offered."""
         root, leaf, nesting = self._resolve_command(name)
-        leaf_options, _resolved = _interactions.build_options(self, name, leaf, filled, partial=True)
+        leaf_options, _resolved = _interactions.build_options(
+            self, name, leaf, filled, partial=True, channel_id=channel.id
+        )
         declared = {o["name"]: o for o in (leaf.get("options") or [])}
         if option not in declared:
             raise SetupError(f"Command '{name}' has no option '{option}'")
@@ -790,10 +792,10 @@ def _commit_modal_uploads(
 ) -> None:
     backend = actor._env.backend
     for data, filename, blob in pending_uploads:
-        attachment_id = backend.snowflake()
-        attachment = backend.cdn.store_attachment(attachment_id, channel_id, filename, blob, None)
-        resolved.setdefault("attachments", {})[str(attachment_id)] = attachment
-        data["values"].append(str(attachment_id))
+        attachment_id = _interactions.store_interaction_attachment(
+            backend, channel_id, filename, blob, resolved
+        )
+        data["values"].append(attachment_id)
 
 
 async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, Any]) -> InteractionResult:

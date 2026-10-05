@@ -99,6 +99,21 @@ class Interactions(commands.Cog):
     async def tag_autocomplete(self, interaction: discord.Interaction, current: str):
         return [app_commands.Choice(name=t, value=t) for t in TAGS if current in t]
 
+    @app_commands.command(description="Receive an uploaded file")
+    async def upload(self, interaction: discord.Interaction, attachment: discord.Attachment) -> None:
+        assert isinstance(attachment, discord.Attachment)
+        data = await attachment.read()
+        await interaction.response.send_message(f"{attachment.filename}:{data.decode()}")
+
+    @app_commands.command(name="option-check", description="Check slash option constraints")
+    async def option_check(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 10],
+        label: app_commands.Range[str, 2, 5],
+    ) -> None:
+        await interaction.response.send_message(f"{label}:{limit}")
+
     @app_commands.command(description="Slow command that defers")
     async def slow(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()

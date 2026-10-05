@@ -4,6 +4,7 @@ from discord import app_commands
 
 import simcord
 from simcord.enums import AppCommandType, MessageType
+from simcord.interactions import OptionError
 
 
 async def test_bulk_sync_preserves_existing_command_ids_and_permissions(env):
@@ -105,3 +106,22 @@ async def test_select_invalid_value_rejected(env, channel, alice):
     result = await alice.slash(channel, "color")
     with pytest.raises(simcord.SetupError, match="does not exist"):
         await alice.select(result.response.message, ["purple"], custom_id="color")
+
+
+async def test_attachment_option_is_resolved_and_fetchable(channel, alice):
+    result = await alice.slash(channel, "upload", attachment=("greeting.txt", b"hello from upload"))
+    assert result.response.content == "greeting.txt:hello from upload"
+
+
+async def test_slash_numeric_range_violation_has_code(channel, alice):
+    with pytest.raises(OptionError) as exc:
+        await alice.slash(channel, "option-check", limit=0, label="okay")
+    assert exc.value.code == "option-range"
+    assert exc.value.option == "limit"
+
+
+async def test_slash_string_length_violation_has_code(channel, alice):
+    with pytest.raises(OptionError) as exc:
+        await alice.slash(channel, "option-check", limit=1, label="x")
+    assert exc.value.code == "option-length"
+    assert exc.value.option == "label"
