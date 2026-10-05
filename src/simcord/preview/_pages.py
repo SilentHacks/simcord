@@ -45,6 +45,7 @@ class _Page:
     latest_action: _Action | None = None
     assets: dict[str, _Asset] = field(default_factory=dict)
     referenced_assets: set[str] = field(default_factory=set)
+    referenced_messages: set[tuple[int, int]] = field(default_factory=set)
     snapshot: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None

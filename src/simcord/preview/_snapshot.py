@@ -811,6 +811,7 @@ def _message_projection(
                         and reference_channel.guild_id is not None
                         and reference_channel.guild_id == channel.guild_id
                     ):
+                        page.referenced_messages.add((reference_channel_id, referenced.id))
                         system["reference"] = {
                             "id": str(referenced.id),
                             "author": _identity_wire(
@@ -898,6 +899,7 @@ def _message_projection(
                 except BackendError:
                     target_channel = None
                 if target_channel is not None and target_channel.guild_id is not None:
+                    page.referenced_messages.add((target_channel_id, target_message.id))
                     interaction_header["target_message"] = {
                         "id": str(target_message.id),
                         "url": _discord_message_link(
@@ -958,6 +960,7 @@ def _message_projection(
         if referenced is not None and can_access_message(
             env, reference_channel_id, referenced, page.viewer, history=True
         ):
+            page.referenced_messages.add((reference_channel_id, referenced.id))
             referenced_identity = _identity_wire(
                 resolve_identity(
                     preview,
@@ -1829,6 +1832,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         channel = None
     allowed = channel is not None and can_access_channel(env, channel.id, page.viewer, history=True)
     page.referenced_assets.clear()
+    page.referenced_messages.clear()
     visible: list[Message] = []
     if channel is not None and allowed:
         # Rebuild fixture-sized history; an index would need its own

@@ -1617,7 +1617,7 @@ async def test_channel_capture_focuses_old_target_without_moving_python_window(
         assert after["timeline"] == before["timeline"]
 
 
-@pytest.mark.parametrize("mutation", ["delete_message", "remove_attachment"])
+@pytest.mark.parametrize("mutation", ["delete_message", "remove_attachment", "remove_unretained_attachment"])
 @pytest.mark.asyncio
 async def test_channel_capture_revalidates_non_target_sources_before_install(
     tmp_path, env, channel, alice, monkeypatch, mutation
@@ -1626,7 +1626,12 @@ async def test_channel_capture_revalidates_non_target_sources_before_install(
     from playwright.async_api import Page
 
     native = env.bot.get_channel(channel.id)
-    source = await native.send("visible source", file=discord.File(io.BytesIO(png_bytes()), "source.png"))
+    unretained = mutation == "remove_unretained_attachment"
+    if unretained:
+        monkeypatch.setattr(simcord.Preview, "_MAX_MEDIA_BYTES", 1)
+    body = b"private attachment excerpt" if unretained else png_bytes()
+    filename = "source.txt" if unretained else "source.png"
+    source = await native.send("visible source", file=discord.File(io.BytesIO(body), filename))
     target = await native.send("capture target")
     original = Page.screenshot
     mutated = False
@@ -1635,6 +1640,8 @@ async def test_channel_capture_revalidates_non_target_sources_before_install(
         nonlocal mutated
         status = await page.evaluate("() => window.simcordPreview")
         assert str(source.id) in status["visibleMessageIds"]
+        if unretained:
+            assert "private attachment excerpt" in await page.locator("#channel-timeline").inner_text()
         png = await original(page, *args, **kwargs)
         if mutation == "delete_message":
             await source.delete()
@@ -1643,11 +1650,77 @@ async def test_channel_capture_revalidates_non_target_sources_before_install(
         mutated = True
         return png
 
-    monkeypatch.setattr(Page, "screenshot", revoke_source)
     destination = tmp_path / "capture.png"
     destination.write_bytes(b"previous capture")
     async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        if unretained:
+            baseline = await preview.screenshot(target=target, mode="viewport", allow_incomplete=True)
+            assert baseline.ready and not baseline.complete and baseline.png.startswith(b"\x89PNG")
+        monkeypatch.setattr(Page, "screenshot", revoke_source)
         with pytest.raises(simcord.SetupError):
             await preview.screenshot(destination, target=target, mode="viewport", allow_incomplete=True)
         assert destination.read_bytes() == b"previous capture"
         assert mutated
+
+
+@pytest.mark.parametrize(
+    ("kind", "mutation"),
+    [("reply", "delete"), ("reply", "revoke"), ("system", "revoke"), ("context", "delete")],
+)
+@pytest.mark.asyncio
+async def test_capture_revalidates_nested_message_sources_before_install(
+    tmp_path, env, channel, alice, monkeypatch, kind, mutation
+):
+    from playwright.async_api import Page
+
+    source_channel = env.guild.create_text_channel("reference") if mutation == "revoke" else channel
+    source = await env.bot.get_channel(source_channel.id).send("private referenced excerpt")
+    native = env.bot.get_channel(channel.id)
+    if source_channel.id == channel.id:
+        for index in range(51):
+            await native.send(f"window filler {index}")
+    if kind == "reply":
+        target = await native.send("reply target", reference=source)
+    elif kind == "system":
+        from simcord.enums import MessageType
+
+        target = env.guild.create_system_message(
+            channel, MessageType.PINS_ADD, author=alice, referenced_message=source
+        )
+    else:
+
+        @env.bot.tree.context_menu(name="Inspect reference")
+        async def inspect_reference(interaction: discord.Interaction, message: discord.Message):
+            await interaction.response.send_message("context target")
+
+        await env.bot.tree.sync()
+        target = (await alice.context_menu(channel, "Inspect reference", source)).response
+    original = Page.screenshot
+    mutated = False
+
+    async def revoke_source(page, *args, **kwargs):
+        nonlocal mutated
+        status = await page.evaluate("() => window.simcordPreview")
+        assert str(source.id) not in status["projectedMessageIds"]
+        if kind == "reply":
+            assert "private referenced excerpt" in await page.locator("#channel-timeline").inner_text()
+        else:
+            assert await page.locator(f"article a[href$='/{source.id}']").count() == 1
+        png = await original(page, *args, **kwargs)
+        if mutation == "delete":
+            await source.delete()
+        else:
+            await env.bot.get_channel(source_channel.id).set_permissions(
+                env.bot.get_guild(env.guild.id).get_member(alice.id), view_channel=False
+            )
+        mutated = True
+        return png
+
+    monkeypatch.setattr(Page, "screenshot", revoke_source)
+    destination = tmp_path / "nested.png"
+    destination.write_bytes(b"previous capture")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        with pytest.raises(simcord.SetupError):
+            await preview.screenshot(destination, target=target, mode="viewport", allow_incomplete=True)
+        assert mutated
+        assert destination.read_bytes() == b"previous capture"

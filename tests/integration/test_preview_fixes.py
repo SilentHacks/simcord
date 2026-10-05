@@ -396,6 +396,32 @@ async def test_native_audio_state_survives_local_select_redraw_and_source_replac
                     "() => document.querySelector('audio.media-player-native') !== window.__retainedAudio"
                 )
                 assert replaced is True
+                await page.wait_for_function("() => window.simcordPreview.ready")
+                restart_revision = await page.evaluate("() => window.simcordPreview.publishedRevision")
+                restart_source = await page.locator("audio.media-player-native").get_attribute("src")
+                from fixtures.sample_bot import create_bot
+
+                await env.restart_bot(create_bot())
+                await preview.refresh()
+                await page.wait_for_function(
+                    "(revision) => window.simcordPreview.publishedRevision > revision"
+                    " && window.simcordPreview.ready && !window.simcordPreview.pendingAction",
+                    arg=restart_revision,
+                )
+                restarted = await page.locator("audio.media-player-native").evaluate(
+                    "(audio) => ({source: audio.getAttribute('src'),"
+                    " readyState: audio.readyState, duration: audio.duration})"
+                )
+                assert isinstance(restarted["source"], str), restarted
+                assert restarted["source"].startswith("blob:")
+                assert restarted["source"] != restart_source
+                assert restarted["readyState"] >= 2 and restarted["duration"] > 0.5
+                await page.keyboard.press("Escape")
+                await page.get_by_role("button", name="Play replacement.ogg", exact=True).click()
+                await page.wait_for_function(
+                    "() => !document.querySelector('audio.media-player-native').paused"
+                )
+                assert (await page.evaluate("() => window.simcordPreview"))["complete"] is True
 
                 stored.attachments.clear()
                 await preview.refresh()
@@ -1108,5 +1134,63 @@ async def test_browser_keeps_oldest_active_failure_after_diagnostic_history_over
                 item["code"] == "media-unavailable" and item["complete"] is False
                 for item in status["diagnostics"]
             )
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_retained_premium_icon_failure_remains_incomplete(env, channel, alice):
+    from playwright.async_api import async_playwright
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(sku_id=101))
+    message = await env.bot.get_channel(channel.id).send(view=view)
+    icon_url = "https://example.test/premium.png"
+    async with (
+        env.preview(
+            channel,
+            viewers=[alice],
+            layout="channel",
+            assets={icon_url: ("premium.png", png_bytes())},
+            sku_presentations={
+                "101": {"name": "Provided plan", "price_text": "$5", "locale": "en-US", "icon_url": icon_url}
+            },
+        ) as preview,
+        async_playwright() as playwright,
+    ):
+        await preview.show(message)
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.add_init_script("""(() => {
+              const decode = HTMLImageElement.prototype.decode;
+              HTMLImageElement.prototype.decode = function() {
+                if (!this.classList.contains("premium-button-icon")) return decode.call(this);
+                window.__pendingIcon = this;
+                return new Promise((resolve, reject) => {
+                  window.__failIcon = () => reject(new Error("decode failed"));
+                });
+              };
+            })()""")
+            await page.goto(preview.url)
+            await page.wait_for_function("() => window.__failIcon && !window.simcordPreview.ready")
+            before = await page.evaluate("() => window.simcordPreview.publishedRevision")
+            await page.get_by_role("button", name="Refresh preview").click()
+            await page.wait_for_function(
+                "(revision) => !window.simcordPreview.pendingAction"
+                " && window.simcordPreview.publishedRevision > revision",
+                arg=before,
+            )
+            assert await page.evaluate("() => window.__pendingIcon.isConnected")
+            await page.evaluate("() => window.__failIcon()")
+            await page.wait_for_function("() => window.simcordPreview.ready")
+            status = await page.evaluate("() => window.simcordPreview")
+            _BROWSER_STATUS_VALIDATOR.validate(status)
+            assert status["complete"] is False
+            assert any(
+                item["code"] == "premium-sku-icon-unavailable" and item["state"] == "current"
+                for item in status["diagnostics"]
+            )
+            assert await page.locator(".premium-button-icon").count() == 0
         finally:
             await browser.close()

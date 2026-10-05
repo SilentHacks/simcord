@@ -177,6 +177,31 @@ class _AssetOps:
         page.assets.clear()
         page.referenced_assets.clear()
 
+    def _authorize_attachment_source(self, page: _Page, source: tuple[Any, ...], digest: str | None) -> None:
+        """Authorize attachment membership independently of retained bytes."""
+        _, channel_id, message_id, attachment_id = source
+        try:
+            message = self.env.backend.get_message(channel_id, message_id)
+        except BackendError as exc:
+            raise SetupError("asset is unavailable") from exc
+        if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
+            raise SetupError("asset access denied")
+        item = next(
+            (item for item in message.attachments if str(item.get("id", "")) == attachment_id),
+            None,
+        )
+        if item is None:
+            raise SetupError("asset is unavailable")
+        if digest is None:
+            return
+        url = item.get("url")
+        current = self.env.backend.cdn.get(url) if isinstance(url, str) else None
+        if current is None and isinstance(url, str):
+            supplied = self._explicit_assets.get(url)
+            current = supplied[1] if supplied is not None else None
+        if current is not None and hashlib.sha256(current).hexdigest() != digest:
+            raise SetupError("asset was replaced")
+
     def _authorize_asset(self, page: _Page, asset_id: str) -> _Asset:
         """Reauthorize one asset at serve time against live backend state."""
         record = page.assets.get(asset_id)
@@ -191,26 +216,7 @@ class _AssetOps:
             return record
         owner = source[0]
         if owner == "attachment":
-            _, channel_id, message_id, attachment_id = source
-            try:
-                message = self.env.backend.get_message(channel_id, message_id)
-            except BackendError as exc:
-                raise SetupError("asset is unavailable") from exc
-            if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
-                raise SetupError("asset access denied")
-            item = next(
-                (item for item in message.attachments if str(item.get("id", "")) == attachment_id),
-                None,
-            )
-            if item is None:
-                raise SetupError("asset is unavailable")
-            url = item.get("url")
-            current = self.env.backend.cdn.get(url) if isinstance(url, str) else None
-            if current is None and isinstance(url, str):
-                supplied = self._explicit_assets.get(url)
-                current = supplied[1] if supplied is not None else None
-            if current is not None and hashlib.sha256(current).hexdigest() != record.digest:
-                raise SetupError("asset was replaced")
+            self._authorize_attachment_source(page, source, record.digest)
         elif owner == "message":
             _, channel_id, message_id = source
             try:

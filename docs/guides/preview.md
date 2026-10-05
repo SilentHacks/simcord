@@ -416,7 +416,8 @@ It does not mean the callback succeeded, the output is complete, or the capture 
 `contextGeneration` changes on viewer or focus changes;
 `botGeneration` changes on restart; render generations also cover local changes such
 as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Pending image/avatar/modal
-loads stay bound to retained DOM owners across redraws; replacing an owner discards its continuation.
+and premium-icon loads stay bound to retained DOM owners across redraws; replacing an owner
+discards its continuation. A retained owner's late failure still makes the surface incomplete.
 Switching viewers or restarting the bot invalidates asset ownership and recreates media rather than
 carrying playback or pending loads across authorization boundaries.
 
@@ -630,11 +631,13 @@ incomplete output (unless explicitly opted in), concurrent capture, a bot restar
 invalid destinations. Output is written atomically, so cancellation or a failed capture does not leave
 a partial PNG. Channel captures pin a bounded history window containing the requested target and
 crop the rendered timeline message, not a navigation control. A pinned capture cannot follow later
-focus, viewer or backend changes; every projected message and available asset is reauthorized before
-rendering and again before installing the PNG. Deletion, attachment removal/replacement or revoked
-access invalidates the capture, including non-target and off-crop projected sources. This fail-closed
-rule also applies with `allow_incomplete=True`; that option permits known missing rendering, not
-revoked source ownership.
+focus, viewer or backend changes; every projected message, nested reply/system/context-menu
+reference (including other channels), and available asset is reauthorized before rendering and
+again before installing the PNG. Attachment membership is checked even when its bytes could
+not be retained: an inline text preview still belongs to that attachment. Deletion, attachment
+removal/replacement or revoked access invalidates the capture, including non-target and off-crop
+projected sources. This fail-closed rule also applies with `allow_incomplete=True`; that option
+permits known missing rendering, not revoked source ownership.
 
 The Capture panel's executable recipe is Python for the real active scenario, with `preview` in scope;
 it is not a standalone scenario definition. Managed captures use a separate pinned page and do not

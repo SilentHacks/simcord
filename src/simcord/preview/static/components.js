@@ -1,4 +1,4 @@
-import { icon, iconButton, node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { current, icon, iconButton, node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { appendEmojiValue, appendMarkdownOrText } from "./text.js";
 import { SELECT_TYPES, optionDefaults, optionEntries, renderSelect, selectedIds } from "./selects.js";
 import {
@@ -61,12 +61,12 @@ function appendPremiumIcon(button, presentation, options) {
   icon.alt = "";
   button.prepend(icon);
   const pending = Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
-    if (!button.isConnected) return;
+    if (!current(options, icon)) return;
     if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("icon is not a local asset");
     icon.src = url;
     if (icon.decode) await icon.decode();
   }).catch(() => {
-    if (!button.isConnected || (options.isCurrent && !options.isCurrent())) return;
+    if (!current(options, icon)) return;
     icon.remove();
     options.onDiagnostic?.({
       code: "premium-sku-icon-unavailable",

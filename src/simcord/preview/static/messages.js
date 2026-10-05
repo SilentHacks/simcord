@@ -209,8 +209,9 @@ export function renderMessage(root, message, options = {}) {
   const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")];
   const canReuse = reuseScope !== null && root.dataset.mediaReuseScope === reuseScope;
   oldPlayers.forEach((player) => {
+    const reusable = canReuse && player._previewMediaPlayer?.active === true;
     if (player._previewMediaPlayer) player._previewMediaPlayer.active = false;
-    if (!canReuse) return;
+    if (!reusable) return;
     const key = player.dataset.mediaReuseKey;
     const queue = reusePlayers.get(key) || [];
     queue.push(player);

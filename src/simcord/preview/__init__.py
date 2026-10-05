@@ -245,24 +245,27 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             raise SetupError("managed capture was invalidated by bot restart")
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("managed capture access was revoked")
-        message_ids = {int(identity) for identity in page.pinned_snapshot["messages"]}
+        message_sources = {
+            (page.channel_id, int(identity)) for identity in page.pinned_snapshot["messages"]
+        } | page.referenced_messages
         if page.target_id is not None:
-            message_ids.add(page.target_id)
-        for message_id in message_ids:
+            message_sources.add((page.channel_id, page.target_id))
+        for channel_id, message_id in message_sources:
             try:
-                message = self.env.backend.get_message(page.channel_id, message_id)
+                message = self.env.backend.get_message(channel_id, message_id)
             except BackendError as exc:
                 raise SetupError("managed capture projected message is unavailable") from exc
-            if not can_access_message(self.env, page.channel_id, message, page.viewer, history=True):
+            if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("managed capture projected message access was revoked")
         for asset_id, record in page.assets.items():
-            if record.available:
-                try:
+            try:
+                source = record.source
+                if isinstance(source, tuple) and source and source[0] == "attachment":
+                    self._authorize_attachment_source(page, source, record.digest)
+                elif record.available:
                     self._authorize_asset(page, asset_id)
-                except SetupError as exc:
-                    raise SetupError(
-                        "managed capture source asset is unavailable or access was revoked"
-                    ) from exc
+            except SetupError as exc:
+                raise SetupError("managed capture source asset is unavailable or access was revoked") from exc
 
     async def show(self, target: Any) -> None:
         """Focus the Python presentation on a Message, ResponseMessage, or InteractionResult.
