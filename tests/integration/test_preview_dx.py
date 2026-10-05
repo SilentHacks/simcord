@@ -314,7 +314,9 @@ async def test_maximum_unicode_message_query_cursors_round_trip(env, channel, al
             page.id, action_body(page, "browse_messages", 3, query=query, cursor=previous)
         )
         assert len(back["result"]["messageIndex"]) == 50
-        tampered = navigation["nextCursor"][:-1] + ("A" if navigation["nextCursor"][-1] != "A" else "B")
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        cursor = navigation["nextCursor"]
+        tampered = cursor[:-1] + alphabet[alphabet.index(cursor[-1]) ^ 1]
         invalid = await preview._action(
             page.id, action_body(page, "browse_messages", 4, query=query, cursor=tampered)
         )
