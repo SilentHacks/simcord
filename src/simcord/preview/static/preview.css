@@ -530,18 +530,40 @@ body[data-managed-capture="true"] .preview-app.presentation-fixed {
 .reaction-chip:hover:not(:disabled) { background: var(--discord-hover); }
 .reaction-emoji, .unicode-emoji { font-family: var(--preview-font-emoji); }
 .reaction-count { font-size: 12px; }
-.message-poll { max-width: 460px; padding: 12px; background: var(--discord-control); border-radius: 8px; }
-.poll-question { margin: 0 0 2px; color: var(--discord-text); font-size: 16px; line-height: 22px; }
-.poll-status { margin-bottom: 8px; color: var(--discord-muted); font-size: 12px; }
-.poll-answer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 8px; align-items: center; margin: 4px 0; }
-.poll-answer { min-width: 0; padding: 3px 6px; color: var(--discord-text); background: transparent; text-align: left; overflow-wrap: anywhere; }
-.poll-answer.is-selected { color: var(--link-text); font-weight: 600; }
-.poll-answer:hover:not(:disabled) { background: var(--discord-hover); }
-.poll-answer-count, .poll-answer-percentage { color: var(--discord-subtle); font-size: 12px; }
-.poll-answer-percentage { grid-column: 3; grid-row: 1; }
-.poll-result-track { grid-column: 1 / -1; height: 4px; overflow: hidden; background: #1e1f22; border-radius: 2px; }
-.poll-result-fill { display: block; height: 100%; background: var(--discord-brand); border-radius: inherit; }
-.poll-submit { margin-top: 8px; padding: 3px 12px; color: #fff; background: var(--discord-brand); }
+.message-poll { max-width: 472px; padding: 16px 16px 20px; background: #383940; border: 1px solid #44454c; border-radius: 8px; }
+.poll-question { margin: 0 0 4px; color: var(--discord-text); font-size: 16px; font-weight: 600; line-height: 22px; }
+.poll-instruction { margin-bottom: 8px; color: #abacb4; font-size: 14px; line-height: 20px; }
+.poll-answer { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 50px; margin-top: 8px; padding: 12px 16px; overflow: hidden; color: var(--discord-text); background: #3e3f46; border: 1px solid transparent; border-radius: 8px; text-align: left; font-size: 14px; font-weight: 600; line-height: 24px; }
+.poll-answer > :not(.poll-result-fill) { position: relative; z-index: 1; }
+.poll-answer-label { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+.poll-emoji { display: inline-flex; flex: 0 0 24px; align-items: center; justify-content: center; width: 24px; height: 24px; font-size: 24px; }
+.poll-emoji img { width: 24px; height: 24px; }
+.poll-answer.is-selected { border-color: #8c9bff; }
+button.poll-answer:hover { background: #44454d; }
+.poll-answer:focus-visible, .poll-actions button:focus-visible { outline: 2px solid var(--discord-focus); outline-offset: 2px; }
+.poll-indicator { display: grid; flex: 0 0 20px; place-items: center; width: 20px; height: 20px; border: 2px solid #e6e6e9; }
+.poll-radio { border-radius: 50%; }
+.is-selected .poll-radio::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #8c9bff; }
+.poll-checkbox { border-radius: 3px; }
+.is-selected .poll-checkbox { border-color: #5865f2; background: #5865f2; }
+.poll-indicator .ui-icon { width: 18px; height: 18px; color: #fff; }
+.poll-voted { flex-basis: 22px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: #5865f2; }
+.poll-answer-count { flex: 0 0 auto; font-size: 12px; line-height: 16px; }
+.poll-answer-percentage { flex: 0 0 auto; font-size: 16px; font-weight: 800; }
+.poll-result-fill { position: absolute; inset: 0 auto 0 0; background: #ffffff0a; pointer-events: none; }
+.is-selected .poll-result-fill { background: #5865f233; }
+.poll-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; min-height: 32px; font-size: 14px; line-height: 20px; }
+.poll-status { display: flex; align-items: center; gap: 8px; }
+.poll-total { font-weight: 500; }
+.poll-time { color: #abacb4; }
+.poll-time::before { content: "·"; margin-right: 8px; }
+.poll-actions { display: flex; align-items: center; gap: 16px; margin-left: auto; }
+.poll-actions button { min-height: 32px; padding: 4px 12px; color: var(--discord-text); border-radius: 8px; font-size: 14px; font-weight: 500; line-height: 20px; }
+.poll-actions .poll-submit { padding-inline: 16px; background: #5865f2; box-shadow: inset 0 0 0 1px #ffffff12; }
+.poll-actions .poll-submit:disabled { opacity: 1; color: #abacb4; background: #494f97; }
+.poll-actions .poll-show-results { padding-inline: 0; background: transparent; }
+.poll-actions .poll-secondary { background: #44454d; }
+.poll-actions button:hover:not(:disabled) { filter: brightness(1.08); }
 .thread-summary { display: inline-flex; align-items: center; gap: 8px; margin: 4px 0 4px 72px; padding: 5px 8px; color: var(--link-text); background: #5865f21a; border-radius: 4px; font-size: 13px; }
 .thread-archived { color: var(--discord-muted); font-size: 11px; }
 .message-surface {

@@ -1,4 +1,4 @@
-import { applyRoleColor, iconButton, node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { applyRoleColor, icon, iconButton, node, presenceDot, renderIdentityAvatar } from "./dom.js";
 import { isEmojiOnly, appendEmojiValue, appendMarkdownOrText } from "./text.js";
 import { renderEmbed, renderNode } from "./components.js";
 import {
@@ -367,11 +367,7 @@ export function renderMessage(root, message, options = {}) {
     const card = node("section", "message-poll");
     card.append(node("h3", "poll-question", poll.question));
     const ended = Boolean(poll.finalized || poll.expired);
-    const expiry = new Date(poll.expiry);
-    const status = ended
-      ? "Poll ended"
-      : `Ends ${Number.isFinite(expiry.getTime()) ? absoluteTime(poll.expiry, options) : "later"}`;
-    card.append(node("div", "poll-status", `${status} · ${poll.total_votes} ${poll.total_votes === 1 ? "vote" : "votes"}`));
+    card.append(node("div", "poll-instruction", poll.multiselect ? "Select one or more answers" : "Select one answer"));
     const canVote = allowedActions.has("set_poll_votes")
       && !ended
       && typeof options.onPollDraft === "function";
@@ -379,16 +375,20 @@ export function renderMessage(root, message, options = {}) {
     const selected = new Set(
       drafted || poll.answers.filter((answer) => answer.viewer_selected).map((answer) => String(answer.id)),
     );
+    const voted = poll.answers.some((answer) => answer.viewer_selected);
+    const showResults = ended || voted || !canVote || options.pollShowingResults?.(message);
     (poll.answers || []).forEach((answer) => {
       const answerId = String(answer.id);
-      const row = node("div", "poll-answer-row");
-      const choice = node(canVote ? "button" : "span", "poll-answer");
+      const choice = node(canVote && !showResults ? "button" : "div", "poll-answer");
+      const label = node("span", "poll-answer-label");
       if (answer.emoji) {
-        appendEmojiValue(choice, answer.emoji, options, "Poll emoji");
-        choice.append(document.createTextNode(" "));
+        const emoji = node("span", "poll-emoji");
+        appendEmojiValue(emoji, answer.emoji, options, "Poll emoji");
+        label.append(emoji);
       }
-      choice.append(document.createTextNode(String(answer.text ?? "")));
-      if (canVote) {
+      label.append(node("span", "", String(answer.text ?? "")));
+      choice.append(label);
+      if (canVote && !showResults) {
         choice.type = "button";
         choice.dataset.controlKey = `message:${message.id}:poll:${answerId}`;
         choice.setAttribute("aria-pressed", String(selected.has(answerId)));
@@ -402,22 +402,59 @@ export function renderMessage(root, message, options = {}) {
           options.onPollDraft(message, [...next]);
         });
       }
-      if (selected.has(answerId)) choice.classList.add("is-selected");
-      const result = node("div", "poll-result-track");
-      const fill = node("span", "poll-result-fill");
-      fill.style.width = `${Math.max(0, Math.min(100, Number(answer.percentage) || 0))}%`;
-      result.append(fill);
-      row.append(choice, node("span", "poll-answer-count", answer.count), result);
-      row.append(node("span", "poll-answer-percentage", `${answer.percentage}%`));
-      card.append(row);
+      const isSelected = showResults ? answer.viewer_selected : selected.has(answerId);
+      if (isSelected) choice.classList.add("is-selected");
+      if (showResults) {
+        const percentage = Math.max(0, Math.min(100, Number(answer.percentage) || 0));
+        const fill = node("span", "poll-result-fill");
+        fill.style.width = `${percentage}%`;
+        choice.prepend(fill);
+        choice.append(
+          node("span", "poll-answer-count", `${answer.count} ${answer.count === 1 ? "vote" : "votes"}`),
+          node("span", "poll-answer-percentage", `${percentage}%`),
+        );
+      }
+      if (!showResults || answer.viewer_selected) {
+        const indicator = node("span", `poll-indicator ${showResults ? "poll-voted" : poll.multiselect ? "poll-checkbox" : "poll-radio"}`);
+        indicator.setAttribute("aria-hidden", "true");
+        if (isSelected && (showResults || poll.multiselect)) indicator.append(icon("check"));
+        choice.append(indicator);
+      }
+      card.append(choice);
     });
-    if (canVote && typeof options.onPollSubmit === "function") {
-      const submit = node("button", "poll-submit", "Vote");
-      submit.type = "button";
-      submit.dataset.controlKey = `message:${message.id}:poll:submit`;
-      submit.addEventListener("click", () => options.onPollSubmit(message, [...selected]));
-      card.append(submit);
+    const footer = node("div", "poll-footer");
+    const status = node("div", "poll-status");
+    status.append(node("span", "poll-total", `${poll.total_votes} ${poll.total_votes === 1 ? "vote" : "votes"}`));
+    const remaining = new Date(poll.expiry).getTime() - new Date(options.presentationTime || Date.now()).getTime();
+    let timeLeft = "Poll ended";
+    if (!ended) {
+      const hours = Math.max(0, Math.floor(remaining / 3600000));
+      timeLeft = Number.isFinite(hours) ? (hours >= 24 ? `${Math.floor(hours / 24)}d left` : hours ? `${hours}h left` : "Less than 1h left") : "Ends later";
     }
+    status.append(node("span", "poll-time", timeLeft));
+    footer.append(status);
+    const actions = node("div", "poll-actions");
+    const addButton = (label, className, key, callback) => {
+      const button = node("button", className, label);
+      button.type = "button";
+      button.dataset.controlKey = `message:${message.id}:poll:${key}`;
+      button.addEventListener("click", callback);
+      actions.append(button);
+      return button;
+    };
+    if (canVote && typeof options.onPollSubmit === "function") {
+      if (voted) {
+        addButton("Remove Vote", "poll-secondary", "remove", () => options.onPollSubmit(message, []));
+      } else if (showResults) {
+        addButton("Go back to vote", "poll-secondary", "back", () => options.onPollResults?.(message, false));
+      } else {
+        addButton("Show results", "poll-show-results", "results", () => options.onPollResults?.(message, true));
+        const submit = addButton("Vote", "poll-submit", "submit", () => options.onPollSubmit(message, [...selected]));
+        submit.disabled = selected.size === 0;
+      }
+    }
+    footer.append(actions);
+    card.append(footer);
     root.append(card);
   }
   if (options.channelLayout) {

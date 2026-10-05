@@ -155,6 +155,7 @@ const state = {
   replyToId: null,
   editTargetId: null,
   pollDrafts: new Map(),
+  pollResults: new Set(),
   closed: false,
   authorized: true,
   pinnedCapture: false,
@@ -1104,6 +1105,12 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
       });
     },
     pollAnswers: (item) => state.pollDrafts.get(pollKey(item)),
+    pollShowingResults: (item) => state.pollResults.has(pollKey(item)),
+    onPollResults: (item, showing) => {
+      if (showing) state.pollResults.add(pollKey(item));
+      else state.pollResults.delete(pollKey(item));
+      localRender(true);
+    },
     onPollDraft: (item, answers) => {
       state.pollDrafts.set(pollKey(item), answers.map(String));
       localRender(true);
@@ -1784,6 +1791,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.spoilerState.clear();
     resetInteractionState();
     state.pollDrafts.clear();
+    state.pollResults.clear();
     state.editTargetId = null;
     state.replyToId = null;
     state.dropdown = null;
@@ -2256,6 +2264,7 @@ function completeActionDrafts(action, receipt) {
   const unchanged = (state.draftVersions.get(draftKey) || 0) === action.draftVersion;
   if ((["send_message", "edit_message"].includes(kind) && unchanged) || kind === "delete_message") state.drafts.delete(draftKey);
   if (kind === "set_poll_votes") state.pollDrafts.delete(`poll:${contextId}:${targetId}`);
+  if (kind === "set_poll_votes") state.pollResults.delete(`poll:${contextId}:${targetId}`);
   if (contextId !== state.contextId) return;
   if ((kind === "send_message" && unchanged) || (kind === "delete_message" && state.replyToId === String(targetId))) state.replyToId = null;
   if ((kind === "edit_message" && unchanged || kind === "delete_message") && state.editTargetId === String(targetId)) state.editTargetId = null;
@@ -2311,6 +2320,7 @@ function resetInteractionState() {
   state.selectVerifiedValues.clear();
   state.pendingSelectValidations.clear();
   state.pollDrafts.clear();
+  state.pollResults.clear();
   clearModalDrafts();
   state.editTargetId = null;
   state.replyToId = null;
