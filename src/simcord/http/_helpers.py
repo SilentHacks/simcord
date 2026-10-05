@@ -15,7 +15,12 @@ from ..backend.models import (
     Poll,
     PollAnswer,
 )
-from ..components import ComponentValidationError, resolve_attachment_references, validate_message_state
+from ..components import (
+    ComponentValidationError,
+    merge_edit_flags,
+    resolve_attachment_references,
+    validate_message_state,
+)
 from ..enums import AppCommandType, MessageType
 from .router import RequestContext
 
@@ -445,11 +450,12 @@ def message_edit_changes(
         effective_components = []
     preview_attachments = fields.get("attachments", current_attachments)
     try:
-        flags = (
+        requested_flags = (
             int(fields["flags"])
             if "flags" in fields and fields["flags"] is not None
             else (message.flags if message is not None else 0)
         )
+        flags = merge_edit_flags(message.flags, requested_flags) if message is not None else requested_flags
     except (TypeError, ValueError) as exc:
         raise errors.invalid_form_body("flags must be an integer") from exc
     effective_components = _validate_edit_state(message, fields, effective_components, flags=flags)

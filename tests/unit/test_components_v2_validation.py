@@ -2,8 +2,11 @@ import pytest
 
 from simcord.components import (
     COMPONENTS_V2_FLAG,
+    EDITABLE_MESSAGE_FLAGS,
+    SUPPRESS_EMBEDS_FLAG,
     ComponentValidationError,
     component_mentions,
+    merge_edit_flags,
     resolve_attachment_references,
     validate_components,
     validate_message_state,
@@ -702,3 +705,14 @@ def test_embed_count_fields_and_aggregate_limits():
     validate_message_state([], flags=0, content=None, embeds=embeds)
     with pytest.raises(ComponentValidationError, match="6000"):
         validate_message_state([], flags=0, content=None, embeds=[*embeds, {"title": "x"}])
+
+
+def test_merge_edit_flags_preserves_immutable_bits_and_applies_editable_flags():
+    previous = (1 << 17) - 1
+    expected_immutable = previous & ~EDITABLE_MESSAGE_FLAGS
+
+    assert merge_edit_flags(previous, COMPONENTS_V2_FLAG) == expected_immutable | COMPONENTS_V2_FLAG
+    assert merge_edit_flags(previous, COMPONENTS_V2_FLAG | SUPPRESS_EMBEDS_FLAG) == (
+        expected_immutable | COMPONENTS_V2_FLAG | SUPPRESS_EMBEDS_FLAG
+    )
+    assert merge_edit_flags(0, COMPONENTS_V2_FLAG) == COMPONENTS_V2_FLAG

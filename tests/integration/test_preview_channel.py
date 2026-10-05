@@ -1,12 +1,75 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from importlib import resources
+from urllib.parse import urlsplit
 
 import discord
+import jsonschema
 import pytest
 from preview_helpers import action_body
 
 import simcord
+
+
+@pytest.mark.asyncio
+async def test_dm_and_guild_channel_recipients_validate_against_schema(env, channel, alice):
+    await alice.send_dm("hello")
+    dm = alice.user.dm_channel
+    schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+
+    async with env.preview(dm, viewers=[alice.user], layout="channel") as preview:
+        dm_snapshot = await preview.snapshot()
+        recipient = dm_snapshot["channel"]["recipient"]
+        assert recipient["id"] == str(env.backend.bot_user.id)
+        assert recipient["name"]
+        validator.validate(dm_snapshot)
+
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        guild_snapshot = await preview.snapshot()
+        assert guild_snapshot["channel"]["recipient"] is None
+        validator.validate(guild_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_dm_composer_label_and_hash_change_load_second_preview(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    await alice.send_dm("hello")
+    dm = alice.user.dm_channel
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            async with env.preview(dm, viewers=[alice.user], layout="channel") as first:
+                first_url = first.url
+                port = urlsplit(first_url).port
+                await page.goto(first_url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                first_context_id = await page.evaluate("() => window.simcordPreview.contextId")
+                placeholder = await page.locator("#channel-composer-input").get_attribute("placeholder")
+                assert placeholder is not None and placeholder.startswith("Message @")
+
+            async with env.preview(channel, viewers=[alice], layout="channel", port=port) as second:
+                second_url = second.url
+                assert (
+                    urlsplit(first_url)._replace(fragment="").geturl()
+                    == urlsplit(second_url)._replace(fragment="").geturl()
+                )
+                await page.evaluate(
+                    "(fragment) => { window.location.hash = fragment; }", urlsplit(second_url).fragment
+                )
+                await page.wait_for_function(
+                    "(previous) => window.simcordPreview?.ready && window.simcordPreview.contextId !== previous",
+                    arg=first_context_id,
+                )
+                second_context_id = await page.evaluate("() => window.simcordPreview.contextId")
+                assert second_context_id in second._pages
+        finally:
+            await browser.close()
 
 
 @pytest.mark.asyncio

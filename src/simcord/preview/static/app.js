@@ -19,6 +19,8 @@ const ui = {
   inspectorTabCount: $("inspector-tab-count"),
   captureOpen: $("capture-open"),
   channelContextName: $("channel-context-name"),
+  channelContextHash: document.querySelector(".channel-context-hash"),
+  channelHash: document.querySelector(".channel-hash"),
   layoutLabel: $("layout-label"),
   surface: $("focused-content"),
   modal: $("modal-root"),
@@ -89,6 +91,7 @@ const inspectorPanels = {
 };
 
 const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+window.addEventListener("hashchange", () => window.location.reload());
 const state = {
   capability: hash,
   snapshot: null,
@@ -449,6 +452,13 @@ function messageTime(createdAt) {
   }
 }
 
+function channelLabel(snapshot) {
+  if (!state.authorized) return { name: "Unavailable channel", glyph: "#" };
+  const recipient = snapshot.channel?.recipient;
+  if (recipient) return { name: recipient.name || "Unavailable channel", glyph: "@" };
+  return { name: snapshot.channel?.name || "Unavailable channel", glyph: "#" };
+}
+
 function updatePickers(snapshot) {
   ui.viewer.replaceChildren();
   const viewers = Array.isArray(snapshot.viewers) && snapshot.viewers.length ? snapshot.viewers : [{ id: snapshot.viewerId }];
@@ -537,11 +547,13 @@ function updatePickers(snapshot) {
   ].filter(Boolean).join(" · ") || "Current authorized page";
   const channelLayout = snapshot.layout === "channel";
   const target = targetId ? snapshot.messages?.[targetId] : null;
-  const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
-  ui.channelContextName.textContent = channelName;
+  const channel = channelLabel(snapshot);
+  ui.channelContextHash.textContent = channel.glyph;
+  ui.channelHash.textContent = channel.glyph;
+  ui.channelContextName.textContent = channel.name;
   ui.layoutLabel.textContent = channelLayout ? "Conversation" : "Isolate message";
   ui.channel.hidden = !channelLayout;
-  ui.channelName.textContent = channelName;
+  ui.channelName.textContent = channel.name;
   ui.channelTopic.textContent = state.authorized ? snapshot.channel?.topic || "" : "";
   ui.channelTopic.hidden = !state.authorized || !snapshot.channel?.topic;
   ui.composerForm.hidden = !channelLayout || !(state.authorized && (snapshot.channel?.canSendMessages || state.editTargetId));
@@ -578,8 +590,10 @@ function updateComposer(snapshot) {
     ui.send.dataset.mode = sendLabel;
   }
   resizeComposer();
-  const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
-  ui.composer.placeholder = state.editTargetId ? "Edit message" : `Message #${channelName}`;
+  const channel = channelLabel(snapshot);
+  ui.composer.placeholder = state.editTargetId
+    ? "Edit message"
+    : `Message ${channel.glyph}${channel.name}`;
   const messageRows = state.authorized ? snapshot.messageIndex || [] : [];
   const reply = state.replyToId
     ? messageRows.find((item) => String(item.id) === state.replyToId)
@@ -2344,6 +2358,8 @@ function redactPrivateView() {
   ui.search.value = "";
   ui.channelName.textContent = "Unavailable channel";
   ui.channelContextName.textContent = "Unavailable channel";
+  ui.channelContextHash.textContent = "#";
+  ui.channelHash.textContent = "#";
   ui.channelTopic.textContent = "";
   ui.channelTopic.hidden = true;
   ui.channel.hidden = true;

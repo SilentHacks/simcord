@@ -27,9 +27,10 @@
     "layout": { "enum": ["message", "channel"] },
     "channel": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "name", "guildId", "type", "topic", "canSendMessages"],
+      "required": ["id", "name", "recipient", "guildId", "type", "topic", "canSendMessages"],
       "properties": {
         "id": { "type": "string" }, "name": { "type": ["string", "null"] },
+        "recipient": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/identity" }] },
         "guildId": { "type": ["string", "null"] }, "type": { "type": ["integer", "null"] },
         "topic": { "type": ["string", "null"] }, "canSendMessages": { "type": "boolean" }
       }

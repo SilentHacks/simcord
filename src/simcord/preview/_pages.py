@@ -345,7 +345,9 @@ class _PageOps:
             diagnostics=[make_diagnostic("access-denied")],
         )
         if isinstance(payload.get("channel"), dict):
-            payload["channel"].update(name=None, guildId=None, type=None, topic=None, canSendMessages=False)
+            payload["channel"].update(
+                name=None, recipient=None, guildId=None, type=None, topic=None, canSendMessages=False
+            )
         payload["status"] = "access_denied"
         payload["lastAction"] = None
         payload["activity"] = []

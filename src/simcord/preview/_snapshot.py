@@ -2048,6 +2048,11 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         "channel": {
             "id": str(page.channel_id),
             "name": channel.name if channel is not None and allowed else None,
+            "recipient": (
+                _identity_wire(resolve_identity(preview, page, env.backend.bot_user.id))
+                if channel is not None and channel.guild_id is None and allowed
+                else None
+            ),
             "guildId": (
                 str(channel.guild_id)
                 if channel is not None and channel.guild_id is not None and allowed
