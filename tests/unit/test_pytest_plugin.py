@@ -27,13 +27,11 @@ def test_simcord_env_fixture_and_transcript_hook(pytester):
         import pytest
 
 
-        @pytest.mark.simcord(strict_sync=False)
-        async def test_marker_options_forwarded(simcord_env):
-            assert simcord_env.create_guild() is not None
-
-
-        async def test_without_marker(simcord_env):
-            assert simcord_env is not None
+        @pytest.mark.simcord(strict_sync=False, future_behavior=True)
+        async def test_marker_enables_detached_error_observations(simcord_env):
+            saved = simcord_env.errors
+            saved.append(RuntimeError("only in the snapshot"))
+            assert simcord_env.errors == []
 
 
         async def test_failure_attaches_transcript(simcord_env):
@@ -42,7 +40,7 @@ def test_simcord_env_fixture_and_transcript_hook(pytester):
         """
     )
     result = pytester.runpytest("-o", "asyncio_mode=auto", "-p", "no:cacheprovider")
-    result.assert_outcomes(passed=2, failed=1)
+    result.assert_outcomes(passed=1, failed=1)
     # The failing test's report carries the env transcript section.
     result.stdout.fnmatch_lines(["*simcord transcript*"])
 

@@ -7,6 +7,7 @@ import contextvars
 import inspect
 import math
 import time
+import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -93,10 +94,14 @@ class Env:
         *,
         strict_sync: bool = True,
         check_errors: bool = True,
+        future_behavior: bool = False,
         approved_intents: discord.Intents | None = None,
         shard_count: int | None = None,
         settle_timeout: float = 5.0,
     ) -> None:
+        if not isinstance(future_behavior, bool):
+            raise SetupError("future_behavior must be a bool")
+        self.future_behavior = future_behavior
         self.bot = bot
         self.strict_sync = strict_sync
         self.check_errors = check_errors
@@ -107,6 +112,7 @@ class Env:
         self._errors: list[BaseException] = []
         self._error_ids: set[int] = set()
         self._errors_inspected = False
+        self._errors_acknowledged = 0
         self._guilds: list[GuildHandle] = []
         self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
         self._callbacks: list[_CallbackRecord] = []
@@ -1055,7 +1061,17 @@ class Env:
 
     @property
     def errors(self) -> list[BaseException]:
-        """Errors the bot raised; reading marks them inspected."""
+        """Captured errors; acknowledge this prefix (the whole lifetime in legacy mode)."""
+        if self.future_behavior:
+            self._errors_acknowledged = self.error_cursor
+            return list(self._errors)
+        warnings.warn(
+            "SimCord 2.3 legacy env.errors returns a live list and acknowledges all future "
+            "errors. Use simcord.run(bot, future_behavior=True) for snapshots and prefix "
+            "acknowledgement, which become the defaults in 3.0 when the flag is removed.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._errors_inspected = True
         return self._errors
 
@@ -1276,9 +1292,15 @@ class Env:
         fails). Call this to assert the bot ran cleanly: it raises an
         ``ExceptionGroup`` of everything captured — even a single error — and
         does nothing if there were none.
+        With ``future_behavior=True``, this acknowledges only the current
+        prefix, so errors captured later still fail teardown.
         """
+        self._raise_errors_since(0)
+
+    def _raise_errors_since(self, cursor: int) -> None:
+        captured = self.errors_since(cursor)
+        self._errors_acknowledged = self.error_cursor
         self._errors_inspected = True
-        captured = list(self._errors)
         if not captured:
             return
         message = f"bot raised {len(captured)} error(s) during the test"
@@ -1352,10 +1374,12 @@ def _summarize(payload: Any, limit: int = 140) -> str:
 class run:
     """``async with simcord.run(bot) as env:`` — attach, fake-login, READY.
 
-    On exit, if the bot raised errors the test never inspected (via
-    ``env.errors`` or ``env.raise_errors()``), they are re-raised as an
-    ``ExceptionGroup`` so bot bugs cannot pass silently. Opt out with
-    ``simcord.run(bot, check_errors=False)``.
+    On exit, uninspected bot errors are re-raised as an ``ExceptionGroup``.
+    In 2.3, ``future_behavior=True`` opts into error snapshots and prefix
+    acknowledgement, plus detached mutable result payloads. Without it,
+    inspecting errors acknowledges the whole environment lifetime.
+    3.0 removes the flag and makes the opt-in behavior the default.
+    Disable teardown checking with ``simcord.run(bot, check_errors=False)``.
     """
 
     def __init__(self, bot: discord.Client, **options: Any) -> None:
@@ -1369,5 +1393,8 @@ class run:
         env = self._env
         await env.shutdown()
         # Don't mask an exception already propagating out of the test body.
-        if exc_type is None and env.check_errors and not env._errors_inspected:
-            env.raise_errors()
+        if exc_type is None and env.check_errors:
+            if env.future_behavior:
+                env._raise_errors_since(env._errors_acknowledged)
+            elif not env._errors_inspected:
+                env.raise_errors()

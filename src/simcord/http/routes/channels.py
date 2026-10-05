@@ -7,7 +7,7 @@ from typing import Any
 from ...backend import errors, serializers
 from ...backend.models import Overwrite, Webhook
 from ...enums import AuditLogAction, ChannelType, OverwriteType
-from .._helpers import bot_message
+from .._helpers import commit_bot_message, prepare_bot_message
 from ..router import RequestContext, route
 
 
@@ -207,15 +207,24 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
     unknown = [t for t in applied_tags if t not in available]
     if unknown:
         raise errors.invalid_form_body(f"applied_tags: Unknown tag(s) {unknown}")
+    name = body["name"]
+    auto_archive_duration = int(body.get("auto_archive_duration") or 1440)
+    prepared = prepare_bot_message(ctx, body=body.get("message") or {})
     thread = backend.create_thread(
         forum_id,
-        body["name"],
+        name,
         backend.bot_user.id,
         type=ChannelType.PUBLIC_THREAD,
-        auto_archive_duration=int(body.get("auto_archive_duration") or 1440),
+        auto_archive_duration=auto_archive_duration,
         applied_tags=applied_tags,
+        broadcast=False,
     )
-    message = bot_message(ctx, thread.id, body=body.get("message") or {})
+    message = commit_bot_message(ctx, thread.id, prepared, broadcast=False)
+    forum.last_message_id = thread.id
+    # Publish only once both the thread and its mandatory starter are visible.
+    backend.announce_thread_create(thread)
+    if prepared[0]["broadcast"]:
+        backend.announce_message_create(message)
     payload = dict(serializers.thread_payload(backend, thread))
     payload["message"] = serializers.message_payload(backend, message)
     return payload

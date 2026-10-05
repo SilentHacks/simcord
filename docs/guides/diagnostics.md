@@ -27,10 +27,17 @@ excluded — a non-command message isn't a bug.)
 ### Errors fail tests by default
 
 !!! warning "Uninspected errors are re-raised at teardown"
-    If the bot raised errors during a test and the test never inspected them, `simcord.run`
-    re-raises them as an `ExceptionGroup` when the environment closes — so a swallowed bug
-    can't slip past a green test. **Reading `env.errors` counts as inspecting**: your
-    assertions take over from there.
+    With the 2.x default, reading `env.errors` acknowledges errors for the environment's
+    entire lifetime, including errors that arrive later. A saved list stays live.
+    SimCord 2.3 warns on this legacy read. Use `simcord.run(bot, future_behavior=True)`
+    to adopt the intended 3.0 behavior now: each read returns a shallow list snapshot and
+    acknowledges only the errors captured so far. A later error still fails teardown,
+    including one captured during shutdown; previously acknowledged errors are not
+    re-raised alongside it. Exception objects and their tracebacks are preserved.
+
+The `future_behavior` flag defaults to `False` in 2.3. SimCord 3.0 removes the flag and
+makes snapshot/prefix acknowledgement the default. Saving an empty opt-in snapshot does
+not acknowledge errors that arrive later, and mutating a snapshot cannot change the history.
 
 You have three ways to handle this:
 
@@ -46,9 +53,14 @@ async with simcord.run(bot, check_errors=False) as env:
     ...
 ```
 
-`env.raise_errors()` is the one-call way to assert "the bot ran cleanly": it raises an
-`ExceptionGroup` of everything captured (even a single error) and does nothing if there were
-none.
+`env.raise_errors()` always raises an `ExceptionGroup` of the **entire captured history**
+(even errors acknowledged earlier), or does nothing if there were none. It acknowledges
+only the current prefix in opt-in mode, including an empty prefix; later errors still fail
+teardown. `check_errors=False` disables automatic checking in either mode. Teardown never
+masks an exception already propagating from the test body.
+
+`env.error_cursor` and `env.errors_since(cursor)` are non-consuming observations used by
+Preview diagnostics. They do not acknowledge errors or disable teardown checking.
 
 ## Assertions
 
@@ -89,8 +101,8 @@ assert_error(env, discord.Forbidden, code=50013)   # matches the wrapped origina
 assert_no_errors(env)                               # the symmetric "ran cleanly" check
 ```
 
-`assert_error` reads `env.errors`, which counts as inspecting them (see below), so it also
-satisfies the teardown guard.
+`assert_error` reads `env.errors`, so it acknowledges the same errors as a direct read:
+the whole lifetime by default, or only the current prefix with `future_behavior=True`.
 
 ## The transcript
 
@@ -162,7 +174,14 @@ simcord_env.inject_error("PUT", "/guilds/*/bans/*", status=403, code=50013, time
 
 Because failures surface as genuine `discord.Forbidden` / `discord.HTTPException` with real
 codes, your `except discord.HTTPException:` branches are exercised exactly as in production.
+
 ## Settlement timeouts and recovery
+
+`settle_timeout` defaults to five seconds for actor operations, `env.settle()`, and the
+pre-restart drain; `env.settle(timeout=...)` overrides that individual settle. Startup
+READY settlement has its own fixed five-second budget, independent of `settle_timeout`.
+Restart uses a fresh fixed five-second READY budget and then a separate fixed five-second
+guild-replay budget. These are settlement budgets, not a timeout on `setup_hook` or login.
 
 `TimeoutError` reports the operation, effective timeout, bot-owned task or callback, wait
 reason, and any recognized waits left parked. A timeout or cancellation does not release

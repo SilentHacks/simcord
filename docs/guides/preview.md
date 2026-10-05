@@ -270,6 +270,15 @@ identifies the focused projection. `modal`, `candidates`, `assets`, `entities`, 
 details may evolve under `protocolVersion`; assert on documented keys rather than exact payload
 layout.
 
+The packaged `protocol.schema.json` also describes protocol-2 action envelopes at
+`#/$defs/action`: `click`, `select`, `modal_submit`, `viewer`, `focus`, `refresh`,
+and `close`. Validate against that definition rather than the snapshot root.
+Unknown metadata remains accepted, and an omitted/null focus target retains its
+initial-target default. Modal values are broadly typed because controls determine
+their types; file bytes are delivered through multipart transport, not JSON.
+Schema validity does not establish authorization, freshness, control availability,
+or sequence admission: runtime checks remain authoritative.
+
 ## Screenshot profiles, modes, and reports
 
 `preview.screenshot(path, ...)` settles and pins the requested viewer/target before releasing the

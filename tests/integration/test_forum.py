@@ -1,5 +1,10 @@
+import io
+
 import discord
 import pytest
+
+import simcord
+from simcord.http import router
 
 
 async def test_create_forum_post(env):
@@ -77,3 +82,117 @@ async def test_forum_post_requires_send_messages(env):
     with pytest.raises(discord.Forbidden) as exc_info:
         await cached.create_thread(name="nope", content="blocked")
     assert exc_info.value.code == 50013
+
+
+def _forum_state(backend, forum_id):
+    return (
+        set(backend.channels),
+        {key: set(messages) for key, messages in backend.messages.items()},
+        list(backend.get_guild(backend.get_channel(forum_id).guild_id).thread_ids),
+        backend.get_channel(forum_id).last_message_id,
+        dict(backend.cdn._blobs),
+        [item for item in backend.transcript if item[0] == "GATEWAY"],
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {},
+        {"content": "x" * 2001},
+        {"embeds": [{"description": "x" * 3001}] * 2},
+        {"embeds": [{"footer": {"text": "x" * 2049}}]},
+        {"content": "not allowed", "flags": 32768, "components": [{"type": 10, "content": "v2"}]},
+        {"components": [{"type": 1, "components": [{"type": 2, "style": 1}]}]},
+        {"flags": 32768, "components": [{"type": 13, "file": {"url": "attachment://missing.bin"}}]},
+        {"content": "ok", "unmodelled": True},
+        {"content": "ok", "sticker_ids": [1]},
+    ],
+)
+def test_failed_forum_validation_leaves_no_world_cdn_or_event_state(env, message):
+    forum = env.guild.create_forum_channel("help")
+    before = _forum_state(env.backend, forum.id)
+    upload = discord.File(io.BytesIO(b"unused"), filename="upload.bin")
+    # Empty starters must not accidentally be rescued by the test's upload.
+    files = [] if not message else [upload]
+    with pytest.raises(simcord.BackendError):
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={"name": "invalid", "message": message},
+            files=files,
+        )
+    assert _forum_state(env.backend, forum.id) == before
+    assert upload.fp.tell() == 0
+
+
+def test_forum_reads_every_upload_before_mutating_state(env):
+    class BrokenRead(io.BytesIO):
+        def read(self, *args):
+            raise OSError("upload read failed")
+
+    forum = env.guild.create_forum_channel("help")
+    before = _forum_state(env.backend, forum.id)
+    first = discord.File(io.BytesIO(b"first"), filename="first.bin")
+    second = discord.File(BrokenRead(b"second"), filename="second.bin")
+    with pytest.raises(OSError, match="upload read failed"):
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={"name": "invalid", "message": {}},
+            files=[first, second],
+        )
+    assert first.fp.tell() == len(b"first")
+    assert _forum_state(env.backend, forum.id) == before
+
+
+@pytest.mark.parametrize("starter", ["attachment", "embed", "component", "poll"])
+def test_forum_subscribers_see_complete_contentless_starter(env, starter):
+    backend = env.backend
+    forum = env.guild.create_forum_channel("help")
+    upload = discord.File(io.BytesIO(b"starter"), filename="starter.bin")
+    messages = {
+        "attachment": {},
+        "embed": {"embeds": [{"title": "starter"}]},
+        "component": {
+            "flags": 32768,
+            "components": [{"type": 13, "file": {"url": "attachment://starter.bin"}}],
+        },
+        "poll": {"poll": {"question": {"text": "Lunch?"}, "answers": [{"poll_media": {"text": "Pizza"}}]}},
+    }
+    files = [upload] if starter in {"attachment", "component"} else []
+    seen = []
+
+    def observe(event, payload):
+        if event not in {"THREAD_CREATE", "MESSAGE_CREATE"}:
+            return
+        thread_id = int(payload["id"] if event == "THREAD_CREATE" else payload["channel_id"])
+        thread = backend.get_channel(thread_id)
+        assert thread_id in backend.get_guild(env.guild.id).thread_ids
+        assert thread.message_count == 1
+        assert forum.id == thread.parent_id
+        assert backend.get_channel(forum.id).last_message_id == thread_id
+        message = backend.get_message(thread_id, thread.last_message_id)
+        assert message.content == ""
+        if files:
+            assert backend.cdn.get(message.attachments[0]["url"]) == b"starter"
+        if starter == "component":
+            assert message.components[0]["file"]["attachment_id"] == message.attachments[0]["id"]
+        seen.append(event)
+
+    backend.subscribers.append(observe)
+    try:
+        result = router.dispatch(
+            backend,
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={"name": "complete", "message": messages[starter]},
+            files=files,
+        )
+    finally:
+        backend.subscribers.remove(observe)
+    assert seen == ["THREAD_CREATE", "MESSAGE_CREATE"]
+    assert result["message"]["channel_id"] == result["id"]
+    assert result["message"]["content"] == ""

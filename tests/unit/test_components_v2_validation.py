@@ -663,3 +663,41 @@ def test_attachment_reference_must_name_an_uploaded_file():
         [{"type": 13, "file": {"url": "attachment://missing.bin"}}],
         [],
     )
+
+
+@pytest.mark.parametrize(
+    "path,limit",
+    [
+        (("title",), 256),
+        (("description",), 4096),
+        (("fields", 0, "name"), 256),
+        (("fields", 0, "value"), 1024),
+        (("footer", "text"), 2048),
+        (("author", "name"), 256),
+    ],
+)
+def test_embed_text_limits_exclude_outer_whitespace_and_preserve_unicode(path, limit):
+    embed = {"fields": [{}], "footer": {}, "author": {}}
+    target = embed
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = " \n" + "🙂" * limit + "\t "
+    validate_message_state([], flags=0, content=None, embeds=[embed], require_nonempty=True)
+    assert target[path[-1]] == " \n" + "🙂" * limit + "\t "
+    target[path[-1]] = "🙂" * (limit + 1)
+    with pytest.raises(ComponentValidationError, match=f"Must be {limit}"):
+        validate_message_state([], flags=0, content=None, embeds=[embed])
+
+
+def test_embed_count_fields_and_aggregate_limits():
+    validate_message_state([], flags=0, content=None, embeds=[{"title": "x"}] * 10)
+    with pytest.raises(ComponentValidationError, match="10 or fewer"):
+        validate_message_state([], flags=0, content=None, embeds=[{"title": "x"}] * 11)
+    field = {"name": "n", "value": "v"}
+    validate_message_state([], flags=0, content=None, embeds=[{"fields": [field] * 25}])
+    with pytest.raises(ComponentValidationError, match="25 or fewer"):
+        validate_message_state([], flags=0, content=None, embeds=[{"fields": [field] * 26}])
+    embeds = [{"description": " " + "x" * 3000 + "\n"}] * 2
+    validate_message_state([], flags=0, content=None, embeds=embeds)
+    with pytest.raises(ComponentValidationError, match="6000"):
+        validate_message_state([], flags=0, content=None, embeds=[*embeds, {"title": "x"}])
