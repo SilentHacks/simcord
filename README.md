@@ -31,7 +31,10 @@ async def test_ping(simcord_env):
     assert channel.last_message.content == "Pong!"
 ```
 
-[![Real SimCord example suite running in pytest](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/simcord-terminal-demo.gif)](https://github.com/SilentHacks/simcord/tree/master/examples)
+[![SimCord Preview rendering Components V2, rich embeds, interactive buttons, a booking modal, and a Discord-style poll](docs/assets/simcord-showcase-poll-refresh.gif)](https://simcord.readthedocs.io/en/latest/guides/preview/)
+
+**Your bot's real callbacks, in a local browser.** Explore Components V2 layouts and
+rich embeds, click buttons, submit a modal, and vote in a poll — entirely offline, without a Discord token.
 
 The [bundled example bot](https://github.com/SilentHacks/simcord/tree/master/examples) is executable, tested, and covers prefix commands,
 slash commands, permissions, cooldowns, modals, buttons, and persistent views.
