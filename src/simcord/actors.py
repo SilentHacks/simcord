@@ -16,6 +16,7 @@ import discord
 from . import interactions as _interactions
 from .backend import serializers
 from .backend.access import can_access_channel, can_access_message
+from .backend.command_access import command_access
 from .backend.errors import SetupError
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle, _guard_builder_operation
 from .components import validate_modal, walk_components
@@ -157,15 +158,12 @@ class MemberActor:
 
     # ---------------------------------------------------------- app commands
 
-    def _resolve_root(self, name: str, type: int) -> dict[str, Any]:
-        """Find a registered command by exact name, falling back to the unsynced tree."""
-        root = self._env.backend.find_command(name, self.guild.id, type=type)
-        if root is None:
-            root = self._unsynced_fallback(name, type)
-        return root
+    def _resolve_root(self, name: str, type: int, channel_id: int) -> dict[str, Any]:
+        """Find and visibility-check a registered command by exact name."""
+        return _resolve_visible_command(self, channel_id, name, type)
 
     def _resolve_command(
-        self, name: str, type: int = AppCommandType.CHAT_INPUT
+        self, name: str, type: int, channel_id: int
     ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
         """Resolve "root [group] [sub]" to (root command, leaf spec, nesting path).
 
@@ -174,58 +172,27 @@ class MemberActor:
         full name via :meth:`_resolve_root` instead.
         """
         parts = name.split()
-        root = self._resolve_root(parts[0], type)
+        root = self._resolve_root(parts[0], type, channel_id)
         leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
         return root, leaf, nesting
 
-    def _unsynced_fallback(self, name: str, type: int) -> dict[str, Any]:
-        tree = getattr(self._env.bot, "tree", None)
-        in_tree = None
-        if tree is not None:
-            for scope in (None, discord.Object(self.guild.id)):
-                for cmd in tree.get_commands(guild=scope, type=discord.AppCommandType(type)):
-                    if cmd.name == name:
-                        in_tree = (cmd, scope)
-        if in_tree is None:
-            raise SetupError(f"No application command named '{name}' exists")
-        if self._env.strict_sync:
-            raise SetupError(
-                f"Command '{name}' exists in the command tree but was never synced — "
-                "did you forget `await bot.tree.sync()`? "
-                "(Pass strict_sync=False to simcord.run to auto-register unsynced commands.)"
-            )
-        cmd, scope = in_tree
-        guild_id = None if scope is None else self.guild.id
-        registered = self._env.backend.register_commands(
-            guild_id,
-            [c.to_dict(tree) for c in self._env.bot.tree.get_commands(guild=scope)],  # type: ignore[union-attr]
-        )
-        return next(
-            c for c in registered if c["name"] == name and c.get("type", AppCommandType.CHAT_INPUT) == type
-        )
-
     async def slash(self, channel: ChannelHandle, name: str, /, **options: Any) -> InteractionResult:
         """Invoke a synced slash command (use spaces for subcommands: "config set")."""
-        self._check(channel, "use_application_commands")
-        root, leaf, nesting = self._resolve_command(name)
-        leaf_options, resolved = _interactions.build_options(self, name, leaf, options, channel_id=channel.id)
-        data: dict[str, Any] = {
-            "id": root["id"],
-            "name": root["name"],
-            "type": root.get("type", AppCommandType.CHAT_INPUT),
-            "options": _interactions.nest_options(root, nesting, leaf_options),
-        }
-        if resolved:
-            data["resolved"] = resolved
-        if root.get("guild_id"):
-            data["guild_id"] = root["guild_id"]
-        return await self._dispatch_interaction(InteractionType.APPLICATION_COMMAND, channel, data)
+        self._check(channel, "view_channel")
+        return await _slash(self, channel, name, options)
+
+    def available_commands(self, channel: ChannelHandle) -> tuple[str, ...]:
+        """List exactly the slash invocations that `slash()` accepts here."""
+        commands = self._env.backend.visible_commands(user_id=self.id, channel_id=channel.id)
+        return tuple(
+            " ".join(path) for command in commands for path, _leaf in _interactions.command_leaves(command)
+        )
 
     async def context_menu(
         self, channel: ChannelHandle, name: str, target: MemberActor | MessageLike
     ) -> InteractionResult:
         """Invoke a user or message context-menu command on a target."""
-        self._check(channel, "use_application_commands")
+        self._check(channel, "view_channel")
         backend = self._env.backend
         if isinstance(target, MemberActor):
             command_type = AppCommandType.USER
@@ -244,7 +211,7 @@ class MemberActor:
             resolved = {"messages": {str(target.id): dict(serializers.message_payload(backend, stored))}}
         # Context-menu names contain spaces and never nest, so resolve the full
         # name directly rather than treating words as a subcommand path.
-        root = self._resolve_root(name, command_type)
+        root = self._resolve_root(name, command_type, channel.id)
         data = {
             "id": root["id"],
             "name": root["name"],
@@ -258,26 +225,7 @@ class MemberActor:
         self, channel: ChannelHandle, name: str, option: str, value: str, /, **filled: Any
     ) -> list[dict[str, Any]]:
         """Type into an autocomplete option; returns the choices the bot offered."""
-        root, leaf, nesting = self._resolve_command(name)
-        leaf_options, _resolved = _interactions.build_options(
-            self, name, leaf, filled, partial=True, channel_id=channel.id
-        )
-        declared = {o["name"]: o for o in (leaf.get("options") or [])}
-        if option not in declared:
-            raise SetupError(f"Command '{name}' has no option '{option}'")
-        leaf_options.append(
-            {"name": option, "type": declared[option]["type"], "value": value, "focused": True}
-        )
-        data = {
-            "id": root["id"],
-            "name": root["name"],
-            "type": root.get("type", AppCommandType.CHAT_INPUT),
-            "options": _interactions.nest_options(root, nesting, leaf_options),
-        }
-        result = await self._dispatch_interaction(
-            InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE, channel, data
-        )
-        return result.autocomplete_choices or []
+        return await _autocomplete(self, channel, name, option, value, filled)
 
     # ------------------------------------------------------------ components
     async def click(
@@ -402,6 +350,122 @@ class MemberActor:
 
     def __repr__(self) -> str:
         return f"<MemberActor id={self.id} name={self.name!r} guild={self.guild.id}>"
+
+
+def _unsynced_fallback(actor: Any, name: str, type: int) -> dict[str, Any]:
+    tree = getattr(actor._env.bot, "tree", None)
+    guild = getattr(actor, "guild", None)
+    scopes = (discord.Object(guild.id), None) if guild is not None else (None,)
+    in_tree = None
+    if tree is not None:
+        for scope in scopes:
+            for cmd in tree.get_commands(guild=scope, type=discord.AppCommandType(type)):
+                if cmd.name == name:
+                    in_tree = (cmd, scope)
+                    break
+            if in_tree is not None:
+                break
+    if in_tree is None:
+        raise SetupError(f"No application command named '{name}' exists")
+    assert tree is not None
+    if actor._env.strict_sync:
+        raise SetupError(
+            f"Command '{name}' exists in the command tree but was never synced — "
+            "did you forget `await bot.tree.sync()`? "
+            "(Pass strict_sync=False to simcord.run to auto-register unsynced commands.)"
+        )
+    cmd, scope = in_tree
+    guild_id = guild.id if scope is not None and guild is not None else None
+    registered = actor._env.backend.register_commands(
+        guild_id,
+        [c.to_dict(tree) for c in tree.get_commands(guild=scope)],
+    )
+    return next(
+        c for c in registered if c["name"] == name and c.get("type", AppCommandType.CHAT_INPUT) == type
+    )
+
+
+def _resolve_visible_command(actor: Any, channel_id: int, name: str, type: int) -> dict[str, Any]:
+    """Resolve a command and enforce the same visibility rules as the picker."""
+    guild = getattr(actor, "guild", None)
+    guild_id = guild.id if guild is not None else None
+    root = actor._env.backend.find_command(name, guild_id, type=type)
+    if root is None:
+        root = _unsynced_fallback(actor, name, type)
+    access = command_access(actor._env.backend, root, user_id=actor.id, channel_id=channel_id)
+    if not access.allowed:
+        reason = access.reason or "unknown"
+        error = SetupError(
+            f"Command '/{name}' is not visible to this user here — "
+            f"a real user could not run it (reason: {reason})"
+        )
+        fixes = {
+            "scope": "Use a command registered for this guild or a global command.",
+            "context": "Allow this context with `@app_commands.allowed_contexts(...)` or `@app_commands.guild_only()` / `dm_permission`.",
+            "nsfw": "Use an NSFW channel (threads inherit the parent channel's NSFW setting).",
+            "use-application-commands": "Grant this member the `use_application_commands` permission.",
+            "channel-denied": "Remove the channel deny or seed an allow with `guild.set_command_permissions(...)`.",
+            "override-denied": "Remove the member/role deny or seed an allow with `guild.set_command_permissions(...)`.",
+            "default-member-permissions": "Grant the command's default member permissions or seed a command allow with `guild.set_command_permissions(...)`.",
+        }
+        error.add_note(
+            fixes.get(reason, "Adjust the command's visibility settings for this user and channel.")
+        )
+        raise error
+    return root
+
+
+async def _slash(actor: Any, channel: ChannelHandle, name: str, options: dict[str, Any]) -> InteractionResult:
+    parts = name.split()
+    root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
+    leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
+    leaf_options, resolved = _interactions.build_options(actor, name, leaf, options, channel_id=channel.id)
+    data: dict[str, Any] = {
+        "id": root["id"],
+        "name": root["name"],
+        "type": root.get("type", AppCommandType.CHAT_INPUT),
+        "options": _interactions.nest_options(root, nesting, leaf_options),
+    }
+    if resolved:
+        data["resolved"] = resolved
+    if root.get("guild_id"):
+        data["guild_id"] = root["guild_id"]
+    return await _dispatch_actor_interaction(actor, InteractionType.APPLICATION_COMMAND, channel, data)
+
+
+async def _autocomplete(
+    actor: Any,
+    channel: ChannelHandle,
+    name: str,
+    option: str,
+    value: str,
+    filled: dict[str, Any],
+) -> list[dict[str, Any]]:
+    parts = name.split()
+    root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
+    leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
+    declared = {item["name"]: item for item in leaf.get("options") or []}
+    if option not in declared:
+        raise _interactions.OptionError(
+            "option-unknown", option, f"Command '{name}' has no option '{option}'"
+        )
+    focused = declared[option]
+    if not focused.get("autocomplete"):
+        raise SetupError(f"Option '{option}' of '{name}' does not enable autocomplete")
+    leaf_options, _resolved = _interactions.build_options(
+        actor, name, leaf, filled, partial=True, channel_id=channel.id
+    )
+    leaf_options.append({"name": option, "type": focused["type"], "value": value, "focused": True})
+    data = {
+        "id": root["id"],
+        "name": root["name"],
+        "type": root.get("type", AppCommandType.CHAT_INPUT),
+        "options": _interactions.nest_options(root, nesting, leaf_options),
+    }
+    result = await _dispatch_actor_interaction(
+        actor, InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE, channel, data
+    )
+    return result.autocomplete_choices or []
 
 
 def _channel_id_of(message: MessageLike, fallback: int | None = None) -> int:

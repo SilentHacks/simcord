@@ -12,6 +12,7 @@ EXTENSIONS = (
     "fixtures.sample_bot.general",
     "fixtures.sample_bot.moderation",
     "fixtures.sample_bot.interactions",
+    "fixtures.sample_bot.picker",
     "fixtures.sample_bot.events",
 )
 

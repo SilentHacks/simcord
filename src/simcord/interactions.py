@@ -81,7 +81,7 @@ def base_payload(
         "locale": "en-US",
         "entitlements": [],
         "authorizing_integration_owners": {},
-        "context": 0,
+        "context": 0 if guild_id is not None else 1,
         "attachment_size_limit": 26214400,
     }
     if guild_id is not None:
@@ -121,6 +121,23 @@ def walk_to_subcommand(command: dict[str, Any], path: list[str]) -> tuple[dict[s
         node = child
         nesting.append(name)
     return node, nesting
+
+
+def command_leaves(command: dict[str, Any]) -> list[tuple[list[str], dict[str, Any]]]:
+    """Flatten a chat-input command into leaf invocation paths and specs."""
+    root_name = command["name"]
+    leaves: list[tuple[list[str], dict[str, Any]]] = []
+
+    def visit(node: dict[str, Any], path: list[str]) -> None:
+        children = [option for option in node.get("options") or [] if option.get("type") in _SUBCOMMAND_TYPES]
+        if not children:
+            leaves.append((path, node))
+            return
+        for child in children:
+            visit(child, [*path, child["name"]])
+
+    visit(command, [root_name])
+    return leaves
 
 
 def resolve_handle(

@@ -21,21 +21,21 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | --- | --- | --- |
 | Login / READY / setup_hook | ✅ | Real discord.py login flow, application info |
 | Gateway intents | ✅ | Server-side gating, `message_content` censoring, member chunking, 4014 — see the [Intents guide](guides/intents.md) |
-| Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`); `publish` (announcement crosspost) |
+| Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`); immutable edit flags are retained; `publish` (announcement crosspost) |
 | Bulk delete (`purge` / `delete_messages`) | ✅ | 2–100 messages, single `MESSAGE_DELETE_BULK`, audit-logged |
-| Embeds, attachments, replies, mentions | ✅ | In-memory CDN; `attachment.read()` works |
+| Embeds, attachments, replies, mentions | ✅ | In-memory CDN; slash `ATTACHMENT` options accept `(filename, bytes)` uploads; `attachment.read()` works |
 | Pins | ✅ | Current paginated endpoints |
 | Typing | ✅ | Both directions |
 | Reactions | ✅ | Add/remove/list, clear-all & clear-emoji, gateway events |
-| DM channels | ✅ | User→bot and bot→user |
+| DM channels | ✅ | User→bot and bot→user; `UserHandle.slash()` / `.autocomplete()` exercise bot-DM commands |
 | Threads | ✅ | Create (standalone & from message), messaging within; join/leave, add/remove member, `fetch_members`, `archived_threads`, `Guild.active_threads`, `edit(archived=/locked=)` |
 | Forum posts | ✅ | `ForumChannel.create_thread` (starter message + `applied_tags`); tag config via edit |
 | Prefix commands (`ext.commands`) | ✅ | Converters, checks, cooldowns, error handlers |
 | Permissions engine | ✅ | Overwrites, hierarchy, timeouts, owner/admin |
-| Slash commands | ✅ | Options, choices, resolved data, subcommand groups |
+| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes |
 | App command permissions | ✅ | `AppCommand.fetch_permissions`; seed via `guild.set_command_permissions` |
 | Context menus (user & message) | ✅ | |
-| Autocomplete | ✅ | |
+| Autocomplete | ✅ | Focused options must be declared and have autocomplete enabled |
 | Interaction lifecycle | ✅ | Defer, followups, `@original` ops, `40060` on double-ack |
 | Ephemeral semantics | ✅ | Visibility-aware history and component access |
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
