@@ -1831,8 +1831,8 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     page.referenced_assets.clear()
     visible: list[Message] = []
     if channel is not None and allowed:
-        # ponytail: rebuild the bounded fixture-sized history instead of adding
-        # an index that would need its own invalidation and authorization model.
+        # Rebuild fixture-sized history; an index would need its own
+        # invalidation and authorization model.
         visible = [
             item
             for item in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id)

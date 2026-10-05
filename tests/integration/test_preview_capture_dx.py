@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 from pathlib import Path
 
 import discord
@@ -930,37 +931,57 @@ async def test_screenshot_rejects_oversized_animated_emoji(tmp_path, env, channe
         assert capture.diagnostics
 
 
+@pytest.mark.parametrize("in_point", [0, 10])
 @pytest.mark.asyncio
-async def test_browser_lottie_sticker_renders_offline_frames(env, channel, alice):
-    from playwright.async_api import async_playwright
+async def test_browser_lottie_sticker_renders_offline_frames(env, channel, alice, monkeypatch, in_point):
+    pytest.importorskip("playwright")
+    from playwright.async_api import Page
 
     from simcord.backend.cdn import sticker_url
 
     sticker = env.guild.create_sticker("moving square", format_type=3)
     guild_sticker = await env.bot.get_guild(env.guild.id).fetch_sticker(sticker.id)
     message = await env.bot.get_channel(channel.id).send("sticker", stickers=[guild_sticker])
-    source = (Path(__file__).parents[1] / "fixtures" / "preview" / "moving-square.json").read_bytes()
+    composition = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "preview" / "moving-square.json").read_bytes()
+    )
+    composition["ip"] += in_point
+    composition["op"] += in_point
+    for layer in composition["layers"]:
+        layer["ip"] += in_point
+        layer["op"] += in_point
+        for keyframe in layer["ks"]["p"]["k"]:
+            keyframe["t"] += in_point
+    source = json.dumps(composition).encode()
+    original = Page.screenshot
+
+    async def verify_frame(page, *args, **kwargs):
+        media_time = await page.evaluate("() => window.simcordPreview.profile.mediaTime")
+        expected_x, empty_x = (16, 48) if media_time == 0 else (48, 16)
+        for x, expected in ((expected_x, [255, 0, 0, 255]), (empty_x, [0, 0, 0, 0])):
+            pixel = await page.locator(".media-lottie canvas").evaluate(
+                """(canvas, x) => {
+                  const scale = Math.min(canvas.width, canvas.height) / 64;
+                  const left = (canvas.width - scale * 64) / 2;
+                  const top = (canvas.height - scale * 64) / 2;
+                  return [...canvas.getContext('2d').getImageData(
+                    Math.round(left + x * scale), Math.round(top + 32 * scale), 1, 1).data];
+                }""",
+                x,
+            )
+            assert pixel == expected
+        return await original(page, *args, **kwargs)
+
+    monkeypatch.setattr(Page, "screenshot", verify_frame)
     url = sticker_url(sticker.id, 3)
     async with env.preview(channel, viewers=[alice], assets={url: ("moving-square.json", source)}) as preview:
         await preview.show(message)
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch()
-            try:
-                page = await browser.new_page()
-                await page.goto(preview.url)
-                await page.wait_for_function("() => window.simcordPreview?.ready === true")
-                await page.locator(".media-lottie canvas").wait_for()
-                assert await page.locator(".media-lottie canvas").evaluate(
-                    "canvas => [...canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data].some((value, index) => index % 4 === 3 && value > 0)"
-                )
-                assert not await page.locator(".media-unavailable").count()
-            finally:
-                await browser.close()
-
         first = await preview.screenshot(media_time=0)
         second = await preview.screenshot(media_time=1)
+        assert first.complete and second.complete
         assert first.png != second.png
-        assert first.media_metadata["captureTimes"] != second.media_metadata["captureTimes"]
+        assert set(first.media_metadata["captureTimes"].values()) == {0}
+        assert set(second.media_metadata["captureTimes"].values()) == {1}
 
 
 @pytest.mark.asyncio
@@ -1558,3 +1579,75 @@ async def test_modal_text_uses_profile_timezone_and_frozen_emoji(env, channel, a
             assert capture.complete and capture.png is not None
             with Image.open(io.BytesIO(capture.png)).convert("RGB") as image:
                 assert any(color == (0, 0, 255) for _, color in image.getcolors(image.width * image.height))
+
+
+@pytest.mark.asyncio
+async def test_channel_capture_focuses_old_target_without_moving_python_window(
+    env, channel, alice, monkeypatch
+):
+    pytest.importorskip("playwright")
+    from playwright.async_api import Page
+
+    native = env.bot.get_channel(channel.id)
+    oldest = await native.send("oldest requested capture")
+    for index in range(54):
+        await native.send(f"later message {index}")
+    original = Page.screenshot
+
+    async def verify_focus(page, *args, **kwargs):
+        status = await page.evaluate("() => window.simcordPreview")
+        assert str(oldest.id) in status["projectedMessageIds"]
+        assert str(oldest.id) in status["visibleMessageIds"]
+        assert (
+            "oldest requested capture"
+            in await page.locator(f"article[data-message-id='{oldest.id}']").inner_text()
+        )
+        return await original(page, *args, **kwargs)
+
+    monkeypatch.setattr(Page, "screenshot", verify_focus)
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        before = await preview.snapshot()
+        for mode in ("surface", "viewport"):
+            capture = await preview.screenshot(target=oldest, mode=mode)
+            assert capture.complete and capture.ready
+            assert capture.target_id == str(oldest.id)
+            assert capture.png.startswith(b"\x89PNG")
+        after = await preview.snapshot()
+        assert after["targetId"] == before["targetId"] == str(channel.last_message.id)
+        assert after["timeline"] == before["timeline"]
+
+
+@pytest.mark.parametrize("mutation", ["delete_message", "remove_attachment"])
+@pytest.mark.asyncio
+async def test_channel_capture_revalidates_non_target_sources_before_install(
+    tmp_path, env, channel, alice, monkeypatch, mutation
+):
+    pytest.importorskip("playwright")
+    from playwright.async_api import Page
+
+    native = env.bot.get_channel(channel.id)
+    source = await native.send("visible source", file=discord.File(io.BytesIO(png_bytes()), "source.png"))
+    target = await native.send("capture target")
+    original = Page.screenshot
+    mutated = False
+
+    async def revoke_source(page, *args, **kwargs):
+        nonlocal mutated
+        status = await page.evaluate("() => window.simcordPreview")
+        assert str(source.id) in status["visibleMessageIds"]
+        png = await original(page, *args, **kwargs)
+        if mutation == "delete_message":
+            await source.delete()
+        else:
+            await source.edit(attachments=[])
+        mutated = True
+        return png
+
+    monkeypatch.setattr(Page, "screenshot", revoke_source)
+    destination = tmp_path / "capture.png"
+    destination.write_bytes(b"previous capture")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        with pytest.raises(simcord.SetupError):
+            await preview.screenshot(destination, target=target, mode="viewport", allow_incomplete=True)
+        assert destination.read_bytes() == b"previous capture"
+        assert mutated

@@ -149,56 +149,58 @@ def _inspect_raster(blob: bytes, media_time: float | None) -> MediaInfo:
                 poster=normalized,
             )
 
-        effective_durations: list[int] = []
-        total_ms = 0
-        for frame_index in range(frames):
+        first_frame = 1 if fmt == "PNG" and image.info.get("default_image") else 0
+        animation_frames = frames - first_frame
+        loop_count = image.info.get("loop")
+        effective_durations: list[float] = []
+        total_ms = 0.0
+        for frame_index in range(first_frame, frames):
             image.seek(frame_index)
+            # WebP publishes the decoded frame's duration only after load().
+            image.load()
             raw_duration = image.info.get("duration", 100)
             if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float)):
                 raise MediaError("media contains invalid animation timing")
             if not math.isfinite(raw_duration) or raw_duration < 0:
                 raise MediaError("media contains invalid animation timing")
-            duration = int(raw_duration)
-            active_duration = max(10, duration)
+            active_duration = max(10.0, float(raw_duration))
             effective_durations.append(active_duration)
             total_ms += active_duration
             if total_ms > MAX_DURATION_SECONDS * 1000:
                 raise MediaError("media animation exceeds the 10 minute duration limit")
 
         requested_seconds = media_time or 0.0
-        loop_count = image.info.get("loop")
         cycle_seconds = total_ms / 1000
-        if loop_count == 0:
-            selected_ms = int((requested_seconds % cycle_seconds) * 1000)
-        elif loop_count is not None:
-            selected_ms = int(min(requested_seconds, cycle_seconds * (int(loop_count) + 1) - 0.001) * 1000)
+        # GIF counts repeats after the first play; APNG and WebP count plays.
+        plays = 1 if loop_count is None else int(loop_count) + (1 if fmt == "GIF" else 0)
+        if loop_count != 0 and requested_seconds >= cycle_seconds * plays:
+            position_ms = total_ms
+            cycle_start_seconds = cycle_seconds * (plays - 1)
         else:
-            selected_ms = int(min(requested_seconds, cycle_seconds - 0.001) * 1000)
-        position_ms = selected_ms % total_ms
-        elapsed = 0
-        selected = frames - 1
+            position_seconds = requested_seconds % cycle_seconds
+            position_ms = position_seconds * 1000
+            cycle_start_seconds = requested_seconds - position_seconds
+        elapsed = 0.0
+        selected = animation_frames - 1
         for index, duration in enumerate(effective_durations):
-            if position_ms < elapsed + duration:
+            boundary = elapsed + duration
+            # Decimal frame boundaries must not slip back through float modulo.
+            if position_ms < boundary and not math.isclose(position_ms, boundary, rel_tol=1e-12):
                 selected = index
                 break
-            elapsed += duration
+            elapsed = boundary
 
-        capture_image = None
-        for frame_index in range(frames):
-            image.seek(frame_index)
-            image.load()
-            if frame_index == selected:
-                capture_image = image.convert("RGBA").copy()
-        if capture_image is None:  # pragma: no cover - Pillow reports empty animations earlier
-            raise MediaError("media animation contains no decodable frames")
+        image.seek(first_frame + selected)
+        image.load()
+        capture_image = image.convert("RGBA")
         capture = _png(capture_image, MAX_CAPTURE_BYTES)
-        actual_ms = selected_ms - position_ms + sum(effective_durations[:selected])
+        actual_seconds = cycle_start_seconds + sum(effective_durations[:selected]) / 1000
         content_type = {"GIF": "image/gif", "PNG": "image/png", "WEBP": "image/webp"}[fmt]
         return MediaInfo(
             fmt,
             width,
             height,
-            frames,
+            animation_frames,
             width * height * 4,
             blob,
             content_type,
@@ -206,7 +208,7 @@ def _inspect_raster(blob: bytes, media_time: float | None) -> MediaInfo:
             capture=capture,
             poster=capture,
             transformation="validated-animation-preserved",
-            effective_media_time=actual_ms / 1000,
+            effective_media_time=actual_seconds,
         )
     except MediaError:
         raise

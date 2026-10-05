@@ -142,6 +142,8 @@ const state = {
   lastMessageKey: null,
   lastMessageFingerprint: "",
   pendingMedia: [],
+  modalPendingMedia: [],
+  renderPendingMedia: [],
   targetId: null,
   objectUrls: new Map(),
   assetLoads: new Map(),
@@ -274,8 +276,13 @@ function statusObject() {
     ])),
     selectStates: selectStates(),
     lastAction: state.authorized ? clone(state.lastAction) : null,
-    pendingAction: state.pendingAction && !state.authorized
-      ? { ...clone(state.pendingAction), controlKey: null, targetId: null } : clone(state.pendingAction),
+    pendingAction: state.pendingAction ? {
+      kind: state.pendingAction.kind,
+      requestId: state.pendingAction.requestId,
+      sequence: state.pendingAction.sequence,
+      controlKey: state.authorized ? state.pendingAction.controlKey : null,
+      targetId: state.authorized ? state.pendingAction.targetId : null,
+    } : null,
     pendingQuery: state.authorized ? clone(state.pendingQuery) : null,
     ready: state.ready && !state.pendingAction && !Object.keys(state.queuedPageIntents).length,
     awaitingRevision: state.awaitingRevision,
@@ -293,9 +300,16 @@ function statusObject() {
       };
     })(),
     complete: state.complete,
-    diagnostics: clone(state.diagnostics),
+    diagnostics: state.diagnostics.map(({ renderOwner, ...diagnostic }) => clone(diagnostic)),
     activity: clone(state.snapshot?.activity || []),
-    transport: clone(state.transport),
+    transport: {
+      state: state.transport.state,
+      failures: state.transport.failures,
+      recoveries: state.transport.recoveries,
+      uncertainRequestId: state.transport.uncertainRequestId,
+      ...(state.transport.lastSuccessfulRead ? { lastSuccessfulRead: state.transport.lastSuccessfulRead } : {}),
+      history: clone(state.transport.history),
+    },
     authorized: state.authorized,
     calibration: { ...state.calibration },
     profile: { ...state.profile, fontStatus: clone(state.fontStatus) },
@@ -660,7 +674,11 @@ function addDiagnostic(diagnostic) {
   };
   state.localDiagnostics = state.localDiagnostics.filter((entry) => entry.id !== item.id);
   state.localDiagnostics.push(item);
-  state.localDiagnostics = state.localDiagnostics.slice(-20);
+  // Active failures belong to the current surface, not bounded diagnostic history.
+  const history = state.localDiagnostics.filter((entry) =>
+    entry.state === "recovered" || entry.complete !== false).slice(-20);
+  state.localDiagnostics = state.localDiagnostics.filter((entry) =>
+    (entry.state !== "recovered" && entry.complete === false) || history.includes(entry));
   renderDiagnostics();
 }
 
@@ -1144,7 +1162,7 @@ function renderChannelTimeline(snapshot, generation, previousTargetId, force = f
       const element = document.createElement("article");
       element.className = "channel-message";
       element.dataset.messageId = id;
-      record = { element, fingerprint: "" };
+      record = { element, fingerprint: "", pendingMedia: [] };
       state.messageNodes.set(id, record);
     }
     const openKey = state.dropdown?.key;
@@ -1153,12 +1171,14 @@ function renderChannelTimeline(snapshot, generation, previousTargetId, force = f
     if (force || record.fingerprint !== value) {
       record.fingerprint = value;
       clearRenderDiagnostics(`message:${id}`);
+      record.pendingMedia = [];
       renderMessage(
         record.element,
         message,
-        messageRenderOptions(snapshot, generation, pendingMedia, message, true),
+        messageRenderOptions(snapshot, generation, record.pendingMedia, message, true),
       );
     }
+    pendingMedia.push(...record.pendingMedia);
     record.element.classList.toggle("message-surface", id === String(snapshot.targetId || ""));
     desired.push(record.element);
   }
@@ -1482,7 +1502,7 @@ function localRender(renderDom = true) {
   else {
     renderDiagnostics();
     updateActionStatus();
-    waitReady(generation, []);
+    waitReady(generation, state.renderPendingMedia);
   }
 }
 
@@ -1790,7 +1810,10 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.localDiagnostics = [];
     state.lastAction = null;
   }
-  if (nextViewer !== state.viewerId || snapshot.botGeneration !== state.botGeneration) revokeAssets();
+  if (nextViewer !== state.viewerId || snapshot.botGeneration !== state.botGeneration) {
+    revokeAssets();
+    force = true;
+  }
   state.contextGeneration = nextGeneration;
   state.botGeneration = Number(snapshot.botGeneration || 0);
   state.publishedRevision = nextRevision;
@@ -1825,11 +1848,10 @@ function renderSnapshot(snapshot, generation, force = false) {
       clearRenderDiagnostics(`message:${selectedKey}`);
       state.lastMessageKey = selectedKey;
       state.lastMessageFingerprint = selectedFingerprint;
-      renderMessage(ui.surface, selected, messageRenderOptions(snapshot, generation, pendingMedia, selected, false));
-      state.pendingMedia = pendingMedia;
-    } else {
-      pendingMedia.push(...state.pendingMedia);
+      state.pendingMedia = [];
+      renderMessage(ui.surface, selected, messageRenderOptions(snapshot, generation, state.pendingMedia, selected, false));
     }
+    pendingMedia.push(...state.pendingMedia);
   }
   const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
   const modalLoading = Boolean(openKey?.startsWith(`modal:${snapshot.modal?.handle}:`) && candidateLoading(openKey));
@@ -1852,6 +1874,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     const scrollTop = ui.modal.querySelector(".modal-body")?.scrollTop || 0;
     clearRenderDiagnostics(state.modalHandle ? `modal:${state.modalHandle}` : null);
     if (modal) clearRenderDiagnostics(`modal:${modal.handle}`);
+    state.modalPendingMedia = [];
     const rendered = renderModal(ui.modal, modal?.payload, {
       drafts: state.modalDrafts,
       dropdown: state.dropdown,
@@ -1868,7 +1891,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       timezone: state.profile.timezone,
       mediaTime: state.profile.mediaTime,
       presentationTime: state.profile.presentationTime,
-      pendingMedia,
+      pendingMedia: state.modalPendingMedia,
       isCurrent: () => generation === state.renderGeneration,
       onInit: (key, value) => initSelectDraft(key, value, state.modalDrafts),
       identityEntries,
@@ -1927,6 +1950,7 @@ function renderSnapshot(snapshot, generation, force = false) {
       if (!restoreFocus(state.modalOpenerFocusKey)) ui.messagesToggle.focus();
     }
   }
+  pendingMedia.push(...state.modalPendingMedia);
   state.modalHandle = nextHandle;
   state.lastModalFingerprint = modalKey;
   renderDiagnostics();
@@ -1935,6 +1959,7 @@ function renderSnapshot(snapshot, generation, force = false) {
   renderTransportStatus();
   updateCaptureRecipe();
   fitOpenDropdowns();
+  state.renderPendingMedia = pendingMedia;
   waitReady(generation, pendingMedia).then(() => {
     if (generation !== state.renderGeneration || !state.activityReturnKey) return;
     const key = state.activityReturnKey;

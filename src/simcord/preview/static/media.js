@@ -1,11 +1,8 @@
-import { icon, iconButton, node, renderIdentityAvatar } from "./dom.js";
+import { current, icon, iconButton, node, renderIdentityAvatar } from "./dom.js";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 let lightbox;
 
-function current(options, element) {
-  return Boolean(element?.isConnected) || !options.isCurrent || options.isCurrent();
-}
 
 function diagnostic(options, code, label, error) {
   options.onDiagnostic?.({
@@ -516,9 +513,9 @@ function renderLottie(media, options, label, assetId) {
     const duration = Math.max(0, (end - first) / fps);
     const capturing = Number.isFinite(options.mediaTime);
     const requested = capturing ? Math.max(0, Number(options.mediaTime) || 0) : 0;
-    const frame = Math.max(first, Math.min(Math.ceil(end) - 1, first + Math.floor(Math.min(requested, duration) * fps)));
+    const frame = Math.max(0, Math.min(Math.ceil(end - first) - 1, Math.floor(Math.min(requested, duration) * fps)));
     animation.goToAndStop(frame, true);
-    options.onMediaCaptureTime?.(assetId, Math.max(0, (frame - first) / fps));
+    options.onMediaCaptureTime?.(assetId, frame / fps);
     diagnoseMemoryLimit(options, assetId);
     if (!options.reducedMotion && !capturing) animation.play();
     observer = new MutationObserver(() => {

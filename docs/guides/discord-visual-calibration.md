@@ -1,6 +1,6 @@
 # Local Discord visual calibration
 
-This checkout provides a bot, a human-operated capture tool, and a [local-agent handoff](discord-calibration-handoff.md). It does **not** automate a Discord user account. The first goal is a small trustworthy reference batch, not a claim of full-client parity.
+This checkout provides a bot and a human-operated capture tool. It does **not** automate a Discord user account. The first goal is a small trustworthy reference batch, not a claim of full-client parity. Coding assistants can use the contributor-only `scripts/discord-calibration-handoff.md` in the source checkout; that prompt is not published as documentation or packaged in distributions.
 
 ## 1. Get this branch onto your machine
 

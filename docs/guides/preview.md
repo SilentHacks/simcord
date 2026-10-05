@@ -323,6 +323,11 @@ retained source bytes; `displayReady` remains false until validation succeeds. V
 EXIF-oriented, metadata-stripped PNGs. Animated raster originals stay animated for interactive browser
 playback; captures select a deterministic frame at `media_time` and serve a static PNG.
 Animated custom emoji use the same bounded inline validation and deterministic capture path.
+Raster capture clocks exclude a separate APNG default image. GIF's finite loop value counts
+repeats after the first play; APNG and WebP count total plays. Infinite loops wrap, and completed
+finite playback holds its final frame. Durations come from decoded frames, preserve fractional
+APNG delays, and have a deterministic 10-ms lower bound; this is not a browser-parity claim.
+The reported animation duration and ten-minute ceiling apply to one cycle, not repeated playback.
 Transient worker scheduling/process failures do not become permanent content-rejection verdicts;
 a later explicit request can try again without automatic retries.
 
@@ -340,6 +345,8 @@ touch devices. Spoiler attachments conceal content and controls until reveal; th
 navigates into unrevealed item or container spoilers.
 
 Lottie stickers use the pinned, MIT-licensed, expression-free light Canvas runtime shipped locally.
+`media_time=0` means the composition's first frame even when its in-point is nonzero; effective
+capture times are relative to that in-point, not absolute timeline frame numbers.
 Expressions, fonts/glyphs, and external or data-URL assets are rejected. SVG and HTML files remain
 download-only; authorized bounded text previews use text nodes and start expanded above the
 filename/size footer. The code icon toggles that preview; the download icon serves original bytes.
@@ -408,14 +415,22 @@ It does not mean the callback succeeded, the output is complete, or the capture 
 `publishedRevision` is a settled publication;
 `contextGeneration` changes on viewer or focus changes;
 `botGeneration` changes on restart; render generations also cover local changes such
-as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Old media/font/render
-continuations cannot update a newer generation.
+as dropdowns, spoiler reveal, modal drafts, validation, and profile edits. Pending image/avatar/modal
+loads stay bound to retained DOM owners across redraws; replacing an owner discards its continuation.
+Switching viewers or restarting the bot invalidates asset ownership and recreates media rather than
+carrying playback or pending loads across authorization boundaries.
 
 `projectedMessageIds` mirrors `snapshot["timeline"]`; `visibleMessageIds` lists only IDs currently
 visible in the simulated viewport, not every projected window item. `geometry` reports measured app,
 host, stage, focused-surface, timeline and modal-body geometry. `selectDrafts` and `selectStates` expose
 page-local draft/commit state. Publication, transport health, `ready`, and `complete` are separate
 facts, not one freshness or success flag.
+
+Public `pendingAction` contains only `kind`, `requestId`, `sequence`, `controlKey`, and `targetId`;
+draft versions, internal close probes, and rendering-owner bookkeeping are not public status.
+Active incomplete diagnostics are retained until their owning surface is repaired or removed.
+Only historical/informational entries are capped at 20, so a large rendered window cannot make
+`complete` true by pushing an older active failure out of history.
 
 Every browser action carries `protocol_version: 3`, positive `generation`, `bot_generation`, the
 observed `published_revision`, a positive per-page `sequence`, a `request_id`, and its `kind`.
@@ -613,8 +628,13 @@ media metadata (effective frame times, codec selection, transformations), readin
 action status and diagnostics. Captures reject unsettled actions, unavailable authorization,
 incomplete output (unless explicitly opted in), concurrent capture, a bot restart during capture, and
 invalid destinations. Output is written atomically, so cancellation or a failed capture does not leave
-a partial PNG. A pinned capture cannot follow later focus, viewer or backend changes; access and
-attachment membership are rechecked before bytes are served.
+a partial PNG. Channel captures pin a bounded history window containing the requested target and
+crop the rendered timeline message, not a navigation control. A pinned capture cannot follow later
+focus, viewer or backend changes; every projected message and available asset is reauthorized before
+rendering and again before installing the PNG. Deletion, attachment removal/replacement or revoked
+access invalidates the capture, including non-target and off-crop projected sources. This fail-closed
+rule also applies with `allow_incomplete=True`; that option permits known missing rendering, not
+revoked source ownership.
 
 The Capture panel's executable recipe is Python for the real active scenario, with `preview` in scope;
 it is not a standalone scenario definition. Managed captures use a separate pinned page and do not
@@ -634,9 +654,10 @@ python scripts/discord_reference_bot.py --check
 ```
 
 For a fresh human-operated Discord capture batch, use the
-[local calibration kit](discord-visual-calibration.md) and its
-[local-agent handoff](discord-calibration-handoff.md). It exports exact bot fixture assets,
-records observed provenance, and keeps Discord actions manual.
+[local calibration kit](discord-visual-calibration.md). It exports exact bot fixture assets,
+records observed provenance, and keeps Discord actions manual. An optional contributor-only
+assistant handoff lives at `scripts/discord-calibration-handoff.md` in the source checkout,
+outside published documentation and distributions.
 
 `tests/fixtures/preview/coverage.json` is the single evidence ledger. Its rows retain fixture
 recipes, canonical payload hashes, aliases, crop/profile metadata, expected outcomes, and separate

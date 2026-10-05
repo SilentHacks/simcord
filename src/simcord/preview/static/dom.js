@@ -5,6 +5,10 @@ export function node(tag, className, text) {
   return element;
 }
 
+export function current(options, element) {
+  return Boolean(element?.isConnected) || !options.isCurrent || options.isCurrent();
+}
+
 const ICON_PATHS = {
   messages: "M4 5h16v11H8l-4 4V5Z",
   refresh: "M20 7v5h-5M4 17v-5h5M19 12a7 7 0 0 0-12-5L4 10m1 2a7 7 0 0 0 12 5l3-3",
@@ -68,11 +72,11 @@ export function renderIdentityAvatar(identity, options = {}, className = "entity
     const image = node("img", "entity-avatar-img");
     image.alt = "";
     const task = Promise.resolve(options.loadAsset(assetId)).then((url) => {
-      if (options.isCurrent && !options.isCurrent()) return;
+      if (!current(options, image)) return;
       image.src = url;
       return image.decode ? image.decode() : undefined;
     }).catch((error) => {
-      if (!options.isCurrent || options.isCurrent()) {
+      if (current(options, image)) {
         if (identity?.avatar_kind !== "default") {
           options.onDiagnostic?.({ code: "avatar-unavailable", severity: "warning", message: "Avatar failed to load or decode", detail: String(error), complete: false });
         }

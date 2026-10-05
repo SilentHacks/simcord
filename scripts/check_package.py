@@ -56,6 +56,14 @@ def has_project_license(names: set[str], *, wheel: bool) -> bool:
 def check(path: Path) -> None:
     wheel = path.suffix == ".whl"
     names = members(path)
+    internal = {
+        name
+        for name in names
+        if name.startswith(("docs/plans/", "docs/reviews/"))
+        or name == "scripts/discord-calibration-handoff.md"
+    }
+    if internal:
+        raise SystemExit(f"{path}: non-release material packaged: {sorted(internal)}")
     required = wheel_requirements() if wheel else sdist_requirements()
     missing = {
         name

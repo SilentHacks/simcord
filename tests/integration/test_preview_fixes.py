@@ -2,6 +2,8 @@
 
 import asyncio
 import io
+import json
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -9,12 +11,18 @@ import pytest
 pytest.importorskip("PIL")
 
 import discord
+import jsonschema
 from aiohttp import ClientSession
 from PIL import Image
 from preview_helpers import action_body, control_key, gif_bytes, png_bytes, preview_headers, target_message
 
 import simcord
 from simcord.components import walk_components
+
+_SCHEMA = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+_BROWSER_STATUS_VALIDATOR = jsonschema.Draft202012Validator(
+    {"$ref": "#/$defs/browserStatus", "$defs": _SCHEMA["$defs"]}
+)
 
 
 class _ReleasableView(discord.ui.View):
@@ -776,6 +784,7 @@ async def test_browser_uncertain_receipt_recovers_dropped_action_response(env, c
                       && item.state === "recovered" && item.complete === true);
                 }""")
                 status = await page.evaluate("() => window.simcordPreview")
+                _BROWSER_STATUS_VALIDATOR.validate(status)
                 assert view.calls == 1
                 assert status["complete"] is True
                 assert not any(
@@ -968,3 +977,136 @@ async def test_browser_rendering_diagnostics_follow_media_surface_replacement(en
 
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_retained_avatar_and_image_hold_readiness_across_refresh(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    from simcord.backend.cdn import CDN_BASE
+
+    user = env.create_user("slow-avatar", avatar="slow-hash")
+    member = env.guild.add_member(user)
+    bob = env.guild.add_member(env.create_user("other-viewer"))
+    await member.send(channel, "retained media", attachments=[("image.png", png_bytes())])
+    avatar_url = f"{CDN_BASE}/avatars/{user.id}/slow-hash.png"
+    async with (
+        env.preview(
+            channel, viewers=[alice, bob], layout="channel", assets={avatar_url: ("avatar.png", png_bytes())}
+        ) as preview,
+        async_playwright() as playwright,
+    ):
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.add_init_script("""(() => {
+              const fetch = window.fetch.bind(window);
+              const assets = [];
+              window.__heldAssets = 0;
+              window.__releaseAssets = () => assets.splice(0).forEach(resolve => resolve());
+              window.fetch = async (input, init = {}) => {
+                const url = typeof input === "string" ? input : input.url;
+                if (url.startsWith("/api/assets/")) {
+                  window.__heldAssets += 1;
+                  await new Promise(resolve => assets.push(resolve));
+                }
+                if (url.endsWith("/api/action") && JSON.parse(init.body || "{}").kind === "refresh") {
+                  await new Promise(resolve => { window.__releaseRefresh = resolve; });
+                }
+                return fetch(input, init);
+              };
+            })()""")
+            await page.goto(preview.url)
+            await page.wait_for_function("() => window.__heldAssets === 2")
+            before = await page.evaluate("() => window.simcordPreview")
+            _BROWSER_STATUS_VALIDATOR.validate(before)
+            assert before["ready"] is False
+            await page.evaluate(
+                "() => { window.__retainedImages = [...document.querySelectorAll('article img')]; }"
+            )
+            await page.get_by_role("button", name="Refresh preview").click()
+            await page.wait_for_function("() => window.simcordPreview.pendingAction !== null")
+            _BROWSER_STATUS_VALIDATOR.validate(await page.evaluate("() => window.simcordPreview"))
+            await page.evaluate("() => window.__releaseRefresh()")
+            await page.wait_for_function(
+                "(revision) => window.simcordPreview.pendingAction === null"
+                " && window.simcordPreview.publishedRevision > revision",
+                arg=before["publishedRevision"],
+            )
+            await page.evaluate(
+                "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+            )
+            assert (await page.evaluate("() => window.simcordPreview"))["ready"] is False
+            assert await page.locator("#preview-app").get_attribute("aria-busy") == "true"
+            assert await page.evaluate("() => window.__retainedImages.every(image => image.isConnected)")
+            await page.evaluate("() => window.__releaseAssets()")
+            await page.wait_for_function("() => window.simcordPreview.ready")
+            status = await page.evaluate("() => window.simcordPreview")
+            _BROWSER_STATUS_VALIDATOR.validate(status)
+            assert status["complete"] is True
+            assert await page.locator("article img").evaluate_all(
+                "images => images.length === 2 && images.every(image => image.complete && image.naturalWidth === 2)"
+            )
+            await page.locator("#viewer-picker").select_option(str(bob.id))
+            await page.wait_for_function(
+                "(id) => window.simcordPreview.viewerId === id && window.__heldAssets === 4",
+                arg=str(bob.id),
+            )
+            assert (await page.evaluate("() => window.simcordPreview"))["ready"] is False
+            assert await page.evaluate("() => window.__retainedImages.every(image => !image.isConnected)")
+            await page.evaluate("() => window.__releaseAssets()")
+            await page.wait_for_function("() => window.simcordPreview.ready")
+            status = await page.evaluate("() => window.simcordPreview")
+            _BROWSER_STATUS_VALIDATOR.validate(status)
+            assert status["complete"] is True
+            assert await page.locator("article img").evaluate_all(
+                "images => images.length === 2 && images.every(image => image.complete && image.naturalWidth === 2)"
+            )
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_keeps_oldest_active_failure_after_diagnostic_history_overflow(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    native = env.bot.get_channel(channel.id)
+    messages = [
+        await native.send(
+            embed=discord.Embed().set_image(url=f"https://assets.example.test/missing-{index}.png")
+        )
+        for index in range(21)
+    ]
+    async with (
+        env.preview(channel, viewers=[alice], layout="channel") as preview,
+        async_playwright() as playwright,
+    ):
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.goto(preview.url)
+            await page.wait_for_function("() => window.simcordPreview?.ready")
+            assert await page.locator(".media-unavailable").count() == 21
+            status = await page.evaluate("() => window.simcordPreview")
+            _BROWSER_STATUS_VALIDATOR.validate(status)
+            assert status["complete"] is False
+            for message in messages[1:]:
+                await message.delete()
+            await page.get_by_role("button", name="Refresh preview").click()
+            await page.wait_for_function(
+                "(id) => window.simcordPreview.ready && window.simcordPreview.projectedMessageIds.length === 1"
+                " && window.simcordPreview.projectedMessageIds[0] === id",
+                arg=str(messages[0].id),
+            )
+            status = await page.evaluate("() => window.simcordPreview")
+            _BROWSER_STATUS_VALIDATOR.validate(status)
+            assert await page.locator(".media-unavailable").count() == 1
+            assert status["complete"] is False
+            assert any(
+                item["code"] == "media-unavailable" and item["complete"] is False
+                for item in status["diagnostics"]
+            )
+        finally:
+            await browser.close()

@@ -48,7 +48,6 @@ class _Page:
     snapshot: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
-    pinned_attachment_ids: dict[str, str] = field(default_factory=dict)
     layout: str = "message"
     display: str = "responsive"
     width: int = 960

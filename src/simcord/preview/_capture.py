@@ -63,9 +63,9 @@ class PreviewCapture:
     """Immutable capture report returned by ``Preview.screenshot``.
 
     ``ready``, ``complete`` and ``calibrated`` are independent signals:
-    readiness describes the rendered page, completeness whether a focus
-    target was available, and calibration whether the bundled page measured
-    its own rendering environment. ``path`` is the written file destination
+    readiness describes settled rendering, completeness whether all in-scope
+    sources and rendering requirements were available, and calibration the
+    reference-calibration status. ``path`` is the written file destination
     (``None`` for in-memory captures) and ``png`` holds the image bytes when
     the capture was taken without a path.
     """
@@ -365,7 +365,7 @@ class ManagedCapture:
                         const inChannel = channel && !channel.hidden;
                         const target = modal ? document.querySelector('.modal-dialog')
                           : inChannel
-                            ? [...document.querySelectorAll('[data-message-id]')]
+                            ? [...channel.querySelectorAll('.channel-message[data-message-id]')]
                                 .find(element => element.dataset.messageId === targetId)
                             : document.getElementById('focused-content');
                         const owner = modal ? app : inChannel
@@ -517,27 +517,6 @@ class _CaptureOps:
             return target_id, None
         return self._resolve_target(viewer, target, capture=True)
 
-    @staticmethod
-    def _capture_attachment_ids(snapshot: Mapping[str, Any]) -> dict[str, str]:
-        found: dict[str, str] = {}
-
-        def visit(value: Any) -> None:
-            if isinstance(value, Mapping):
-                asset_id = value.get("asset_id")
-                attachment_id = value.get("attachment_id")
-                if isinstance(asset_id, str) and attachment_id is not None:
-                    found[asset_id] = str(attachment_id)
-                for item in value.get("attachments", ()):
-                    found[item["asset_id"]] = str(item.get("id", ""))
-                for item in value.values():
-                    visit(item)
-            elif isinstance(value, list):
-                for item in value:
-                    visit(item)
-
-        visit(snapshot.get("messages", {}).get(str(snapshot.get("targetId"))))
-        return {key: value for key, value in found.items() if value}
-
     def _pin_capture(
         self,
         viewer: Any,
@@ -564,6 +543,7 @@ class _CaptureOps:
             revision=source.revision,
             status=source.status,
             layout=layout,
+            window_end_id=target_id if layout == "channel" else None,
             display="fixed",
             width=viewport[0],
             height=viewport[1],
@@ -585,7 +565,6 @@ class _CaptureOps:
             capture_page.snapshot = snapshot
             capture_page.pinned_snapshot = deepcopy(snapshot)
             capture_page.pinned_generation = self.env._generation
-            capture_page.pinned_attachment_ids = self._capture_attachment_ids(snapshot)
             self._pages[capture_page.id] = capture_page
         except Exception:
             # The page was never registered: release the blob refs the failed
@@ -629,13 +608,17 @@ class _CaptureOps:
         default is the focused message, falling back to the latest visible
         message. ``mode`` is ``"surface"`` (the visible message or modal dialog
         at its viewport-constrained geometry) or ``"viewport"`` (the full preview
-        viewport). ``allow_incomplete`` permits captures without a focusable
-        target. ``media_time`` selects a bounded deterministic frame time, and
+        viewport). ``allow_incomplete`` permits known missing rendering, but
+        never bypasses live authorization or capture-source invalidation.
+        ``media_time`` selects a deterministic frame time, and
         ``media_metadata`` reports effective times and validated codecs.
         ``viewport`` overrides this capture's exact dimensions without changing
         session defaults. ``layout`` overrides the Python presentation layout.
         Surface captures include only the visible intersection with the owning
         viewport, not all content in a scroll region.
+        Channel captures pin a bounded history window containing the target;
+        all projected messages and available assets are revalidated before
+        rendering and before atomic PNG installation.
 
         Returns an immutable ``PreviewCapture`` report; ``ready``,
         ``complete`` and ``calibrated`` are independent signals, and ``png``

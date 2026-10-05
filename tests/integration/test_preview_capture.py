@@ -549,3 +549,57 @@ async def test_entity_menu_finishes_loading_and_shows_search_results(env, channe
                     await browser.close()
     finally:
         catalog.close_payload(payload)
+
+
+@pytest.mark.asyncio
+async def test_raster_capture_uses_animation_frames_format_loops_and_decoded_durations():
+    red, blue, green = (255, 0, 0), (0, 0, 255), (0, 255, 0)
+    cases = [
+        ("PNG", True, 1, [100, 100], [(0, blue, 0), (0.15, green, 0.1), (0.25, green, 0.1)]),
+        ("PNG", False, 1, [100, 100], [(0, red, 0), (0.25, blue, 0.1)]),
+        ("WEBP", False, 1, [500, 500], [(0.15, red, 0), (0.65, blue, 0.5), (1.25, blue, 0.5)]),
+        ("GIF", False, 1, [100, 100], [(0.25, red, 0.2), (0.3, blue, 0.3), (0.45, blue, 0.3)]),
+        ("WEBP", False, 0, [100, 100], [(0.25, red, 0.2), (0.3, blue, 0.3)]),
+        ("PNG", False, 1, [125.5, 124.5], [(0.126, blue, 0.1255), (0.3, blue, 0.1255)]),
+        ("GIF", False, None, [100, 100], [(0.25, blue, 0.1)]),
+    ]
+    worker = MediaWorker()
+    try:
+        for case, (fmt, default_image, loop, durations, samples) in enumerate(cases):
+            colors = [red, blue, green] if default_image else [red, blue]
+            frames = [Image.new("RGB", (2, 2), color) for color in colors]
+            source = io.BytesIO()
+            options = {"loop": loop} if loop is not None else {}
+            frames[0].save(
+                source,
+                format=fmt,
+                save_all=True,
+                append_images=frames[1:],
+                default_image=default_image,
+                duration=durations,
+                lossless=True,
+                **options,
+            )
+            for requested, expected_color, effective_time in samples:
+                result = await worker.validate(str(case), source.getvalue(), media_time=requested)
+                assert result.frames == 2
+                assert result.duration == pytest.approx(sum(durations) / 1000)
+                assert result.effective_media_time == pytest.approx(effective_time)
+                with Image.open(io.BytesIO(result.capture)).convert("RGB") as captured:
+                    assert captured.getpixel((0, 0)) == expected_color
+
+        for fmt in ("PNG", "WEBP"):
+            source = io.BytesIO()
+            Image.new("RGB", (2, 2), red).save(
+                source,
+                format=fmt,
+                save_all=True,
+                append_images=[Image.new("RGB", (2, 2), blue)],
+                duration=[400_000, 400_000],
+                loop=1,
+                lossless=True,
+            )
+            with pytest.raises(MediaError, match="10 minute duration limit"):
+                await worker.validate(f"too-long-{fmt}", source.getvalue())
+    finally:
+        await worker.close()

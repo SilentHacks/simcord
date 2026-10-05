@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simcord"
-version = "2.2.1"
+version = "3.0.0"
 description = "Offline discord.py bot testing with pytest. No network, token, or test server."
 readme = "README.md"
 license = "MIT"
@@ -60,6 +60,9 @@ Changelog = "https://github.com/SilentHacks/simcord/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/simcord"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["docs/plans", "docs/reviews", "scripts/discord-calibration-handoff.md"]
 
 
 [tool.pytest.ini_options]

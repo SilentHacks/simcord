@@ -82,9 +82,9 @@ may evolve under its `protocolVersion` key rather than the package version. Inte
 endpoint names, DOM structure, and CSS classes are implementation details, not general extension
 APIs.
 
-The current preview snapshot and browser action contract is protocol 3, independently versioned from
-the Python package. This checkout's project metadata remains at `2.2.1`; the protocol cutover is not a
-package 3.0 release or a release-certification claim. Protocol-2 consumers must migrate explicitly
+SimCord 3.0 uses preview snapshot and browser action protocol 3, independently versioned from
+the Python package. The 3.0 package marks this breaking cutover; version metadata is not a
+release-certification claim. Protocol-2 consumers must migrate explicitly
 using the [protocol-3 preview guide](guides/preview.md#migrating-preview-consumers-to-protocol-3);
 there is no compatibility adapter or shim. The migration covers bounded navigation and candidate
 pages, typed causal receipts, and versioned browser/capture status. Preview entry still requires the

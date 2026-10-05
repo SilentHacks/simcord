@@ -5,47 +5,24 @@ description: "Reviewed local preview evidence, exact coverage counts, hashes, an
 
 # Preview evidence attestation
 
-## Current status — 2026-10-03
+## Release status
 
-**Local implementation and independent review correction gates pass.** The preview
-uses protocol 3 while `pyproject.toml` remains package version `2.2.1`; no package 3.0 release,
-complete resolution of all 21 findings, or release-certification claim is made.
+SimCord 3.0 uses preview protocol 3. Protocol-2 consumers must use the
+[migration guide](guides/preview.md#migrating-preview-consumers-to-protocol-3);
+there is no compatibility shim.
 
-Observed local checks: 922 repository tests passed with six third-party warnings; the unchanged
-core coverage report passes its 95% ratchet. An untouched `988e4a2` snapshot had passed 877
-tests but failed that gate at 94%. User-approved behavioral core checks now exercise malformed
-mention/sticker payloads, external sticker authorization, callback rejection without consuming
-acknowledgement, and native service reference scope. They also reproduced a real interaction
-webhook ownership defect: fetch/edit/delete admitted an ordinary channel message. A shared
-ownership guard fixes all three routes; the integrated native boundary journeys pass (51 tests).
-The threshold was not lowered and no exclusions or wiring-only coverage tests were added.
-Pyright reported zero errors and Ruff checks passed. Real Chromium exercised guild/DM controls,
-search/access recovery/queued Close, modal entity defaults and callbacks, native player retention,
-adversarial downloaded report privacy, and an executed active-session Python capture recipe.
-The full pinned COLRv1 emoji build renders regional flags; glyph faces were inspected across the
-Unicode text/control corpus with only DejaVu Sans available as a system font. Fresh wheel/sdist
-content checks passed, and the installed wheel outside the checkout completed a modal/edit/PNG
-journey with `complete=true`, no diagnostics, and custom platform font glyphs.
-
-Exactly one fresh independent review identified eight branch-introduced defects; all eight
-were reproduced and corrected, with native/browser regression journeys. Corrections cover
-Text Display spoiler summaries, grapheme-compatible schema bounds, preserved history anchors,
-prior-viewer receipt redaction, recovered transport diagnostics, sequence-safe Close after an
-unadmitted uncertain action, cached select authorization, and replaced rendering diagnostics.
-No findings were rejected and no second review was substituted for fixing them.
-
-Authorized private Discord transition/pixel measurements and human screen-reader attestation are
-unavailable. These external gates remain blocked; local screenshots and automated ARIA checks
-do not substitute for that evidence. The historical record below is not current certification.
+Authorized private Discord transition/pixel measurements and human screen-reader
+attestation remain unavailable. These external release gates are blocked; local
+screenshots and automated ARIA checks do not substitute for that evidence.
+The dated historical record below is not certification of the current release.
 
 ## Historical attestation — 2026-09-27 UTC
 
 **Historical result for the renderer commit below: local functional verification passed; Discord visual
 and human accessibility parity were not certified.** This scrubbed record was for renderer commit
-`820a041fd3edf651e379e2b05ac89663185d01fa`, reviewed independently by `IndependentPreviewReviewer`
-on 2026-09-27. Five actionable findings were corrected in that commit; two were rejected as pre-existing
-viewport capture behavior and deliberately local required-select clearing. No human screen-reader
-review or authorized private reference comparison had occurred for that historical record.
+`820a041fd3edf651e379e2b05ac89663185d01fa` on 2026-09-27.
+No human screen-reader review or authorized private reference comparison had
+occurred for that historical record.
 
 | Artifact / environment | Version or SHA-256 |
 | --- | --- |

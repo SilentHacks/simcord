@@ -245,20 +245,24 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             raise SetupError("managed capture was invalidated by bot restart")
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("managed capture access was revoked")
+        message_ids = {int(identity) for identity in page.pinned_snapshot["messages"]}
         if page.target_id is not None:
+            message_ids.add(page.target_id)
+        for message_id in message_ids:
             try:
-                message = self.env.backend.get_message(page.channel_id, page.target_id)
+                message = self.env.backend.get_message(page.channel_id, message_id)
             except BackendError as exc:
-                raise SetupError("managed capture target is unavailable") from exc
+                raise SetupError("managed capture projected message is unavailable") from exc
             if not can_access_message(self.env, page.channel_id, message, page.viewer, history=True):
-                raise SetupError("managed capture target access was revoked")
-        for asset_id, attachment_id in page.pinned_attachment_ids.items():
-            try:
-                message = self.env.backend.get_message(page.channel_id, page.target_id or 0)
-            except BackendError as exc:
-                raise SetupError("managed capture asset is unavailable") from exc
-            if not any(str(item.get("id", "")) == attachment_id for item in message.attachments):
-                raise SetupError(f"managed capture asset {asset_id} is unavailable")
+                raise SetupError("managed capture projected message access was revoked")
+        for asset_id, record in page.assets.items():
+            if record.available:
+                try:
+                    self._authorize_asset(page, asset_id)
+                except SetupError as exc:
+                    raise SetupError(
+                        "managed capture source asset is unavailable or access was revoked"
+                    ) from exc
 
     async def show(self, target: Any) -> None:
         """Focus the Python presentation on a Message, ResponseMessage, or InteractionResult.

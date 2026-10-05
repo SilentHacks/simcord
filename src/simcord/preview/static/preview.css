@@ -851,7 +851,7 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
 }
 .component-gallery figure { min-width: 0; margin: 0; }
 .gallery-image { width: 100%; height: auto; }
-/* ponytail: two-item ratio measured at 600px; extend measured layouts when more widths/counts are captured. */
+/* Two-item ratio measured at 600px; extend measured layouts when more widths/counts are captured. */
 .component-gallery:has(> figure:nth-child(2)):not(:has(> figure:nth-child(3))) .gallery-image {
   aspect-ratio: 298 / 280;
   object-fit: cover;
