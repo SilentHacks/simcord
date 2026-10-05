@@ -7,8 +7,30 @@ import discord
 import pytest
 from discord import app_commands
 from discord.ext import commands
+from discord.http import Route
 
 import simcord
+
+
+async def _interaction_callback(
+    bot: commands.Bot,
+    interaction: discord.Interaction,
+    callback_type: int,
+    data: dict | None = None,
+    *,
+    interaction_id: int | None = None,
+    token: str | None = None,
+) -> dict:
+    route = Route(
+        "POST",
+        "/interactions/{interaction_id}/{token}/callback",
+        interaction_id=interaction.id if interaction_id is None else interaction_id,
+        token=interaction.token if token is None else token,
+    )
+    payload = {"type": callback_type}
+    if data is not None:
+        payload["data"] = data
+    return await bot.http.request(route, json=payload)
 
 
 def _make_bot() -> commands.Bot:
@@ -117,3 +139,126 @@ async def test_original_response_edit_then_delete():
         await alice.slash(ch, "sendedit")
         # Sent, edited, then deleted: the channel ends up empty.
         assert ch.history() == []
+
+
+async def test_native_callback_rejections_preserve_ack_and_response_lifecycle():
+    admitted: list[discord.Interaction] = []
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+    @bot.tree.command(name="admit", description="admit a callback lifecycle test")
+    async def admit(interaction: discord.Interaction) -> None:
+        admitted.append(interaction)
+
+    async with simcord.run(bot, strict_sync=False) as env:
+        env.create_guild()
+        ch = env.guild.create_text_channel("general")
+        alice = env.guild.add_member(env.create_user("alice"))
+        first_result = await alice.slash(ch, "admit")
+        second_result = await alice.slash(ch, "admit")
+        first, second = admitted
+
+        # Callback credentials are paired: neither a mismatched pair nor an
+        # unknown id/token can reveal an interaction or acknowledge either one.
+        for interaction_id, token in (
+            (first.id, second.token),
+            (first.id, f"{first.token}-unknown"),
+            (first.id + 1, first.token),
+        ):
+            with pytest.raises(discord.NotFound) as error:
+                await _interaction_callback(
+                    bot,
+                    first,
+                    discord.InteractionResponseType.channel_message.value,
+                    {"content": "must not appear"},
+                    interaction_id=interaction_id,
+                    token=token,
+                )
+            assert error.value.code == 10015
+            assert token not in str(error.value)
+            assert not first_result.acknowledged
+            assert not second_result.acknowledged
+            assert ch.history() == []
+
+        # The original-response endpoint also rejects an admitted interaction
+        # that has not yet produced a message.
+        with pytest.raises(discord.NotFound) as error:
+            await first.original_response()
+        assert error.value.code == 10008
+
+        # Invalid callbacks are safe to reject and do not consume this admission.
+        for callback_type, data in (
+            (
+                discord.InteractionResponseType.modal.value,
+                {"custom_id": "bad", "title": "Bad", "components": []},
+            ),
+            (99, {}),
+            (discord.InteractionResponseType.channel_message.value, {"content": "x" * 2001}),
+        ):
+            with pytest.raises(discord.HTTPException) as error:
+                await _interaction_callback(bot, first, callback_type, data)
+            assert error.value.status == 400
+            assert error.value.code == 50035
+            assert not first.response.is_done()
+            assert not first_result.acknowledged
+            assert ch.history() == []
+
+        await first.response.send_message("accepted")
+        assert first_result.acknowledged
+        assert first_result.response.content == "accepted"
+        assert [message.content for message in ch.history()] == ["accepted"]
+
+        with pytest.raises(discord.HTTPException) as error:
+            await _interaction_callback(
+                bot,
+                first,
+                discord.InteractionResponseType.channel_message.value,
+                {"content": "duplicate"},
+            )
+        assert error.value.code == 40060
+        assert first_result.response.content == "accepted"
+        assert [message.content for message in ch.history()] == ["accepted"]
+        assert not second_result.acknowledged
+
+        original = await first.original_response()
+        assert original.content == "accepted"
+        edited = await first.edit_original_response(content="edited")
+        assert edited.content == "edited"
+        assert first_result.response.content == "edited"
+        await first.delete_original_response()
+        assert ch.history() == []
+
+
+async def test_interaction_followup_token_cannot_access_an_ordinary_message():
+    admitted: list[discord.Interaction] = []
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+    @bot.tree.command(name="admit", description="admit a followup boundary test")
+    async def admit(interaction: discord.Interaction) -> None:
+        admitted.append(interaction)
+
+    async with simcord.run(bot, strict_sync=False) as env:
+        env.create_guild()
+        ch = env.guild.create_text_channel("general")
+        alice = env.guild.add_member(env.create_user("alice"))
+        result = await alice.slash(ch, "admit")
+        interaction = admitted[0]
+        ordinary = await alice.send(ch, "ordinary")
+
+        errors = []
+        for request in (
+            interaction.followup.fetch_message(ordinary.id),
+            interaction.followup.edit_message(ordinary.id, content="tampered"),
+            interaction.followup.delete_message(ordinary.id),
+        ):
+            try:
+                await request
+            except discord.HTTPException as error:
+                errors.append(error)
+            else:
+                errors.append(None)
+
+        assert all(isinstance(error, discord.NotFound) and error.code == 10008 for error in errors)
+        assert all(interaction.token not in str(error) for error in errors if error is not None)
+        assert not result.acknowledged
+        assert ordinary.content == "ordinary"
+        assert [(message.id, message.content) for message in ch.history()] == [(ordinary.id, "ordinary")]

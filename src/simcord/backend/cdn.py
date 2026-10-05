@@ -6,6 +6,11 @@ import mimetypes
 from typing import Any
 
 CDN_BASE = "https://cdn.simcord.invalid"
+_STICKER_EXTENSIONS = {1: "png", 2: "png", 3: "json", 4: "gif"}
+
+
+def sticker_url(sticker_id: int, format_type: int) -> str:
+    return f"{CDN_BASE}/stickers/{sticker_id}.{_STICKER_EXTENSIONS[format_type]}"
 
 
 class CdnStore:
@@ -26,6 +31,11 @@ class CdnStore:
             "proxy_url": url,
             "content_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
         }
+
+    def store_sticker(self, sticker_id: int, format_type: int, data: bytes) -> str:
+        url = sticker_url(sticker_id, format_type)
+        self._blobs[url] = data
+        return url
 
     def get(self, url: str) -> bytes | None:
         return self._blobs.get(url)

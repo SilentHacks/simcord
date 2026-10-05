@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import simcord
@@ -58,12 +59,12 @@ async def main(destination: str = "preview-example.png", keep_open: bool = False
                         },
                     },
                     indent=2,
-                    default=str,
+                    default=lambda value: dict(value) if isinstance(value, Mapping) else str(value),
                 )
             )
             if keep_open:
                 print(
-                    "Keeping the preview open — use the page's Close action or Ctrl+C to exit.",
+                    "Keeping the preview open — use More → End preview session or Ctrl+C to exit.",
                     file=sys.stderr,
                 )
                 await preview.wait_closed()

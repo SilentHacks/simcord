@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from .backend import Backend, serializers
 from .backend.errors import SetupError
 from .backend.models import Interaction
-from .enums import OptionType
+from .enums import AppCommandType, InteractionType, OptionType
 
 if TYPE_CHECKING:
     from .actors import MemberActor
@@ -41,6 +41,20 @@ def base_payload(
 ) -> tuple[Interaction, dict[str, Any]]:
     """Create an interaction record and its INTERACTION_CREATE payload."""
     record = backend.new_interaction(type, channel_id, user_id, guild_id)
+    if int(type) == int(InteractionType.APPLICATION_COMMAND):
+        record.command_name = data.get("name") if isinstance(data.get("name"), str) else None
+        try:
+            record.command_type = int(data.get("type", AppCommandType.CHAT_INPUT))
+            if data.get("target_id") is not None:
+                record.target_id = int(data["target_id"])
+                record.target_type = record.command_type
+                if record.command_type == AppCommandType.MESSAGE:
+                    resolved = data.get("resolved") or {}
+                    target = (resolved.get("messages") or {}).get(str(record.target_id)) or {}
+                    if target.get("channel_id") is not None:
+                        record.target_channel_id = int(target["channel_id"])
+        except (TypeError, ValueError):
+            record.command_type = None
     channel = backend.get_channel(channel_id)
     payload: dict[str, Any] = {
         "id": str(record.id),

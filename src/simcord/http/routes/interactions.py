@@ -127,6 +127,14 @@ def _record(ctx: RequestContext) -> Interaction:
     return record
 
 
+def _interaction_message(ctx: RequestContext) -> Any:
+    record = _record(ctx)
+    message_id = ctx.int_arg("message_id")
+    if message_id != record.message_id and message_id not in record.followup_ids:
+        raise errors.unknown_message()
+    return ctx.backend.get_message(record.channel_id, message_id)
+
+
 def _incoming_webhook(ctx: RequestContext) -> Any:
     backend = ctx.backend
     webhook_id = backend.webhook_tokens.get(ctx.args["token"])
@@ -184,17 +192,15 @@ def delete_original_response(ctx: RequestContext) -> Any:
 @route("GET", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
 def get_followup(ctx: RequestContext) -> Any:
     if ctx.args["token"] in ctx.backend.interaction_tokens:
-        record = _record(ctx)
-        return message_response(ctx, ctx.backend.get_message(record.channel_id, ctx.int_arg("message_id")))
+        return message_response(ctx, _interaction_message(ctx))
     return message_response(ctx, _incoming_message(ctx))
 
 
 @route("PATCH", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
 def edit_followup(ctx: RequestContext) -> Any:
     if ctx.args["token"] in ctx.backend.interaction_tokens:
-        record = _record(ctx)
-        message = ctx.backend.get_message(record.channel_id, ctx.int_arg("message_id"))
-        message = ctx.backend.edit_message(record.channel_id, message.id, message_edit_changes(ctx, message))
+        message = _interaction_message(ctx)
+        message = ctx.backend.edit_message(message.channel_id, message.id, message_edit_changes(ctx, message))
         return message_response(ctx, message)
     message = _incoming_message(ctx)
     body, with_components = _incoming_webhook_body(ctx)
@@ -212,8 +218,8 @@ def edit_followup(ctx: RequestContext) -> Any:
 @route("DELETE", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
 def delete_followup(ctx: RequestContext) -> Any:
     if ctx.args["token"] in ctx.backend.interaction_tokens:
-        record = _record(ctx)
-        ctx.backend.delete_message(record.channel_id, ctx.int_arg("message_id"))
+        message = _interaction_message(ctx)
+        ctx.backend.delete_message(message.channel_id, message.id)
         return
     message = _incoming_message(ctx)
     ctx.backend.delete_message(message.channel_id, message.id)

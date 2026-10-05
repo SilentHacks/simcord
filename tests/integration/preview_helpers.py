@@ -49,13 +49,13 @@ def preview_headers(preview: Any, context_id: str | None = None) -> dict[str, st
 
 
 def target_message(snapshot: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Return the focused protocol-2 message projection."""
+    """Return the focused protocol-3 message projection."""
     target_id = snapshot.get("targetId")
     return snapshot.get("messages", {}).get(str(target_id)) if target_id is not None else None
 
 
 def control_key(snapshot: Mapping[str, Any], custom_id: str) -> str:
-    """Return a projected protocol-2 control key for a component custom ID."""
+    """Return a projected protocol-3 control key for a component custom ID."""
     target = target_message(snapshot)
     if target is None:
         raise AssertionError(f"target projection is unavailable for {custom_id!r}")
@@ -89,12 +89,10 @@ def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str,
     ``sequence``/``request_id``/``generation``/``bot_generation``/``kind`` are
     filled in: the generation defaults from ``page`` — a ``_Page`` (whose
     ``preview.env`` supplies ``bot_generation``) or a ``/api/pages`` JSON
-    ``context`` mapping (which needs ``env=`` or an explicit
-    ``bot_generation=``). Mutating actions also receive the page's
-    ``target_id`` and ``published_revision`` unless deliberately supplied.
-    Kind-specific fields (``control_key``, ``values``, ``modal_handle``,
-    ``target_id``, ``viewer_id``, ``published_revision``) and deliberate bad
-    values both work.
+    ``context`` mapping (which needs ``env=`` or explicit ``bot_generation=``).
+    Kind-specific fields, including deliberate invalid values, may also be
+    supplied. Revision-bound actions receive the observed revision; component
+    actions and message mutations also receive their target ID.
     """
     env = fields.pop("env", None)
     if isinstance(page, Mapping):
@@ -106,6 +104,7 @@ def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str,
     if env is None and "bot_generation" not in fields:
         raise TypeError("action_body() for a JSON page context needs env= or bot_generation=")
     body = {
+        "protocol_version": 3,
         "sequence": sequence,
         "request_id": f"action-{sequence}",
         "generation": generation,
@@ -113,10 +112,35 @@ def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str,
         "kind": kind,
     }
     body.update(fields)
+    if kind == "browse_messages":
+        body.setdefault("filter", "all")
     if kind in {"click", "select", "modal_submit"}:
         body.setdefault("target_id", _page_target_id(page))
+    if kind in {
+        "click",
+        "select",
+        "modal_submit",
+        "history",
+        "send_message",
+        "edit_message",
+        "delete_message",
+        "set_reaction",
+        "set_poll_votes",
+        "set_pinned",
+        "browse_messages",
+        "browse_candidates",
+        "configure_presentation",
+    }:
         body.setdefault(
             "published_revision",
             page.get("publishedRevision") if isinstance(page, Mapping) else page.revision,
         )
+    if kind in {
+        "edit_message",
+        "delete_message",
+        "set_reaction",
+        "set_poll_votes",
+        "set_pinned",
+    }:
+        body.setdefault("target_id", _page_target_id(page))
     return body

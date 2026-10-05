@@ -66,6 +66,13 @@ Discord connection. Install `simcord[preview]` for the bridge, or
 `port=` pins the loopback origin so a pre-created forward can use the same origin on both ends;
 it never makes the capability-bearing URL stable or safe to log. Keep `preview.url` secret.
 
+`Env.preview(..., sku_presentations=...)` optionally accepts a mapping from positive SKU snowflake
+strings to exactly `{"name": str, "price_text": str, "locale": str}` (`name` 1–100 characters,
+`price_text` 1–80, supported Discord locale) with optional `icon_url`. Text is caller-supplied and
+displayed verbatim. An icon URL must match a supported raster asset provided through `assets`;
+no remote fetch or purchase action occurs. See the
+[premium button preview contract](guides/preview.md#premium-button-presentations).
+
 ::: simcord.preview.Preview
 
 ::: simcord.preview.Preview.screenshot
@@ -80,6 +87,25 @@ Its `ready`, `complete`, and `calibrated` fields are independent; inspect `diagn
 `profile`, and `geometry` rather than inferring success from a PNG path. When `screenshot()` is
 called with `path=None`, `PreviewCapture.path` is `None` and `PreviewCapture.png` carries the PNG
 bytes in memory. Internal `/api/*` payloads and DOM/CSS names are not extension APIs.
+`Preview.screenshot(..., media_time=...)` selects a deterministic capture time; `PreviewCapture.media_metadata`
+reports each validated asset's effective time, codecs, and transformation.
+
+`viewport=(width, height)` and `layout="message" | "channel"` override only the managed capture pin;
+they do not reconfigure a human page or the session defaults. Capture reports include
+`schema_version=1`, `protocol_version=3`, and geometry for the visible crop, scroll offset, content
+extent, overflow, logical viewport, and output dimensions.
+
+Modal `mode="surface"` captures keep the dialog within the configured preview viewport; they do
+not expand scrollable content. Use a browser session to inspect both scroll positions.
+
+For historical protocol-1 consumers, replace the old `selected` full message with
+`snapshot["messages"].get(snapshot["targetId"])` and the old `messages` picker list with
+`snapshot["messageIndex"]`; `snapshot["timeline"]` orders full projections.
+
+The current snapshot and action contract is protocol 3. Protocol-2 consumers must migrate explicitly;
+there is no protocol-2 compatibility adapter or shim. See the
+[protocol-3 migration guide](guides/preview.md#migrating-preview-consumers-to-protocol-3) for bounded
+navigation and candidate pages, causal action receipts, authorization, publication state and capture.
 
 ## Results
 

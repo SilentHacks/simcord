@@ -7,14 +7,13 @@ import contextvars
 import inspect
 import math
 import time
-import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 import discord
 
@@ -94,14 +93,10 @@ class Env:
         *,
         strict_sync: bool = True,
         check_errors: bool = True,
-        future_behavior: bool = False,
         approved_intents: discord.Intents | None = None,
         shard_count: int | None = None,
         settle_timeout: float = 5.0,
     ) -> None:
-        if not isinstance(future_behavior, bool):
-            raise SetupError("future_behavior must be a bool")
-        self.future_behavior = future_behavior
         self.bot = bot
         self.strict_sync = strict_sync
         self.check_errors = check_errors
@@ -111,7 +106,6 @@ class Env:
         self.backend = Backend()
         self._errors: list[BaseException] = []
         self._error_ids: set[int] = set()
-        self._errors_inspected = False
         self._errors_acknowledged = 0
         self._guilds: list[GuildHandle] = []
         self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
@@ -237,6 +231,11 @@ class Env:
         if not self._operation_depth:
             self._operation_task = None
             self._operation_label = None
+
+    def _mark_mutation(self) -> None:
+        if self._operation_task is not None and self._operation_task is _current_task():
+            if self._preview is not None:
+                self._preview._mark_action_dispatched()
 
     async def start(self) -> None:
         token = self._begin_operation("start")
@@ -1061,22 +1060,14 @@ class Env:
 
     @property
     def errors(self) -> list[BaseException]:
-        """Captured errors; acknowledge this prefix (the whole lifetime in legacy mode)."""
-        if self.future_behavior:
-            self._errors_acknowledged = self.error_cursor
-            return list(self._errors)
-        warnings.warn(
-            "SimCord 2.3 legacy env.errors returns a live list and acknowledges all future "
-            "errors. Use simcord.run(bot, future_behavior=True) for snapshots and prefix "
-            "acknowledgement, which become the defaults in 3.0 when the flag is removed.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._errors_inspected = True
-        return self._errors
+        """Return a shallow snapshot and acknowledge only the currently captured prefix."""
+        self._errors_acknowledged = self.error_cursor
+        return list(self._errors)
 
     def _capture_errors(self) -> None:
         from discord.ext import commands
+
+        _dpy_internals.capture_ui_errors(self.bot, self._record_error)
 
         async def on_command_error(_ctx: Any, error: BaseException) -> None:
             if not isinstance(error, commands.CommandNotFound):
@@ -1112,25 +1103,34 @@ class Env:
         channel: ChannelHandle,
         *,
         viewers: Sequence[MemberActor | UserHandle],
+        layout: Literal["message", "channel"] = "message",
+        display: Literal["responsive", "fixed"] = "responsive",
         width: int = 960,
         height: int = 720,
         locale: str = "en-US",
         timezone: str = "UTC",
         presentation_time: datetime | None = None,
         assets: Mapping[str, tuple[str, bytes]] | None = None,
+        sku_presentations: Mapping[str, Mapping[str, str]] | None = None,
         port: int | None = None,
     ) -> Preview:
         """Create one eagerly validated local preview context manager.
 
-        ``channel`` is the channel the session presents. ``viewers`` is a
-        non-empty allowlist of same-Env handles — members for guild channels,
-        the owning ``UserHandle`` for DMs. ``width``/``height`` are
-        positive-int viewport sizes;
-        ``locale`` and ``timezone`` seed the rendered profile. ``assets`` maps
-        otherwise-remote media URLs to ``(filename, bytes)`` tuples so they
-        render offline. ``port`` pins the loopback port: ``None``/``0`` lets
-        the OS assign one, 1-65535 requests a specific port — the session is
-        still capability-gated either way.
+        ``layout="message"`` focuses one message; ``layout="channel"`` shows
+        authorized channel history and a real actor-backed composer. ``channel``
+        is the channel the session presents. ``viewers`` is a non-empty
+        allowlist of same-Env handles — members for guild channels, the owning
+        ``UserHandle`` for DMs. Human pages default to ``display="responsive"``,
+        which fits the available workspace. ``display="fixed"`` uses an exact
+        profile without shrinking. ``width``/``height`` configure that profile
+        and managed-capture defaults; browser presentation changes are page-local.
+        ``locale`` and ``timezone`` seed the rendered profile.
+        ``assets`` maps otherwise-remote media URLs to ``(filename, bytes)``
+        tuples so they render offline. ``sku_presentations`` maps positive SKU
+        snowflake strings to exact ``name``/``price_text`` and a supported
+        Discord ``locale``; optional ``icon_url`` values require matching
+        supported raster bytes in ``assets``. No purchase state is modeled.
+        ``port`` pins the loopback port.
 
         Returns an async context manager serving the authorized preview;
         ``preview.url`` is the capability-bearing address.
@@ -1147,12 +1147,15 @@ class Env:
                 self,
                 channel,
                 viewers=viewers,
+                layout=layout,
+                display=display,
                 width=width,
                 height=height,
                 locale=locale,
                 timezone=timezone,
                 presentation_time=presentation_time,
                 assets=assets,
+                sku_presentations=sku_presentations,
                 port=port,
             )
         finally:
@@ -1292,15 +1295,14 @@ class Env:
         fails). Call this to assert the bot ran cleanly: it raises an
         ``ExceptionGroup`` of everything captured — even a single error — and
         does nothing if there were none.
-        With ``future_behavior=True``, this acknowledges only the current
-        prefix, so errors captured later still fail teardown.
+        This acknowledges only the current prefix, so errors captured later
+        still fail teardown.
         """
         self._raise_errors_since(0)
 
     def _raise_errors_since(self, cursor: int) -> None:
         captured = self.errors_since(cursor)
         self._errors_acknowledged = self.error_cursor
-        self._errors_inspected = True
         if not captured:
             return
         message = f"bot raised {len(captured)} error(s) during the test"
@@ -1375,10 +1377,8 @@ class run:
     """``async with simcord.run(bot) as env:`` — attach, fake-login, READY.
 
     On exit, uninspected bot errors are re-raised as an ``ExceptionGroup``.
-    In 2.3, ``future_behavior=True`` opts into error snapshots and prefix
-    acknowledgement, plus detached mutable result payloads. Without it,
-    inspecting errors acknowledges the whole environment lifetime.
-    3.0 removes the flag and makes the opt-in behavior the default.
+    Error inspection acknowledges only the current prefix. Result handles stay
+    live, while individual mutable payload reads are detached snapshots.
     Disable teardown checking with ``simcord.run(bot, check_errors=False)``.
     """
 
@@ -1394,7 +1394,4 @@ class run:
         await env.shutdown()
         # Don't mask an exception already propagating out of the test body.
         if exc_type is None and env.check_errors:
-            if env.future_behavior:
-                env._raise_errors_since(env._errors_acknowledged)
-            elif not env._errors_inspected:
-                env.raise_errors()
+            env._raise_errors_since(env._errors_acknowledged)

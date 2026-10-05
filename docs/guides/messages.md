@@ -33,7 +33,8 @@ And the other text verbs mirror what a user can do to their own messages:
 
 ```python
 await alice.edit(message, "edited content")   # only your own messages (else 50005)
-await alice.delete(message)                    # your own, or with manage_messages
+await alice.delete(message)                   # your own, or with manage_messages
+await alice.set_pinned(message, True)          # requires manage_messages
 await alice.typing(channel)                    # triggers on_typing
 ```
 
@@ -69,7 +70,18 @@ fetched = channel.last_message
 assert any(str(r.emoji) == "👋" for r in fetched.reactions)
 ```
 
+`set_reaction(message, emoji, reacted=...)` sets desired membership idempotently; `react` and
+`unreact` remain the event-oriented add/remove helpers.
+
 More on reaction-driven flows in [Threads, reactions & DMs](threads-reactions-dms.md).
+
+## Polls
+
+Set the viewer's complete poll answer set with `await alice.set_poll_votes(message, answers=...)`.
+For a multiselect poll, `answers=[1, 2]` selects both choices; a single-select poll accepts one.
+Pass `answers=[]` to withdraw all choices. The backend validates the entire set before changing
+votes, enforces expiry, and publishes normal vote events. Preview poll projections show counts and
+percentages, not voter lists.
 
 ## Direct messages
 
@@ -140,13 +152,32 @@ async def test_rejects_oversized(simcord_env):
     assert exc.value.code == 50035
 ```
 
+## 3.0 message behavior
+
+Bot messages now retain `tts` and apply `allowed_mentions` to notification state. Mention
+text remains visible when notifications are disabled; assert `Message.mentions` or backend
+ping state separately when that distinction matters.
+
+Guild sticker sends support up to three available stickers. External stickers require the
+bot's `use_external_stickers` permission. Static PNG stickers render in preview; APNG, GIF,
+and Lottie stickers are identified but their animation is not rendered, and preview marks
+that surface incomplete. Sticker reference captures remain blocked until permitted Discord
+evidence is available.
+
+Pinning a message, creating a message thread, and adding a member to a configured system
+channel can create typed service messages in channel history. Channel-name changes do too.
+These messages update `channel.last_message` and may arrive after the operation's primary
+event, so keep the returned message/ID or filter history by `Message.type` instead of
+assuming the final history item is always the bot's reply. `GuildHandle.create_system_message`
+seeds a typed service message for offline setup; its text and identity references are
+backend-generated. It does not model call or payment transport.
+
 Some invalid messages previously accepted by SimCord now fail, including embeds whose
 combined text exceeds 6000 characters and oversized individual embed fields. New user
-and bot messages must contain content, an attachment, an embed, components or a poll;
+and bot messages must contain content, an attachment, an embed, components, a sticker or a poll;
 content-free messages with one of those payloads remain supported. Partial edits and
 explicit `None` values can clear fields, including leaving an existing message empty.
 System messages and empty interaction deferrals are not treated as empty message sends.
-Stickers remain explicitly unsupported offline.
 Interaction message responses validate before acknowledgement; a rejected response
 can be retried. Updating an interaction's source message requires an actual source
 message (a component interaction or a modal opened from one).

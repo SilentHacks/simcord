@@ -18,7 +18,7 @@ Use SimCord when an AI coding agent creates or changes a discord.py bot. It give
 - [Test without a token or test server](https://simcord.readthedocs.io/guides/test-without-token/)
 - [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/)
 - [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
-- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Local authenticated browser callbacks, offline assets, SSH forwarding, and immutable capture reports.
+- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Protocol 3, bounded authorized navigation and control-scoped candidates, typed receipts, capture geometry and blocked external fidelity gates.
 - [Recipes](https://simcord.readthedocs.io/cookbook/)
 
 ## Installation
@@ -43,6 +43,15 @@ The tested bot must be constructible without calling `bot.run()`. Provide a pyte
   waits with `await env.external_wait(awaitable, reason="...")`; unknown waits time
   out with diagnostics and can be recovered by a later operation or `env.settle()`.
   Public operations reject overlap before mutating state.
+- Preview snapshots use protocol 3: `messageIndex` is a separate authorized page of at most 50
+  summaries; `messages` holds full authorized projections. Queries are NFC/case-folded plain text
+  (at most 128 Unicode code points); denied and deleted exact IDs have the same unavailable result.
+  Entity candidates are control-scoped, paged to at most 50, and keep separately authorized selected
+  values; raw entity `component.default_values` are not projected. Protocol 2 has no compatibility
+  shim. Read `window.simcordPreview` as immutable schema 1 / protocol 3 status; readiness, completion,
+  publication, transport, actual visibility and projected IDs are separate. Never share private
+  snapshots, recipes, captures, capability URLs or reference images; Copy/Download support reports
+  use an allowlist. Preview is not calibration/accessibility-certified; 3.0 releases with an explicit maintainer evidence-gate waiver.
 
 ## Migrating from 1.x
 

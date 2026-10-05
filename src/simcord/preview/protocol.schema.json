@@ -1,18 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://simcord.dev/schemas/preview/protocol-2.json",
-  "title": "SimCord preview protocol 2 snapshot",
+  "$id": "https://simcord.dev/schemas/preview/protocol-3.json",
+  "title": "SimCord preview protocol 3 snapshot",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "protocolVersion", "publishedRevision", "context", "botGeneration", "viewers",
-    "viewerId", "channelId", "channel", "targetId", "messageIndex", "messages",
-    "timeline", "history", "modal", "entities", "candidates", "assets", "profile",
-    "status", "diagnostics", "lastAction"
+    "runtimeVersion", "protocolVersion", "publishedRevision", "publication", "context", "botGeneration", "viewers",
+    "viewerId", "channelId", "channel", "layout", "targetId", "messageIndex", "navigation", "messages",
+    "timeline", "history", "modal", "entities", "candidates", "assets", "profile", "presentation",
+    "status", "diagnostics", "lastAction", "activity"
   ],
   "properties": {
-    "protocolVersion": { "const": 2 },
+    "runtimeVersion": { "type": "string" },
+    "protocolVersion": { "const": 3 },
     "publishedRevision": { "type": "integer", "minimum": 0 },
+    "publication": { "$ref": "#/$defs/publication" },
     "context": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "generation"],
@@ -22,96 +24,351 @@
     "viewers": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
     "viewerId": { "type": "string" },
     "channelId": { "type": "string" },
-    "channel": { "type": ["object", "null"] },
-    "targetId": { "type": ["string", "null"] },
-    "messageIndex": {
-      "type": "array", "items": {
-        "type": "object", "additionalProperties": false,
-        "required": ["id", "author_name", "excerpt"],
-        "properties": { "id": { "type": "string" }, "author_name": { "type": "string" }, "excerpt": { "type": "string" } }
+    "layout": { "enum": ["message", "channel"] },
+    "channel": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "guildId", "type", "topic", "canSendMessages"],
+      "properties": {
+        "id": { "type": "string" }, "name": { "type": ["string", "null"] },
+        "guildId": { "type": ["string", "null"] }, "type": { "type": ["integer", "null"] },
+        "topic": { "type": ["string", "null"] }, "canSendMessages": { "type": "boolean" }
       }
     },
-    "messages": { "type": "object", "description": "The authorized target message only; channel summaries belong in messageIndex.", "maxProperties": 1, "additionalProperties": { "$ref": "#/$defs/message" } },
-    "timeline": { "type": "array", "description": "The target message id only when targetId is authorized and present.", "maxItems": 1, "items": { "type": "string" } },
+    "targetId": { "type": ["string", "null"] },
+    "messageIndex": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/messageSummary" } },
+    "navigation": { "$ref": "#/$defs/navigation" },
+    "messages": { "type": "object", "description": "Up to 50 full projections for the current authorized window in channel layout; the authorized target only in message layout.", "maxProperties": 50, "additionalProperties": { "$ref": "#/$defs/message" } },
+    "timeline": { "type": "array", "description": "Authorized message IDs in visible window order.", "maxItems": 50, "items": { "type": "string" } },
     "history": {
       "type": "object", "additionalProperties": false,
-      "required": ["hasBefore", "hasAfter"],
-      "properties": { "hasBefore": { "type": "boolean" }, "hasAfter": { "type": "boolean" } }
+      "required": ["hasBefore", "hasAfter", "windowStartId", "windowEndId"],
+      "properties": {
+        "hasBefore": { "type": "boolean" }, "hasAfter": { "type": "boolean" },
+        "windowStartId": { "type": ["string", "null"] }, "windowEndId": { "type": ["string", "null"] }
+      }
     },
     "modal": { "type": ["object", "null"] },
     "entities": { "type": "object", "additionalProperties": { "type": "object" } },
-    "candidates": { "type": "object", "additionalProperties": { "type": "array" } },
+    "candidates": { "type": "object", "additionalProperties": { "$ref": "#/$defs/candidateDescriptor" } },
     "assets": { "type": "object", "additionalProperties": { "$ref": "#/$defs/asset" } },
     "profile": { "type": "object", "required": ["theme", "width", "height", "locale", "timezone", "presentationTime"], "additionalProperties": true, "properties": {
-      "theme": { "type": "string" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+      "theme": { "type": "string" }, "width": { "type": "integer", "minimum": 1, "maximum": 32768 }, "height": { "type": "integer", "minimum": 1, "maximum": 32768 },
       "locale": { "type": "string" }, "timezone": { "type": "string" }, "presentationTime": { "type": "string", "format": "date-time" }
     } },
+    "presentation": { "$ref": "#/$defs/presentation" },
     "status": { "type": "string" },
     "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
-    "lastAction": { "type": ["object", "null"] }
+    "lastAction": { "anyOf": [{ "$ref": "#/$defs/actionReceipt" }, { "type": "null" }] },
+    "activity": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/actionReceipt" } }
   },
   "$defs": {
-    "action": {
-      "type": "object",
-      "description": "Protocol-2 action envelope; validate via #/$defs/action. Unknown metadata is accepted. Runtime checks authorization, revisions, controls and admission. Modal file bytes use multipart transport, not JSON.",
-      "required": ["kind", "sequence", "request_id", "generation", "bot_generation"],
+    "identity": { "type": "object", "required": ["id", "name"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "name": { "type": "string" } } },
+    "publication": {
+      "type": "object", "additionalProperties": false, "required": ["publishedAt", "publishedRevision", "reason"],
       "properties": {
-        "kind": { "type": "string" },
-        "sequence": { "type": "integer", "minimum": 1 },
-        "request_id": { "type": "string", "minLength": 1 },
-        "generation": { "type": "integer", "minimum": 1 },
-        "bot_generation": { "type": "integer", "minimum": 1 }
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "publishedRevision": { "type": "integer", "minimum": 0 },
+        "reason": { "enum": ["initial", "refresh", "snapshot", "navigation", "query", "presentation", "action", "capture"] }
+      }
+    },
+    "componentSummary": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "label"],
+      "properties": { "kind": { "type": "string", "minLength": 1, "maxLength": 64 }, "label": { "type": "string", "description": "Producer emits at most 80 Unicode grapheme clusters." } }
+    },
+    "attachmentSummary": {
+      "type": "object", "additionalProperties": false, "required": ["count", "kinds"],
+      "properties": { "count": { "type": "integer", "minimum": 0 }, "kinds": { "type": "array", "uniqueItems": true, "items": { "type": "string" } } }
+    },
+    "messageSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "author", "createdAt", "editedAt", "excerpt", "contentKinds", "components", "attachments", "ephemeral"],
+      "properties": {
+        "id": { "type": "string" }, "author": { "$ref": "#/$defs/identity" },
+        "createdAt": { "type": ["string", "null"], "format": "date-time" }, "editedAt": { "type": ["string", "null"], "format": "date-time" },
+        "excerpt": { "type": "string", "description": "Producer emits at most 100 Unicode grapheme clusters." },
+        "contentKinds": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "components": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/componentSummary" } },
+        "attachments": { "$ref": "#/$defs/attachmentSummary" }, "ephemeral": { "type": "boolean" }
+      }
+    },
+    "navigation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["query", "filter", "hasPrevious", "hasNext", "previousCursor", "nextCursor"],
+      "properties": {
+        "query": { "type": "string", "maxLength": 128 }, "filter": { "const": "all" },
+        "hasPrevious": { "type": "boolean" }, "hasNext": { "type": "boolean" },
+        "previousCursor": { "type": ["string", "null"], "maxLength": 1024 }, "nextCursor": { "type": ["string", "null"], "maxLength": 1024 }
+      }
+    },
+    "candidateFilter": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "properties": { "channelTypes": { "type": "array", "uniqueItems": true, "items": { "type": "integer" } } }
+    },
+    "candidateEntry": {
+      "type": "object", "additionalProperties": true, "required": ["id", "label", "kind"],
+      "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "kind": { "type": "string" }, "name": { "type": "string" } }
+    },
+    "candidateDescriptor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "filter", "selected", "entries", "state", "query", "hasPrevious", "hasNext", "previousCursor", "nextCursor"],
+      "properties": {
+        "type": { "enum": ["users", "roles", "mentionables", "channels"] }, "filter": { "$ref": "#/$defs/candidateFilter" },
+        "selected": { "type": "array", "items": { "$ref": "#/$defs/candidateEntry" } },
+        "entries": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/candidateEntry" } },
+        "state": { "enum": ["available", "empty", "unavailable", "loading"] }, "query": { "type": "string", "maxLength": 128 },
+        "hasPrevious": { "type": "boolean" }, "hasNext": { "type": "boolean" },
+        "previousCursor": { "type": ["string", "null"], "maxLength": 1024 }, "nextCursor": { "type": ["string", "null"], "maxLength": 1024 }
+      }
+    },
+    "presentation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["display", "layout", "viewport", "exactProfile", "host", "constraint"],
+      "properties": {
+        "display": { "enum": ["responsive", "fixed"] }, "layout": { "enum": ["message", "channel"] },
+        "viewport": { "$ref": "#/$defs/dimensions" }, "exactProfile": { "$ref": "#/$defs/dimensions" }, "host": { "$ref": "#/$defs/dimensions" },
+        "constraint": { "type": ["string", "null"] }
+      }
+    },
+    "dimensions": {
+      "type": "object", "additionalProperties": false, "required": ["width", "height"],
+      "properties": { "width": { "type": "integer", "minimum": 1, "maximum": 32768 }, "height": { "type": "integer", "minimum": 1, "maximum": 32768 } }
+    },
+    "diagnostic": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "code", "category", "severity", "state", "complete", "message", "remediation"],
+      "properties": {
+        "id": { "type": "string" }, "code": { "type": "string" }, "category": { "type": "string" },
+        "severity": { "enum": ["info", "warning", "error", "critical"] }, "state": { "enum": ["current", "recovered"] },
+        "complete": { "type": "boolean" }, "message": { "type": "string" }, "remediation": { "type": "string" },
+        "subject": { "type": "object", "additionalProperties": false, "required": ["messageId"], "properties": { "messageId": { "type": "string" }, "controlKey": { "type": "string" } } },
+        "correlation": { "type": "string" }
+      }
+    },
+    "actionTarget": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["messageId", "controlKey"], "properties": { "messageId": { "type": "string" }, "controlKey": { "type": ["string", "null"] } }
+    },
+    "outcome": {
+      "type": "object", "additionalProperties": false, "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["response", "followup", "source_edit", "message", "modal", "no_output", "deferred", "unavailable"] },
+        "messageId": { "type": "string" }
+      }
+    },
+    "actionReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requestId", "sequence", "expectedSequence", "rejected", "dispatched", "dispatch", "acknowledgement", "settlement", "presentation", "revision", "diagnostics", "target", "uncertain", "correlation", "outcomes"],
+      "properties": {
+        "requestId": { "type": ["string", "null"] }, "sequence": { "type": ["integer", "null"] }, "expectedSequence": { "type": "integer", "minimum": 0 },
+        "rejected": { "type": "boolean" }, "dispatched": { "type": "boolean" },
+        "dispatch": { "enum": ["pending", "not_dispatched", "dispatched"] },
+        "acknowledgement": { "enum": ["pending", "acknowledged", "deferred", "unacknowledged", "not_applicable"] },
+        "settlement": { "enum": ["pending", "settled", "rejected", "failed", "timeout", "cancelled"] },
+        "presentation": { "enum": ["current", "stale", "access_denied"] }, "revision": { "type": "integer", "minimum": 0 },
+        "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } }, "target": { "$ref": "#/$defs/actionTarget" },
+        "uncertain": { "type": "boolean" }, "correlation": { "type": "string" }, "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } }
+      }
+    },
+    "actionRequest": {
+      "type": "object", "additionalProperties": true,
+      "required": ["protocol_version", "generation", "bot_generation", "sequence", "request_id", "kind"],
+      "properties": {
+        "protocol_version": { "const": 3 }, "generation": { "type": "integer", "minimum": 1 }, "bot_generation": { "type": "integer", "minimum": 1 },
+        "published_revision": { "type": "integer", "minimum": 0 }, "sequence": { "type": "integer", "minimum": 1 }, "request_id": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/actionKind" },
+        "selected_values": { "type": ["array", "null"], "maxItems": 25, "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9]{1,20}$" } }
       },
+      "allOf": [{
+        "if": { "properties": { "kind": { "enum": ["click", "select", "modal_submit", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "browse_messages", "browse_candidates", "configure_presentation"] } } },
+        "then": { "required": ["published_revision"] }
+      }, {
+        "if": { "properties": { "kind": { "enum": ["click", "select", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned"] } } },
+        "then": { "required": ["target_id"], "properties": { "target_id": { "type": ["string", "integer"] } } }
+      }],
       "oneOf": [
-        {
-          "properties": {
-            "kind": { "const": "click" },
-            "target_id": { "$ref": "#/$defs/actionIdentifier" },
-            "control_key": { "type": "string" },
-            "published_revision": { "type": "integer", "minimum": 0 }
-          },
-          "required": ["target_id", "control_key", "published_revision"]
-        },
-        {
-          "properties": {
-            "kind": { "const": "select" },
-            "target_id": { "$ref": "#/$defs/actionIdentifier" },
-            "control_key": { "type": "string" },
-            "published_revision": { "type": "integer", "minimum": 0 },
-            "values": { "type": "array", "items": { "type": "string" } }
-          },
-          "required": ["target_id", "control_key", "published_revision", "values"]
-        },
-        {
-          "properties": {
-            "kind": { "const": "modal_submit" },
-            "modal_handle": { "type": "string" },
-            "published_revision": { "type": "integer", "minimum": 0 },
-            "values": { "type": "object" }
-          },
-          "required": ["modal_handle", "published_revision", "values"]
-        },
-        {
-          "properties": {
-            "kind": { "const": "viewer" },
-            "viewer_id": { "$ref": "#/$defs/actionIdentifier" }
-          },
-          "required": ["viewer_id"]
-        },
-        {
-          "description": "Omitting target_id (or null) focuses the initial visible target; runtime resolves supplied identifiers.",
-          "properties": {
-            "kind": { "const": "focus" },
-            "target_id": { "type": ["string", "number", "boolean", "null"] }
-          }
-        },
-        { "properties": { "kind": { "enum": ["refresh", "close"] } } }
+        { "properties": { "kind": { "const": "click" }, "control_key": { "type": "string" } }, "required": ["control_key"] },
+        { "properties": { "kind": { "const": "select" }, "control_key": { "type": "string" }, "values": { "type": "array", "items": { "type": "string" } } }, "required": ["control_key", "values"] },
+        { "properties": { "kind": { "const": "modal_submit" }, "modal_handle": { "type": "string" }, "values": { "type": "object" } }, "required": ["modal_handle", "values"] },
+        { "properties": { "kind": { "const": "viewer" }, "viewer_id": { "type": ["string", "integer"] } }, "required": ["viewer_id"] },
+        { "properties": { "kind": { "const": "focus" } } },
+        { "properties": { "kind": { "enum": ["refresh", "close"] } } },
+        { "properties": { "kind": { "const": "history" }, "direction": { "enum": ["older", "newer", "latest"] } }, "required": ["direction"] },
+        { "properties": { "kind": { "const": "send_message" }, "content": { "type": "string", "minLength": 1, "maxLength": 2000 }, "reply_to_id": { "type": ["string", "integer", "null"] } }, "required": ["content"] },
+        { "properties": { "kind": { "const": "edit_message" }, "content": { "type": "string", "maxLength": 2000 } }, "required": ["content"] },
+        { "properties": { "kind": { "const": "delete_message" }, "confirmed": { "const": true } }, "required": ["confirmed"] },
+        { "properties": { "kind": { "const": "set_reaction" }, "emoji": { "type": "string", "minLength": 1 }, "reacted": { "type": "boolean" } }, "required": ["emoji", "reacted"] },
+        { "properties": { "kind": { "const": "set_poll_votes" }, "answer_ids": { "type": "array", "uniqueItems": true, "items": { "type": ["string", "integer"] } } }, "required": ["answer_ids"] },
+        { "properties": { "kind": { "const": "set_pinned" }, "pinned": { "type": "boolean" } }, "required": ["pinned"] },
+        { "properties": { "kind": { "const": "browse_messages" }, "query": { "type": "string", "maxLength": 128 }, "filter": { "const": "all" }, "cursor": { "type": ["string", "null"] } }, "required": ["query", "filter"] },
+        { "properties": { "kind": { "const": "browse_candidates" }, "control_key": { "type": "string", "minLength": 1, "maxLength": 256 }, "query": { "type": "string", "maxLength": 128 }, "cursor": { "type": ["string", "null"] }, "modal_handle": { "type": ["string", "null"] } }, "required": ["control_key", "query"] },
+        { "properties": { "kind": { "const": "configure_presentation" }, "layout": { "enum": ["message", "channel"] }, "display": { "enum": ["responsive", "fixed"] }, "width": { "type": "integer", "minimum": 1, "maximum": 32768 }, "height": { "type": "integer", "minimum": 1, "maximum": 32768 }, "host_width": { "type": "integer", "minimum": 1, "maximum": 32768 }, "host_height": { "type": "integer", "minimum": 1, "maximum": 32768 } }, "required": ["layout", "display", "width", "height", "host_width", "host_height"] }
       ]
     },
-    "actionIdentifier": { "type": ["string", "integer"] },
-    "identity": { "type": "object", "required": ["id", "name"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "name": { "type": "string" } } },
-    "asset": { "type": "object", "required": ["id", "filename", "contentType", "available"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "filename": { "type": "string" }, "contentType": { "type": "string" }, "available": { "type": "boolean" }, "bytes": { "type": "integer", "minimum": 0 }, "diagnostic": { "type": ["string", "null"] } } },
-    "diagnostic": { "type": "object", "required": ["code", "severity", "message", "complete"], "additionalProperties": true, "properties": { "code": { "type": "string" }, "severity": { "type": "string" }, "message": { "type": "string" }, "complete": { "type": "boolean" }, "path": { "type": ["string", "null"] }, "feature": { "type": ["string", "null"] }, "fixtureId": { "type": ["string", "null"] }, "remediation": { "type": ["string", "null"] } } },
-    "message": { "type": "object", "required": ["id", "channel_id", "author", "timestamp", "edited_timestamp", "type", "pinned", "tts", "content", "content_tokens", "embeds", "components", "flags", "ephemeral", "components_v2", "compact", "attachments", "mention_user_ids", "mention_role_ids", "mention_everyone", "reactions", "poll", "stickers", "thread", "allowed_actions", "reply"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "channel_id": { "type": "string" }, "author": { "type": "object" }, "timestamp": { "type": "string" }, "edited_timestamp": { "type": ["string", "null"] }, "type": { "type": "integer" }, "pinned": { "type": "boolean" }, "tts": { "type": "boolean" }, "content": { "type": "string" }, "content_tokens": { "type": "array" }, "embeds": { "type": "array" }, "components": { "type": "array" }, "flags": { "type": "integer" }, "ephemeral": { "type": "boolean" }, "components_v2": { "type": "boolean" }, "compact": { "type": "boolean" }, "attachments": { "type": "array" }, "mention_user_ids": { "type": "array" }, "mention_role_ids": { "type": "array" }, "mention_everyone": { "type": "boolean" }, "reactions": { "type": "array" }, "poll": { "type": ["object", "null"] }, "stickers": { "type": "array" }, "thread": { "type": ["object", "null"] }, "allowed_actions": { "type": "array" }, "reply": { "type": "object" } } }
+    "queryActionResult": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["navigation", "messageIndex"], "properties": {
+          "navigation": { "$ref": "#/$defs/navigation" }, "messageIndex": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/messageSummary" } }
+        } },
+        { "type": "object", "additionalProperties": false, "required": ["control_key", "candidate"], "properties": {
+          "control_key": { "type": "string" }, "candidate": { "$ref": "#/$defs/candidateDescriptor" }
+        } },
+        { "type": "object", "additionalProperties": false, "required": ["presentation"], "properties": { "presentation": { "$ref": "#/$defs/presentation" } } }
+      ]
+    },
+    "actionResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "requestId", "sequence", "expectedSequence", "rejected", "dispatched", "dispatch",
+        "acknowledgement", "settlement", "presentation", "revision", "diagnostics", "target",
+        "uncertain", "correlation", "outcomes"
+      ],
+      "properties": {
+        "requestId": { "type": ["string", "null"] }, "sequence": { "type": ["integer", "null"] },
+        "expectedSequence": { "type": "integer", "minimum": 0 }, "rejected": { "type": "boolean" },
+        "dispatched": { "type": "boolean" }, "dispatch": { "enum": ["pending", "not_dispatched", "dispatched"] },
+        "acknowledgement": { "enum": ["pending", "acknowledged", "deferred", "unacknowledged", "not_applicable"] },
+        "settlement": { "enum": ["pending", "settled", "rejected", "failed", "timeout", "cancelled"] },
+        "presentation": { "enum": ["current", "stale", "access_denied"] }, "revision": { "type": "integer", "minimum": 0 },
+        "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
+        "target": { "$ref": "#/$defs/actionTarget" }, "uncertain": { "type": "boolean" },
+        "correlation": { "type": "string" }, "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } },
+        "result": { "$ref": "#/$defs/queryActionResult" }
+      }
+    },
+    "browserStatus": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "protocolVersion", "contextId", "contextGeneration", "botGeneration", "viewerId", "targetId", "publishedRevision", "presentation", "lastAction", "ready", "complete", "diagnostics", "geometry", "navigation", "publication", "selectStates", "transport", "pendingAction", "pendingQuery", "authorized"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "protocolVersion": { "const": 3 }, "contextId": { "type": ["string", "null"] },
+        "contextGeneration": { "type": "integer", "minimum": 0 }, "botGeneration": { "type": "integer", "minimum": 0 },
+        "viewerId": { "type": ["string", "null"] }, "targetId": { "type": ["string", "null"] }, "activeControlKey": { "type": ["string", "null"] },
+        "visibleMessageIds": { "type": "array", "maxItems": 50, "items": { "type": "string" } },
+        "projectedMessageIds": { "type": "array", "maxItems": 50, "items": { "type": "string" } },
+        "publishedRevision": { "type": "integer", "minimum": 0 },
+        "publication": { "anyOf": [{ "$ref": "#/$defs/publication" }, { "type": "null" }] },
+        "navigation": { "anyOf": [{ "$ref": "#/$defs/navigation" }, { "type": "null" }] },
+        "presentation": { "anyOf": [{ "$ref": "#/$defs/presentation" }, { "type": "null" }] },
+        "renderGeneration": { "type": "integer", "minimum": 0 }, "renderState": { "type": "object" },
+        "selectDrafts": { "type": "object", "additionalProperties": { "type": "array", "maxItems": 25, "items": { "type": "string" } } },
+        "selectStates": { "type": "object", "additionalProperties": { "$ref": "#/$defs/selectState" } },
+        "lastAction": { "anyOf": [{ "$ref": "#/$defs/actionReceipt" }, { "type": "null" }] },
+        "pendingAction": { "$ref": "#/$defs/pendingAction" }, "pendingQuery": { "$ref": "#/$defs/pendingQuery" },
+        "ready": { "type": "boolean" }, "complete": { "type": "boolean" }, "authorized": { "type": "boolean" },
+        "awaitingRevision": { "type": ["integer", "null"], "minimum": 0 }, "queryResultRevision": { "type": ["integer", "null"], "minimum": 0 },
+        "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
+        "activity": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/actionReceipt" } },
+        "geometry": { "$ref": "#/$defs/browserGeometry" }, "transport": { "$ref": "#/$defs/transport" },
+        "calibration": { "type": "object" }, "profile": { "$ref": "#/$defs/browserProfile" }
+      }
+    },
+    "supportReport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "runtimeVersion", "protocolVersion", "rendererVersion", "display", "dimensions", "publicationRevision", "diagnostics"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "runtimeVersion": { "type": "string" }, "protocolVersion": { "const": 3 },
+        "rendererVersion": { "const": "3" }, "display": { "enum": ["responsive", "fixed"] },
+        "dimensions": { "type": "object", "additionalProperties": false, "required": ["viewport", "host"], "properties": { "viewport": { "$ref": "#/$defs/dimensions" }, "host": { "$ref": "#/$defs/dimensions" } } },
+        "publicationRevision": { "type": "integer", "minimum": 0 },
+        "diagnostics": { "type": "array", "maxItems": 40, "items": { "$ref": "#/$defs/safeReportDiagnostic" } }
+      }
+    },
+    "actionKind": { "enum": ["click", "select", "modal_submit", "viewer", "focus", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "refresh", "close", "browse_messages", "browse_candidates", "configure_presentation"] },
+    "browserProfile": {
+      "type": "object", "required": ["theme", "width", "height", "locale", "timezone", "fontStatus"],
+      "properties": { "theme": { "type": "string" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 }, "locale": { "type": "string" }, "timezone": { "type": "string" }, "presentationTime": { "type": "string", "format": "date-time" }, "fontStatus": { "type": "object" } }
+    },
+    "rect": {
+      "type": "object", "additionalProperties": false, "required": ["x", "y", "width", "height"],
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "width": { "type": "number", "minimum": 0 }, "height": { "type": "number", "minimum": 0 }, "right": { "type": "number" }, "bottom": { "type": "number" } }
+    },
+    "size": {
+      "type": "object", "additionalProperties": false, "required": ["width", "height"],
+      "properties": { "width": { "type": "number", "minimum": 0 }, "height": { "type": "number", "minimum": 0 } }
+    },
+    "scrollOffset": {
+      "type": "object", "additionalProperties": false, "required": ["x", "y"],
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+    },
+    "overflow": {
+      "type": "object", "additionalProperties": false, "required": ["horizontal", "vertical"],
+      "properties": { "horizontal": { "type": "boolean" }, "vertical": { "type": "boolean" } }
+    },
+    "ownerGeometry": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["rect", "viewport", "contentExtent", "visibleCrop", "scrollOffset", "overflow", "visible"],
+      "properties": { "rect": { "$ref": "#/$defs/rect" }, "viewport": { "$ref": "#/$defs/size" }, "contentExtent": { "$ref": "#/$defs/size" }, "visibleCrop": { "$ref": "#/$defs/rect" }, "scrollOffset": { "$ref": "#/$defs/scrollOffset" }, "overflow": { "$ref": "#/$defs/overflow" }, "visible": { "type": "boolean" } }
+    },
+    "browserGeometry": {
+      "type": "object", "additionalProperties": false, "required": ["constraint", "app", "host", "owners"],
+      "properties": {
+        "constraint": { "type": ["string", "null"] }, "app": { "$ref": "#/$defs/rect" }, "host": { "$ref": "#/$defs/size" },
+        "owners": { "type": "object", "additionalProperties": false, "required": ["stage", "focused", "timeline", "modalBody"], "properties": { "stage": { "$ref": "#/$defs/ownerGeometry" }, "focused": { "$ref": "#/$defs/ownerGeometry" }, "timeline": { "$ref": "#/$defs/ownerGeometry" }, "modalBody": { "$ref": "#/$defs/ownerGeometry" } } }
+      }
+    },
+    "captureGeometry": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "scope", "logicalViewport", "contentExtent", "visibleCrop", "scrollOffset", "overflow", "viewportWidth", "viewportHeight", "outputWidth", "outputHeight"],
+      "properties": {
+        "mode": { "enum": ["surface", "viewport"] }, "scope": { "const": "visible" }, "logicalViewport": { "$ref": "#/$defs/rect" },
+        "contentExtent": { "$ref": "#/$defs/size" }, "visibleCrop": { "$ref": "#/$defs/rect" }, "scrollOffset": { "$ref": "#/$defs/scrollOffset" }, "overflow": { "$ref": "#/$defs/overflow" },
+        "viewportWidth": { "type": "integer", "minimum": 1 }, "viewportHeight": { "type": "integer", "minimum": 1 }, "outputWidth": { "type": "integer", "minimum": 1 }, "outputHeight": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "pendingAction": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["kind", "requestId", "sequence", "controlKey", "targetId"],
+      "properties": { "kind": { "$ref": "#/$defs/actionKind" }, "requestId": { "type": "string" }, "sequence": { "type": "integer", "minimum": 1 }, "controlKey": { "type": ["string", "null"] }, "targetId": { "type": ["string", "null"] } }
+    },
+    "pendingQuery": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["kind", "key", "controlKey", "requestId", "sequence", "query"],
+      "properties": { "kind": { "enum": ["browse_messages", "browse_candidates"] }, "key": { "type": "string" }, "controlKey": { "type": ["string", "null"] }, "requestId": { "type": "string" }, "sequence": { "type": "integer", "minimum": 1 }, "query": { "type": "string", "maxLength": 128 } }
+    },
+    "selectState": {
+      "type": "object", "additionalProperties": false, "required": ["values", "minimum", "maximum", "optional", "valid", "editing", "touched", "pending", "commit"],
+      "properties": {
+        "values": { "type": "array", "maxItems": 25, "items": { "type": "string" } }, "minimum": { "type": "integer", "minimum": 0, "maximum": 25 }, "maximum": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "optional": { "type": "boolean" }, "valid": { "type": "boolean" }, "editing": { "type": "boolean" }, "touched": { "type": "boolean" }, "pending": { "type": "boolean" },
+        "commit": { "type": ["object", "null"], "additionalProperties": false, "required": ["requestId", "sequence", "dispatch", "settlement", "uncertain"], "properties": { "requestId": { "type": ["string", "null"] }, "sequence": { "type": ["integer", "null"] }, "dispatch": { "$ref": "#/$defs/actionReceipt/properties/dispatch" }, "settlement": { "$ref": "#/$defs/actionReceipt/properties/settlement" }, "uncertain": { "type": "boolean" } } }
+      }
+    },
+    "transport": {
+      "type": "object", "additionalProperties": false, "required": ["state", "failures", "recoveries", "uncertainRequestId", "history"],
+      "properties": {
+        "state": { "enum": ["idle", "healthy", "recovered", "error", "uncertain"] }, "failures": { "type": "integer", "minimum": 0 }, "recoveries": { "type": "integer", "minimum": 0 }, "uncertainRequestId": { "type": ["string", "null"] },
+        "lastSuccessfulRead": { "type": "string", "format": "date-time" },
+        "history": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["state", "code", "at"], "properties": { "state": { "enum": ["error", "uncertain", "recovered"] }, "code": { "type": "string" }, "at": { "type": "number" } } } }
+      }
+    },
+    "safeReportDiagnostic": {
+      "type": "object", "additionalProperties": false, "required": ["code", "severity", "state", "remediation"],
+      "properties": {
+        "code": { "enum": ["bad-envelope", "unsupported-protocol", "stale-sequence", "sequence-gap", "conflicting-request", "busy", "stale-context", "stale-generation", "stale-revision", "unknown-kind", "validation-failed", "query-invalid", "stale-cursor", "control-unavailable", "context-unavailable", "asset-unavailable", "access-denied", "action-callback-error", "action-timeout", "action-cancelled", "message-type-unknown", "premium-sku-metadata-missing", "sticker-asset-unavailable", "target-unavailable", "font-platform-inspection", "internal-error", "preview-render", "preview-fonts", "modal-validation", "viewport-invalid", "missing-capability", "bootstrap-failed", "state-poll-unavailable", "state-refresh-unavailable", "action-response-unavailable", "action-receipt-unavailable", "premium-sku-icon-unavailable", "invalid-link", "unsupported-component", "unsupported-modal-component", "media-rejected", "media-unavailable", "unsupported-media-type", "media-process-memory-limit-unavailable"] },
+        "severity": { "enum": ["info", "warning", "error", "critical"] }, "state": { "enum": ["current", "recovered"] }, "remediation": { "type": "string" },
+        "path": { "type": "string", "maxLength": 160, "pattern": "^(message|modal|viewport|media)(\\.(components|component|accessory|items|embeds|attachments)|\\[[0-9]+\\])*$" },
+        "correlation": { "type": "string", "pattern": "^c_[A-Za-z0-9_-]{8,64}$" }
+      }
+    },
+    "serverError": { "type": "object", "additionalProperties": false, "required": ["error"], "properties": { "error": { "$ref": "#/$defs/diagnostic" } } },
+    "asset": { "type": "object", "required": ["id", "filename", "contentType", "available"], "additionalProperties": true, "properties": { "id": { "type": "string" }, "filename": { "type": "string" }, "contentType": { "type": "string" }, "available": { "type": "boolean" }, "bytes": { "type": "integer", "minimum": 0 } } },
+    "skuPresentation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sku_id", "name", "price_text", "locale"],
+      "properties": {
+        "sku_id": { "type": "string" }, "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "price_text": { "type": "string", "minLength": 1, "maxLength": 80 }, "locale": { "type": "string" },
+        "icon_asset_id": { "type": "string" }, "icon_available": { "type": "boolean" }
+      }
+    },
+    "component": {
+      "type": "object", "additionalProperties": true,
+      "properties": {
+        "type": { "type": "integer" }, "style": { "type": "integer" },
+        "sku_id": { "type": ["integer", "string"] }, "sku_presentation": { "$ref": "#/$defs/skuPresentation" },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/component" } },
+        "accessory": { "$ref": "#/$defs/component" }, "component": { "$ref": "#/$defs/component" }
+      }
+    },
+    "message": {
+      "type": "object", "required": ["id", "channel_id", "author", "timestamp", "edited_timestamp", "type", "pinned", "tts", "content", "content_tokens", "embeds", "components", "flags", "ephemeral", "components_v2", "compact", "attachments", "mention_user_ids", "mention_role_ids", "mention_everyone", "reactions", "poll", "stickers", "thread", "allowed_actions", "reply", "interaction_header"], "additionalProperties": true,
+      "properties": { "id": { "type": "string" }, "channel_id": { "type": "string" }, "author": { "type": "object" }, "timestamp": { "type": "string" }, "edited_timestamp": { "type": ["string", "null"] }, "type": { "type": "integer" }, "pinned": { "type": "boolean" }, "tts": { "type": "boolean" }, "content": { "type": "string" }, "content_tokens": { "type": "array" }, "embeds": { "type": "array" }, "components": { "type": "array", "items": { "$ref": "#/$defs/component" } }, "flags": { "type": "integer" }, "ephemeral": { "type": "boolean" }, "components_v2": { "type": "boolean" }, "compact": { "type": "boolean" }, "attachments": { "type": "array" }, "mention_user_ids": { "type": "array" }, "mention_role_ids": { "type": "array" }, "mention_everyone": { "type": "boolean" }, "reactions": { "type": "array" }, "poll": { "type": ["object", "null"] }, "stickers": { "type": "array" }, "thread": { "type": ["object", "null"] }, "allowed_actions": { "type": "array" }, "reply": { "type": "object" }, "interaction_header": { "type": ["object", "null"] } }
+    }
   }
 }

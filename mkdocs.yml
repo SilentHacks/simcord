@@ -6,6 +6,10 @@ repo_url: https://github.com/SilentHacks/simcord
 repo_name: SilentHacks/simcord
 copyright: Copyright &copy; SilentHacks — MIT licensed
 
+exclude_docs: |
+  /plans/
+  /reviews/
+
 theme:
   name: material
   custom_dir: overrides
@@ -66,6 +70,7 @@ nav:
       - Fixtures & configuration: guides/fixtures.md
       - Errors & diagnostics: guides/diagnostics.md
       - Component preview & screenshots: guides/preview.md
+      - Local Discord visual calibration: guides/discord-visual-calibration.md
   - Recipes: cookbook.md
   - Reference:
       - API reference: api.md

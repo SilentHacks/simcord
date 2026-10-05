@@ -72,12 +72,12 @@ quality gates, documentation, and built metadata before publishing.
 For the 2.3 → 3.0 migration, keep the two release lines separate and verify both
 legacy defaults and `future_behavior=True` before tagging 2.3.
 
-The expanded 3.0 preview work additionally requires authorized Discord comparisons
-with complete provenance and dated human accessibility checks. Its reference ledger
+Discord calibration and screen-reader certification require authorized comparisons
+with complete provenance and dated human accessibility checks. The reference ledger
 is `tests/fixtures/preview/coverage.json`; blocked or non-comparable rows are not
-passing evidence. These preview-specific requirements do not block the compatible
-2.3 bridge, which retains the already-released protocol-2 preview without new
-visual fidelity claims.
+passing evidence. For 3.0, the maintainer explicitly waived outstanding external
+preview-evidence publication gates after human review, accepting documented
+limitations rather than certification; see `docs/preview-attestation.md`.
 
 ## Reporting bugs
 

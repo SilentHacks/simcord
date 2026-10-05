@@ -243,6 +243,7 @@ def test_component_mentions_collects_nested_text_displays():
         ([None], "must be an object"),
         ([{"type": True}], "type is required"),
         ([{"type": 15}], "unsupported type 15"),
+        ([{"type": 20}], "unsupported type 20"),
         ([{"type": 2, "style": 1, "custom_id": "x"}], "only action rows"),
     ],
 )

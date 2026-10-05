@@ -82,6 +82,95 @@
       "animationPolicy": "unknown",
       "referencePackHash": null,
       "fixtureHashSource": "coverage.json row historicalCapture.sha256"
+    },
+    {
+      "id": "discord-ash-calibration-1280x780",
+      "theme": "ash",
+      "viewport": {
+        "width": 1280,
+        "height": 780
+      },
+      "locale": "en-GB",
+      "timezone": "Europe/London",
+      "deviceScaleFactor": 1,
+      "zoom": 1,
+      "fontScale": "user-attested-16px; effective glyph size unverified",
+      "motion": "animations-off (user-attested)",
+      "browser": "Chrome 151",
+      "clientBuild": "stable 627798 (01ad173)",
+      "observedAt": "2026-10-04",
+      "provenance": "Observed capture-session profile and user attestations; calibration handoff pack is observed-unreviewed and is not certification.",
+      "referencePackKey": "calibration-batch-01",
+      "os": "macOS 27.0.1 arm64 (observed)",
+      "fontIdentity": "gg sans declared; actual glyph usage/fallback unverified",
+      "emojiFallback": "unknown",
+      "reducedMotion": false,
+      "density": "Default reported; Cozy unconfirmed",
+      "animationPolicy": "animations off (attested); reducedMotion=false observed",
+      "referencePackHash": "fcf4ad0fa3bb6afae4755f09dbd3f45087e0a29878922164fd5615c4b561786a",
+      "fixtureHashSource": "reference-pack.json references[].normalizedPayloadHash",
+      "observed": {
+        "os": "macOS 27.0.1 arm64",
+        "browser": "Chrome 151",
+        "deviceScaleFactor": 1,
+        "viewport": "1280x780 CSS pixels",
+        "locale": "en-GB",
+        "timezone": "Europe/London",
+        "reducedMotion": false
+      },
+      "userAttested": {
+        "clientBuild": "stable 627798 (01ad173)",
+        "clientLocale": "English",
+        "fontSize": "16px",
+        "animationsOff": true
+      },
+      "unknown": {
+        "density": "Default reported; Cozy unconfirmed",
+        "effectiveFontRendering": "Declared fonts do not establish glyph usage or fallback",
+        "emojiFallback": "not established",
+        "modalCallbacksAndSubmittedValues": "not established",
+        "liveModalTimeoutCause": "unknown"
+      },
+      "evidenceStatus": "observed-unreviewed",
+      "calibrated": false
+    }
+  ],
+  "referenceProfileRequirements": [
+    {
+      "id": "authorized-buttons",
+      "existingProfileCandidates": ["discord-dark-idle-1280x900", "discord-dark-guided-1280x700"],
+      "regions": ["button sizes", "row wrapping", "disabled/link/premium variants", "keyboard focus"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Authorized Discord client and permitted private fixture assets; retain original images/recordings outside the repository."
+    },
+    {
+      "id": "authorized-thumbnail-spoiler",
+      "existingProfileCandidates": ["discord-dark-idle-1280x900", "discord-dark-guided-1280x700"],
+      "regions": ["thumbnail accessory", "spoiler badge", "localized/narrow wrap and reveal target"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Measure the authorized thumbnail profile and badge/wrap boxes; do not substitute the audit's local accessory size."
+    },
+    {
+      "id": "authorized-gallery-mixed-aspect",
+      "existingProfileCandidates": ["discord-dark-idle-1280x900", "discord-dark-guided-1280x700"],
+      "regions": ["1-10 mixed-aspect items", "narrow/wide wrapping", "spoilers and media"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Acquire permitted authorized gallery assets and measured layouts at named profiles; private images remain outside the repository."
+    },
+    {
+      "id": "authorized-modal",
+      "existingProfileCandidates": ["discord-dark-guided-1280x700"],
+      "regions": ["backdrop", "dialog", "header", "fields", "validation", "footer/actions", "scroll viewport"],
+      "requiredMetadata": ["client build", "OS", "browser", "locale", "timezone", "device scale", "zoom", "font identity/scale", "motion", "density"],
+      "status": "blocked",
+      "owner": "preview maintainers",
+      "prerequisite": "Acquire authorized modal geometry and validation states; commit sanitized measurements/provenance only, not source images."
     }
   ]
 }

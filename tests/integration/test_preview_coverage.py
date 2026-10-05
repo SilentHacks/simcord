@@ -8,11 +8,9 @@ pytest.importorskip("PIL")
 import discord
 from aiohttp import ClientSession, FormData
 from PIL import Image
-from preview_helpers import action_body, control_key, png_bytes, preview_headers, target_message
+from preview_helpers import action_body, control_key, preview_headers, target_message
 
 import simcord
-from simcord.preview import _media
-from simcord.preview._media import MediaError, MediaWorker
 
 
 @pytest.mark.asyncio
@@ -37,32 +35,61 @@ async def test_preview_public_asset_and_lifecycle_contracts(env, channel, alice)
         target = target_message(state)
         assert target["id"] == str(message.id)
         asset_id = target["embeds"][0]["image"]["asset_id"]
-        content_type, body, filename = await preview._prepare_asset("python", asset_id)
+        with pytest.raises(simcord.SetupError, match="unsupported inline media"):
+            await preview._prepare_asset("python", asset_id)
+        content_type, body, filename = await preview._prepare_asset("python", asset_id, download=True)
         assert (content_type, body, filename) == ("text/plain", b"hello", "note.txt")
-        assert await preview._prepare_asset("python", asset_id) == ("text/plain", b"hello", "note.txt")
-
-    worker = MediaWorker()
-    with pytest.raises(MediaError, match="valid PNG"):
-        await worker.validate("broken", b"not-an-image")
-    with pytest.raises(MediaError, match="valid PNG"):
-        await worker.validate("broken", b"not-an-image")
-    await worker.close()
+        assert await preview._prepare_asset("python", asset_id, download=True) == (
+            "text/plain",
+            b"hello",
+            "note.txt",
+        )
 
 
 @pytest.mark.asyncio
-async def test_preview_public_exports_and_media_cache(monkeypatch):
-    assert simcord.Preview.__name__ == "Preview"
-    assert simcord.PreviewCapture.__name__ == "PreviewCapture"
-
-    worker = MediaWorker()
+async def test_preview_asset_manifest_publishes_oriented_size_and_shares_variants(env, channel, alice):
     output = io.BytesIO()
-    Image.new("RGBA", (2, 2)).save(output, format="PNG")
-    valid = await worker.validate("valid", output.getvalue())
-    assert await worker.validate("valid", b"ignored") is valid
-    monkeypatch.setattr(_media, "MAX_PIXELS", 1)
-    with pytest.raises(MediaError, match="megapixels"):
-        await worker.validate("pixels", output.getvalue())
-    await worker.close()
+    Image.new("RGB", (5, 3), (20, 40, 60)).save(output, format="PNG")
+    body = output.getvalue()
+    urls = ("https://cdn.example.test/one.png", "https://cdn.example.test/two.png")
+    await env.bot.get_channel(channel.id).send(embeds=[discord.Embed().set_image(url=url) for url in urls])
+    async with env.preview(
+        channel,
+        viewers=[alice],
+        assets={url: ("image.png", body) for url in urls},
+    ) as preview:
+        selected = target_message(preview._page_payload(preview._python))
+        asset_ids = [embed["image"]["asset_id"] for embed in selected["embeds"]]
+        initial = preview._page_payload(preview._python)["assets"]
+        assert all(initial[asset_id]["available"] for asset_id in asset_ids)
+        assert all(initial[asset_id]["displayReady"] is False for asset_id in asset_ids)
+        assert all("displayWidth" not in initial[asset_id] for asset_id in asset_ids)
+        retained_before = preview._retained_media_bytes
+
+        await preview._prepare_asset("python", asset_ids[0])
+        ready = preview._page_payload(preview._python)["assets"]
+        assert ready[asset_ids[0]]["displayReady"] is True
+        assert (ready[asset_ids[0]]["displayWidth"], ready[asset_ids[0]]["displayHeight"]) == (5, 3)
+        assert ready[asset_ids[1]]["displayReady"] is False
+
+        await preview._prepare_asset("python", asset_ids[1])
+        records = [preview._python.assets[asset_id] for asset_id in asset_ids]
+        shared = preview._blobs[records[0].digest]
+        assert records[1].digest == records[0].digest
+        assert shared.normalized_refs == 2
+        assert preview._retained_media_bytes == retained_before + shared.normalized_size
+        for asset_id in asset_ids:
+            assert preview._page_payload(preview._python)["assets"][asset_id]["displayReady"] is True
+
+        async with ClientSession() as client:
+            response = await client.get(
+                preview._origin + f"/api/assets/{asset_ids[0]}",
+                headers=preview_headers(preview, "python"),
+            )
+            assert response.status == 200
+            assert response.headers["X-Display-Width"] == "5"
+            assert response.headers["X-Display-Height"] == "3"
+            await response.read()
 
 
 @pytest.mark.asyncio
@@ -72,13 +99,6 @@ async def test_preview_public_media_session_budgets(monkeypatch, env, channel, a
     body = output.getvalue()
     url = "https://cdn.example.test/budget.png"
     message = await env.bot.get_channel(channel.id).send(embed=discord.Embed().set_image(url=url))
-
-    async with env.preview(channel, viewers=[alice], assets={url: ("budget.png", body)}) as preview:
-        await preview.show(message)
-        asset = target_message(preview._page_payload(preview._python))["embeds"][0]["image"]["asset_id"]
-        preview._retained_media_bytes = preview._MAX_MEDIA_BYTES
-        with pytest.raises(simcord.SetupError, match="budget exceeded after normalization"):
-            await preview._prepare_asset("python", asset)
 
     monkeypatch.setattr(simcord.Preview, "_MAX_MEDIA_BYTES", 1)
     async with env.preview(channel, viewers=[alice], assets={url: ("budget.png", body)}) as preview:
@@ -275,7 +295,7 @@ async def test_preview_publication_inheritance_and_asset_reauthorization(env, ch
         )
         assert switched["settlement"] == "settled"
         with pytest.raises(simcord.SetupError, match="asset is unavailable"):
-            preview._asset("python", old_asset)
+            await preview._prepare_asset("python", old_asset)
 
     feedback = await alice.slash(channel, "feedback")
     async with env.preview(channel, viewers=[alice]) as preview:
@@ -314,14 +334,3 @@ async def test_preview_rejected_overlap_does_not_consume_action(env, channel, al
         )
         assert closed["settlement"] == "settled"
         await asyncio.wait_for(preview.wait_closed(), 1)
-
-
-@pytest.mark.asyncio
-async def test_preview_media_worker_release_forgets_decoded_entries():
-    worker = MediaWorker()
-    body = png_bytes()
-    await worker.validate("owned", body)
-    assert "owned" in worker._cache
-    worker.release("owned")
-    assert "owned" not in worker._cache
-    await worker.close()

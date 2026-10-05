@@ -8,11 +8,12 @@ import importlib.util
 import json
 import secrets
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
@@ -30,11 +31,11 @@ from ._server import PreviewServer
 from ._snapshot import build_snapshot
 
 _PREVIEW_FONT_MANIFEST = Path(__file__).with_name("static") / "fonts" / "manifest.json"
-_PREVIEW_RUNTIME_MODULES = ("aiohttp", "markdown_it", "PIL")
+_PREVIEW_RUNTIME_MODULES = ("aiohttp", "markdown_it", "linkify_it", "regex", "PIL")
 
 
 @cache
-def _require_preview_runtime() -> None:
+def _require_preview_runtime() -> tuple[Mapping[str, Any], ...]:
     missing = [module for module in _PREVIEW_RUNTIME_MODULES if importlib.util.find_spec(module) is None]
     if missing:
         names = ", ".join(missing)
@@ -49,6 +50,19 @@ def _require_preview_runtime() -> None:
             path = _PREVIEW_FONT_MANIFEST.parent / filename
             if hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
                 raise ValueError(filename)
+        return tuple(
+            MappingProxyType(
+                {
+                    "family": item["family"],
+                    "style": item["style"],
+                    "weight": item["weights"],
+                    "filename": item["filename"],
+                    "sha256": item["sha256"],
+                    "scripts": tuple(item["scripts"]),
+                }
+            )
+            for item in fonts
+        )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise SetupError(
             "Preview typography assets are missing or corrupt; reinstall with `pip install simcord[preview]`."
@@ -74,14 +88,19 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         channel: ChannelHandle,
         viewers: tuple[Any, ...],
         *,
+        layout: Literal["message", "channel"],
+        display: Literal["responsive", "fixed"],
         width: int,
         height: int,
         locale: str,
         timezone: str,
         presentation_time: datetime | None,
         assets: Mapping[str, tuple[str, bytes]] | None,
+        sku_presentations: Mapping[str, Mapping[str, str]] | None = None,
         port: int,
     ) -> None:
+        self.display = display
+        self.layout = layout
         self.env = env
         self.channel = channel
         self.viewers = viewers
@@ -90,6 +109,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.locale = locale
         self.timezone = timezone
         self._explicit_assets = dict(assets or {})
+        self._sku_presentations = {sku: dict(value) for sku, value in (sku_presentations or {}).items()}
         self._presentation_time_explicit = presentation_time is not None
         self.capture_time = presentation_time or datetime.fromisoformat(self.env.backend.now_iso())
         self.capability = secrets.token_urlsafe(32)
@@ -145,8 +165,16 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 raise SetupError("Preview was closed while starting")
             self._python = _Page(self, "python", self.viewers[0], self.channel.id)
             self._python.target_id = self._initial_target(self._python.viewer, self.channel.id)
+            self._python.layout = self.layout
+            self._python.display = "fixed"
+            self._python.width = self.width
+            self._python.height = self.height
+            self._python.host_width = self.width
+            self._python.host_height = self.height
+            if self._python.layout == "channel":
+                self._python.window_end_id = self._python.target_id
             self._pages[self._python.id] = self._python
-            self._publish(self._python)
+            self._publish(self._python, reason="initial")
             self._unregister_shutdown = self.env._register_pre_shutdown(self.close)
             self._unregister_dispatch = self.env._register_dispatch_observer(self._on_dispatch)
             self._active = True
@@ -167,18 +195,41 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         await self.close()
 
-    def _publish(self, page: _Page) -> None:
+    def _publish(
+        self,
+        page: _Page,
+        *,
+        reason: Literal[
+            "initial", "refresh", "snapshot", "navigation", "query", "presentation", "action", "capture"
+        ] = "action",
+    ) -> None:
         self._prune_expired(keep=page)
         page.revision += 1
+        page.published_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        page.publication_reason = reason
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             page.status = "access_denied"
+            page.modal = None
+            page.modal_handle = None
+            self._redact_page_receipts(page)
+            self._clear_page_assets(page)
         elif page.status != "current":
-            # Every publish is a fresh settled projection: it is the only thing
-            # that clears "stale" and restores revoked access.
             page.status = "current"
+        if page.status != "access_denied":
+            self._refresh_action_receipts(page)
         if page.modal is not None and page.modal._interaction.modal_consumed:
             page.modal = None
             page.modal_handle = None
+        if page.pending_receipt_revision:
+            for receipt in (
+                page.last_action,
+                page.activity[-1] if page.activity else None,
+                page.latest_action.response if page.latest_action is not None else None,
+            ):
+                if isinstance(receipt, dict):
+                    receipt["revision"] = page.revision
+                    receipt["presentation"] = page.status
+            page.pending_receipt_revision = False
         page.snapshot = build_snapshot(self, page)
 
     def _advance_presentation_time(self) -> None:
@@ -194,25 +245,33 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             raise SetupError("managed capture was invalidated by bot restart")
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("managed capture access was revoked")
+        message_sources = {
+            (page.channel_id, int(identity)) for identity in page.pinned_snapshot["messages"]
+        } | page.referenced_messages
         if page.target_id is not None:
+            message_sources.add((page.channel_id, page.target_id))
+        for channel_id, message_id in message_sources:
             try:
-                message = self.env.backend.get_message(page.channel_id, page.target_id)
+                message = self.env.backend.get_message(channel_id, message_id)
             except BackendError as exc:
-                raise SetupError("managed capture target is unavailable") from exc
-            if not can_access_message(self.env, page.channel_id, message, page.viewer, history=True):
-                raise SetupError("managed capture target access was revoked")
-        for asset_id, attachment_id in page.pinned_attachment_ids.items():
+                raise SetupError("managed capture projected message is unavailable") from exc
+            if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
+                raise SetupError("managed capture projected message access was revoked")
+        for asset_id, record in page.assets.items():
             try:
-                message = self.env.backend.get_message(page.channel_id, page.target_id or 0)
-            except BackendError as exc:
-                raise SetupError("managed capture asset is unavailable") from exc
-            if not any(str(item.get("id", "")) == attachment_id for item in message.attachments):
-                raise SetupError(f"managed capture asset {asset_id} is unavailable")
+                source = record.source
+                if isinstance(source, tuple) and source and source[0] == "attachment":
+                    self._authorize_attachment_source(page, source, record.digest)
+                elif record.available:
+                    self._authorize_asset(page, asset_id)
+            except SetupError as exc:
+                raise SetupError("managed capture source asset is unavailable or access was revoked") from exc
 
     async def show(self, target: Any) -> None:
         """Focus the Python presentation on a Message, ResponseMessage, or InteractionResult.
 
-        A modal-carrying InteractionResult shows its modal to the opener.
+        A modal-carrying InteractionResult shows its modal to the opener. In channel layout, focusing
+        a target moves the authorized history window to include it.
         """
         if not self._active or self._python is None:
             raise SetupError("Preview is not active")
@@ -221,13 +280,19 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             page = self._python
             target_id, modal = self._resolve_target(page.viewer, target)
             page.target_id = target_id
+            if page.layout == "channel":
+                page.window_end_id = target_id
             if modal is not None:
                 page.modal = modal
                 page.modal_handle = "m_" + secrets.token_urlsafe(12)
             else:
                 page.modal = None
                 page.modal_handle = None
-            self._publish(page)
+            page.generation += 1
+            page.navigation_query = ""
+            page.navigation_cursor = None
+            page.candidate_queries.clear()
+            self._publish(page, reason="navigation")
         finally:
             self.env._end_operation(token)
 
@@ -241,7 +306,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             self._advance_presentation_time()
             for page in tuple(self._pages.values()):
                 if page.id in self._pages:  # earlier publishes prune expired pages
-                    self._publish(page)
+                    self._publish(page, reason="refresh")
         finally:
             self.env._end_operation(token)
 
@@ -249,9 +314,9 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         """Settle bot work, republish, and return the detached JSON projection.
 
         This is the structured, agent-facing read surface: the same projection
-        the bundled page renders, covering ``messageIndex`` summaries, the
-        authorized target in ``messages``/``timeline``, ``targetId``, ``modal``,
-        ``candidates``, ``entities``, ``assets``, ``diagnostics``, and
+        the bundled page renders, covering ``messageIndex`` summaries, ``messages`` and ``timeline``
+        for the focused target or authorized 50-message channel window, ``history`` boundaries,
+        ``targetId``, ``modal``, ``candidates``, ``entities``, ``assets``, ``diagnostics``, and
         ``lastAction``. Fields evolve under ``protocolVersion``.
         """
         if not self._active or self._python is None:
@@ -259,13 +324,13 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         token = self.env._begin_operation("preview.snapshot")
         try:
             await self.env._settle_internal()
-            self._publish(self._python)
+            self._publish(self._python, reason="snapshot")
             return self._page_payload(self._python)
         finally:
             self.env._end_operation(token)
 
     async def wait_closed(self) -> None:
-        """Return once the session closes — via the browser Close action, ``close()``, or env shutdown."""
+        """Return once the session ends via End preview session, ``close()``, or env shutdown."""
         await self._closed_event.wait()
 
     async def close(self) -> None:
@@ -304,6 +369,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 self._unregister_shutdown()
                 self._unregister_shutdown = None
             for page in tuple(self._pages.values()):
+                self._redact_page_receipts(page)
                 self._clear_page_assets(page)
             self._pages.clear()
             self._pending_page_closes.clear()
@@ -326,8 +392,21 @@ def _validate_preview(
     timezone: str,
     presentation_time: Any = None,
     assets: Any = None,
+    sku_presentations: Any = None,
     port: Any = None,
-) -> tuple[ChannelHandle, tuple[Any, ...], Mapping[str, tuple[str, bytes]], int]:
+    layout: Any = "message",
+    display: Any = "responsive",
+) -> tuple[
+    ChannelHandle,
+    tuple[Any, ...],
+    Mapping[str, tuple[str, bytes]],
+    Mapping[str, Mapping[str, str]],
+    int,
+]:
+    if layout not in ("message", "channel"):
+        raise SetupError("layout must be 'message' or 'channel'")
+    if display not in ("responsive", "fixed"):
+        raise SetupError("display must be 'responsive' or 'fixed'")
     if not isinstance(channel, ChannelHandle) or channel._env is not env:
         raise SetupError("preview channel must belong to this Env")
     try:
@@ -348,9 +427,7 @@ def _validate_preview(
             raise SetupError("guild previews require members of the selected guild")
         if not can_access_channel(env, channel.id, viewer, history=True):
             raise SetupError("viewer lacks channel and history access")
-    for value, name in ((width, "width"), (height, "height")):
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise SetupError(f"{name} must be a positive integer")
+    ManagedCapture._validate_dimensions(width, height)
     if locale not in Preview._LOCALES:
         raise SetupError(f"unsupported locale {locale!r}")
     try:
@@ -376,21 +453,93 @@ def _validate_preview(
         if not isinstance(filename, str) or not isinstance(blob, bytes):
             raise SetupError("assets must map URLs to (filename, bytes) tuples")
         normalized[url] = (filename, blob)
+    sku_presentations = _validate_sku_presentations(sku_presentations, normalized)
     if port is None:
         port = 0
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise SetupError("port must be an integer between 0 and 65535")
-    return channel, selected, MappingProxyType(normalized), port
+    return channel, selected, MappingProxyType(normalized), sku_presentations, port
+
+
+def _validate_sku_presentations(
+    value: Any,
+    assets: Mapping[str, tuple[str, bytes]],
+) -> Mapping[str, Mapping[str, str]]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise SetupError("sku_presentations must map SKU snowflake strings to presentation objects")
+
+    required = {"name", "price_text", "locale"}
+    allowed = required | {"icon_url"}
+    normalized: dict[str, Mapping[str, str]] = {}
+    for sku_id, presentation in value.items():
+        if (
+            not isinstance(sku_id, str)
+            or not sku_id.isascii()
+            or not sku_id.isdigit()
+            or len(sku_id) > 20
+            or int(sku_id) <= 0
+        ):
+            raise SetupError("sku_presentations keys must be positive SKU snowflake strings")
+        if sku_id in normalized:
+            raise SetupError(f"duplicate SKU presentation for {sku_id}")
+        if not isinstance(presentation, Mapping):
+            raise SetupError(f"sku_presentations[{sku_id!r}] must be a presentation object")
+        fields = set(presentation)
+        if not required <= fields or fields - allowed:
+            raise SetupError(
+                f"sku_presentations[{sku_id!r}] requires name, price_text, locale and optional icon_url only"
+            )
+        name = presentation["name"]
+        price_text = presentation["price_text"]
+        locale = presentation["locale"]
+        if not isinstance(name, str) or not name.strip() or len(name) > 100:
+            raise SetupError(f"sku_presentations[{sku_id!r}].name must be 1-100 characters")
+        if not isinstance(price_text, str) or not price_text.strip() or len(price_text) > 80:
+            raise SetupError(f"sku_presentations[{sku_id!r}].price_text must be 1-80 characters")
+        if not isinstance(locale, str) or locale not in Preview._LOCALES:
+            raise SetupError(f"sku_presentations[{sku_id!r}].locale must be a supported Discord locale")
+        item = {"name": name, "price_text": price_text, "locale": locale}
+        if "icon_url" in presentation:
+            icon_url = presentation["icon_url"]
+            if not isinstance(icon_url, str):
+                raise SetupError(f"sku_presentations[{sku_id!r}].icon_url must be a safe offline asset URL")
+            try:
+                parsed = urlsplit(icon_url)
+                safe_url = (
+                    parsed.scheme in {"http", "https"}
+                    and parsed.hostname is not None
+                    and parsed.username is None
+                    and parsed.password is None
+                    and not parsed.fragment
+                )
+            except ValueError:
+                safe_url = False
+            supplied = assets.get(icon_url)
+            if not safe_url or supplied is None:
+                raise SetupError(
+                    f"sku_presentations[{sku_id!r}].icon_url must be a safe URL supplied in assets"
+                )
+            if Path(supplied[0]).suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                raise SetupError(f"sku_presentations[{sku_id!r}].icon_url must use a supported raster image")
+            item["icon_url"] = icon_url
+        normalized[sku_id] = MappingProxyType(item)
+    return MappingProxyType(normalized)
 
 
 def make_preview(env: Any, channel: Any, **kwargs: Any) -> Preview:
-    channel, viewers, assets, port = _validate_preview(env, channel, **kwargs)
+    channel, viewers, assets, sku_presentations, port = _validate_preview(env, channel, **kwargs)
     return Preview(
         env,
         channel,
         viewers,
-        **{key: kwargs[key] for key in ("width", "height", "locale", "timezone", "presentation_time")},
+        **{
+            key: kwargs[key]
+            for key in ("layout", "display", "width", "height", "locale", "timezone", "presentation_time")
+        },
         assets=assets,
+        sku_presentations=sku_presentations,
         port=port,
     )
 

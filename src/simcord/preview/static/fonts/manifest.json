@@ -155,14 +155,15 @@
         "Emoji presentation sequences",
         "ZWJ sequences",
         "skin-tone modifiers",
+        "regional-indicator flags",
         "variation selectors"
       ],
       "release": "noto-emoji v2.051 / commit 0612165",
-      "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/06121655d0e82f9cae6e7ba6feed4fa6fdbfc2a4/2D/fonts/Noto-COLRv1-noflags.ttf",
+      "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/06121655d0e82f9cae6e7ba6feed4fa6fdbfc2a4/2D/fonts/Noto-COLRv1.ttf",
       "license": "OFL-1.1-Noto-Emoji.txt",
       "filename": "noto-color-emoji-v2.051.ttf",
-      "bytes": 3038756,
-      "sha256": "741815c198323b067670a1cfe6660ad8463ffcb8733314af30868eab9c4eb18b",
+      "bytes": 5038236,
+      "sha256": "b8e25ea68db82f9e4d0aee921f4420be2be39887bd5c893a2ad98710531f9d0c",
       "format": "truetype",
       "unicode_coverage": "Published upstream script coverage; no subsetting"
     }

@@ -27,17 +27,14 @@ excluded — a non-command message isn't a bug.)
 ### Errors fail tests by default
 
 !!! warning "Uninspected errors are re-raised at teardown"
-    With the 2.x default, reading `env.errors` acknowledges errors for the environment's
-    entire lifetime, including errors that arrive later. A saved list stays live.
-    SimCord 2.3 warns on this legacy read. Use `simcord.run(bot, future_behavior=True)`
-    to adopt the intended 3.0 behavior now: each read returns a shallow list snapshot and
-    acknowledges only the errors captured so far. A later error still fails teardown,
-    including one captured during shutdown; previously acknowledged errors are not
-    re-raised alongside it. Exception objects and their tracebacks are preserved.
+    Reading `env.errors` returns a shallow list snapshot and acknowledges only the
+    currently captured prefix. A later error still fails teardown, including one
+    captured during shutdown; previously acknowledged errors are not re-raised
+    alongside it. Exception objects and their tracebacks are preserved.
 
-The `future_behavior` flag defaults to `False` in 2.3. SimCord 3.0 removes the flag and
-makes snapshot/prefix acknowledgement the default. Saving an empty opt-in snapshot does
-not acknowledge errors that arrive later, and mutating a snapshot cannot change the history.
+Saving an empty snapshot does not acknowledge errors that arrive later, and mutating
+a snapshot cannot change the history. Explicit `raise_errors()` still checks the
+entire captured history, including errors already inspected.
 
 You have three ways to handle this:
 
@@ -102,7 +99,7 @@ assert_no_errors(env)                               # the symmetric "ran cleanly
 ```
 
 `assert_error` reads `env.errors`, so it acknowledges the same errors as a direct read:
-the whole lifetime by default, or only the current prefix with `future_behavior=True`.
+only the currently captured prefix, not errors that arrive later.
 
 ## The transcript
 

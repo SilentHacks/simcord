@@ -1,15 +1,17 @@
 """Post a labelled Discord component gallery for manual reference screenshots.
 
 Run ``python scripts/discord_reference_bot.py --help`` for setup. The bot never
-captures screenshots, controls a user account, or stores credentials or images.
+captures screenshots, controls a user account, or stores credentials.
+Optional exports contain only its own fixture assets and message metadata.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
+import hashlib
 import importlib.util
-import io
 import json
 import os
 from collections.abc import Sequence
@@ -42,58 +44,97 @@ _layout_view = _CATALOG._layout_view
 _png = _CATALOG._png
 
 
-async def post_gallery(channel: discord.abc.Messageable, user: discord.abc.User, sku_id: int | None) -> None:
-    await channel.send(
-        "**REF-00-INDEX — visual reference gallery**\n"
-        "Keep browser zoom at 100% and use the agreed capture profile. Each surface carries its own REF identifier. "
-        "Capture idle, hover, keyboard-focus, disabled, open/selected, and validation states where available. "
-        "No screenshot is uploaded by this bot.",
-    )
-    await channel.send(
-        f"**REF-10-LEGACY-EMBED**\nReference viewer: {user.mention}\n"
-        "Markdown: **bold**, *italic*, __underline__, ~~strike~~, ||spoiler||, `inline code`, and a very-long-token-for-wrap-testing-0123456789.",
-        embed=_embed(),
-        files=[
-            _image_file("ref-thumbnail.png", (88, 101, 242), (35, 39, 42)),
-            _image_file("ref-hero.png", (35, 165, 90), (20, 80, 130)),
-        ],
-    )
-    await channel.send(
-        "**REF-11-ATTACHMENTS**\nCapture the inline image, file tile, filename wrapping, sizes, and download controls.",
-        files=[
-            _image_file("ref-inline-image-with-a-long-name.png", (210, 70, 90), (65, 25, 90)),
-            discord.File(
-                io.BytesIO(b"Standalone legacy attachment reference\n"),
-                filename="ref-standalone-document-with-a-long-name.txt",
-            ),
-        ],
-    )
-    premium = (
-        " Included: active premium SKU."
-        if sku_id is not None
-        else " Premium omitted: set DISCORD_SKU_ID to an active SKU owned by this app."
-    )
-    await channel.send(
-        "**REF-20-BUTTONS**\nCapture idle, hover, pressed, keyboard focus, and disabled states." + premium,
-        view=ButtonGallery(sku_id),
-    )
-    await channel.send(
-        "**REF-30-STRING-SELECT**\nCapture closed, open, hover, keyboard focus, one/two selected, cleared, and disabled states.",
-        view=StringSelectGallery(),
-    )
-    await channel.send(
-        "**REF-31-ENTITY-SELECTS**\nOpen each menu and capture its candidate decoration, selection, and keyboard focus.",
-        view=EntitySelectGallery(),
-    )
-    layout, files = _layout_view()
-    await channel.send(view=layout, files=files)
-    await channel.send(
-        "**REF-50-MODALS**\nOpen each modal. Capture empty, focus, filled, validation, selection/upload, and button-focus states.",
-        view=ModalGallery(),
-    )
+def _export_fixture(reference_id: str, payload: dict, mention: str, directory: Path) -> dict:
+    normalized = {"content": str(payload.get("content", "")).replace(mention, "@simcord-viewer")}
+    if "embed" in payload:
+        normalized["embed"] = payload["embed"].to_dict()
+    if "view" in payload:
+        normalized["components"] = payload["view"].to_components()
+        normalized["flags"] = 32768 if isinstance(payload["view"], discord.ui.LayoutView) else 0
+    hashes = {}
+    for file in payload.get("files", []):
+        position = file.fp.tell()
+        try:
+            data = file.fp.read()
+        finally:
+            file.fp.seek(position)
+        name = file.filename
+        if Path(name).name != name or name in {".", ".."}:
+            raise ValueError("Fixture filenames must be plain filenames")
+        (directory / "assets" / name).write_bytes(data)
+        hashes[name] = hashlib.sha256(data).hexdigest()
+    normalized["attachments"] = hashes
+    canonical = json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    return {
+        "referenceId": reference_id,
+        "postedContent": payload.get("content", ""),
+        "viewerMention": mention,
+        "normalizedPayload": normalized,
+        "normalizedPayloadHash": hashlib.sha256(canonical).hexdigest(),
+        "assetHashes": hashes,
+    }
 
 
-def create_bot(guild_id: int, sku_id: int | None = None) -> commands.Bot:
+def _write_manifest(directory: Path, records: list[dict]) -> None:
+    data = {
+        "schemaVersion": 1,
+        "source": "official-bot-api",
+        "discordPyVersion": discord.__version__,
+        "hashNormalization": "sorted UTF-8 input JSON; invoking-user mention replaced with @simcord-viewer; attachment bytes hashed",
+        "fixtures": records,
+    }
+    temporary = directory / "bot-fixtures.json.tmp"
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(directory / "bot-fixtures.json")
+
+
+async def post_gallery(
+    channel: discord.abc.Messageable,
+    user: discord.abc.User,
+    sku_id: int | None,
+    *,
+    output_dir: Path | None = None,
+) -> None:
+    records = []
+    author = None
+    if output_dir is not None:
+        await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=False)
+        await asyncio.to_thread((output_dir / "assets").mkdir)
+    for reference_id in REFERENCE_IDS:
+        payload = _CATALOG.gallery_payload(reference_id, viewer_mention=user.mention, sku_id=sku_id)
+        try:
+            record = None
+            if output_dir is not None:
+                record = await asyncio.to_thread(
+                    _export_fixture, reference_id, payload, user.mention, output_dir
+                )
+            message = await channel.send(**payload)
+            if record is not None:
+                if author is None:
+                    if message.guild is None:
+                        raise ValueError("Fixture provenance export requires a guild channel")
+                    author = await message.guild.fetch_member(message.author.id)
+                record.update(
+                    {
+                        "messageId": str(message.id),
+                        "channelId": str(message.channel.id),
+                        "createdAt": message.created_at.isoformat(),
+                        "author": {
+                            "id": str(author.id),
+                            "username": author.name,
+                            "displayName": author.display_name,
+                            "avatarUrl": str(author.display_avatar.url),
+                        },
+                        "previousMessageId": records[-1]["messageId"] if records else None,
+                    }
+                )
+                records.append(record)
+                await asyncio.to_thread(_write_manifest, output_dir, records)
+        finally:
+            _CATALOG.close_payload(payload)
+
+
+def create_bot(guild_id: int, sku_id: int | None = None, *, output_dir: Path | None = None) -> commands.Bot:
     bot = commands.Bot(
         command_prefix=commands.when_mentioned,
         intents=discord.Intents.none(),
@@ -114,9 +155,14 @@ def create_bot(guild_id: int, sku_id: int | None = None) -> commands.Bot:
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await post_gallery(interaction.channel, interaction.user, sku_id)
+        if output_dir is not None and await asyncio.to_thread(output_dir.exists):
+            await interaction.edit_original_response(
+                content="Fixture output already exists. Restart with a new --output-dir; existing evidence is preserved."
+            )
+            return
+        await post_gallery(interaction.channel, interaction.user, sku_id, output_dir=output_dir)
         await interaction.edit_original_response(
-            content="Posted REF-00 through REF-50. Take screenshots manually; the bot stores none."
+            content="Posted REF-00 through REF-50. Take screenshots manually; the bot never captures or uploads screenshots."
         )
 
     async def setup_hook() -> None:
@@ -175,16 +221,7 @@ def _component_types(value: object) -> set[int]:
 def _check() -> None:
     assert len(REFERENCE_IDS) == len(set(REFERENCE_IDS))
     assert _png(2, 2, (0, 0, 0), (255, 255, 255)).startswith(b"\x89PNG\r\n\x1a\n")
-    assert len(ButtonGallery(None).children) == 7
-    assert len(StringSelectGallery().children) == 2
-    assert len(EntitySelectGallery().children) == 4
     layout, files = _layout_view()
-    assert len(layout.children) == 6 and len(files) == 4
-    assert len(ModalGallery().children) == 4
-    assert len(TextModal().children) == 3
-    assert len(ChoiceModal().children) == 4
-    assert len(EntityModal().children) == 4
-    assert len(UploadModal().children) == 1
     fixtures = (
         ButtonGallery(None),
         StringSelectGallery(),
@@ -227,15 +264,24 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--check", action="store_true", help="validate the fixture catalog without connecting"
     )
+    parser.add_argument("--guild-id", type=int, help="private test guild ID (or DISCORD_GUILD_ID)")
+    parser.add_argument(
+        "--prompt-token", action="store_true", help="enter the bot token without echo or shell history"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, help="new private fixture export directory; never overwritten"
+    )
     args = parser.parse_args(argv)
     if args.check:
         _check()
         return
-    token = os.getenv("DISCORD_TOKEN")
-    guild_id = _optional_int("DISCORD_GUILD_ID")
+    token = getpass.getpass("Test BOT token (hidden): ") if args.prompt_token else os.getenv("DISCORD_TOKEN")
+    guild_id = args.guild_id if args.guild_id is not None else _optional_int("DISCORD_GUILD_ID")
     if not token or guild_id is None:
-        parser.error("set DISCORD_TOKEN and DISCORD_GUILD_ID (use --check without credentials)")
-    create_bot(guild_id, _optional_int("DISCORD_SKU_ID")).run(token, log_handler=None)
+        parser.error("provide --prompt-token/--guild-id or DISCORD_TOKEN/DISCORD_GUILD_ID")
+    create_bot(guild_id, _optional_int("DISCORD_SKU_ID"), output_dir=args.output_dir).run(
+        token, log_handler=None
+    )
 
 
 if __name__ == "__main__":

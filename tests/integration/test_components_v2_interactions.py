@@ -232,7 +232,7 @@ async def test_modal_text_input_validation_is_reported_through_actor_api(env, ch
         )
         note = discord.ui.Label(
             text="Note",
-            component=discord.ui.TextInput(custom_id="note", required=False),
+            component=discord.ui.TextInput(custom_id="note", required=False, min_length=3),
         )
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -253,11 +253,19 @@ async def test_modal_text_input_validation_is_reported_through_actor_api(env, ch
         await alice.submit_modal(opened, {"name": "A"})
     with pytest.raises(simcord.SetupError, match="exceeds max_length=4"):
         await alice.submit_modal(opened, {"name": "Alice"})
+    with pytest.raises(simcord.SetupError, match="shorter than min_length=3"):
+        await alice.submit_modal(opened, {"name": "Amy", "note": "ab"})
     result = await alice.submit_modal(opened, {"name": "Amy"})
+    assert result.response.content == "ok"
+    env.bot.tree.remove_command("show")
+    reopened = await _open_modal(env, channel, alice, Form())
+    result = await alice.submit_modal(reopened, {"name": "Amy", "note": ""})
     assert result.response.content == "ok"
 
 
 async def test_modal_choice_validation_is_reported_through_actor_api(env, channel, alice):
+    captured = {}
+
     class Form(discord.ui.Modal, title="Choices"):
         color = discord.ui.Label(
             text="Color",
@@ -298,6 +306,12 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
         )
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
+            captured.update(
+                {
+                    "checks": self.checks.component.values,
+                    "person": [member.id for member in self.person.component.values],
+                }
+            )
             await interaction.response.send_message("ok")
 
     opened = await _open_modal(env, channel, alice, Form())
@@ -331,6 +345,14 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
         {"color": ["red"], "radio": "one", "checks": ["one", "two"], "person": [bob]},
     )
     assert result.response.content == "ok"
+    env.bot.tree.remove_command("show")
+    opened = await _open_modal(env, channel, alice, Form())
+    result = await alice.submit_modal(
+        opened,
+        {"color": ["red"], "radio": "one", "checks": [], "person": []},
+    )
+    assert result.response.content == "ok"
+    assert captured == {"checks": [], "person": []}
     with pytest.raises(simcord.SetupError, match="did not respond with a modal"):
         await alice.submit_modal(result, {})
 
@@ -365,3 +387,49 @@ async def test_modal_upload_and_checkbox_validation_is_reported_through_actor_ap
         await alice.submit_modal(opened, {"upload": ("one", b"1"), "accepted": "yes"})
     result = await alice.submit_modal(opened, {"upload": ("one", b"1"), "accepted": True})
     assert result.response.content == "ok"
+
+
+async def test_optional_modal_upload_and_checkbox_group_clear_to_empty(env, channel, alice):
+    captured = {}
+
+    class Form(discord.ui.Modal, title="Optional choices"):
+        upload = discord.ui.Label(
+            text="Upload",
+            component=discord.ui.FileUpload(
+                custom_id="upload",
+                required=False,
+                min_values=2,
+                max_values=3,
+            ),
+        )
+        checks = discord.ui.Label(
+            text="Checks",
+            component=discord.ui.CheckboxGroup(
+                custom_id="checks",
+                options=[
+                    discord.CheckboxGroupOption(label="One", value="one"),
+                    discord.CheckboxGroupOption(label="Two", value="two"),
+                ],
+                required=False,
+                min_values=2,
+                max_values=2,
+            ),
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            captured.update(
+                {
+                    "upload": [file.filename for file in self.upload.component.values],
+                    "checks": self.checks.component.values,
+                }
+            )
+            await interaction.response.send_message("ok")
+
+    opened = await _open_modal(env, channel, alice, Form())
+    with pytest.raises(simcord.SetupError, match="expects between 2 and 3 files"):
+        await alice.submit_modal(opened, {"upload": [("one", b"1")], "checks": []})
+    with pytest.raises(simcord.SetupError, match="expects between 2 and 2 values"):
+        await alice.submit_modal(opened, {"upload": [], "checks": ["one"]})
+    result = await alice.submit_modal(opened, {"upload": [], "checks": []})
+    assert result.response.content == "ok"
+    assert captured == {"upload": [], "checks": []}

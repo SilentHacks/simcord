@@ -56,6 +56,12 @@ class MemberActor:
     def _check(self, channel: ChannelHandle, *permissions: str) -> None:
         self._env.backend.require_permissions(self.guild.id, self.id, channel.id, *permissions)
 
+    def _message(self, message: MessageLike) -> Any:
+        stored = _visible_message(self, message)
+        if self._env.backend.get_channel(stored.channel_id).guild_id != self.guild.id:
+            raise SetupError("That message is outside this member's guild")
+        return stored
+
     # ------------------------------------------------------------------ text
 
     async def send(
@@ -80,24 +86,36 @@ class MemberActor:
             reference=reference,
             attachments=attachment_payloads,
         )
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.send")
         return to_discord_message(self._env, message)
 
     async def edit(self, message: MessageLike, content: str) -> None:
-        stored = self._env.backend.get_message(_channel_id_of(message), message.id)
+        stored = self._message(message)
         if stored.author_id != self.id:
             raise SetupError("Users can only edit their own messages")
         self._env.backend.edit_message(stored.channel_id, stored.id, {"content": content})
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.edit")
 
     async def delete(self, message: MessageLike) -> None:
-        stored = self._env.backend.get_message(_channel_id_of(message), message.id)
+        stored = self._message(message)
         if stored.author_id != self.id:
             self._env.backend.require_permissions(
                 self.guild.id, self.id, stored.channel_id, "manage_messages"
             )
         self._env.backend.delete_message(stored.channel_id, stored.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.delete")
+
+    async def set_pinned(self, message: MessageLike, pinned: bool) -> None:
+        stored = self._message(message)
+        if not isinstance(pinned, bool):
+            raise SetupError("pinned must be a boolean")
+        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "manage_messages")
+        self._env.backend.set_pinned(stored.channel_id, stored.id, pinned, actor_id=self.id)
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="MEMBER.set_pinned")
 
     async def typing(self, channel: ChannelHandle) -> None:
         self._check(channel, "send_messages")
@@ -114,17 +132,25 @@ class MemberActor:
         await self._env._settle_internal(dispatch="MEMBER.typing")
 
     async def react(self, message: MessageLike, emoji: str) -> None:
-        backend = self._env.backend
-        stored = backend.get_message(_channel_id_of(message), message.id)
-        backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
-        backend.add_reaction(stored.channel_id, stored.id, emoji, self.id)
+        stored = self._message(message)
+        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
+        self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, True)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.react")
 
     async def unreact(self, message: MessageLike, emoji: str) -> None:
-        backend = self._env.backend
-        stored = backend.get_message(_channel_id_of(message), message.id)
-        backend.remove_reaction(stored.channel_id, stored.id, emoji, self.id)
+        stored = self._message(message)
+        self._env.backend.remove_reaction(stored.channel_id, stored.id, emoji, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.unreact")
+
+    async def set_reaction(self, message: MessageLike, emoji: str, *, reacted: bool) -> None:
+        stored = self._message(message)
+        if reacted:
+            self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
+        self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="MEMBER.set_reaction")
 
     async def send_dm(self, content: str = "", **kwargs: Any) -> discord.Message:
         return await self.user.send_dm(content, **kwargs)
@@ -289,21 +315,24 @@ class MemberActor:
 
     # ------------------------------------------------------------------ polls
 
+    async def set_poll_votes(self, message: MessageLike, *, answers: Sequence[int]) -> None:
+        stored = self._message(message)
+        self._env.backend.set_poll_votes(stored.channel_id, stored.id, answers, self.id)
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="MEMBER.set_poll_votes")
+
     async def vote(self, message: MessageLike, *, answer: int) -> None:
         """Cast (or move) this user's vote to ``answer`` (a 1-based answer id)."""
-        backend = self._env.backend
-        stored = backend.get_message(_channel_id_of(message), message.id)
-        # require_permissions enforces view_channel whenever a channel id is passed.
-        backend.require_permissions(self.guild.id, self.id, stored.channel_id)
-        backend.add_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        stored = self._message(message)
+        self._env.backend.add_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.vote")
 
     async def remove_vote(self, message: MessageLike, *, answer: int) -> None:
         """Retract this user's vote for ``answer``."""
-        backend = self._env.backend
-        stored = backend.get_message(_channel_id_of(message), message.id)
-        backend.require_permissions(self.guild.id, self.id, stored.channel_id)
-        backend.remove_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        stored = self._message(message)
+        self._env.backend.remove_poll_vote(stored.channel_id, stored.id, answer, self.id)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.remove_vote")
 
     # ------------------------------------------------------------------ voice
@@ -639,7 +668,7 @@ def _modal_leaf(
             raise SetupError(f"Required modal control {custom_id!r} cannot be empty")
         minimum = component.get("min_length")
         maximum = component.get("max_length")
-        if minimum is not None and len(value) < minimum:
+        if minimum is not None and (value or required) and len(value) < minimum:
             raise SetupError(f"Text input {custom_id!r} is shorter than min_length={minimum}")
         if maximum is not None and len(value) > maximum:
             raise SetupError(f"Text input {custom_id!r} exceeds max_length={maximum}")
@@ -650,7 +679,7 @@ def _modal_leaf(
         lo, hi = _modal_bounds(component, default_min=1, default_max=1, maximum_limit=25)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
-        if (supplied or required) and not lo <= len(chosen) <= hi:
+        if chosen and not lo <= len(chosen) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} values")
         if typ == ComponentType.STRING_SELECT:
             if not all(isinstance(item, str) for item in chosen):
@@ -670,7 +699,7 @@ def _modal_leaf(
         lo, hi = _modal_bounds(component, default_min=1, default_max=1, maximum_limit=10)
         if required and not files:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
-        if (supplied or required) and not lo <= len(files) <= hi:
+        if files and not lo <= len(files) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} files")
         data["values"] = []
         for filename, blob in files:
@@ -699,7 +728,7 @@ def _modal_leaf(
         _ensure_unique(chosen)
         if required and not chosen:
             raise SetupError(f"Required modal control {custom_id!r} was not supplied")
-        if (supplied or required) and not lo <= len(chosen) <= hi:
+        if chosen and not lo <= len(chosen) <= hi:
             raise SetupError(f"Modal control {custom_id!r} expects between {lo} and {hi} values")
         if not all(isinstance(item, str) for item in chosen):
             raise SetupError(f"CheckboxGroup {custom_id!r} expects string values")
@@ -865,6 +894,9 @@ for _operation_name in (
     "edit",
     "delete",
     "typing",
+    "set_pinned",
+    "set_reaction",
+    "set_poll_votes",
     "react",
     "unreact",
     "send_dm",

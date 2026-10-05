@@ -1,11 +1,15 @@
 import pytest
 
 import simcord
+from simcord.enums import AppCommandType, MessageType
 
 
 async def test_subcommand_group(env, channel, alice):
     result = await alice.slash(channel, "config set", key="lang", value="en")
     assert result.response.content == "lang=en"
+    stored = env.backend.get_message(channel.id, result.response.id)
+    assert stored.type == MessageType.CHAT_INPUT_COMMAND
+    assert stored.interaction_metadata["command_type"] == AppCommandType.CHAT_INPUT
 
 
 async def test_unknown_subcommand_is_caught(env, channel, alice):
@@ -20,6 +24,11 @@ async def test_user_context_menu(env, channel, alice):
     result = await alice.context_menu(channel, "Report Member", bob)
     assert result.ephemeral
     assert result.response.content == "Reported bob"
+
+    stored = env.backend.get_message(channel.id, result.response.id)
+    assert stored.type == MessageType.CONTEXT_MENU_COMMAND
+    assert stored.interaction_metadata["target_id"] == bob.id
+    assert stored.interaction_metadata["target_type"] == AppCommandType.USER
 
 
 async def test_autocomplete(env, channel, alice):

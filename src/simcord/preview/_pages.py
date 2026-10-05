@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import time
@@ -12,9 +13,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import discord
 
 from ..backend.access import can_access_channel, can_access_message
+from ..backend.cdn import CDN_BASE
 from ..backend.errors import BackendError, SetupError
 from ..results import InteractionResult, ResponseMessage
 from ._assets import _Asset, _content_type
+from ._diagnostics import make_diagnostic
 
 if TYPE_CHECKING:
     from ..builders import ChannelHandle
@@ -30,6 +33,7 @@ class _Page:
     viewer: Any
     channel_id: int
     target_id: int | None = None
+    window_end_id: int | None = None
     generation: int = 1
     revision: int = 0
     status: str = "current"
@@ -41,10 +45,25 @@ class _Page:
     latest_action: _Action | None = None
     assets: dict[str, _Asset] = field(default_factory=dict)
     referenced_assets: set[str] = field(default_factory=set)
+    referenced_messages: set[tuple[int, int]] = field(default_factory=set)
     snapshot: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
-    pinned_attachment_ids: dict[str, str] = field(default_factory=dict)
+    layout: str = "message"
+    display: str = "responsive"
+    width: int = 960
+    height: int = 720
+    host_width: int = 960
+    host_height: int = 720
+    navigation_query: str = ""
+    navigation_cursor: str | None = None
+    candidate_queries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    cursor_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+    published_at: str | None = None
+    publication_reason: str = "initial"
+    activity: list[dict[str, Any]] = field(default_factory=list)
+    pending_receipt_revision: bool = False
+    activity_actions: list[_Action | None] = field(default_factory=list)
     # Resolved at call time: env patches time.monotonic while running, and this
     # module may be imported under an earlier (now dead) env's patch.
     last_activity: float = field(default_factory=lambda: time.monotonic())
@@ -54,13 +73,60 @@ class _Page:
     ) -> str:
         existing = next((asset for asset, item in self.assets.items() if item.key == key), None)
         if existing is not None:
-            record = self.assets[existing]
-            self.referenced_assets.add(existing)
-            # A placeholder created by a foreign reference gains real ownership
-            # when the attachment that owns the bytes is projected later.
-            if record.digest is None and source is not None and source[0] == "attachment":
-                self._resolve_blob(record, metadata, source)
-            return existing
+            old = self.assets[existing]
+            filename = str(metadata.get("filename", old.filename))
+            content_type = str(metadata.get("content_type") or "application/octet-stream")
+            if content_type == "application/octet-stream":
+                content_type = _content_type(
+                    filename if filename != "asset" else str(metadata.get("url", ""))
+                )
+            replacement = _Asset(
+                id=existing,
+                filename=filename,
+                contentType=content_type,
+                key=key,
+                source=source,
+            )
+            self._resolve_blob(replacement, metadata, source)
+            old_released = False
+            if replacement.diagnostic == "session media budget exceeded" and old.digest is not None:
+                self.preview._release_asset_record(old)
+                old_released = True
+                replacement = _Asset(
+                    id=existing,
+                    filename=filename,
+                    contentType=content_type,
+                    key=key,
+                    source=source,
+                )
+                self._resolve_blob(replacement, metadata, source)
+            if (
+                old.digest,
+                old.filename,
+                old.contentType,
+                old.source,
+            ) == (
+                replacement.digest,
+                replacement.filename,
+                replacement.contentType,
+                replacement.source,
+            ):
+                if not old_released:
+                    self.preview._release_asset_record(replacement)
+                    self.assets[existing] = old
+                else:
+                    self.assets[existing] = replacement
+                self.referenced_assets.add(existing)
+                return existing
+            # A handle binds source bytes/metadata, including unavailable transitions.
+            asset = "a_" + secrets.token_urlsafe(12)
+            if not old_released:
+                self.preview._release_asset_record(old)
+            replacement.id = asset
+            self.assets.pop(existing)
+            self.assets[asset] = replacement
+            self.referenced_assets.add(asset)
+            return asset
         asset = "a_" + secrets.token_urlsafe(12)
         filename = str(metadata.get("filename", "asset"))
         content_type = str(metadata.get("content_type") or "application/octet-stream")
@@ -84,22 +150,50 @@ class _Page:
         blob: bytes | None = None
         url = metadata.get("url")
         if isinstance(url, str):
-            if source is not None and source[0] == "attachment":
-                # Only the owning message's own attachments may resolve CDN
-                # bytes; foreign attachment URLs never reach this branch.
+            owner = source[0] if source else None
+            if owner in {
+                "attachment",
+                "sticker",
+                "emoji",
+                "user_avatar",
+                "member_avatar",
+                "default_avatar",
+                "application_avatar",
+            }:
                 blob = self.preview.env.backend.cdn.get(url)
-                if blob is not None:
-                    record.source = source
-            if blob is None and (supplied := self.preview._explicit_assets.get(url)) is not None:
+            if (
+                blob is None
+                and (supplied := self.preview._explicit_assets.get(url)) is not None
+                and not (owner == "message" and url.startswith(f"{CDN_BASE}/"))
+            ):
                 filename, blob = supplied
                 record.filename = filename
-                if source is None:
-                    record.source = ("explicit", url)
+                if source is not None:
+                    record.source = source
         if blob is None:
+            if record.digest is not None:
+                self.preview._release_blob(record.digest, normalized=record.normalizedRetained)
+                record.digest = None
+                record.normalizedRetained = False
+            record.available = False
+            record.bytes = None
+            record.validated = False
             return
+        digest = hashlib.sha256(blob).hexdigest()
+        if digest == record.digest:
+            record.available = True
+            record.bytes = len(blob)
+            record.diagnostic = None
+            return
+        if record.digest is not None:
+            self.preview._release_blob(record.digest, normalized=record.normalizedRetained)
+            record.normalizedRetained = False
         digest = self.preview._retain_blob(blob)
         if digest is None:
             record.diagnostic = "session media budget exceeded"
+            record.available = False
+            record.bytes = None
+            record.digest = None
             return
         if record.contentType == "application/octet-stream":
             record.contentType = _content_type(record.filename)
@@ -107,6 +201,7 @@ class _Page:
         record.digest = digest
         record.available = True
         record.bytes = len(blob)
+        record.validated = False
 
 
 class _PageOps:
@@ -114,6 +209,10 @@ class _PageOps:
 
     env: Env
     channel: ChannelHandle
+    layout: str
+    display: str
+    width: int
+    height: int
     viewers: tuple[Any, ...]
     _pages: dict[str, _Page]
     _python: _Page | None
@@ -123,7 +222,7 @@ class _PageOps:
     _closed: bool
     _MAX_PAGES: ClassVar[int]
     _PAGE_LEASE_SECONDS: ClassVar[float]
-    _publish: Callable[[_Page], None]
+    _publish: Callable[..., None]
     _clear_page_assets: Callable[[_Page], None]
     _assert_capture_live: Callable[[_Page], None]
 
@@ -163,45 +262,129 @@ class _PageOps:
                 continue
             if now - page.last_activity > self._PAGE_LEASE_SECONDS:
                 self._pages.pop(page.id, None)
+                self._redact_page_receipts(page)
                 self._clear_page_assets(page)
 
+    @staticmethod
+    def _redact_receipt(receipt: dict[str, Any] | None) -> None:
+        if not isinstance(receipt, dict):
+            return
+        receipt["target"] = None
+        receipt["outcomes"] = []
+        receipt["presentation"] = "access_denied"
+        receipt.pop("result", None)
+        for diagnostic in receipt.get("diagnostics", []):
+            diagnostic.pop("subject", None)
+
+    def _redact_page_receipts(self, page: _Page) -> None:
+        self._redact_receipt(page.last_action)
+        if page.latest_action is not None:
+            page.latest_action.interaction = None
+            page.latest_action.target = None
+            page.latest_action.outcomes.clear()
+            self._redact_receipt(page.latest_action.response)
+        page.activity.clear()
+        page.activity_actions.clear()
+
+    def _receipt_payload(self, page: _Page, receipt: Any, *, allowed: bool) -> Any:
+        if not isinstance(receipt, Mapping):
+            return None
+        safe = json.loads(json.dumps(receipt))
+        safe.pop("result", None)
+        if not allowed:
+            self._redact_receipt(safe)
+            return safe
+
+        def message_is_visible(value: Any) -> bool:
+            try:
+                message = self.env.backend.get_message(page.channel_id, int(value))
+            except (BackendError, TypeError, ValueError):
+                return False
+            return can_access_message(self.env, page.channel_id, message, page.viewer, history=True)
+
+        target = safe.get("target")
+        if isinstance(target, Mapping) and not message_is_visible(target.get("messageId")):
+            safe["target"] = None
+        outcomes = []
+        for item in safe.get("outcomes", []):
+            if not isinstance(item, Mapping):
+                continue
+            outcome = dict(item)
+            if outcome.get("messageId") is not None and not message_is_visible(outcome["messageId"]):
+                outcomes.append({"kind": "unavailable"})
+            else:
+                outcomes.append(outcome)
+        safe["outcomes"] = outcomes
+        return safe
+
+    @staticmethod
+    def _denied_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        payload.update(
+            messageIndex=[],
+            navigation={
+                "query": "",
+                "filter": "all",
+                "hasPrevious": False,
+                "hasNext": False,
+                "previousCursor": None,
+                "nextCursor": None,
+            },
+            messages={},
+            timeline=[],
+            entities={},
+            modal=None,
+            candidates={},
+            assets={},
+            targetId=None,
+            history={
+                "hasBefore": False,
+                "hasAfter": False,
+                "windowStartId": None,
+                "windowEndId": None,
+            },
+            diagnostics=[make_diagnostic("access-denied")],
+        )
+        if isinstance(payload.get("channel"), dict):
+            payload["channel"].update(name=None, guildId=None, type=None, topic=None, canSendMessages=False)
+        payload["status"] = "access_denied"
+        payload["lastAction"] = None
+        payload["activity"] = []
+        return payload
+
     def _page_payload(self, page: _Page) -> dict[str, Any]:
+
         if page.pinned_snapshot is not None:
             self._assert_capture_live(page)
-            return json.loads(json.dumps(page.pinned_snapshot))
+            payload = json.loads(json.dumps(page.pinned_snapshot))
+            allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
+            if allowed:
+                payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=True)
+                payload["activity"] = [
+                    self._receipt_payload(page, item, allowed=True) for item in page.activity
+                ]
+            else:
+                self._denied_payload(payload)
+            return payload
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
         if not allowed:
             if page.status != "access_denied":
                 self._clear_page_assets(page)
                 page.modal = None
                 page.modal_handle = None
-                page.snapshot.update(
-                    {
-                        "messageIndex": [],
-                        "messages": {},
-                        "timeline": [],
-                        "entities": {},
-                        "modal": None,
-                        "candidates": {},
-                        "assets": {},
-                    }
-                )
+                self._redact_page_receipts(page)
             page.status = "access_denied"
-        # Reads never republish and never clear "stale": they serve the last
-        # published projection with the live status overlaid, redacted on denial.
         payload = json.loads(json.dumps(page.snapshot))
-        if not allowed:
-            payload.update(
-                {
-                    "messageIndex": [],
-                    "messages": {},
-                    "timeline": [],
-                    "entities": {},
-                    "modal": None,
-                    "candidates": {},
-                    "assets": {},
-                }
-            )
+        if allowed:
+            payload["assets"] = {}
+            for asset_id, record in page.assets.items():
+                item = record.to_wire()
+                item.pop("diagnostic", None)
+                payload["assets"][asset_id] = item
+        else:
+            self._denied_payload(payload)
+        if allowed:
+            payload["lastAction"] = self._receipt_payload(page, page.last_action, allowed=True)
+            payload["activity"] = [self._receipt_payload(page, item, allowed=True) for item in page.activity]
         payload["status"] = page.status
         return payload
 
@@ -247,11 +430,19 @@ class _PageOps:
             self.channel.id,
             target,
         )
+        page.layout = self.layout
+        page.display = self.display
+        page.width = self.width
+        page.height = self.height
+        page.host_width = self.width
+        page.host_height = self.height
+        if page.layout == "channel":
+            page.window_end_id = target if target_id is not None else source.window_end_id
         if source.modal is not None and source.modal._interaction.user_id == viewer.id:
             page.modal = source.modal
             page.modal_handle = "m_" + secrets.token_urlsafe(12)
         try:
-            self._publish(page)
+            self._publish(page, reason="initial")
         except BaseException:
             # The page was never registered: drop any blobs its partial
             # snapshot retained so a failed publish leaves nothing behind.
@@ -270,6 +461,7 @@ class _PageOps:
             return
         page = self._pages.pop(context_id, None)
         if page is not None:
+            self._redact_page_receipts(page)
             self._clear_page_assets(page)
 
     def _target_id(self, target_id: Any, viewer: Any = None, *, denied_fallback: bool = False) -> int | None:

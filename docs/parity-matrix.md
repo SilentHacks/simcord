@@ -41,10 +41,16 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
 | Components V2 / `LayoutView` | ✅ | Legal wire-tree nesting, 40-component limit, stable IDs, V2 flag/content invariants, media attachments and webhook `with_components`; arbitrary remote media is metadata-only offline |
-| Local component preview | ✅ | Optional loopback page, real actor callbacks, page-local authorized viewers, explicit refresh/staleness, packaged offline assets; not a Discord client or network connection |
-| Preview screenshots | ✅ | Optional Playwright capture returns immutable `PreviewCapture` reports with surface/viewport modes, readiness, diagnostics, completeness, and calibration metadata; no pixel-perfect claim |
+| Local component preview | ✅ | Optional loopback page on the protocol-3 contract: bounded authorized message navigation, control-scoped candidate descriptors, typed causal action receipts, explicit refresh and page-local viewers. No protocol-2 compatibility reader; not a Discord client or network connection. |
+| Preview screenshots | ✅ | Optional Playwright capture returns immutable `PreviewCapture` reports (`schema_version=1`, `protocol_version=3`) with exact requested logical viewport, visible-intersection geometry, readiness, diagnostics, completeness and calibration metadata. Surface captures never expand scroll content or include inspector chrome. |
+| Preview embed presentation | ✅ | Safe title/author/provider links and offline-authorized media; adaptive field runs, thumbnail/image composition, author/footer icons and timestamps. External-only media stays unavailable; embed reference geometry remains blocked. |
+| Preview buttons | ⚠️ | Styles 1–6, supplied emoji/icon content, safe disabled links, responsive wrapping and visible keyboard focus. The dated reference reported button focus equal to idle; the preview intentionally adds a focus ring. Premium names/prices/icons are caller-supplied offline data; activation only discloses the external Discord purchase boundary. `historical-family-buttons` remains blocked: measurements contain no reference crops, region boxes, or wrap points, and no legitimate SKU price/icon observations. |
+| Preview selects | ⚠️ | Accessible select-only combobox/listbox with trigger focus, active-descendant navigation, identity-decorated selections, min/max-aware options, viewport-clamped menus, and stale-candidate pruning without dispatch. Uncalibrated fallback: singles commit on choice; multis toggle until Enter, trigger-close, or outside click and commit only within min/max; Escape/blur cancel. Message actions use the existing callback; modal values stay draft until submit and required clears validate locally. `tests/fixtures/preview/states.json` marks `select-commit`/`select-cancel` blocked; `historical-select-popup` has no measured popup regions in `measurements.json`. Search/Apply behavior and per-variant reference commit parity are not claimed. |
+| Preview modals | ⚠️ | Real application identity/disclosure, bounded scrollable dialog, Labels and legacy inputs, Text Display, all select types, radio/checkbox groups, checkbox, and real File Upload; local field-associated validation and focus/inert behavior lead to the authoritative Python callback. Upload policy is 10 MiB/file and 25 MiB/action aggregate. Exact geometry and validation/select traces remain uncertified: `historical-modal-window` is non-comparable because Discord navigation remains in the crop, `historical-family-modals` has no region boxes/spacing/wrap points, and `states.json` blocks modal validation/select traces pending authorized client/app/assets and interaction traces. |
+| Preview Components V2 | ⚠️ | Sections/accessories, Text Displays, container accents/separators, spoiler reveal and authorized offline media render with an intrinsic responsive gallery fallback. Discord gallery geometry is not certified; `historical-family-v2` remains blocked pending authorized 1–10-item mixed-aspect captures with measured wide/narrow crop and region coordinates. |
+| Preview responsive and lifecycle verification | ⚠️ | Browser checks cover 320/360/420/640/960/1280 px message profiles at 700/900 px heights, long mixed-direction text and zoom, and delayed asset delivery during one viewer's revocation while another viewer stays authorized. These prove local behavior, not Discord geometry or human screen-reader usability. The private reference comparison and human modal/select/reaction/poll screen-reader smoke remain release blockers; no certified parity is claimed. |
 | Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
-| Preview fidelity boundary | ⚠️ | System font/emoji fallback, first-frame animation capture, unsupported audio/video/premium/mobile behavior, and uncalibrated references are reported differences, not backend parity claims |
+| Preview fidelity boundary | ⚠️ | Packaged, pinned licensed Noto text/script/emoji faces substitute for proprietary Discord fonts; uncovered glyphs and platform-dependent codecs may fall back. Visible keyboard focus intentionally differs. Offline assets are explicit, premium/provider service actions stay external, and arbitrary captures remain uncalibrated. Browser playback is interactive; managed capture uses deterministic `media_time`. |
 | Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
@@ -63,6 +69,28 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
 | Sharding simulation | ✅ | `AutoShardedClient`/`AutoShardedBot`; full and partial shard sets, Discord guild routing, per-shard READY/chunking/presence/latency/controls; no multi-process IPC |
+
+### Preview feature and evidence matrix
+
+The [fixture ledger](https://github.com/SilentHacks/simcord/blob/master/tests/fixtures/preview/coverage.json) defines 94 rows across
+14 families (`profile`, `identity`, `message_context`, `reactions`, `polls`,
+`stickers_system`, `markdown`, `attachments_media`, `embeds`, `buttons`, `selects`,
+`modals`, `v2`, `access_lifecycle`) and registers 76 historical images by hash.
+Its `referenceStatus`, `implementationStatus` and `comparisonStatus` are separate,
+per-row facts; 18 references are blocked and 13 comparisons are not comparable.
+See the [profile, transition and measurement recipes](https://github.com/SilentHacks/simcord/tree/master/tests/fixtures/preview)
+and the [private comparison workflow](guides/preview.md#one-fixture-a-family-or-the-private-batch).
+
+| Evidence state | Meaning | Current release claim |
+| --- | --- | --- |
+| Ready | Current local generation has finished rendering, fonts and authorized media or explicit diagnostics | Exercised by the local capture/browser checks; does not prove completeness or pixel parity |
+| Complete | All in-scope information for that capture is present, subject to diagnostics and resource limits | Per-capture report only, never inferred from a saved PNG |
+| Calibrated | Exact normalized fixture, profile, provenance-checked reference and reviewed comparison | **Not certified** without an authorized private pack, missing geometry/state traces and human screen-reader smoke |
+
+Feature support above is implementation support, not a promise of matching every
+Discord client state. Missing references, inaccessible service surfaces, resource
+ceilings and intentional focus/font substitutions remain visible rather than
+converted into a passing global pixel score.
 
 ## Implemented routes
 

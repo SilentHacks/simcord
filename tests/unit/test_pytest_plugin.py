@@ -27,8 +27,8 @@ def test_simcord_env_fixture_and_transcript_hook(pytester):
         import pytest
 
 
-        @pytest.mark.simcord(strict_sync=False, future_behavior=True)
-        async def test_marker_enables_detached_error_observations(simcord_env):
+        @pytest.mark.simcord(strict_sync=False)
+        async def test_default_detached_error_observations(simcord_env):
             saved = simcord_env.errors
             saved.append(RuntimeError("only in the snapshot"))
             assert simcord_env.errors == []

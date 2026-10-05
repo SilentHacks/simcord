@@ -186,7 +186,7 @@ def assert_error(
     discord.py wraps callback failures (e.g. ``CommandInvokeError.original``), so
     the type and code are matched against the error *and* its ``.original``.
     Returns the matched error. Reading ``env.errors`` acknowledges the captured
-    prefix with ``future_behavior=True`` (the entire lifetime in legacy mode).
+    prefix; errors captured later still fail teardown.
     """
     captured = env.errors
 

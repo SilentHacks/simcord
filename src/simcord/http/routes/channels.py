@@ -209,7 +209,7 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
         raise errors.invalid_form_body(f"applied_tags: Unknown tag(s) {unknown}")
     name = body["name"]
     auto_archive_duration = int(body.get("auto_archive_duration") or 1440)
-    prepared = prepare_bot_message(ctx, body=body.get("message") or {})
+    prepared = prepare_bot_message(ctx, forum_id, body=body.get("message") or {})
     thread = backend.create_thread(
         forum_id,
         name,

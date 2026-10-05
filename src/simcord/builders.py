@@ -30,8 +30,8 @@ from .backend.models import (
     VoiceState,
     Webhook,
 )
-from .enums import ChannelType, OverwriteType
-from .results import to_discord_message
+from .enums import ChannelType, MessageType, OverwriteType
+from .results import ResponseMessage, to_discord_message
 
 if TYPE_CHECKING:
     from .actors import MemberActor
@@ -91,8 +91,45 @@ class UserHandle:
         """DM the bot as this user."""
         channel = self._env.backend.get_dm_channel(self.id)
         message = self._env.backend.create_message(channel.id, self.id, content, **kwargs)
+        self._env._mark_mutation()
         await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
+
+    async def edit(self, message: Any, content: str) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        if stored.author_id != self.id:
+            raise SetupError("Users can only edit their own messages")
+        self._env.backend.edit_message(stored.channel_id, stored.id, {"content": content})
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="USER.edit")
+
+    async def delete(self, message: Any) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        if stored.author_id != self.id:
+            raise SetupError("Users can only delete their own DM messages")
+        self._env.backend.delete_message(stored.channel_id, stored.id)
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="USER.delete")
+
+    async def set_reaction(self, message: Any, emoji: str, *, reacted: bool) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="USER.set_reaction")
+
+    async def set_poll_votes(self, message: Any, *, answers: Sequence[int]) -> None:
+        from .actors import _visible_message
+
+        stored = _visible_message(self, message)
+        self._env.backend.set_poll_votes(stored.channel_id, stored.id, answers, self.id)
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="USER.set_poll_votes")
 
     async def click(
         self,
@@ -158,6 +195,7 @@ class WebhookHandle:
         content: str = "",
         *,
         username: str | None = None,
+        avatar_url: str | None = None,
         embed: discord.Embed | None = None,
         embeds: Sequence[discord.Embed] = (),
         attachments: Sequence[tuple[str, bytes]] = (),
@@ -183,6 +221,7 @@ class WebhookHandle:
             attachments=attachment_payloads,
             webhook_id=self._webhook.id,
             author_name=username,
+            author_avatar=avatar_url,
         )
         await self._env._settle_internal(dispatch="WEBHOOK.send")
         return to_discord_message(self._env, message)
@@ -356,10 +395,69 @@ class GuildHandle:
     def create_emoji(self, name: str, *, animated: bool = False) -> GuildEmoji:
         return self._env.backend.create_emoji(self.id, name, self._env.backend.bot_user.id, animated=animated)
 
-    def create_sticker(self, name: str, *, description: str | None = None, tags: str = "") -> Sticker:
+    def create_sticker(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        tags: str = "",
+        format_type: int = 1,
+    ) -> Sticker:
         return self._env.backend.create_sticker(
-            self.id, name, self._env.backend.bot_user.id, description=description, tags=tags
+            self.id,
+            name,
+            self._env.backend.bot_user.id,
+            description=description,
+            tags=tags,
+            format_type=format_type,
         )
+
+    def create_system_message(
+        self,
+        channel: ChannelHandle,
+        message_type: MessageType,
+        *,
+        author: UserHandle | MemberActor,
+        recipient: UserHandle | MemberActor | None = None,
+        target_channel: ChannelHandle | None = None,
+        referenced_message: discord.Message | ResponseMessage | None = None,
+    ) -> discord.Message:
+        """Seed a typed service message with real identities, not arbitrary content."""
+        if channel._env is not self._env or channel.guild is None or channel.guild.id != self.id:
+            raise SetupError("system message channel must belong to this guild and environment")
+        if getattr(author, "_env", None) is not self._env:
+            raise SetupError("system message author must belong to this environment")
+        if recipient is not None and getattr(recipient, "_env", None) is not self._env:
+            raise SetupError("system message recipient must belong to this environment")
+        if target_channel is not None and (
+            target_channel._env is not self._env
+            or target_channel.guild is None
+            or target_channel.guild.id != self.id
+        ):
+            raise SetupError("system message target channel must belong to this guild and environment")
+        referenced_channel_id = None
+        referenced_message_id = None
+        if referenced_message is not None:
+            referenced_message_id = referenced_message.id
+            if isinstance(referenced_message, ResponseMessage):
+                if referenced_message._env is not self._env:
+                    raise SetupError("referenced message must belong to this environment")
+                referenced_channel_id = referenced_message.channel_id
+            else:
+                message_channel = referenced_message.channel
+                referenced_channel_id = getattr(message_channel, "id", None)
+                if getattr(message_channel, "guild", None) is None:
+                    raise SetupError("referenced message must be in this guild")
+        stored = self._env.backend.create_system_message(
+            channel.id,
+            message_type,
+            author.id,
+            recipient_id=recipient.id if recipient is not None else None,
+            target_channel_id=target_channel.id if target_channel is not None else None,
+            referenced_channel_id=referenced_channel_id,
+            referenced_message_id=referenced_message_id,
+        )
+        return to_discord_message(self._env, stored)
 
     def set_command_permissions(
         self, command: Any, permissions: dict[RoleHandle | ChannelHandle | UserHandle | MemberActor, bool]
@@ -430,10 +528,18 @@ class GuildHandle:
         *,
         roles: Sequence[RoleHandle] = (),
         nick: str | None = None,
+        avatar: str | None = None,
     ) -> MemberActor:
         from .actors import MemberActor
 
-        self._env.backend.add_member(self.id, user.id, roles=[r.id for r in roles], nick=nick, announce=True)
+        self._env.backend.add_member(
+            self.id,
+            user.id,
+            roles=[r.id for r in roles],
+            nick=nick,
+            avatar=avatar,
+            announce=True,
+        )
         return MemberActor(self._env, self, user)
 
     def remove_member(self, member: MemberActor | UserHandle) -> None:
@@ -533,7 +639,16 @@ def _guard_builder_operation(method: Any) -> Any:
     return guarded_sync
 
 
-for _operation_name in ("send_dm", "click", "select", "submit_modal"):
+for _operation_name in (
+    "send_dm",
+    "edit",
+    "delete",
+    "set_reaction",
+    "set_poll_votes",
+    "click",
+    "select",
+    "submit_modal",
+):
     setattr(UserHandle, _operation_name, _guard_builder_operation(getattr(UserHandle, _operation_name)))
 WebhookHandle.send = _guard_builder_operation(WebhookHandle.send)
 for _operation_name in (
@@ -547,6 +662,7 @@ for _operation_name in (
     "create_webhook",
     "create_emoji",
     "create_sticker",
+    "create_system_message",
     "set_command_permissions",
     "set_vanity_url",
     "create_role",

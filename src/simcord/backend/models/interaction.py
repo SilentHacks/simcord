@@ -42,6 +42,11 @@ class Interaction:
     followup_ids: list[int] = field(default_factory=list)
     modal: dict[str, Any] | None = None
     autocomplete_choices: list[dict[str, Any]] | None = None
+    command_name: str | None = None
+    command_type: int | None = None
+    target_id: int | None = None
+    target_type: int | None = None
+    target_channel_id: int | None = None
 
     # ----------------------------------------------------- response lifecycle
 

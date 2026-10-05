@@ -7,6 +7,39 @@ from typing import Any
 EPHEMERAL_FLAG = 1 << 6
 
 
+@dataclass(frozen=True, slots=True)
+class AllowedMentions:
+    """The resolved mention policy used for this message and later edits."""
+
+    everyone: bool = True
+    users: frozenset[int] | None = None
+    roles: frozenset[int] | None = None
+    replied_user: bool = True
+
+    def allows_user(self, user_id: int) -> bool:
+        return self.users is None or user_id in self.users
+
+    def allows_role(self, role_id: int) -> bool:
+        return self.roles is None or role_id in self.roles
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSticker:
+    id: int
+    name: str
+    format_type: int
+    guild_id: int
+    url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemMessageMetadata:
+    recipient_id: int | None = None
+    channel_id: int | None = None
+    referenced_channel_id: int | None = None
+    referenced_message_id: int | None = None
+
+
 @dataclass
 class Reaction:
     emoji: str  # unicode emoji or "name:id" for custom
@@ -57,11 +90,19 @@ class Message:
     reference: dict[str, Any] | None = None
     interaction_metadata: dict[str, Any] | None = None
     webhook_id: int | None = None
+    #: Incoming webhook per-message avatar URL override, when supplied.
+    author_avatar: str | None = None
     #: A per-message display-name override (an incoming webhook's ``username=``).
     #: When set, the serialized author reports this name instead of the authoring
     #: user's; ``None`` means "use the author user's own name" (the common case).
     author_name: str | None = None
     poll: Poll | None = None
+
+    stickers: list[MessageSticker] = field(default_factory=list)
+    allowed_mentions: AllowedMentions = field(default_factory=AllowedMentions)
+    ping_user_ids: list[int] = field(default_factory=list)
+    ping_role_ids: list[int] = field(default_factory=list)
+    system_metadata: SystemMessageMetadata | None = None
 
     @property
     def is_ephemeral(self) -> bool:

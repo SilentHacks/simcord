@@ -1,7 +1,6 @@
-"""The 2.3 bridge preserves defaults while exposing the intended 3.0 observations."""
+"""Unconditional 3.0 error-prefix and detached-payload observation contracts."""
 
 import asyncio
-import warnings
 from io import BytesIO
 
 import discord
@@ -41,36 +40,11 @@ def _actors(env):
     return channel, alice
 
 
-@pytest.mark.parametrize("value", [None, 0, 1, "false", [], {}])
-async def test_future_behavior_requires_bool(value):
-    bot, _ = _error_bot()
-    with pytest.raises(simcord.SetupError, match="future_behavior must be a bool"):
-        simcord.run(bot, future_behavior=value)
-
-
-async def test_legacy_saved_errors_are_live_and_acknowledge_lifetime():
-    bot, errors = _error_bot()
-    async with simcord.run(bot) as env:
-        channel, alice = _actors(env)
-        assert env.future_behavior is False
-        with pytest.warns(DeprecationWarning, match=r"2\.3.*future_behavior=True.*3\.0") as warned:
-            saved = env.errors
-        assert warned[0].filename == __file__
-        assert saved == []
-        await alice.send(channel, "!broken A")
-        await alice.send(channel, "!broken B")
-        assert [error.original for error in saved] == [errors["A"], errors["B"]]
-        with pytest.warns(DeprecationWarning):
-            assert env.errors is saved
-        await alice.send(channel, "!park")
-    assert saved[-1] is errors["shutdown"]
-
-
 @pytest.mark.parametrize("source", ["body", "shutdown"])
-async def test_future_acknowledges_only_current_prefix(source):
+async def test_acknowledges_only_current_prefix(source):
     bot, errors = _error_bot()
     with pytest.raises(ExceptionGroup) as raised:
-        async with simcord.run(bot, future_behavior=True) as env:
+        async with simcord.run(bot) as env:
             channel, alice = _actors(env)
             await alice.send(channel, "!broken A")
             saved = env.errors
@@ -97,9 +71,9 @@ async def test_future_acknowledges_only_current_prefix(source):
     assert saved == []
 
 
-async def test_future_saved_error_snapshot_stays_fixed():
+async def test_saved_error_snapshot_stays_fixed():
     bot, errors = _error_bot()
-    async with simcord.run(bot, future_behavior=True) as env:
+    async with simcord.run(bot) as env:
         channel, alice = _actors(env)
         saved = env.errors
         await alice.send(channel, "!broken A")
@@ -107,10 +81,10 @@ async def test_future_saved_error_snapshot_stays_fixed():
         assert env.errors[0].original is errors["A"]
 
 
-async def test_future_raise_errors_includes_acknowledged_history():
+async def test_raise_errors_includes_acknowledged_history():
     bot, errors = _error_bot()
     with pytest.raises(ExceptionGroup) as teardown:
-        async with simcord.run(bot, future_behavior=True) as env:
+        async with simcord.run(bot) as env:
             channel, alice = _actors(env)
             await alice.send(channel, "!broken A")
             expected = env.errors[0]
@@ -130,27 +104,20 @@ async def test_future_raise_errors_includes_acknowledged_history():
     assert teardown.value.exceptions[0] is errors["shutdown"]
 
 
-@pytest.mark.parametrize("future_behavior", [False, True])
-async def test_empty_raise_errors_acknowledgement(future_behavior):
+async def test_empty_raise_errors_does_not_acknowledge_future_errors():
     bot, errors = _error_bot()
-    if future_behavior:
-        with pytest.raises(ExceptionGroup) as raised:
-            async with simcord.run(bot, future_behavior=True) as env:
-                channel, alice = _actors(env)
-                env.raise_errors()
-                await alice.send(channel, "!broken A")
-        assert raised.value.exceptions[0].original is errors["A"]
-    else:
+    with pytest.raises(ExceptionGroup) as raised:
         async with simcord.run(bot) as env:
             channel, alice = _actors(env)
             env.raise_errors()
             await alice.send(channel, "!broken A")
+    assert raised.value.exceptions[0].original is errors["A"]
 
 
 async def test_preview_error_cursors_are_nonconsuming():
     bot, errors = _error_bot()
     with pytest.raises(ExceptionGroup) as raised:
-        async with simcord.run(bot, future_behavior=True) as env:
+        async with simcord.run(bot) as env:
             channel, alice = _actors(env)
             cursor = env.error_cursor
             await alice.send(channel, "!broken A")
@@ -161,20 +128,18 @@ async def test_preview_error_cursors_are_nonconsuming():
     assert raised.value.exceptions == observed
 
 
-@pytest.mark.parametrize("future_behavior", [False, True])
-async def test_bridge_keeps_check_errors_opt_out(future_behavior):
+async def test_check_errors_opt_out():
     bot, _ = _error_bot()
-    async with simcord.run(bot, future_behavior=future_behavior, check_errors=False) as env:
+    async with simcord.run(bot, check_errors=False) as env:
         channel, alice = _actors(env)
         await alice.send(channel, "!broken A")
 
 
-@pytest.mark.parametrize("future_behavior", [False, True])
-async def test_bridge_does_not_mask_test_body_exception(future_behavior):
+async def test_does_not_mask_test_body_exception():
     bot, _ = _error_bot()
     body_error = ValueError("test body")
     with pytest.raises(ValueError) as raised:
-        async with simcord.run(bot, future_behavior=future_behavior) as env:
+        async with simcord.run(bot) as env:
             channel, alice = _actors(env)
             await alice.send(channel, "!broken A")
             await alice.send(channel, "!park")
@@ -202,37 +167,28 @@ def _payload_bot():
     return bot, interactions
 
 
-@pytest.mark.parametrize("future_behavior", [False, True])
 @pytest.mark.parametrize("property_name", ["components", "embeds", "message"])
-async def test_nested_observation_aliasing_transition(future_behavior, property_name):
+async def test_nested_observations_are_detached(property_name):
     bot, _ = _payload_bot()
-    async with simcord.run(bot, strict_sync=False, future_behavior=future_behavior) as env:
+    async with simcord.run(bot, strict_sync=False) as env:
         channel, alice = _actors(env)
         result = await alice.slash(channel, "payload")
         response = result.response
-        if future_behavior:
-            with warnings.catch_warnings(record=True) as warned:
-                warnings.simplefilter("always", DeprecationWarning)
-                observed = getattr(response, property_name)
-            assert warned == []
-        else:
-            with pytest.warns(DeprecationWarning, match=r"2\.3.*future_behavior=True.*3\.0") as warned:
-                observed = getattr(response, property_name)
-            assert warned[0].filename == __file__
+        observed = getattr(response, property_name)
         stored = env.backend.get_message(channel.id, response.id)
         if property_name == "components":
             observed[0]["components"][0]["options"][0]["label"] = "tampered"
             actual = stored.components[0]["components"][0]["options"][0]["label"]
-            assert actual == ("Initial" if future_behavior else "tampered")
+            assert actual == "Initial"
         else:
             embed = observed[0] if property_name == "embeds" else observed.embeds[0]
             embed.to_dict()["fields"][0]["value"] = "tampered"
-            assert stored.embeds[0]["fields"][0]["value"] == ("initial" if future_behavior else "tampered")
+            assert stored.embeds[0]["fields"][0]["value"] == "initial"
 
 
-async def test_future_result_handles_remain_live_with_fixed_payload_snapshots():
+async def test_result_handles_remain_live_with_fixed_payload_snapshots():
     bot, interactions = _payload_bot()
-    async with simcord.run(bot, strict_sync=False, future_behavior=True) as env:
+    async with simcord.run(bot, strict_sync=False) as env:
         channel, alice = _actors(env)
         result = await alice.slash(channel, "payload")
         response = result.response
@@ -267,10 +223,10 @@ async def test_future_result_handles_remain_live_with_fixed_payload_snapshots():
         assert result.followups == []
 
 
-async def test_future_modal_submission_ignores_snapshot_edits():
+async def test_modal_submission_ignores_snapshot_edits():
     from fixtures.sample_bot import create_bot
 
-    async with simcord.run(create_bot(), future_behavior=True) as env:
+    async with simcord.run(create_bot()) as env:
         channel, alice = _actors(env)
         shown = await alice.slash(channel, "feedback")
         modal = shown.modal
@@ -286,54 +242,23 @@ async def test_future_modal_submission_ignores_snapshot_edits():
         assert stored.autocomplete_choices[0]["name"] == "python"
 
 
-@pytest.mark.parametrize("future_behavior", [False, True])
-async def test_modal_and_autocomplete_preserve_shapes_and_alias_contract(future_behavior):
+async def test_modal_and_autocomplete_detach_nested_payloads():
     bot, _ = _error_bot()
-    env = simcord.Env(bot, future_behavior=future_behavior)
+    env = simcord.Env(bot)
     interaction = Interaction(id=1, token="token", type=2, channel_id=1, guild_id=None, user_id=1)
     result = InteractionResult(env, interaction)
-    with warnings.catch_warnings(record=True) as warned:
-        warnings.simplefilter("always", DeprecationWarning)
-        assert result.modal is None
-        assert result.autocomplete_choices is None
-        assert not result.acknowledged
-    assert warned == []
+    assert result.modal is None
+    assert result.autocomplete_choices is None
     interaction.show_modal({"custom_id": "modal", "components": [{"nested": ["original"]}]})
     interaction.complete_autocomplete([{"name": "choice", "name_localizations": {"de": "Original"}}])
-    if future_behavior:
-        modal, choices = result.modal, result.autocomplete_choices
-    else:
-        with pytest.warns(DeprecationWarning):
-            modal = result.modal
-        with pytest.warns(DeprecationWarning):
-            choices = result.autocomplete_choices
+    modal, choices = result.modal, result.autocomplete_choices
     modal["components"][0]["nested"][0] = "tampered"
     choices[0]["name_localizations"]["de"] = "tampered"
-    expected = "original" if future_behavior else "tampered"
-    assert interaction.modal["components"][0]["nested"][0] == expected
-    expected = "Original" if future_behavior else "tampered"
-    assert interaction.autocomplete_choices[0]["name_localizations"]["de"] == expected
+    assert interaction.modal["components"][0]["nested"][0] == "original"
+    assert interaction.autocomplete_choices[0]["name_localizations"]["de"] == "Original"
     interaction.modal["components"][0]["nested"].append("later")
     interaction.complete_autocomplete([])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        assert result.autocomplete_choices == []
-        assert result.modal["components"][0]["nested"][-1] == "later"
-    if future_behavior:
-        assert modal["components"][0]["nested"] == ["tampered"]
-        assert choices != []
-
-
-async def test_legacy_startup_and_scalar_observations_do_not_warn():
-    bot, _ = _payload_bot()
-    with warnings.catch_warnings(record=True) as warned:
-        warnings.simplefilter("always", DeprecationWarning)
-        async with simcord.run(bot, strict_sync=False) as env:
-            channel, alice = _actors(env)
-            result = await alice.slash(channel, "payload")
-            assert result.acknowledged
-            assert not result.deferred
-            assert not result.ephemeral
-            assert result.response.content == "initial"
-            assert result.response.channel_id == channel.id
-    assert not [warning for warning in warned if str(warning.message).startswith("SimCord 2.3")]
+    assert result.autocomplete_choices == []
+    assert result.modal["components"][0]["nested"][-1] == "later"
+    assert modal["components"][0]["nested"] == ["tampered"]
+    assert choices != []

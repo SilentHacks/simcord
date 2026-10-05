@@ -13,7 +13,16 @@ from .guild import Guild
 from .interaction import Interaction, ResponseKind
 from .invite import Invite
 from .member import Member
-from .message import EPHEMERAL_FLAG, Message, Poll, PollAnswer, Reaction
+from .message import (
+    EPHEMERAL_FLAG,
+    AllowedMentions,
+    Message,
+    MessageSticker,
+    Poll,
+    PollAnswer,
+    Reaction,
+    SystemMessageMetadata,
+)
 from .role import Role
 from .scheduled_event import ScheduledEvent
 from .stage_instance import StageInstance
@@ -23,6 +32,7 @@ from .webhook import Webhook
 
 __all__ = (
     "EPHEMERAL_FLAG",
+    "AllowedMentions",
     "AuditLogEntry",
     "AutoModRule",
     "Channel",
@@ -32,6 +42,7 @@ __all__ = (
     "Invite",
     "Member",
     "Message",
+    "MessageSticker",
     "Overwrite",
     "Poll",
     "PollAnswer",
@@ -41,6 +52,7 @@ __all__ = (
     "ScheduledEvent",
     "StageInstance",
     "Sticker",
+    "SystemMessageMetadata",
     "ThreadMetadata",
     "User",
     "VoiceState",

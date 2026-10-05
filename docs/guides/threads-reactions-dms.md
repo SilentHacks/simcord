@@ -25,6 +25,9 @@ counts = {str(r.emoji): r.count for r in fetched.reactions}
 assert counts["👍"] == 1
 ```
 
+`await alice.set_reaction(message, "👍", reacted=True)` sets desired membership idempotently;
+use `react`/`unreact` when the test should explicitly add or remove a reaction event.
+
 Reaction-driven flows — role menus, confirmations, reaction-paginated help — are testable
 end to end: react as the user, then assert on what the bot did in response.
 
@@ -69,6 +72,19 @@ assert reply[-1].content.startswith("Hi")
 
 `alice.user.dm_channel` is the user's DM channel with the bot; `.history()` returns the
 conversation as real `discord.Message` objects.
+
+Guild actors can edit/delete their messages and pin with `set_pinned`. In the user's bot DM,
+`UserHandle` supports their own message edits/deletes, desired reactions, and poll votes:
+
+```python
+dm_message = await alice.send_dm("hello bot")
+await alice.user.edit(dm_message, "edited in the DM")
+await alice.user.set_reaction(dm_message, "👍", reacted=True)
+```
+
+For a poll message in that same DM, call
+`await alice.user.set_poll_votes(poll_message, answers=[1])`. `UserHandle` message actions are
+restricted to that user's DM channel.
 
 !!! info "DM failures are realistic"
     Opening a DM channel always succeeds, but a bot **sending** a DM to a user it can't

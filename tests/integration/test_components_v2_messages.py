@@ -182,3 +182,30 @@ def test_message_attachment_references_require_matching_uploads(env, channel):
                 "components": [{"type": 13, "file": {"url": "attachment://missing.bin"}}],
             },
         )
+
+
+def test_stickers_validate_count_availability_and_v2(env, channel):
+    sticker = env.guild.create_sticker("wave")
+    path = f"/channels/{channel.id}/messages"
+
+    with pytest.raises(simcord.BackendError, match="3 or fewer"):
+        router.dispatch(env.backend, "POST", path, json={"sticker_ids": [str(sticker.id)] * 4})
+
+    sticker.available = False
+    with pytest.raises(simcord.BackendError, match="unavailable"):
+        router.dispatch(env.backend, "POST", path, json={"sticker_ids": [str(sticker.id)]})
+    sticker.available = True
+
+    before = len(env.backend.messages[channel.id])
+    with pytest.raises(simcord.BackendError, match="cannot contain content, embeds, polls, or stickers"):
+        router.dispatch(
+            env.backend,
+            "POST",
+            path,
+            json={
+                "sticker_ids": [str(sticker.id)],
+                "flags": 32768,
+                "components": [{"type": 10, "content": "v2"}],
+            },
+        )
+    assert len(env.backend.messages[channel.id]) == before

@@ -43,10 +43,27 @@ uv run playwright install --with-deps chromium
 uv run python examples/preview_example.py
 ```
 
-The example writes a PNG plus a JSON capture report to stdout — so
-`python examples/preview_example.py | jq` works. Pass `--keep-open` for the
-interactive mode, which prints the live capability URL and human-facing notes
-to stderr and calls `preview.wait_closed()`.
+The example writes a PNG plus a structured JSON capture report to stdout — so
+`python examples/preview_example.py | jq` works without printing a capability URL.
+Inspect `complete` and `diagnostics` before sharing a report; a local PNG is not a
+certified Discord comparison. Pass `--keep-open` only for interactive use: it prints
+the live capability URL to stderr and calls `preview.wait_closed()`. See the
+[protocol-2 migration and private comparison workflow](../docs/guides/preview.md#migrating-preview-consumers-to-protocol-2).
+
+For the full interactive checkout gallery (no Discord token):
+
+```bash
+uv sync --extra dev --extra screenshot
+uv run python scripts/preview_dogfood.py --channel
+# Separate DM-only entity selector:
+uv run python scripts/preview_dogfood.py --dm
+```
+
+Search **Messages** for `REF-*` component families or `DOG-*` stress cases.
+`DOG-UI-01` explains the text-preview/image-viewer and composer walkthrough;
+the D01–D12/U01–U09 cards retain their action and expected-outcome checklists.
+The printed URL is a private capability. **More → End preview session** shuts down
+that scenario. The gallery demonstrates local behavior, not certified Discord parity.
 
 For more patterns, including selects, autocomplete, view timeouts, fault injection, and DMs,
 see the [recipe cookbook](../docs/cookbook.md) and the

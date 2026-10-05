@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from ..enums import VOICE_CHANNEL_TYPES, ChannelType
+from .cdn import sticker_url
 from .models import (
     AuditLogEntry,
     AutoModRule,
@@ -122,7 +123,7 @@ def member_payload(
         "pending": member.pending,
         "flags": 0,
         "communication_disabled_until": member.timed_out_until,
-        "avatar": None,
+        "avatar": member.avatar,
     }
     if with_user:
         payload["user"] = user_payload(backend.users[member.user_id])
@@ -266,6 +267,10 @@ def message_payload(
         "embeds": list(message.embeds),
         "components": list(message.components),
         "pinned": message.pinned,
+        "sticker_items": [
+            {"id": str(item.id), "name": item.name, "format_type": item.format_type}
+            for item in message.stickers
+        ],
         "type": message.type,
         "flags": message.flags,
         "nonce": None,
@@ -284,11 +289,18 @@ def message_payload(
     }
     if channel.guild_id is not None:
         payload["guild_id"] = str(channel.guild_id)
-    if message.reference is not None:
-        payload["message_reference"] = dict(message.reference)
-        referenced = backend.messages.get(int(message.reference["channel_id"]), {}).get(
-            int(message.reference["message_id"])
-        )
+    metadata = message.system_metadata
+    if metadata is not None and metadata.recipient_id is not None:
+        payload["mentions"] = [user_payload(backend.users[metadata.recipient_id])]
+    reference = message.reference
+    if metadata is not None and metadata.referenced_message_id is not None:
+        reference = {
+            "channel_id": str(metadata.referenced_channel_id or message.channel_id),
+            "message_id": str(metadata.referenced_message_id),
+        }
+    if reference is not None:
+        payload["message_reference"] = dict(reference)
+        referenced = backend.messages.get(int(reference["channel_id"]), {}).get(int(reference["message_id"]))
         if referenced is not None:
             payload["referenced_message"] = message_payload(backend, referenced)
     if message.interaction_metadata is not None:
@@ -541,6 +553,7 @@ def sticker_payload(backend: BackendBase, sticker: Sticker) -> dict[str, Any]:
         "format_type": sticker.format_type,
         "guild_id": str(sticker.guild_id),
         "available": sticker.available,
+        "url": sticker.url or sticker_url(sticker.id, sticker.format_type),
         "user": user_payload(backend.users[sticker.user_id]) if sticker.user_id in backend.users else None,
     }
 

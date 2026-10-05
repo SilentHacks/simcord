@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..backend.errors import BackendError, SetupError
+from ._diagnostics import make_diagnostic
 
 if TYPE_CHECKING:
     from . import Preview
@@ -35,6 +37,35 @@ class PreviewServer:
         "/": "index.html",
         "/app.js": "app.js",
         "/components.js": "components.js",
+        "/selects.js": "selects.js",
+        "/messages.js": "messages.js",
+        "/media.js": "media.js",
+        "/text.js": "text.js",
+        "/vendor/lottie/LICENSE": "vendor/lottie/LICENSE",
+        "/vendor/lottie/SHA256SUMS": "vendor/lottie/SHA256SUMS",
+        "/vendor/lottie/5.12.2/lottie_light_canvas.min.js": "vendor/lottie/5.12.2/lottie_light_canvas.min.js",
+        "/vendor/highlight/LICENSE": "vendor/highlight/LICENSE",
+        "/vendor/highlight/SHA256SUMS": "vendor/highlight/SHA256SUMS",
+        "/vendor/highlight/es/core.min.js": "vendor/highlight/es/core.min.js",
+        "/vendor/highlight/es/languages/bash.min.js": "vendor/highlight/es/languages/bash.min.js",
+        "/vendor/highlight/es/languages/cpp.min.js": "vendor/highlight/es/languages/cpp.min.js",
+        "/vendor/highlight/es/languages/csharp.min.js": "vendor/highlight/es/languages/csharp.min.js",
+        "/vendor/highlight/es/languages/css.min.js": "vendor/highlight/es/languages/css.min.js",
+        "/vendor/highlight/es/languages/diff.min.js": "vendor/highlight/es/languages/diff.min.js",
+        "/vendor/highlight/es/languages/dockerfile.min.js": "vendor/highlight/es/languages/dockerfile.min.js",
+        "/vendor/highlight/es/languages/go.min.js": "vendor/highlight/es/languages/go.min.js",
+        "/vendor/highlight/es/languages/ini.min.js": "vendor/highlight/es/languages/ini.min.js",
+        "/vendor/highlight/es/languages/java.min.js": "vendor/highlight/es/languages/java.min.js",
+        "/vendor/highlight/es/languages/javascript.min.js": "vendor/highlight/es/languages/javascript.min.js",
+        "/vendor/highlight/es/languages/json.min.js": "vendor/highlight/es/languages/json.min.js",
+        "/vendor/highlight/es/languages/markdown.min.js": "vendor/highlight/es/languages/markdown.min.js",
+        "/vendor/highlight/es/languages/python.min.js": "vendor/highlight/es/languages/python.min.js",
+        "/vendor/highlight/es/languages/rust.min.js": "vendor/highlight/es/languages/rust.min.js",
+        "/vendor/highlight/es/languages/sql.min.js": "vendor/highlight/es/languages/sql.min.js",
+        "/vendor/highlight/es/languages/typescript.min.js": "vendor/highlight/es/languages/typescript.min.js",
+        "/vendor/highlight/es/languages/xml.min.js": "vendor/highlight/es/languages/xml.min.js",
+        "/vendor/highlight/es/languages/yaml.min.js": "vendor/highlight/es/languages/yaml.min.js",
+        "/dom.js": "dom.js",
         "/preview.css": "preview.css",
         "/protocol.schema.json": "protocol.schema.json",
         "/fonts/noto-sans-latin-v2.015.ttf": "fonts/noto-sans-latin-v2.015.ttf",
@@ -49,10 +80,18 @@ class PreviewServer:
     _FONT_FILES = frozenset(value for value in _STATIC_FILES.values() if value.startswith("fonts/"))
     _STATIC_CONTENT_TYPES: ClassVar[dict[str, str]] = {
         "index.html": "text/html",
-        "app.js": "application/javascript",
-        "components.js": "application/javascript",
         "preview.css": "text/css",
         "protocol.schema.json": "application/schema+json",
+        "app.js": "application/javascript",
+        "components.js": "application/javascript",
+        "media.js": "application/javascript",
+        "messages.js": "application/javascript",
+        "dom.js": "application/javascript",
+        "text.js": "application/javascript",
+        "vendor/highlight/LICENSE": "text/plain",
+        "vendor/highlight/SHA256SUMS": "text/plain",
+        "vendor/lottie/LICENSE": "text/plain",
+        "vendor/lottie/SHA256SUMS": "text/plain",
     }
     _SECURITY_HEADERS: ClassVar[dict[str, str]] = {
         "Cache-Control": "no-store",
@@ -62,8 +101,8 @@ class PreviewServer:
         "X-Frame-Options": "DENY",
         "Content-Security-Policy": (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "font-src 'self'; connect-src 'self'; img-src 'self' blob:; object-src 'none'; "
-            "base-uri 'none'; frame-ancestors 'none'"
+            "font-src 'self'; connect-src 'self' blob:; img-src 'self' blob:; media-src 'self' blob:; "
+            "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         ),
     }
 
@@ -153,7 +192,11 @@ class PreviewServer:
             else Path(__file__).with_name("static") / filename
         )
         content_type = (
-            "font/ttf" if filename in self._FONT_FILES else self._STATIC_CONTENT_TYPES.get(filename)
+            "font/ttf"
+            if filename in self._FONT_FILES
+            else self._STATIC_CONTENT_TYPES.get(
+                filename, "application/javascript" if filename.endswith(".js") else None
+            )
         )
         if content_type is None:  # pragma: no cover - static map is class-owned
             raise web.HTTPNotFound()
@@ -174,8 +217,10 @@ class PreviewServer:
             raise web.HTTPBadRequest(text="JSON object required")
         try:
             page = self.preview._open_page(body.get("viewer_id"), body.get("target_id"))
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("control-unavailable")}, status=400, headers=self._SECURITY_HEADERS
+            )
         return web.json_response(self.preview._page_payload(page), headers=self._SECURITY_HEADERS)
 
     async def _delete_page(self, request: Any) -> Any:
@@ -184,8 +229,10 @@ class PreviewServer:
             raise web.HTTPUnauthorized()
         try:
             self.preview._close_page(context_id)
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=400, headers=self._SECURITY_HEADERS
+            )
         return web.json_response({"closed": True}, headers=self._SECURITY_HEADERS)
 
     async def _state(self, request: Any) -> Any:
@@ -195,8 +242,10 @@ class PreviewServer:
         try:
             page = self.preview._get_page(context_id)
             payload = self.preview._page_payload(page)
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPGone(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=410, headers=self._SECURITY_HEADERS
+            )
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
     async def _action(self, request: Any) -> Any:
@@ -211,8 +260,10 @@ class PreviewServer:
         # parseable body with a structured result (rejections carry HTTP 200).
         try:
             result = await self.preview._action(context_id, body)
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=400, headers=self._SECURITY_HEADERS
+            )
         return web.json_response(result, headers=self._SECURITY_HEADERS)
 
     async def _multipart_action(self, request: Any) -> dict[str, Any]:
@@ -266,22 +317,68 @@ class PreviewServer:
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
             raise web.HTTPUnauthorized()
-        # ?download=1 requests the original bytes as an attachment; the default
-        # display path serves validated, normalized media inline.
         download = request.query.get("download") in {"1", "true"}
+        capture = request.query.get("capture") in {"1", "true"}
+        poster = request.query.get("poster") in {"1", "true"}
+        media_time: float | None = None
+        if "media_time" in request.query:
+            try:
+                media_time = float(request.query["media_time"])
+            except (TypeError, ValueError) as exc:
+                raise web.HTTPBadRequest(text="media_time must be a finite non-negative number") from exc
+            if not math.isfinite(media_time) or media_time < 0:
+                raise web.HTTPBadRequest(text="media_time must be a finite non-negative number")
+            capture = True
         try:
             content_type, body, filename = await self.preview._prepare_asset(
-                context_id, request.match_info["asset_id"], download=download
+                context_id,
+                request.match_info["asset_id"],
+                download=download,
+                capture=capture,
+                poster=poster,
+                media_time=media_time,
             )
-        except (SetupError, BackendError) as exc:
-            raise web.HTTPNotFound(text=str(exc)) from exc
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("asset-unavailable")}, status=404, headers=self._SECURITY_HEADERS
+            )
         safe_filename = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
-        disposition = "attachment" if download else "inline"
+        record = self.preview._get_page(context_id).assets.get(request.match_info["asset_id"])
+        active_document = bool(record is not None and self.preview._active_document(record, body))
+        disposition = "attachment" if download or active_document else "inline"
+        if active_document:
+            content_type = "application/octet-stream"
+        headers = {
+            **self._SECURITY_HEADERS,
+            "Content-Disposition": f'{disposition}; filename="{safe_filename}"',
+        }
+        if record is not None and record.validated:
+            if record.width and record.height:
+                headers["X-Display-Width"] = str(record.width)
+                headers["X-Display-Height"] = str(record.height)
+            if record.duration is not None:
+                headers["X-Media-Duration"] = str(record.duration)
+            if record.effectiveMediaTime is not None:
+                headers["X-Media-Time"] = str(record.effectiveMediaTime)
+            if record.mediaKind is not None:
+                headers["X-Media-Kind"] = record.mediaKind
+            headers["X-Simcord-Media-Metadata"] = json.dumps(
+                {
+                    "mediaKind": record.mediaKind,
+                    "duration": record.duration,
+                    "frames": record.frames,
+                    "sourceCodecs": record.sourceCodecs or {},
+                    "displayCodecs": record.displayCodecs or {},
+                    "transformation": record.transformation,
+                    "qualityDifferences": record.qualityDifferences,
+                    "effectiveMediaTime": record.effectiveMediaTime,
+                    "waveform": record.waveform,
+                    "workerMemoryLimited": record.workerMemoryLimited,
+                },
+                separators=(",", ":"),
+            )
         return web.Response(
             body=body,
             content_type=content_type or "application/octet-stream",
-            headers={
-                **self._SECURITY_HEADERS,
-                "Content-Disposition": f'{disposition}; filename="{safe_filename}"',
-            },
+            headers=headers,
         )

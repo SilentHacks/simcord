@@ -85,9 +85,9 @@ def _scrub(value: Any) -> Any:
 
 
 def validate_snapshot(snapshot: Mapping[str, Any]) -> None:
-    """Reject malformed protocol-2 data before it can become a capture."""
-    if snapshot.get("protocolVersion") != 2:
-        raise ValueError("capture snapshot is not protocol 2")
+    """Reject malformed protocol-3 data before it can become a capture."""
+    if snapshot.get("protocolVersion") != 3:
+        raise ValueError("capture snapshot is not protocol 3")
     if not isinstance(snapshot.get("messages"), Mapping):
         raise ValueError("capture snapshot messages must be an object")
     if not isinstance(snapshot.get("profile"), Mapping):
@@ -192,13 +192,17 @@ def check_catalog() -> dict[str, Any]:
 def _bot() -> commands.Bot:
     return commands.Bot(
         command_prefix=commands.when_mentioned,
-        intents=discord.Intents.none(),
+        intents=discord.Intents(guilds=True),
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
 async def _ready(page: Any, deadline_ms: float = 30_000) -> None:
-    await page.wait_for_function("() => window.simcordPreview?.ready === true", timeout=deadline_ms)
+    await page.wait_for_function(
+        "() => window.simcordPreview?.ready === true && !window.simcordPreview.pendingAction && "
+        "['healthy', 'recovered'].includes(window.simcordPreview.transport.state)",
+        timeout=deadline_ms,
+    )
     await page.wait_for_function(
         "() => !document.fonts || document.fonts.status === 'loaded'", timeout=deadline_ms
     )
@@ -232,79 +236,174 @@ async def _settle_action(page: Any, before: Mapping[str, Any], deadline_ms: floa
     await _ready(page, deadline_ms)
 
 
-async def _act(page: Any, row: Mapping[str, Any]) -> str:
-    """Drive one registered recipe; return the action description."""
-    fixture_id = str(row["id"])
-    before = await _status(page)
-    recipe_text = " ".join(
-        str(step.get("action", "")) for step in row.get("steps", ()) if isinstance(step, Mapping)
-    ).lower()
-    if "scroll" in recipe_text:
-        await page.mouse.wheel(0, 480)
-        await page.evaluate("() => new Promise(requestAnimationFrame)")
-        return "scroll:480"
-    if "tab" in recipe_text and "blocked" not in recipe_text:
-        await page.keyboard.press("Shift+Tab" if "shift" in recipe_text else "Tab")
-        await page.evaluate("() => new Promise(requestAnimationFrame)")
-        return "keyboard:tab"
-    if "type" in recipe_text and "blocked" not in recipe_text:
-        await page.keyboard.type("SimCord capture")
-        await page.evaluate("() => new Promise(requestAnimationFrame)")
-        return "keyboard:type"
-    button_label: str | None = None
+def _button_label(fixture_id: str) -> str | None:
     if ".modals.button.open." in fixture_id:
-        button_label = fixture_id.split(".modals.button.open.", 1)[1].rsplit(".", 1)[0].title()
-    elif ".button." in fixture_id:
-        tail = fixture_id.split(".button.", 1)[1].rsplit(".", 1)[0]
-        button_label = "With emoji" if tail == "with.emoji" else tail.replace(".", " ").title()
-    elif ".reveal." in fixture_id:
-        # Spoiler buttons are labelled by the product surface; text is more
-        # stable than implementation classes and keeps this interaction real.
-        button_label = "Reveal"
-    if button_label is not None:
-        locator = page.get_by_role("button", name=button_label, exact=True)
-        if ".hover" in fixture_id:
-            await locator.hover()
-            await page.evaluate("() => new Promise(requestAnimationFrame)")
-            return f"hover:{button_label}"
+        key = fixture_id.split(".modals.button.open.", 1)[1].split(".", 1)[0]
+        return {
+            "choice": "Open choice modal",
+            "entity": "Open entity modal",
+            "text": "Open text modal",
+            "upload": "Open upload modal",
+        }.get(key)
+    if ".button." not in fixture_id:
+        return None
+    key = fixture_id.split(".button.", 1)[1].rsplit(".", 1)[0]
+    return {
+        "danger": "Danger",
+        "link": "Link",
+        "primary": "Primary",
+        "secondary": "Secondary",
+        "success": "Success",
+        "with.emoji": "With emoji",
+    }.get(key)
+
+
+def _select_label(fixture_id: str) -> str | None:
+    for fragment, label in (
+        (".string.select.", "Choose up to two destinations"),
+        (".channel.select.", "Choose a text channel"),
+        (".entity.channel.", "Choose a text channel"),
+        (".mentionable.select.", "Choose a user or role"),
+        (".entity.mentionable.", "Choose a user or role"),
+        (".role.select.", "Choose a role"),
+        (".entity.role.", "Choose a role"),
+        (".user.select.", "Choose a user"),
+        (".entity.user.", "Choose a user"),
+    ):
+        if fragment in fixture_id:
+            return label
+    return None
+
+
+def _recipe(row: Mapping[str, Any]) -> tuple[str, str | None]:
+    """Return a recipe only when the registered expected state has a real driver."""
+    fixture_id = str(row["id"])
+    variant = row.get("variant")
+    expected = row.get("expected")
+    steps = row.get("steps")
+    if (
+        not isinstance(expected, Mapping)
+        or expected.get("backend") != "unchanged"
+        or expected.get("visible") != f"historical {variant} surface"
+        or not isinstance(steps, list)
+        or not steps
+        or any(
+            step.get("input") != "none"
+            or step.get("action") != "capture historical image without mutating state"
+            for step in steps
+            if isinstance(step, Mapping)
+        )
+        or any(not isinstance(step, Mapping) for step in steps)
+    ):
+        raise ValueError(f"no supported capture recipe for {fixture_id} ({variant})")
+
+    button = _button_label(fixture_id)
+    select = _select_label(fixture_id)
+    if variant == "idle" and fixture_id.endswith(".idle"):
+        return "idle", None
+    if variant == "active" and fixture_id.endswith(".active") and button is not None:
+        return "active-button", button
+    if variant == "hover" and fixture_id.endswith(".hover") and button is not None:
+        return "hover-button", button
+    if variant == "hover" and fixture_id.endswith(".hover") and select is not None:
+        return "hover-select", select
+    if variant == "focus" and fixture_id.endswith(".focus") and select is not None:
+        return "focus-select", select
+    if variant == "open" and ".open." in fixture_id and select is not None:
+        return "open-select", select
+    raise ValueError(f"no supported capture recipe for {fixture_id} ({variant})")
+
+
+async def _act(page: Any, recipe: tuple[str, str | None]) -> str:
+    """Exercise one prevalidated recipe and reject an absent or incorrect state."""
+    kind, label = recipe
+    if kind == "idle":
+        if (
+            await page.locator(".modal-dialog").count()
+            or not await page.locator(".message-surface").is_visible()
+        ):
+            raise ValueError("expected idle message surface is unavailable")
+        return "none"
+
+    role = "link" if label == "Link" else "button"
+    if kind not in {"active-button", "hover-button"}:
+        role = "combobox"
+    locator = page.get_by_role(role, name=label, exact=True)
+    if await locator.count() != 1 or not await locator.is_visible():
+        raise ValueError(f"expected control {label!r} is unavailable")
+
+    if kind == "active-button":
+        if label == "Link":
+            if await locator.get_attribute("aria-disabled") == "true" or not await locator.get_attribute(
+                "href"
+            ):
+                raise ValueError("expected active link is unavailable")
+        elif not await locator.is_enabled():
+            raise ValueError(f"expected active button {label!r} is disabled")
+        return f"check:button-enabled:{label}"
+    if kind in {"hover-button", "hover-select"}:
+        if not await locator.is_enabled():
+            raise ValueError(f"expected hover control {label!r} is disabled")
+        await locator.hover()
+        if not await locator.evaluate("(element) => element.matches(':hover')"):
+            raise ValueError(f"control {label!r} did not enter hover state")
+        return f"hover:{label}"
+    if kind == "focus-select":
+        await locator.focus()
+        if not await locator.evaluate("(element) => element.matches(':focus')"):
+            raise ValueError(f"control {label!r} did not receive focus")
+        return f"focus:{label}"
+    if kind == "open-select":
         await locator.click()
-        await _settle_action(page, before)
-        return f"click:{button_label}"
-    if ".select." in fixture_id and ".open." in fixture_id:
-        select = page.get_by_role("combobox").first
-        await select.click()
         await _ready(page)
-        return "click:select"
-    if ".focus" in fixture_id:
-        control = page.get_by_role("combobox").first
-        await control.focus()
-        await page.evaluate("() => new Promise(requestAnimationFrame)")
-        return "focus:combobox"
-    return "none"
+        listbox = page.get_by_role("listbox")
+        if (
+            await locator.get_attribute("aria-expanded") != "true"
+            or await listbox.count() != 1
+            or not await listbox.is_visible()
+        ):
+            raise ValueError(f"select {label!r} did not open")
+        return f"click:select:{label}"
+    raise ValueError(f"unsupported capture recipe {kind!r}")
+
+
+def _assert_backend_unchanged(
+    row: Mapping[str, Any], before: Mapping[str, Any], after: Mapping[str, Any]
+) -> None:
+    expected = row.get("expected")
+    if not isinstance(expected, Mapping) or expected.get("backend") != "unchanged":
+        raise ValueError(f"capture recipe has no supported backend expectation for {row['id']}")
+    if before.get("messages") != after.get("messages"):
+        raise ValueError(f"capture recipe changed backend message state for {row['id']}")
+
+
+def _blocked_capture(row: Mapping[str, Any], path: Path, metadata_path: Path, reason: str) -> dict[str, Any]:
+    path.unlink(missing_ok=True)
+    metadata_path.unlink(missing_ok=True)
+    return {"fixtureId": row["id"], "status": "blocked", "reason": reason}
 
 
 async def _capture_row(
     row: Mapping[str, Any], output_dir: Path, catalog: Any, profiles: Mapping[str, Any]
 ) -> dict[str, Any]:
-    if row.get("referenceStatus") != "available":
-        return {
-            "fixtureId": row["id"],
-            "status": "blocked",
-            "reason": row.get("reason", "reference is blocked"),
-        }
-    if Image is None:
-        return {"fixtureId": row["id"], "status": "blocked", "reason": "Pillow is unavailable"}
-    profile = _profile(profiles, str(row["profile"]))
-    payload = catalog.gallery_payload(_reference_id(row), viewer_mention="@simcord-viewer")
     path = output_dir / _capture_name(row)
     metadata_path = path.with_suffix(".json")
-    bot = _bot()
-    action = "none"
+    if row.get("referenceStatus") != "available":
+        return _blocked_capture(row, path, metadata_path, str(row.get("reason", "reference is blocked")))
+    if Image is None:
+        return _blocked_capture(row, path, metadata_path, "Pillow is unavailable")
+
+    payload: dict[str, Any] | None = None
     try:
+        recipe = _recipe(row)
+        profile = _profile(profiles, str(row["profile"]))
+        payload = catalog.gallery_payload(_reference_id(row), viewer_mention="@simcord-viewer")
+        bot = _bot()
         async with simcord.run(bot) as env:
             guild = env.create_guild("visual-reference-capture")
             channel = guild.create_text_channel("reference-gallery")
             viewer = guild.add_member(env.create_user("simcord-viewer"))
+            await env.settle()
             bot_channel = env.bot.get_channel(channel.id)
             if bot_channel is None:
                 raise RuntimeError("SimCord bot channel was not created")
@@ -315,6 +414,7 @@ async def _capture_row(
                 viewers=[viewer],
                 width=int(profile["viewport"]["width"]),
                 height=int(profile["viewport"]["height"]),
+                display="fixed",
                 locale=str(profile.get("locale", "en-GB"))
                 if profile.get("locale") not in {None, "unknown"}
                 else "en-GB",
@@ -343,29 +443,65 @@ async def _capture_row(
                     try:
                         await page.goto(preview.url, wait_until="domcontentloaded", timeout=30_000)
                         await _ready(page)
-                        action = await _act(page, row)
-                        surface = page.locator(
-                            ".modal-dialog"
-                            if await page.locator(".modal-dialog").count()
-                            else ".message-surface"
+                        chrome = await page.evaluate(
+                            "() => { const host = document.querySelector('#preview-stage'); "
+                            "return {width: innerWidth - host.clientWidth, height: innerHeight - host.clientHeight}; }"
                         )
-                        if action == "none" and ".idle" in str(row["id"]):
+                        await page.set_viewport_size(
+                            {
+                                "width": int(profile["viewport"]["width"]) + int(chrome["width"]),
+                                "height": int(profile["viewport"]["height"]) + int(chrome["height"]),
+                            }
+                        )
+                        await _ready(page)
+                        action = await _act(page, recipe)
+                        final_snapshot = await preview.snapshot()
+                        validate_snapshot(final_snapshot)
+                        _assert_backend_unchanged(row, snapshot, final_snapshot)
+
+                        crop = row.get("crop")
+                        scope = crop.get("scope") if isinstance(crop, Mapping) else None
+                        surface = (
+                            page.get_by_role("listbox")
+                            if recipe[0] == "open-select" and scope == "dialog"
+                            else page.locator("#focused-content")
+                        )
+                        if not await surface.is_visible():
+                            raise ValueError("expected capture surface is unavailable")
+                        if action == "none":
                             capture = await preview.screenshot(path, mode="surface")
                             geometry = dict(capture.geometry)
                             capture_action = capture.action
                             capture_profile = dict(capture.profile)
                         else:
-                            await surface.screenshot(path=str(path), type="png")
-                            box = await surface.bounding_box()
-                            geometry = {"surface": dict(box) if isinstance(box, Mapping) else {}}
+                            geometry = await surface.evaluate("""element => {
+                              const rect = element.getBoundingClientRect();
+                              const app = document.querySelector('#preview-app').getBoundingClientRect();
+                              const host = document.querySelector('#preview-stage').getBoundingClientRect();
+                              const x = Math.ceil(Math.max(rect.left, app.left, host.left, 0));
+                              const y = Math.ceil(Math.max(rect.top, app.top, host.top, 0));
+                              const right = Math.floor(Math.min(rect.right, app.right, host.right, innerWidth));
+                              const bottom = Math.floor(Math.min(rect.bottom, app.bottom, host.bottom, innerHeight));
+                              return {mode:'surface', scope:'visible',
+                                logicalViewport:{x:app.x,y:app.y,width:app.width,height:app.height,right:app.right,bottom:app.bottom},
+                                contentExtent:{width:element.scrollWidth,height:element.scrollHeight},
+                                visibleCrop:{x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)},
+                                scrollOffset:{x:element.scrollLeft,y:element.scrollTop},
+                                overflow:{horizontal:element.scrollWidth>element.clientWidth,vertical:element.scrollHeight>element.clientHeight},
+                                viewportWidth:app.width,viewportHeight:app.height,
+                                outputWidth:Math.max(0,right-x),outputHeight:Math.max(0,bottom-y)};
+                            }""")
+                            if geometry["outputWidth"] <= 0 or geometry["outputHeight"] <= 0:
+                                raise ValueError("capture surface has no visible intersection")
+                            await page.screenshot(path=str(path), type="png", clip=geometry["visibleCrop"])
                             status = await _status(page)
                             capture_action = status.get("lastAction")
-                            capture_profile = dict(snapshot.get("profile", {}))
-                        final_snapshot = await preview.snapshot()
-                        validate_snapshot(final_snapshot)
+                            capture_profile = dict(status.get("profile", {}))
                         metadata = _scrub(
                             {
                                 "schemaVersion": 1,
+                                "protocolVersion": 3,
+                                "runtimeVersion": simcord.__version__,
                                 "profile": capture_profile,
                                 "action": capture_action,
                                 "actionRecipe": action,
@@ -386,17 +522,12 @@ async def _capture_row(
                     finally:
                         await context.close()
                         await browser.close()
-    except (OSError, RuntimeError, ValueError, simcord.SetupError) as exc:
-        path.unlink(missing_ok=True)
-        metadata_path.unlink(missing_ok=True)
-        return {"fixtureId": row["id"], "status": "blocked", "reason": str(exc)}
     except Exception as exc:
-        path.unlink(missing_ok=True)
-        metadata_path.unlink(missing_ok=True)
-        return {"fixtureId": row["id"], "status": "blocked", "reason": str(exc)}
+        return _blocked_capture(row, path, metadata_path, str(exc))
     finally:
-        with suppress(Exception):
-            catalog.close_payload(payload)
+        if payload is not None:
+            with suppress(Exception):
+                catalog.close_payload(payload)
 
 
 async def capture(rows: Sequence[Mapping[str, Any]], output_dir: Path) -> tuple[list[dict[str, Any]], int]:

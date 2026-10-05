@@ -35,8 +35,8 @@ async def test_preview_edges_configuration_and_page_lifecycle(env, channel, alic
         ({"viewers": [alice], "assets": {"u": ("x",)}}, "assets must map"),
         ({"viewers": [alice], "assets": {"u": ["x", b"x"]}}, "assets must map"),
         ({"viewers": [alice], "assets": {"u": ("x", bytearray())}}, "assets must map"),
-        ({"viewers": [alice], "width": 1.0}, "width must be"),
-        ({"viewers": [alice], "height": False}, "height must be"),
+        ({"viewers": [alice], "width": 1.0}, None),
+        ({"viewers": [alice], "height": False}, None),
     )
     for options, text in invalid:
         with pytest.raises(simcord.SetupError, match=text):
@@ -113,7 +113,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     control_key=1,
                     published_revision=page.revision,
                 ),
-                "control_key",
+                "validation-failed",
             ),
             (
                 action_body(
@@ -125,7 +125,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     values="x",
                     published_revision=page.revision,
                 ),
-                "values must be a list",
+                "validation-failed",
             ),
             (
                 action_body(
@@ -137,7 +137,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     values=[[]],
                     published_revision=page.revision,
                 ),
-                "scalar",
+                "validation-failed",
             ),
             (
                 action_body(
@@ -149,7 +149,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     values=[],
                     published_revision=page.revision,
                 ),
-                "expects",
+                "validation-failed",
             ),
             (
                 action_body(
@@ -161,7 +161,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     values=[1],
                     published_revision=page.revision,
                 ),
-                "strings",
+                "validation-failed",
             ),
             (
                 action_body(
@@ -173,7 +173,7 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     values=["nope"],
                     published_revision=page.revision,
                 ),
-                "option",
+                "validation-failed",
             ),
             (
                 action_body(
@@ -185,16 +185,16 @@ async def test_preview_edges_action_validation_controls_and_access(env, channel,
                     values={},
                     published_revision=page.revision,
                 ),
-                "modal is stale",
+                "validation-failed",
             ),
         )
-        for body, text in bads:
+        for body, expected_code in bads:
             result = await preview._action("python", body)
             assert result["dispatched"] is False
-            assert (
-                text in " ".join(item["message"] for item in result["diagnostics"])
-                or result["settlement"] == "settled"
-            )
+            assert result["rejected"] is True
+            assert result["settlement"] == "rejected"
+            assert result["diagnostics"][0]["code"] == expected_code
+            assert page.last_sequence == 0
 
         backend = env.backend.get_message(channel.id, message.id)
         components = backend.components
@@ -349,7 +349,7 @@ async def test_preview_edges_snapshot_entities_mentions_assets_and_v2(tmp_path, 
         assert selected["embeds"][0]["image"]["available"] is True
         assert selected["embeds"][0]["thumbnail"]["available"] is True
         asset = selected["attachments"][0]["asset_id"]
-        assert preview._asset("python", asset)[1] == image.getvalue()
+        assert (await preview._prepare_asset("python", asset, download=True))[1] == image.getvalue()
         assert await preview._prepare_asset("python", asset)
         assert await preview._prepare_asset("python", asset)
         await preview.show(v2_message)

@@ -81,6 +81,15 @@ may evolve under its `protocolVersion` key rather than the package version. Inte
 endpoint names, DOM structure, and CSS classes are implementation details, not general extension
 APIs.
 
+SimCord 3.0 uses preview snapshot and browser action protocol 3, independently versioned from
+the Python package. The 3.0 package marks this breaking cutover; version metadata is not a
+release-certification claim. Protocol-2 consumers must migrate explicitly
+using the [protocol-3 preview guide](guides/preview.md#migrating-preview-consumers-to-protocol-3);
+there is no compatibility adapter or shim. The migration covers bounded navigation and candidate
+pages, typed causal receipts, and versioned browser/capture status. Preview entry still requires the
+complete `simcord[preview]` extra, and a surface-mode modal screenshot does not expand scroll content.
+Modeled system events may add history entries and change `last_message` and event ordering.
+
 `Env.http_requests` is the semver-covered request-observability API. Its
 `HttpLogEntry` fields preserve discord.py transport arguments (`params`, `json`, and
 `reason`); they are not wire-normalized query strings or encoded headers, and files are
@@ -116,11 +125,11 @@ verified in CI, so they cannot quietly drift as discord.py evolves.
 These exception types are part of the public API precisely so your tests can
 assert on them.
 
-## Preparing for 3.0 with 2.3
+## Migrating from 2.3 to 3.0
 
-Use `simcord.run(bot, future_behavior=True)` (or decorate a fixture-using test with
-`@pytest.mark.simcord(future_behavior=True)`) to exercise both
-upcoming observation contracts without changing the default behavior of 2.x:
+The error and result contracts available through `future_behavior=True` in 2.3
+are unconditional in 3.0. Remove `future_behavior` from `simcord.run(...)` and
+`@pytest.mark.simcord(...)`; the temporary option and legacy behavior are gone.
 
 - Reading `env.errors` acknowledges only the currently captured prefix and returns
   a list snapshot. Later errors, including shutdown errors, still fail teardown.
@@ -130,11 +139,9 @@ upcoming observation contracts without changing the default behavior of 2.x:
   Saved payloads no longer follow edits, and mutating them cannot change the world.
   Read the handle again after a genuine edit or followup.
 
-Legacy error inspection and mutable result reads emit `DeprecationWarning` with
-opt-in guidance in 2.3. Enable these warnings while migrating, for example with
-`pytest -W default::DeprecationWarning`. The temporary `future_behavior` option
-will be removed in 3.0 when these semantics become unconditional. See the
-[diagnostics guide](guides/diagnostics.md) and
+Do not rely on saved error lists or payloads staying live. Keep a result handle and
+read it again after changes; inspect newly captured errors after each expected failure.
+See the [diagnostics guide](guides/diagnostics.md) and
 [interaction guide](guides/interactions.md) for details.
 
 The compatible correctness fixes reject previously accepted invalid messages and
