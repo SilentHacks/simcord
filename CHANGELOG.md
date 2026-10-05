@@ -4,6 +4,107 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.0.0 (2026-10-05)
+
+### Features
+
+- Discord message parity now retains sticker items and upload metadata, TTS, and allowed-mention notification policy. Pin/thread/member/channel service messages are typed and affect channel history; application-command responses retain command and target metadata. Static PNG stickers can be previewed safely; animated formats and blocked Discord visual-reference captures are explicitly incomplete rather than represented as calibrated parity. ([#8](https://github.com/SilentHacks/simcord/issues/8))
+- Preview now parses message, Text Display and embed text with field-specific safe Markdown, resolves authorized mentions and custom emoji, formats all Discord timestamp styles from the published time profile, and highlights fenced code using a pinned offline grammar set. Unknown languages remain plain code; custom emoji without authorized supplied bytes remain unavailable. ([#9](https://github.com/SilentHacks/simcord/issues/9))
+- Preview media manifests now distinguish retained source bytes from validated display readiness and publish EXIF-oriented intrinsic dimensions. Shared normalized variants are charged once; browser media loading is generation-aware and uses only local blob URLs. Images keep their intrinsic ratio, spoilers and text previews are accessible, and an Escape/arrow-key lightbox restores focus. File cards provide safe text preview and explicit download actions without embedding SVG or HTML. Multi-image attachment mosaics remain uncalibrated: the available `ref-11-attachments-idle` evidence covers one image only, so the preview retains a bounded vertical-list fallback rather than inventing 2–10-image geometry. ([#10](https://github.com/SilentHacks/simcord/issues/10))
+- Preview media now keeps original downloads separate from validated browser display and deterministic captures. Animated raster and licensed expression-free Lottie stickers play interactively; screenshots select `media_time`. Optional PyAV support validates audio/video, reports codec transformations, and provides accessible native players. Source/display/capture ceilings, a bounded serial worker, per-session memory accounting, and live authorization checks apply. Audio/video availability depends on platform decoder/encoder support; unsupported codecs remain download-only. ([#11](https://github.com/SilentHacks/simcord/issues/11))
+- Redesign the browser Preview as a Discord-inspired workbench with a compact app bar, readable authorized message navigation, responsive drawers, and an on-demand tabbed inspector instead of the sprawling toolbar and vertical diagnostics strip. Present human-readable action results and recovery guidance, keep viewport and capture tools outside the simulated surface, and place multi-select draft helpers beside their menu. Preserve page-local layouts, real callbacks, authorization, and managed capture isolation; fix local channel rendering so select drafts and other local interaction state update visibly.
+
+  Keep mobile inspector isolation across snapshot and resize updates, preserve panning access to oversized fixed viewports, restore owning select focus after draft helper actions, retain the avatar gutter in narrow focused-message views, and preserve custom dimension drafts while refreshed state is published.
+
+  Fix line-scoped subtext, including multiline spoilers with a shared reveal, and highlighted declarations; conceal formatted spoiler descendants and exclude unrevealed container media from lightbox navigation. Preserve accessibility after failed spoiler media loads, expose original downloads for all inline attachments, honor legacy file spoilers, and wrap playback controls in narrow columns.
+
+  Keep dropdown scrolling and modal search/selection focus stable, support clearing optional selections and minimum-length optional text, cancel keyboard focus-out drafts, and disable clear controls with their owner. Keep searched channel targets visible and keyboard navigation focus intact; reconcile delayed lost send receipts in both stored drafts and the visible composer without discarding newer typing. Honor small exact captures, distinguish duplicate summaries, clear corrected viewport warnings, offer safe clipboard recovery and visible callback outputs, and improve timestamp contrast. Extend the real dogfood gallery with Markdown/media boundaries, editable messages, replies, reactions, polls, and callback outcomes. ([#22](https://github.com/SilentHacks/simcord/issues/22))
+- Add a local, human-operated Discord reference capture kit with setup instructions and a self-contained agent handoff. Reuse the shared gallery payloads in the official test bot, export exact fixture assets and input hashes, and capture prepared UI with explicit provenance, lossless crops, no-overwrite protection and private allowlisted evidence export. Login and all Discord interactions remain manual; new captures are unreviewed, not parity certification.
+
+  Preserve the bot's actual guild display identity in exported provenance even when member context is absent from its cache.
+- Make the error-prefix acknowledgement and detached mutable result observations introduced by the 2.3 bridge unconditional; remove the temporary `future_behavior` option and legacy aliasing paths. Result handles remain live, explicit `raise_errors()` checks all captured errors, and later/shutdown errors still fail teardown. Integrate the released 2.3 shared message validation, atomic forum preparation and Python 3.14.8 shield-wait correction while preserving 3.0 sticker, mention, webhook identity and system-message behavior. Complete structural schema coverage for all 17 protocol-3 action kinds without changing runtime authorization or replay checks. The maintainer approved releasing 3.0 with explicitly documented preview evidence gaps; this is not Discord calibration or screen-reader certification.
+- Polish the local preview with a restrained, independently styled SimCord toolbar and compact message navigation around the Discord-like conversation. Add consistent accessible SVG action icons, an auto-growing Enter/Shift+Enter composer with IME protection, expanded safe text-attachment previews, and hover/focus/touch image-download controls. Replace the boxed image lightbox with a preview-scoped scene showing authorized author/time, fit/zoom, keyboard/drag/touch panning, spoiler-safe navigation, and original-byte download/open actions. Preserve actor callbacks, authorization, page-local state, and exact capture boundaries. The checkout gallery includes a media/composer walkthrough; this does not certify Discord visual or interaction parity.
+
+  Late file selections remain visible and removable after a modal redraw.
+  Keep viewer avatar loads and original-image links scoped to the active image draw across Refresh and delayed navigation.
+
+  Record actor mutations before settlement so failed, timed-out and cancelled receipts remain truthful.
+  Redact channel topics and history boundaries immediately on permission revocation. Keep Unicode
+  paging tokens bounded, discard stale derived media on source replacement, and allow explicit retry
+  after transient worker failures. Validate and freeze animated emoji during captures, respect code-span
+  and escape boundaries in spoilers, require MarkdownIt 4.1+, and derive font metadata from its validated
+  manifest instead of a second inventory.
+
+  Keep browser readiness false while actions or page intents are pending, including resize
+  reconfiguration, so consumers do not interact with a render about to be replaced.
+
+  Restore newly-created thread event routing and forum parent updates. Render poll answer text as
+  accessible voting choices. Reject lost candidate cursor anchors before admission and recover retained
+  queries on publication. Apply the selected timezone and deterministic emoji capture time to modal text.
+- Validate the returned private calibration pack against its immutable archive and full sidecars, register an uncertainty-aware Ash profile, and replay its bot messages and visible states through the actual local preview. Emit natural-size captures, geometry/font diagnostics and per-capture comparison/gap reports without resizing references or certifying parity.
+
+  Correct shared embed thumbnail/field layout and image aspect, two-item gallery geometry, obscured spoiler pixels, button focus and channel hover contrast, and role-option decoration. Keep select constraints accessible without adding default helper rows to the bot message; preserve visible validation errors. Refresh channel entity menus when query loading completes.
+
+  Shorten the reference text-modal feedback label to meet Discord's 45-character limit. Verify the real offline bot-to-modal dispatch and document the narrow live bot-log/recapture follow-up; offline success does not establish the live timeout cause.
+
+  Keep non-image spoiler media concealed until reveal, and clear entity listbox loading state after unchanged queries in channel, message and modal layouts. Mark callback buttons unavailable while an action or its publication is pending, retaining their keyboard focus and declared disabled state.
+
+  Validate fresh exporter packs with dynamic inventories and an optional externally supplied archive
+  fingerprint, without inheriting historical visual judgments. Replay documented select and V2 states
+  with explicit crop recipes, retain honest evidence gaps as dogfood status evolves, and correct the
+  optional single-select modal label so the real launcher acknowledges and opens it.
+
+### Bug fixes
+
+- Legacy embed previews now compose mixed field runs, thumbnails, images, author/footer metadata, timestamps, and provider attribution without a fixed thumbnail reservation. Embed media plays only from authorized offline bytes; external-only media remains unavailable, suppressed embeds leave message content and attachments visible, and reference geometry stays blocked pending measurements. ([#12](https://github.com/SilentHacks/simcord/issues/12))
+- V2 galleries now use a responsive intrinsic-ratio grid, retain image descriptions as alt text, support keyboard spoiler reveal, and render zero/nonzero container accents correctly. Browser coverage exercises 1-, 3-, and 10-item galleries, narrow width, and component/media suppression and reuse; backend validation tests reject unknown type 20 and illegal V2 message compositions.
+
+  Reference geometry remains blocked: `tests/fixtures/preview/measurements.json` → `historical-family-v2` requires authorized Discord interaction notes and measured crop/region coordinates, including mixed-aspect gallery captures across counts 1–10 at wide and narrow message widths. No reference parity budget is claimed. ([#13](https://github.com/SilentHacks/simcord/issues/13))
+- Button previews now preserve all six style colors, use responsive rows for long labels and emoji controls, and expose keyboard focus intentionally even though the dated reference showed button focus equal to idle. Disabled links cannot navigate; disabled controls and style-5/6 controls are not dispatched as callbacks.
+
+  Premium details are strictly caller-supplied through `sku_presentations` (`name`, `price_text`, `locale`, optional offline `icon_url`); values are never inferred or formatted. Missing metadata reports `premium-sku-metadata-missing`. A click only reports that purchases belong to Discord outside the message surface. No proprietary shop icon or purchase backend is included.
+
+  `historical-family-buttons` calibration remains blocked: `measurements.json` has no crop regions, region boxes, or wrap points, and no legitimate SKU price/icon observations. No Discord button geometry or premium price/icon parity is claimed. ([#14](https://github.com/SilentHacks/simcord/issues/14))
+- Select previews now use a select-only combobox/listbox: focus stays on the trigger, keyboard navigation exposes the active option, entity selections keep identity decorations, and long lists are viewport-positioned and scroll the active option into view. Candidate updates prune stale local choices without dispatching.
+
+  The uncalibrated input fallback is explicit: single choices commit immediately; multi choices toggle until Enter, trigger close, or outside click and commit only within min/max; Escape and blur cancel. Message selections use the existing callback only on valid commit, while modal choices remain local until submit. Clearing a required modal select validates locally instead of sending an invalid request. No search or Apply control is inferred.
+
+  `tests/fixtures/preview/states.json` marks `select-commit` and `select-cancel` blocked pending authorized Discord client access, a private test server/application, permitted fixture assets, and an interaction trace. `historical-select-popup` has no measured popup region boxes in `measurements.json`. Exact per-variant pointer, keyboard, clear, and commit parity is not claimed. ([#15](https://github.com/SilentHacks/simcord/issues/15))
+- Modal previews now render the projected application identity and disclosure, title, close control, and viewport backdrop. The dialog remains bounded by the preview viewport and scrolls normally; surface screenshots no longer expand modal content. Labels, legacy text rows, Text Display, text/select/radio/checkbox/file-upload controls, effective defaults, and local field-associated validation feed the real Python modal action. Python remains authoritative. Upload copy matches SimCord's 10 MiB per-file and 25 MiB per-action limits; this may be lower than Discord's current allowance.
+
+  Modal visual and interaction parity remains uncertified. `historical-modal-window` is non-comparable because the original crop includes Discord navigation; `historical-family-modals` has no measured region boxes, spacing, or wrap points. The modal validation and select transitions in `tests/fixtures/preview/states.json` remain blocked pending authorized Discord client/application access, permitted assets, and interaction traces. The bounded accessible rendering is a functional fallback, not invented measured geometry. ([#16](https://github.com/SilentHacks/simcord/issues/16))
+- The independent preview review corrected channel component actions targeting the wrong message, centered focused history and kept its paging cursor consistent, removed private pending draft content from the browser's public status, and reauthorized message-linked media against the live message before serving cached bytes. Capture recipes now block unsupported or unobserved states instead of writing mislabeled evidence; a real idle and select-popup capture exercise the corrected runner. ([#19](https://github.com/SilentHacks/simcord/issues/19))
+- Preview Markdown emits safe absolute HTTP(S) bare links only in link-enabled fields; fuzzy domains/emails and unsupported protocols remain plain text. Shared summaries conceal spoiler bodies and truncate at grapheme boundaries. Native font fallback now uses the full pinned Noto Color Emoji build, including regional flags; rendered Unicode glyphs were exercised across text and controls in Chromium. Substitute artwork remains an explicit, uncertified Discord-fidelity deviation.
+
+  Preview snapshot and action consumers now use breaking protocol 3, with bounded authorized message and control-scoped candidate pages, typed causal receipts, and no protocol-2 compatibility shim. Screenshot viewport/layout overrides are capture-local and reports carry versioned visible-crop geometry.
+
+  Preview preserves unchanged native media players across select redraws, captures swallowed View/Modal callback errors in Env.errors, and reports failed settlement without retrying callbacks. Meaningful error/recovery announcements are deduplicated; downloaded support reports omit private content, drafts, identifiers, URLs and raw exceptions.
+
+  Native interaction webhook fetch/edit/delete now require admitted original/followup ownership, rather than accepting any message in the interaction's channel. Behavioral core checks cover malformed mention/sticker payloads, external sticker authorization, callback rejection without consuming acknowledgement, and protection of ordinary channel messages.
+
+  Preview summaries no longer reveal Text Display spoiler bodies, and their schema matches grapheme-safe truncation. Presentation-only changes retain history anchors; viewer changes clear prior private activity. Observed receipts recover transport diagnostics, Close can escape an unadmitted uncertain action without replay, cached select identities are reauthorized on publication, and replaced rendering surfaces no longer retain obsolete failures. ([#21](https://github.com/SilentHacks/simcord/issues/21))
+- Preview readiness now waits for retained message/modal media, avatars, and premium icons across redraws; late failures remain incomplete while their DOM owner is present. Viewer changes and bot restarts reload media under the new authorization boundary rather than reusing disposed players. Browser status exposes the strict protocol-3 public fields without internal draft, close-probe, or rendering-owner bookkeeping. Active incomplete diagnostics survive the bounded historical log until their surface is repaired or removed.
+
+  Channel captures pin a bounded history window containing the requested target and crop the rendered message rather than its navigation button. Every projected message, nested reply/system/context-menu reference, and attachment owner is reauthorized before rendering and atomic PNG installation, including text previews whose source bytes exceeded the retention budget. Retained asset bytes are also validated. Deletion, attachment replacement/removal, or revoked access invalidates the capture even with `allow_incomplete=True`.
+
+  Animation captures exclude separate APNG default images, honor GIF repeat versus APNG/WebP total-play semantics, preserve fractional APNG timing, and read decoded WebP durations before enforcing the ten-minute per-cycle ceiling. Finite playback holds its final frame. Lottie capture times are relative to the composition in-point.
+
+  The 3.0 release excludes local planning/review documents, review screenshots, and the contributor-only calibration prompt from published documentation and distributions. Existing changelog fragments now use recognized Towncrier categories, and migration notes consistently describe breaking protocol 3 without compatibility shims. Package metadata and the lockfile are versioned 3.0.0; the maintainer explicitly waived outstanding external preview-evidence publication gates while retaining the known calibration and accessibility limitations.
+
+### Documentation
+
+- Preview's 3.0 migration uses breaking protocol-3 snapshots (`messageIndex` summaries, full `messages` keyed by ID, `timeline` ordering), explicit message action targets, channel layout and virtual presentation time. Opening Preview now requires the complete optional runtime; modeled system events can add history messages; modal surface captures no longer expand scrollable content. The guide documents media ceilings, offline assets, structured capture diagnostics and the private-reference workflow.
+
+  The fixture ledger tracks feature and comparison states separately. Licensed Noto fonts replace unspecified system-font rendering for supported scripts, while Discord's proprietary font, external purchase/provider services and visible keyboard focus remain deliberate differences. No Discord pixel parity or human screen-reader certification is claimed without authorized provenance-checked references, measurements, interaction traces and manual accessibility review. ([#18](https://github.com/SilentHacks/simcord/issues/18))
+
+### Miscellaneous
+
+- Preview browser verification now covers six message widths at both 700/900 px heights, long mixed-direction content and zoom, and delayed media during viewer revocation across two pages. Narrow diagnostics no longer overflow the viewport. Distribution checks require packaged runtime assets, licenses, schemas and fixture tools; the installed wheel runs outside the checkout with a sparse system-font set.
+
+  These checks establish local functional behavior only. Visual calibration still requires authorized private reference captures with measured regions and reviewed comparisons, and accessibility certification still requires human screen-reader smoke for modal, select, reaction and poll flows. Neither prerequisite is represented by an automated pass. ([#17](https://github.com/SilentHacks/simcord/issues/17))
+- Register D01–D12 and U01–U09 as 21 reusable dogfood scenarios with separate implementation, reference, and human-review evidence states. The local gallery supports message, channel, and DM launches plus a capability-free catalog check. Missing authorized Discord traces and measured references remain blocked, not passing parity claims. ([#21](https://github.com/SilentHacks/simcord/issues/21))
+
+
 ## 2.3.0 (2026-10-05)
 
 ### Features
