@@ -74,17 +74,14 @@ uv add --dev "simcord[pytest]"
 ```
 
 Requires **Python >=3.11** (tested on **3.11–3.14**) and **discord.py >=2.7.1,<3**.
-The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow checks upstream
-`master`, rather than continuously testing every released 2.x version. The base simulation
-adds no runtime dependency beyond discord.py.
+The base simulation adds no runtime dependency beyond discord.py.
 
 For an authenticated local browser page showing real component callbacks, install
 `simcord[preview]` (a Preview now requires its full extra); for deterministic PNGs
 install `simcord[screenshot]` and run `playwright install --with-deps chromium`.
 See the [component preview and screenshots guide](https://simcord.readthedocs.io/en/latest/guides/preview/)
 for the protocol-3 snapshot, navigation, candidate and receipt contracts; lifecycle,
-security, bounded media and deterministic capture. Private Discord reference comparison
-and human screen-reader review remain blocked release gates; no parity certification is claimed.
+security, bounded media and deterministic capture.
 
 ## Quickstart
 
@@ -134,7 +131,7 @@ test framework.
 
 ## AI coding agents
 
-Give Claude Code, Codex, Copilot, Cursor, or another coding agent a deterministic Discord
+Give Claude Code, Codex, Cursor, or another coding agent a deterministic Discord
 runtime instead of letting it invent mocks that confirm its own assumptions.
 
 Add this requirement to the task:
