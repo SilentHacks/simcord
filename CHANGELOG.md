@@ -17,6 +17,7 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
   Interaction update callbacks without a source message now fail before acknowledgement instead of silently succeeding.
 
   Prepare forum starter fields, components and every upload read before creating thread/message/CDN state, then publish the existing ordered events only after thread, starter and parent state are complete. Validation or upload-read failures no longer leave orphan posts or gateway events. Preparation consumes upload streams; an earlier successfully read stream must be rewound or replaced if a later read fails. Subscriber exceptions after publication begins are outside this atomicity boundary.
+  Starter reference identifiers are also validated before publication, preventing malformed references from corrupting the forum's previous last-post pointer.
 
 
 ## 2.2.1 (2026-09-24)

@@ -123,11 +123,15 @@ def prepare_bot_message(
             "authorizing_integration_owners": {},
         }
     reference = body.get("message_reference")
-    if reference:
-        reference = {
-            **({"channel_id": str(reference["channel_id"])} if "channel_id" in reference else {}),
-            "message_id": str(reference["message_id"]),
-        }
+    if reference is not None:
+        if not isinstance(reference, dict) or "message_id" not in reference:
+            raise errors.invalid_form_body("message_reference requires a message_id")
+        try:
+            reference = {
+                key: str(int(str(reference[key]))) for key in ("channel_id", "message_id") if key in reference
+            }
+        except (TypeError, ValueError) as exc:
+            raise errors.invalid_form_body("message_reference identifiers must be integers") from exc
     embeds = body.get("embeds") if "embeds" in body else ([body["embed"]] if body.get("embed") else [])
     if embeds is None:
         embeds = []
