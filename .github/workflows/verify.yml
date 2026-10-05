@@ -49,10 +49,9 @@ jobs:
     name: Preview package + locked Linux Chromium
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
     steps:
       - uses: actions/checkout@v7
+      - run: echo "PLAYWRIGHT_BROWSERS_PATH=${{ runner.temp }}/playwright-browsers" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
