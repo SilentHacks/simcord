@@ -6,6 +6,7 @@ from typing import Any
 
 from ...enums import AppCommandType
 from .. import errors
+from ..command_access import command_access
 from ..models import Interaction
 from .base import BackendBase
 
@@ -15,11 +16,13 @@ class CommandsMixin(BackendBase):
 
     def register_commands(self, guild_id: int | None, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
         registered = {}
+        existing = self.commands.get(guild_id, {})
         for payload in payloads:
             cmd = dict(payload)
-            cmd["id"] = str(self.snowflake())
-            cmd["application_id"] = str(self.application_id)
             cmd.setdefault("type", AppCommandType.CHAT_INPUT)
+            previous = existing.get((cmd["name"], cmd["type"]))
+            cmd["id"] = previous["id"] if previous is not None else str(self.snowflake())
+            cmd["application_id"] = str(self.application_id)
             cmd.setdefault("description", "")
             cmd.setdefault("options", [])
             cmd.setdefault("default_member_permissions", None)
@@ -53,6 +56,20 @@ class CommandsMixin(BackendBase):
             if cmd is not None:
                 return cmd
         return None
+
+    def visible_commands(
+        self, *, user_id: int, channel_id: int, type: int = AppCommandType.CHAT_INPUT
+    ) -> list[dict[str, Any]]:
+        channel = self.get_channel(channel_id)
+        scopes = (channel.guild_id, None) if channel.guild_id is not None else (None,)
+        visible = [
+            command
+            for scope in scopes
+            for command in self.commands.get(scope, {}).values()
+            if command.get("type", AppCommandType.CHAT_INPUT) == type
+            and command_access(self, command, user_id=user_id, channel_id=channel_id).allowed
+        ]
+        return sorted(visible, key=lambda command: (command["name"], int(command["id"])))
 
     # ----------------------------------------------------------- interactions
 

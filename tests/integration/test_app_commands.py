@@ -1,7 +1,47 @@
+import discord
 import pytest
+from discord import app_commands
 
 import simcord
 from simcord.enums import AppCommandType, MessageType
+
+
+async def test_bulk_sync_preserves_existing_command_ids_and_permissions(env):
+    tree = env.bot.tree
+    await tree.sync()
+    initial = await tree.fetch_commands()
+    assert len(initial) > 1
+    retained = initial[0]
+    removed = initial[1]
+    old_ids = {command.name: command.id for command in initial}
+
+    role = env.guild.create_role("Command moderators")
+    env.guild.set_command_permissions(retained, {role: True})
+    permission_key = (env.guild.id, retained.id)
+    seeded_permissions = env.backend.command_permissions[permission_key]
+
+    tree.remove_command(removed.name)
+
+    async def added_callback(interaction: discord.Interaction) -> None:
+        return None
+
+    tree.add_command(
+        app_commands.Command(
+            name="simcord-added-stable-id-test",
+            description="A command added after the initial sync",
+            callback=added_callback,
+        )
+    )
+    await tree.sync()
+    synced = await tree.fetch_commands()
+    synced_by_name = {command.name: command for command in synced}
+
+    assert removed.name not in synced_by_name
+    assert synced_by_name["simcord-added-stable-id-test"].id not in old_ids.values()
+    for command in initial:
+        if command.name != removed.name:
+            assert synced_by_name[command.name].id == old_ids[command.name]
+    assert env.backend.command_permissions[permission_key] == seeded_permissions
 
 
 async def test_subcommand_group(env, channel, alice):
