@@ -1017,7 +1017,7 @@ function localMessageDay(message) {
     key: `${value.year}-${value.month}-${value.day}`,
     label: new Intl.DateTimeFormat(state.profile.locale || "en-US", {
       timeZone: state.profile.timezone || "UTC",
-      dateStyle: "full",
+      dateStyle: "long",
     }).format(date),
   };
 }

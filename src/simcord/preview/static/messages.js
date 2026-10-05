@@ -232,9 +232,8 @@ export function renderMessage(root, message, options = {}) {
   options.lightboxGroup ||= { items: [] };
   const shortTime = (value) => new Intl.DateTimeFormat(options.locale || "en-US", {
     timeZone: options.timezone || "UTC",
-    hour: "2-digit",
+    hour: "numeric",
     minute: "2-digit",
-    hourCycle: "h23",
   }).format(new Date(value));
 
   appendReply(root, message.reply, options);
@@ -259,7 +258,11 @@ export function renderMessage(root, message, options = {}) {
     else if (message.author?.webhook) header.append(node("span", "message-app-badge", "WEBHOOK"));
     else if (message.author?.bot) header.append(node("span", "message-app-badge", "BOT"));
     if (message.timestamp) {
-      const time = node("time", "message-time", shortTime(message.timestamp));
+      const time = node("time", "message-time", new Intl.DateTimeFormat(options.locale || "en-US", {
+        timeZone: options.timezone || "UTC",
+        dateStyle: "short",
+        timeStyle: "short",
+      }).format(new Date(message.timestamp)));
       time.dateTime = message.timestamp;
       time.title = absoluteTime(message.timestamp, options);
       if (message.edited_timestamp) {

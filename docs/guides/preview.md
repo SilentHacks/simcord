@@ -79,6 +79,12 @@ rejected or failed sends retain the draft. It does not navigate to another chann
 Preview session. The inspector remains outside the emulated viewport, while a modal backdrop covers
 only that viewport.
 
+Channel messages share a stable avatar/text gutter: focusing a message does not change its width,
+wrapping, or group spacing. New author groups have more separation than same-author continuations.
+Headers show a short date and time using the configured `locale` and `timezone`; day dividers use
+the same profile with a long date. Standalone emoji are enlarged. Text keeps the packaged, licensed
+Noto fonts, so these presentation improvements do not establish Discord font or pixel parity.
+
 `display="responsive"` (default for human browser pages) fits the measured workspace with a logical
 viewport minimum of 240×180. `presentation.host` retains the actual host dimensions; below the minimum,
 the viewport clamps to 240×180, reports `host_below_minimum`, and the stage pans rather than claiming

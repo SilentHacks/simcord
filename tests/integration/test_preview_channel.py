@@ -600,3 +600,53 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
                 assert len(submissions) == 1
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_channel_focus_preserves_message_geometry_and_group_spacing(env, alice):
+    from playwright.async_api import async_playwright
+
+    channel = env.guild.create_text_channel("general")
+    first = await alice.send(channel, "Wrapping stays stable when selecting this message. " * 12)
+    await alice.send(channel, "A continuation by the same author.")
+    await env.bot.get_channel(channel.id).send("A new author group.")
+    await env.bot.get_channel(channel.id).send("🙂")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 1280, "height": 800})
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                geometry = """() => [...document.querySelectorAll('.channel-message')].map(element => {
+                    const bounds = node => {
+                        if (!node) return null;
+                        const {x, y, width, height} = node.getBoundingClientRect();
+                        return {x, y, width, height};
+                    };
+                    return {
+                        message: bounds(element),
+                        content: bounds(element.querySelector('.message-content')),
+                        avatar: bounds(element.querySelector('.message-avatar')),
+                    };
+                })"""
+                before = await page.evaluate(geometry)
+                continuation_gap = before[1]["message"]["y"] - (
+                    before[0]["message"]["y"] + before[0]["message"]["height"]
+                )
+                author_gap = before[2]["message"]["y"] - (
+                    before[1]["message"]["y"] + before[1]["message"]["height"]
+                )
+                assert author_gap > continuation_gap
+                assert len({item["content"]["x"] for item in before}) == 1
+                assert await page.locator(".channel-heading h1").evaluate(
+                    "heading => heading.scrollWidth <= heading.clientWidth"
+                )
+                await page.locator(f".message-row[data-message-id='{first.id}']").click()
+                await page.wait_for_function(
+                    "id => window.simcordPreview.targetId === id && window.simcordPreview.ready",
+                    arg=str(first.id),
+                )
+                assert await page.evaluate(geometry) == before
+            finally:
+                await browser.close()
