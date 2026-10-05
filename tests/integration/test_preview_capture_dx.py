@@ -1073,7 +1073,20 @@ async def test_browser_select_navigation_retains_combobox_focus(env, channel, al
                     arg=first,
                 )
                 assert await page.locator(".select-trigger[aria-expanded=true]:focus").count() == 1
-                assert (await page.evaluate("() => window.simcordPreview")).get("pendingAction") is None
+                active_id = await trigger.get_attribute("aria-activedescendant")
+                active_value = await page.evaluate(
+                    "id => document.getElementById(id)?.dataset.value", active_id
+                )
+                control_key = await trigger.get_attribute("data-control-key")
+                await trigger.press("Enter")
+                await page.wait_for_function(
+                    "([key, value]) => window.simcordPreview?.selectStates?.[key]?.values?.includes(value)",
+                    arg=[control_key, active_value],
+                )
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.lastAction?.settlement === 'settled'"
+                    " && !window.simcordPreview?.pendingAction"
+                )
             finally:
                 await browser.close()
         finally:

@@ -1,4 +1,5 @@
 import { node, presenceDot, renderIdentityAvatar } from "./dom.js";
+import { createListbox } from "./listbox.js";
 import { appendEmojiValue } from "./text.js";
 
 const TYPE = Object.freeze({
@@ -185,9 +186,9 @@ export function renderSelect(component, path, options) {
   }
   trigger.setAttribute("aria-controls", `listbox-${safeId(key)}`);
   const activeValue = isOpen ? String(dropdown?.highlight ?? "") : "";
-  if (activeValue && entries.some((entry) => String(entry.value ?? entry.id ?? "") === activeValue)) {
-    trigger.setAttribute("aria-activedescendant", optionId(key, activeValue));
-  }
+  let listbox = null;
+  let searchListbox = null;
+  let searchInput = null;
   // Singles commit on choice; multis on Enter/Apply/trigger-close/outside pointer; Escape/focusout cancel.
   const choose = (value) => {
     onDraft?.(key, value, multi, minimum, maximum, selected, findEntry(value));
@@ -212,27 +213,7 @@ export function renderSelect(component, path, options) {
       return;
     }
     if (!popupOpen()) return;
-    const optionNodes = [...list.querySelectorAll('[role="option"]:not(.is-disabled)')];
-    let index = optionNodes.findIndex((item) => item.dataset.value === activeValue);
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
-      event.preventDefault();
-      if (event.key === "Home") index = 0;
-      else if (event.key === "End") index = optionNodes.length - 1;
-      else {
-        const start = index < 0 ? (event.key === "ArrowUp" ? optionNodes.length : -1) : index;
-        const delta = event.key === "ArrowDown" ? 1 : -1;
-        index = Math.max(0, Math.min(optionNodes.length - 1, start + delta));
-      }
-      if (optionNodes[index]) onNavigate?.(key, optionNodes[index].dataset.value);
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (multi && event.key === "Enter") {
-        onCommit?.(key);
-        return;
-      }
-      const value = optionNodes[index]?.dataset.value;
-      if (value !== undefined) choose(value);
-    }
+    listbox?.handleKey(event);
   });
   wrap.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && popupOpen()) {
@@ -281,6 +262,7 @@ export function renderSelect(component, path, options) {
     const tools = node("div", "select-candidate-tools");
     const searchLabel = node("label", "select-candidate-search-label", "Search options");
     const search = node("input", "select-candidate-search");
+    searchInput = search;
     search.type = "search";
     search.maxLength = 128;
     search.autocomplete = "off";
@@ -291,22 +273,8 @@ export function renderSelect(component, path, options) {
       options.onCandidateQuery?.(candidateKey, search.value, null, options.modalHandle || null);
     });
     search.addEventListener("keydown", (event) => {
-      const available = [...list.querySelectorAll('[role="option"]:not(.is-disabled)')];
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopPropagation();
-        const index = available.findIndex((item) => item.dataset.value === activeValue);
-        const start = index < 0 ? (event.key === "ArrowUp" ? available.length : -1) : index;
-        const next = Math.max(0, Math.min(available.length - 1, start + (event.key === "ArrowDown" ? 1 : -1)));
-        if (available[next]) options.onNavigate?.(key, available[next].dataset.value);
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        event.stopPropagation();
-        const option = available.find((item) => item.dataset.value === activeValue);
-        if (!option) return;
-        choose(option.dataset.value);
-        if (multi) onCommit?.(key);
-      }
+      if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
+      if (searchListbox?.handleKey(event)) event.stopPropagation();
     });
     const pages = node("div", "select-candidate-pages");
     const previous = node("button", "", "Previous");
@@ -377,6 +345,41 @@ export function renderSelect(component, path, options) {
   });
   if (!entries.length) list.append(node("div", "select-empty", "No available options"));
   popup.append(list);
+  const optionNodes = [...list.querySelectorAll('[role="option"]')];
+  const activeIndex = optionNodes.findIndex((item) => item.dataset.value === activeValue);
+  const listboxOptions = {
+    list,
+    idPrefix: `option-${safeId(key)}`,
+    isSelected: (item) => selected.includes(item.dataset.value),
+    activeClass: "is-highlighted",
+    onNavigate: (item) => options.onNavigate?.(key, item.dataset.value),
+  };
+  listbox = createListbox({
+    ...listboxOptions,
+    owner: trigger,
+    activationKeys: [" "],
+    onActivate: (item) => choose(item.dataset.value),
+    onCommit: (item) => {
+      if (multi) onCommit?.(key);
+      else if (item) choose(item.dataset.value);
+    },
+  });
+  listbox.setItems(optionNodes);
+  if (activeIndex >= 0) listbox.setActive(activeIndex, { scroll: isOpen });
+  if (searchInput) {
+    searchInput.setAttribute("aria-expanded", String(isOpen));
+    searchListbox = createListbox({
+      ...listboxOptions,
+      owner: searchInput,
+      onCommit: (item) => {
+        if (!item) return;
+        choose(item.dataset.value);
+        if (multi) onCommit?.(key);
+      },
+    });
+    searchListbox.setItems(optionNodes);
+    if (activeIndex >= 0) searchListbox.setActive(activeIndex, { scroll: false });
+  }
   if (multi && isOpen) {
     const actions = node("div", "select-draft-actions preview-helper");
     actions.setAttribute("role", "group");

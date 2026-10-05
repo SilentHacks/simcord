@@ -38,6 +38,8 @@ class PreviewServer:
         "/app.js": "app.js",
         "/components.js": "components.js",
         "/selects.js": "selects.js",
+        "/listbox.js": "listbox.js",
+        "/composer.js": "composer.js",
         "/messages.js": "messages.js",
         "/media.js": "media.js",
         "/text.js": "text.js",
