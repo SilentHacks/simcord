@@ -9,6 +9,7 @@ import secrets
 from bisect import bisect_right
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..actors import MemberActor, _modal_control_map, _modal_submit_nodes
@@ -78,6 +79,48 @@ def _find_scoped_component(
     raise SetupError("control is unavailable")
 
 
+@dataclass(frozen=True)
+class ActionSpec:
+    revision_bound: bool = False
+    mutating: bool = False
+    requires_target: bool = False
+    records_target: bool = False
+    page_intent: bool = False
+
+
+ACTION_SPECS: Mapping[str, ActionSpec] = MappingProxyType(
+    {
+        "click": ActionSpec(revision_bound=True, mutating=True, requires_target=True, records_target=True),
+        "select": ActionSpec(revision_bound=True, mutating=True, requires_target=True, records_target=True),
+        "modal_submit": ActionSpec(revision_bound=True, mutating=True),
+        "viewer": ActionSpec(page_intent=True),
+        "focus": ActionSpec(records_target=True, page_intent=True),
+        "history": ActionSpec(revision_bound=True, mutating=True),
+        "send_message": ActionSpec(revision_bound=True, mutating=True),
+        "edit_message": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "delete_message": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "set_reaction": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "set_poll_votes": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "set_pinned": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "refresh": ActionSpec(page_intent=True),
+        "close": ActionSpec(page_intent=True),
+        "browse_messages": ActionSpec(revision_bound=True),
+        "browse_candidates": ActionSpec(revision_bound=True),
+        "configure_presentation": ActionSpec(revision_bound=True, page_intent=True),
+    }
+)
+
+
 @dataclass(slots=True)
 class _Action:
     sequence: int
@@ -118,43 +161,12 @@ class _ActionOps:
     _advance_presentation_time: Callable[[], None]
 
     _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "click",
-            "select",
-            "modal_submit",
-            "history",
-            "send_message",
-            "edit_message",
-            "delete_message",
-            "set_reaction",
-            "set_poll_votes",
-            "set_pinned",
-        }
+        kind for kind, spec in ACTION_SPECS.items() if spec.mutating
     )
-    _REVISION_KINDS: ClassVar[frozenset[str]] = _MUTATING_KINDS | frozenset(
-        {"browse_messages", "browse_candidates", "configure_presentation"}
+    _REVISION_KINDS: ClassVar[frozenset[str]] = frozenset(
+        kind for kind, spec in ACTION_SPECS.items() if spec.revision_bound
     )
-    _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "click",
-            "select",
-            "modal_submit",
-            "viewer",
-            "focus",
-            "history",
-            "send_message",
-            "edit_message",
-            "delete_message",
-            "set_reaction",
-            "set_poll_votes",
-            "set_pinned",
-            "refresh",
-            "close",
-            "browse_messages",
-            "browse_candidates",
-            "configure_presentation",
-        }
-    )
+    _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(ACTION_SPECS)
 
     def _on_dispatch(self, interaction: Interaction) -> None:
         task = asyncio.current_task()
@@ -351,7 +363,8 @@ class _ActionOps:
         kind = body.get("kind")
         if not isinstance(kind, str) or kind not in self._ACTION_KINDS:
             return self._reject(page, "unknown-kind", request_id=request_id, sequence=sequence)
-        if kind in self._REVISION_KINDS:
+        spec = ACTION_SPECS[kind]
+        if spec.revision_bound:
             published_revision = body.get("published_revision")
             if (
                 isinstance(published_revision, bool)
@@ -359,15 +372,9 @@ class _ActionOps:
                 or published_revision != page.revision
             ):
                 return self._reject(page, "stale-revision", request_id=request_id, sequence=sequence)
-        if kind in {
-            "click",
-            "select",
-            "edit_message",
-            "delete_message",
-            "set_reaction",
-            "set_poll_votes",
-            "set_pinned",
-        } and (isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))):
+        if spec.requires_target and (
+            isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))
+        ):
             return self._reject(page, "target-unavailable", request_id=request_id, sequence=sequence)
         token = self.env._begin_operation("preview.action")
         try:
@@ -385,16 +392,7 @@ class _ActionOps:
                     sequence=sequence,
                 )
             action = _Action(sequence, request_id, fingerprint, kind)
-            if kind in {
-                "click",
-                "select",
-                "focus",
-                "edit_message",
-                "delete_message",
-                "set_reaction",
-                "set_poll_votes",
-                "set_pinned",
-            } and isinstance(body.get("target_id"), (str, int)):
+            if spec.records_target and isinstance(body.get("target_id"), (str, int)):
                 target_id = self._target_id(body.get("target_id"), page.viewer)
                 if target_id is not None:
                     control_key = body.get("control_key")
