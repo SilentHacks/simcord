@@ -25,6 +25,15 @@ class SetupError(Exception):
     """The test mis-set-up or mis-drove the virtual world (not a bot bug)."""
 
 
+class OptionError(SetupError):
+    """A slash option value that violates its declared Discord constraints."""
+
+    def __init__(self, code: str, option: str | None, message: str) -> None:
+        self.code = code
+        self.option = option
+        super().__init__(message)
+
+
 # --- the catalog (codes per https://discord.com/developers/docs/topics/opcodes-and-status-codes) ---
 
 

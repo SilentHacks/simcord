@@ -13,7 +13,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .backend import Backend, serializers
-from .backend.errors import SetupError
+from .backend.errors import OptionError, SetupError
 from .backend.models import Interaction
 from .enums import AppCommandType, InteractionType, OptionType
 
@@ -32,15 +32,6 @@ _FILE_TYPE_GROUPS = {
     "video": {".mp4", ".mov", ".qt", ".webm"},
     "audio": {".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac"},
 }
-
-
-class OptionError(SetupError):
-    """A slash option value that violates its declared Discord constraints."""
-
-    def __init__(self, code: str, option: str | None, message: str) -> None:
-        self.code = code
-        self.option = option
-        super().__init__(message)
 
 
 def base_payload(

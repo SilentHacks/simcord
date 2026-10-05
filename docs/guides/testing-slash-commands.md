@@ -50,6 +50,64 @@ async def test_greet_slash_command(simcord_env):
 
 `InteractionResult` exposes the initial response, followups, modal, acknowledgement state, and deferred state.
 
+## Command visibility
+
+In SimCord 3.0, `MemberActor.slash()`, `.autocomplete()`, `.context_menu()`, and the DM command helpers reject commands a real user could not see. They raise `simcord.SetupError` with `Command '/x' is not visible to this user here — a real user could not run it (reason: <code>)` and a note suggesting a fix. The visibility check follows these rules:
+
+- Guild commands are limited to their guild. Global command `contexts` control guild and bot-DM use (`GUILD=0`, `BOT_DM=1`); when `contexts` is absent, legacy `dm_permission` controls bot DMs.
+- NSFW commands require an age-restricted guild channel. Threads inherit the parent's setting; NSFW commands are never visible in DMs because the user's age setting is not modeled.
+- In guilds, `Administrator` bypasses permission checks after scope, context, and NSFW checks. Other users need `USE_APPLICATION_COMMANDS`.
+- Command-level permission overrides take precedence over application-level overrides. Seed them with `guild.set_command_permissions(command, {target: True})`; `@everyone` is the guild ID, All Channels is `guild.id - 1`, and thread channel overrides inherit from the parent. Explicit command-level user/role allows bypass `default_member_permissions`; application-level allows do not. A role allow beats a role deny. `default_member_permissions="0"` allows admins or explicit command-level overrides only.
+- Discord leaves conflicting duplicate channel, user, or `@everyone` overrides for an identical target unspecified; SimCord conservatively hides the command. Role conflicts use allow-over-deny.
+
+The refusal includes one of these reason codes: `scope`, `context`, `nsfw`, `use-application-commands`, `channel-denied`, `override-denied`, or `default-member-permissions`.
+
+If `slash()` says a command is not visible, adjust the fixture or assert that refusal. Grant the required permission, seed an override with `guild.set_command_permissions(...)`, use an NSFW channel, or declare the intended contexts:
+
+```python
+@bot.tree.command()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.allowed_contexts(guilds=True, dms=True)
+async def settings(interaction: discord.Interaction) -> None:
+    ...
+
+with pytest.raises(simcord.SetupError, match="reason: default-member-permissions"):
+    await alice.slash(channel, "settings")
+```
+
+## Validate slash options
+
+`slash()` validates supplied options against the synced command definition and raises `OptionError`, a `SetupError` subclass. It checks required and unknown options, Python value types, choices, numeric `min_value`/`max_value`, string `min_length`/`max_length` (Unicode code points), channel option `channel_types`, and entity-handle kinds. INTEGER values are limited to ±(2⁵³−1); NUMBER values must be finite. Autocomplete values may be free-form even when choices are declared. During autocomplete, invalid already-filled values are dropped rather than raising: a Discord client only submits values that passed its own validation.
+
+`OptionError.code` identifies the failed check: `option-unknown`, `option-required`, `option-type`, `option-choice`, `option-range`, `option-length`, `option-integer-range`, `option-channel-type`, `option-file-type`, `option-entity`, or `command-not-leaf`. See the [API reference](../api.md#errors) for its import path and attributes.
+
+For an ATTACHMENT option, pass `(filename, bytes)`; the callback receives a real, readable `discord.Attachment`:
+
+```python
+uploaded = await alice.slash(channel, "upload", file=("photo.png", b"image bytes"))
+```
+
+`file_types` accepts the `image`, `video`, and `audio` groups or dot-prefixed extensions. SimCord checks the filename extension only; it does not inspect MIME type or file contents.
+
+## Bot-DM slash commands and visible command lists
+
+`UserHandle.slash(name, **options)` and `UserHandle.autocomplete(name, option, value, **filled)` invoke global commands whose contexts allow `BOT_DM`. Their interactions have `context == 1`:
+
+```python
+user = simcord_env.create_user("alice")
+await user.slash("help")  # The bot's callback receives interaction.context == 1.
+```
+
+Use `member.available_commands(channel)` or `user.available_commands()` to get a tuple of leaf invocation strings that are visible there and accepted by `slash()` (for example, `"config set"`):
+
+```python
+assert "ban" not in alice.available_commands(channel)
+```
+
+## Stable command IDs
+
+Like Discord's bulk overwrite, `tree.sync()` preserves a command ID when its `(name, type)` is unchanged. Permission overrides keyed by that ID therefore survive a re-sync; renaming the command or changing its type creates a different identity.
+
 ## Test deferred responses and followups
 
 ```python

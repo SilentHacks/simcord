@@ -38,6 +38,9 @@ await alice.set_pinned(message, True)          # requires manage_messages
 await alice.typing(channel)                    # triggers on_typing
 ```
 
+Editing a message preserves immutable flags: ephemeral messages stay ephemeral, and the
+`IS_COMPONENTS_V2` flag can be set but not removed. `SUPPRESS_EMBEDS` is the editable exception.
+
 !!! note "Permissions are enforced"
     `send` checks `send_messages` (or `send_messages_in_threads` inside a thread), `react`
     checks `add_reactions`, deleting someone else's message checks `manage_messages`, and so

@@ -24,6 +24,7 @@ Copy the following into your project's `AGENTS.md`, `CLAUDE.md`, or equivalent a
   views, gateway listeners, cache-dependent behavior, or sharding.
 - Exercise behavior through `simcord_env` builders and actors. Do not call a
   command callback directly when the contract depends on discord.py dispatch.
+- Slash, autocomplete, and context-menu actor calls enforce command visibility; inspect `available_commands()` or arrange permissions and contexts in the fixture, and use `UserHandle.slash()` / `.autocomplete()` for bot-DM commands.
 - Keep tests offline. Never request, invent, log, or connect with a Discord token.
 - Assert observable results from SimCord handles or the bot's real discord.py cache.
 - Keep pure business logic in ordinary unit tests and mock only application-owned

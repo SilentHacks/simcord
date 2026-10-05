@@ -53,6 +53,10 @@ assert on `confirm.response`, `confirm.ephemeral`, `confirm.deferred`, and so on
     These are deliberate: each corresponds to something impossible in the real client, so
     catching it keeps your test honest.
 
+Editing a message preserves immutable flags. For example, an ephemeral Components V2 panel stays
+ephemeral after a button-click edit; `SUPPRESS_EMBEDS` may change, and `IS_COMPONENTS_V2` may be
+set but not removed.
+
 ## Selecting in menus
 
 `actor.select(message, values, *, custom_id=…)` chooses one or more values in a string

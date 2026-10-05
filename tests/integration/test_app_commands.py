@@ -3,8 +3,8 @@ import pytest
 from discord import app_commands
 
 import simcord
+from simcord import OptionError
 from simcord.enums import AppCommandType, MessageType
-from simcord.interactions import OptionError
 
 
 async def test_bulk_sync_preserves_existing_command_ids_and_permissions(env):

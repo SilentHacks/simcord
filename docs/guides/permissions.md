@@ -77,6 +77,10 @@ async def test_cannot_ban_higher_role(simcord_env):
     assert guild.get_ban(boss) is None
 ```
 
+## Application command visibility
+
+Before an actor dispatches a slash command, autocomplete request, or context menu, SimCord checks whether that user could see the command in that guild and channel. This is separate from callback checks such as `@app_commands.checks.has_permissions(...)`; hidden commands raise `SetupError` instead of dispatching an interaction. See [slash command visibility](testing-slash-commands.md#command-visibility) for scope/context rules, permission overrides, reason codes, and fixture setup.
+
 ## Client-side checks work too
 
 Because the cache is populated through discord.py's real parsers, the client-side helpers

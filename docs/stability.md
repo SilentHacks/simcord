@@ -72,7 +72,7 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the request-observability type `HttpLogEntry` and `Env.http_requests`;
 - the assertion helpers (`assert_responded`, `assert_sent`, `assert_message`,
   `assert_error`, `assert_no_errors`);
-- the error and parity-signal types `BackendError`, `SetupError`,
+- the error and parity-signal types `BackendError`, `SetupError`, `OptionError`,
   `RouteNotImplemented` and `UnsupportedField`.
 
 Preview's public Python lifecycle, capture report fields, and readiness semantics are covered by

@@ -36,7 +36,7 @@ from .asserts import (  # noqa: E402
 from .backend import Backend  # noqa: E402, F401  — importable for advanced use, but NOT public API:
 
 # Backend's methods and payload shapes are internal and may change in any release.
-from .backend.errors import BackendError, SetupError  # noqa: E402
+from .backend.errors import BackendError, OptionError, SetupError  # noqa: E402
 from .builders import (  # noqa: E402
     ChannelHandle,
     GuildHandle,
@@ -77,6 +77,7 @@ __all__ = (
     "HttpLogEntry",
     "InteractionResult",
     "MemberActor",
+    "OptionError",
     "Preview",
     "PreviewCapture",
     "ResponseMessage",
