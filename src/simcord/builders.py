@@ -184,7 +184,7 @@ class UserHandle:
 
     async def submit_modal(self, shown: Any, values: dict[str, Any]) -> Any:
         """Submit a DM modal using strings, entity handles, booleans, or file tuples."""
-        from .actors import _submit_modal
+        from ._modal import _submit_modal
 
         return await _submit_modal(self, shown, values)
 

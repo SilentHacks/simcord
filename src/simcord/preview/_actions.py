@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from ..actors import MemberActor, _modal_control_map, _modal_submit_nodes
+from .._modal import _modal_control_map, _modal_submit_nodes
+from ..actors import MemberActor
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
