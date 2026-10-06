@@ -13,6 +13,7 @@ import discord
 
 from . import _dpy_internals
 from . import intents as _intents
+from ._settlement import _wakes_recognized_wait
 from .backend.errors import SetupError
 from .gateway import ShardRouter
 from .http import FakeHTTPClient, FakeWebhookAdapter
@@ -128,7 +129,7 @@ def _track_callback(
 
         def run_real() -> None:
             if record.handle is not None and not record.handle.cancelled():
-                if self._wakes_recognized_wait(record):
+                if _wakes_recognized_wait(self, record):
                     # The task suspended on a recognized wait after this
                     # timer was scheduled: the wake-up now belongs to the
                     # virtual clock alone.
