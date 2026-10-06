@@ -119,9 +119,10 @@ When a change affects a panel, modal, or other component presentation, install
 dispatches the real callback; do not replace it with a DOM mock. Use `await preview.refresh()` after
 Python-side mutations, wait for `window.simcordPreview.ready`, and inspect `lastAction`,
 `complete`, `calibration`, and `diagnostics` separately. Prefer `await preview.snapshot()` for
-assertions and text-only agents: it settles, republishes, and returns the protocol-2 projection dict
+assertions and text-only agents: it settles, republishes, and returns the protocol-3 projection dict
 (`messages[targetId]`, `messageIndex`, `timeline`, `diagnostics`, `lastAction`, …) without a browser.
 Browser tooling can read `viewerId`/`targetId` on `window.simcordPreview` alongside `ready`.
+For the Conversation-layout slash-command picker, read `window.simcordPreview.commandPicker` and fetch the page-authorized catalog from `GET /api/commands`.
 Pass `port=` to `env.preview` for a repeatable capability URL across reruns and pre-created SSH
 forwards. Managed captures require `simcord[screenshot]` plus `playwright install --with-deps chromium`;
 never put the capability-bearing `preview.url` in agent logs or artifacts.

@@ -247,6 +247,94 @@ The composer grows with its draft up to a bounded scrolling height. Enter sends 
 Shift+Enter inserts a newline. Enter during IME composition never sends. Its icon button provides
 the same action with an accessible Send/Save label.
 
+## Slash command picker
+
+In SimCord 3.0, type `/` at the start of the composer to browse registered chat-input commands the
+current viewer can use in this channel. The picker is available only in **Conversation**
+(`layout="channel"`), not **Isolate message** (`layout="message"`). It uses the same command
+visibility rules as `MemberActor.slash()`; permissions, command scope and context,
+NSFW restrictions, and command overrides are not reimplemented as a separate Preview policy. See
+[testing slash commands and interactions](testing-slash-commands.md#command-visibility) for those
+rules and their reason codes. It is also unavailable in edit mode or when the viewer cannot use
+application commands. If no command matches, the popup closes and the text remains an ordinary
+message draft. If the viewer can use commands but cannot send messages, the composer remains visible,
+the ordinary Send action is disabled, and its placeholder says that application commands are available.
+
+The browsing popup has the bot/application heading and one row per visible command leaf. It filters
+locally as you type; path-prefix matches rank first, then segment-prefix and substring matches, with
+invocation and command ID breaking ties. Selecting a row changes the composer into command mode and
+focuses its first required option; all-optional commands open `OPTIONS` immediately, while commands
+without options run from the chip. The command row has a context bar naming the focused option (or
+the command when focus is on its chip), a visible **×** exit, the bot avatar, a `/invocation` chip,
+and one pill for each required option, plus any optional option you add. The trailing hint says
+`+N options` before any option pill is shown, or
+`+N more` after pills are present. Exiting restores `/invocation` as ordinary composer text; Escape
+closes a suggestion popup but does not discard a command draft.
+
+Suggestions use `OPTIONS` for choices, Boolean values and optional options; entity suggestions use
+`MEMBERS`, `ROLES` or `CHANNELS`; autocomplete results use `OPTIONS MATCHING <value>`. Entity choices
+are authorized candidates for this viewer, not a locally copied member list. Attachment options use
+a file picker and show a removable filename. Each file is limited to 10 MiB and all command
+attachments together to 25 MiB per run; declared `file_types` are checked by extension. Command runs
+with attachments use multipart parts named `file:<optionName>`.
+
+Option fields validate on blur and again on submit. Python's `OptionError` code set includes
+`option-type`, `option-choice`, `option-range`, `option-length`, `option-integer-range`,
+`option-channel-type`, `option-file-type`, `option-entity`, `option-required`, `option-unknown`, and
+`command-not-leaf`; browser feedback uses the same validation codes where it can validate locally,
+and Python remains authoritative. A rejected server-side option check is reported as
+`command-option-invalid`, with the option name in diagnostic `subject.commandOption`, and the draft
+stays available to correct.
+
+Enter commits the active suggestion when a popup has one, otherwise it validates and runs the
+command as a real interaction through the viewer's SimCord actor. The existing receipt and Activity
+surfaces report the result; **View response**, followup links and modal presentation use the existing
+Preview flow. Ephemeral output remains visible only to its authorized invoker through the existing
+View response and receipt rules. A deferred command is not shown as a “thinking…” timeline message.
+
+| Key | Browsing commands | Composing a command |
+| --- | --- | --- |
+| ↑ / ↓ | Move the active command row | Move through an open suggestion list |
+| Enter | Select the active command | Commit the active suggestion, or validate and run |
+| Tab | Select the active command | Move to the next option pill |
+| Shift+Tab | — | Move to the previous pill; from the first pill, focus the command chip |
+| Escape | Close the picker and keep `/` text | Close the suggestion popup only; keep the draft |
+| Backspace | Edit the composer text normally | In an empty first pill, focus the chip; on the chip, exit command mode |
+| × button | — | Exit command mode and restore `/invocation` as text |
+
+DM previews use a `UserHandle` as the viewer; the DM header and message placeholder identify the bot,
+and only bot-DM commands visible to that viewer are offered. If the bot command tree contains
+chat-input commands that have not been registered with SimCord, `commands-unsynced` advises calling
+`await bot.tree.sync()`. The picker lists only registered commands even when `strict_sync=False`.
+
+The match ranking, autocomplete debounce timing and visual details are uncalibrated: there is no
+Discord reference capture for this picker, and the human screen-reader walkthrough is still pending.
+This feature does not add a picker to message layout, built-in Discord commands, context-menu Apps,
+a deferred “thinking…” timeline message or translated names; command and option names use their
+untranslated defaults. There is no channel/DM navigation inside one Preview session.
+
+### Agent-visible picker status
+
+`window.simcordPreview` remains an immutable schema-1 / protocol-3 status surface and includes
+`commandPicker`, so browser agents can inspect picker state without scraping pixels:
+
+```javascript
+commandPicker: {
+  state,                 // unavailable | closed | browsing | composing | pending
+  catalog: { fingerprint, state, truncated }, // state: idle | loading | ready | failed
+  query, entryKeys, activeEntryKey,
+  draft: { commandId, invocation, schemaFingerprint, available, focusedOption,
+           submittable, missingRequired, droppedOptions, options },
+  autocomplete: { option, state, choiceCount }
+}
+```
+
+`entryKeys` contains at most 50 visible rows. `ready` remains false while an open picker is waiting
+for its catalog. Each draft option reports `name`, `type`, `required`, `present`, `valid`, `error` and
+`display`; attachment display data contains a filename and size, never file bytes. `draft` is `null`
+outside command composition, and autocomplete state is one of
+`idle`, `loading`, `answered` or `failed`.
+
 ## Text, code and emoji
 
 Preview parses message and Text Display bodies on the server into safe tokens. Message bodies and
@@ -380,6 +468,8 @@ before unbounded buffering; bytes are never silently truncated:
 | JSON action/envelope (including multipart JSON) | 256 KiB |
 | Entire multipart request, including boundaries | 26 MiB |
 | One uploaded file / aggregate uploaded bytes per action | 10 MiB / 25 MiB |
+| Command catalog | 1,000 leaves / 2 MiB; larger catalogs are truncated |
+| Command attachments per file / per run | 10 MiB / 25 MiB |
 | Multipart files / total parts | 10 files / 11 parts |
 | Retained session media (source, normalized, pinned; shared blobs count once) | 128 MiB |
 | Media decoder source / normalized display / still capture | 10 MiB / 10 MiB / 64 MiB |
@@ -450,10 +540,10 @@ disabled, deleted, or invalid controls are rejected before admission and are nev
 retried. A disconnected client does not cancel an admitted callback; delivery failure is separate
 from callback settlement.
 
-Revision-bound actions (`click`, `select`, `modal_submit`, `history`, `send_message`, `edit_message`,
-`delete_message`, `set_reaction`, `set_poll_votes`, `set_pinned`, `browse_messages`,
-`browse_candidates`, and `configure_presentation`) must echo the page's current
-`publishedRevision`; a mismatch is rejected as `stale-revision`. Per-message actions also carry the
+Revision-bound actions (`click`, `select`, `modal_submit`, `autocomplete_command`, `run_command`,
+`history`, `send_message`, `edit_message`, `delete_message`, `set_reaction`, `set_poll_votes`,
+`set_pinned`, `browse_messages`, `browse_candidates`, and `configure_presentation`) must echo the
+page's current `publishedRevision`; a mismatch is rejected as `stale-revision`. Per-message actions also carry the
 authorized message `target_id`.
 
 Each receipt retains `requestId`, `sequence`, `expectedSequence`, `rejected`, `dispatch`,
@@ -530,6 +620,36 @@ message IDs, names, message or draft text, filenames, URLs, capabilities, raw ex
 and PNG data. Treat snapshots, executable recipes and screenshots as private even when they omit a
 capability.
 
+## Protocol 3 command-picker reference
+
+The current Preview protocol remains version 3, and `window.simcordPreview` remains status schema 1.
+In a snapshot, top-level `commands` is a small manifest `{state, fingerprint, count}`; `state` is
+`available`, `empty` or `unavailable`. `channel.canUseApplicationCommands` reports the viewer's
+command permission, and `channel.recipient` is the DM recipient identity or `null` outside a DM.
+The full catalog is a separate read, rather than repeated in every state snapshot.
+
+`GET /api/commands` returns the page-authorized catalog: `protocolVersion`, `fingerprint`, `state`,
+`truncated`, `application` (`id`, `name`, `avatarAssetId`) and `entries`. Each entry describes a
+visible command leaf with its ID, invocation path, scope, schema fingerprint and typed options. The
+schema defines this wire shape at `$defs.commandCatalog`. The response is protected by the page
+capability and context. Catalogs are capped at 1,000 leaves and 2 MiB; an oversized catalog is marked
+`truncated`.
+
+The two additional revision-bound action kinds are `autocomplete_command` and `run_command`. Both
+carry `command_id`, `path` and `schema_fingerprint`; autocomplete also carries `focused`, `value` and
+currently valid filled `options`, while run carries `options`. Command uploads travel as multipart
+parts named `file:<optionName>` rather than JSON bytes. Every receipt has a nullable `command` field
+beside `target`: when present it is `{commandId, invocation}`. The diagnostic subject union adds
+`{commandOption}` beside the existing `{messageId, controlKey?}` form.
+
+Command diagnostics include `commands-unsynced` (call `await bot.tree.sync()`), `command-unavailable`,
+`command-changed`, `command-option-invalid` and `autocomplete-unanswered`. A
+`command-option-invalid` diagnostic identifies the relevant option without exposing raw request or bot
+text. The schema's `actionKind` enum contains 19 kinds: `click`, `select`, `modal_submit`,
+`autocomplete_command`, `run_command`, `viewer`, `focus`, `history`, `send_message`, `edit_message`,
+`delete_message`, `set_reaction`, `set_poll_votes`, `set_pinned`, `refresh`, `close`,
+`browse_messages`, `browse_candidates` and `configure_presentation`.
+
 ## Migrating preview consumers to protocol 3
 
 Protocol 3 is the current schema and a breaking cutover: it changes the message navigation page and
@@ -556,7 +676,7 @@ with only the requested page. The `protocol.schema.json` file also defines the i
 and allowlisted support-report shapes; there is no diagnostics/report upload endpoint.
 
 
-The packaged schema describes all 17 action kinds at `#/$defs/actionRequest`.
+The packaged schema describes all 19 action kinds at `#/$defs/actionRequest`.
 Unknown extension metadata remains accepted. Schema validity does not establish
 authorization, freshness, control availability, or replay admission; runtime checks
 remain authoritative. Modal file bytes use multipart transport rather than JSON.

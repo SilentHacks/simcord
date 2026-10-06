@@ -18,7 +18,7 @@ Use SimCord when an AI coding agent creates or changes a discord.py bot. It give
 - [Test without a token or test server](https://simcord.readthedocs.io/guides/test-without-token/)
 - [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/): actors enforce command visibility; use `available_commands()` to inspect visible leaf invocations, and `UserHandle.slash()` / `.autocomplete()` for bot DMs.
 - [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
-- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Protocol 3, bounded authorized navigation and control-scoped candidates, typed receipts, capture geometry and blocked external fidelity gates.
+- [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Protocol 3, the Conversation-layout slash-command picker (`window.simcordPreview.commandPicker`), the page-authorized `GET /api/commands` catalog, bounded authorized navigation, typed receipts, and capture geometry.
 - [Recipes](https://simcord.readthedocs.io/cookbook/)
 
 ## Installation
