@@ -349,7 +349,7 @@ async def test_autocomplete_answered_unanswered_partial_values_and_ledger(env, c
                 _interaction=fake_interaction,
             )
 
-        monkeypatch.setattr("simcord.preview._actions._autocomplete_result", many_choices)
+        monkeypatch.setattr("simcord.preview._action_plans._autocomplete_result", many_choices)
         limited = await preview._action(
             page.id,
             _command_body(
@@ -371,7 +371,7 @@ async def test_autocomplete_answered_unanswered_partial_values_and_ledger(env, c
         async def unanswered(*args, **kwargs):
             return SimpleNamespace(autocomplete_choices=None, _interaction=fake_interaction)
 
-        monkeypatch.setattr("simcord.preview._actions._autocomplete_result", unanswered)
+        monkeypatch.setattr("simcord.preview._action_plans._autocomplete_result", unanswered)
         unanswered_receipt = await preview._action(
             page.id,
             _command_body(
@@ -392,7 +392,7 @@ async def test_autocomplete_answered_unanswered_partial_values_and_ledger(env, c
         async def callback_error(*args, **kwargs):
             raise RuntimeError("private bot callback details")
 
-        monkeypatch.setattr("simcord.preview._actions._autocomplete_result", callback_error)
+        monkeypatch.setattr("simcord.preview._action_plans._autocomplete_result", callback_error)
         failed = await preview._action(
             page.id,
             _command_body(

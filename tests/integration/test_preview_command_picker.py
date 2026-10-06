@@ -154,9 +154,9 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                     "() => window.simcordPreview.commandPicker.state === 'composing'"
                 )
                 tag = page.locator('.command-option-input[data-option="name"]')
-                from simcord.preview import _actions
+                from simcord.preview import _action_plans
 
-                original_autocomplete = _actions._autocomplete_result
+                original_autocomplete = _action_plans._autocomplete_result
                 fake_interaction = env.backend.new_interaction(4, channel.id, alice.id, env.guild.id)
 
                 async def unanswered(actor, command_channel, invocation, focused, value, options, **kwargs):
@@ -166,7 +166,7 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                         actor, command_channel, invocation, focused, value, options, **kwargs
                     )
 
-                monkeypatch.setattr(_actions, "_autocomplete_result", unanswered)
+                monkeypatch.setattr(_action_plans, "_autocomplete_result", unanswered)
                 await tag.fill("silent")
                 await page.wait_for_function(
                     "() => window.simcordPreview.commandPicker.autocomplete.state === 'failed'"
