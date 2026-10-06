@@ -12,12 +12,13 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from ..actors import MemberActor, _modal_control_map, _modal_submit_nodes
+from ..actors import MemberActor, _autocomplete_result, _modal_control_map, _modal_submit_nodes
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
 from ..components import validate_modal
-from ..enums import SELECT_TYPES, ComponentType
+from ..enums import SELECT_TYPES, ComponentType, OptionType
+from ..interactions import OptionError, check_options, parse_option_input, validate_option_value
 from ..results import ResponseMessage
 from ._diagnostics import make_diagnostic
 
@@ -93,6 +94,8 @@ ACTION_SPECS: Mapping[str, ActionSpec] = MappingProxyType(
         "click": ActionSpec(revision_bound=True, mutating=True, requires_target=True, records_target=True),
         "select": ActionSpec(revision_bound=True, mutating=True, requires_target=True, records_target=True),
         "modal_submit": ActionSpec(revision_bound=True, mutating=True),
+        "autocomplete_command": ActionSpec(revision_bound=True),
+        "run_command": ActionSpec(revision_bound=True, mutating=True),
         "viewer": ActionSpec(page_intent=True),
         "focus": ActionSpec(records_target=True, page_intent=True),
         "history": ActionSpec(revision_bound=True, mutating=True),
@@ -131,6 +134,10 @@ class _Action:
     interaction: Interaction | None = None
     correlation: str = field(default_factory=lambda: "c_" + secrets.token_urlsafe(12))
     target: dict[str, str | None] | None = None
+    command: dict[str, str] | None = None
+    autocomplete_focused: str | None = None
+    autocomplete_answered: bool | None = None
+    record_activity: bool = True
     dispatched: bool = False
     uncertain: bool = False
     outcomes: list[dict[str, Any]] = field(default_factory=list)
@@ -204,8 +211,10 @@ class _ActionOps:
         uncertain: bool = False,
         correlation: str | None = None,
         outcomes: list[dict[str, Any]] | None = None,
+        command: dict[str, str] | None = None,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "requestId": request_id,
             "sequence": sequence,
             "expectedSequence": page.last_sequence,
@@ -218,10 +227,14 @@ class _ActionOps:
             "revision": page.revision,
             "diagnostics": diagnostics,
             "target": target,
+            "command": command,
             "uncertain": uncertain,
             "correlation": correlation or "c_" + secrets.token_urlsafe(12),
             "outcomes": outcomes or [],
         }
+        if result is not None:
+            payload["result"] = result
+        return payload
 
     @staticmethod
     def _append_activity(page: _Page, receipt: dict[str, Any], action: _Action | None) -> None:
@@ -238,6 +251,7 @@ class _ActionOps:
         *,
         request_id: Any = None,
         sequence: Any = None,
+        subject: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """A pre-admission rejection: never consumes the per-page sequence."""
         correlation = "c_" + secrets.token_urlsafe(12)
@@ -249,7 +263,7 @@ class _ActionOps:
             dispatch="not_dispatched",
             acknowledgement="pending",
             settlement="rejected",
-            diagnostics=[make_diagnostic(code, correlation=correlation)],
+            diagnostics=[make_diagnostic(code, correlation=correlation, subject=subject)],
             correlation=correlation,
         )
         page.last_action = result
@@ -349,6 +363,7 @@ class _ActionOps:
                         uncertain=latest.uncertain,
                         correlation=latest.correlation,
                         outcomes=latest.outcomes,
+                        command=latest.command,
                     )
                 return self._replay_response(page, latest)
             return self._reject(page, "stale-sequence", request_id=request_id, sequence=sequence)
@@ -385,13 +400,34 @@ class _ActionOps:
             except (SetupError, BackendError, ValueError) as exc:
                 from ._snapshot import _QueryError
 
+                code = (
+                    exc.code
+                    if isinstance(exc, _QueryError)
+                    else "command-option-invalid"
+                    if kind == "run_command" and isinstance(exc, OptionError)
+                    else "validation-failed"
+                )
+                subject = (
+                    {"commandOption": exc.option}
+                    if kind == "run_command" and isinstance(exc, OptionError) and exc.option is not None
+                    else None
+                )
                 return self._reject(
                     page,
-                    exc.code if isinstance(exc, _QueryError) else "validation-failed",
+                    code,
                     request_id=request_id,
                     sequence=sequence,
+                    subject=subject,
                 )
             action = _Action(sequence, request_id, fingerprint, kind)
+            if kind in {"autocomplete_command", "run_command"}:
+                path = cast(list[str], body["path"])
+                action.command = {
+                    "commandId": cast(str, body["command_id"]),
+                    "invocation": " ".join(path),
+                }
+                if kind == "autocomplete_command":
+                    action.autocomplete_focused = cast(str, body["focused"])
             if spec.records_target and isinstance(body.get("target_id"), (str, int)):
                 target_id = self._target_id(body.get("target_id"), page.viewer)
                 if target_id is not None:
@@ -546,7 +582,7 @@ class _ActionOps:
                     "modal_handle": modal_handle,
                     "selected_values": selected_values,
                 }
-                if modal_handle is None:
+                if modal_handle is None and not control_key.startswith("command:"):
                     target_id = control_key.split(":", 2)[1]
                     action.target = {"messageId": target_id, "controlKey": control_key}
                 result = self._finish_action(page, action, "settled", cursor)
@@ -713,6 +749,135 @@ class _ActionOps:
 
             return run_send
         actor = page.viewer
+        if kind in {"autocomplete_command", "run_command"}:
+            from ._commands import command_permission, entry_for_leaf, visible_leaf
+            from ._snapshot import _QueryError
+
+            if page.layout != "channel" or page.status != "current":
+                raise _QueryError("command-unavailable")
+            if not command_permission(cast("Preview", self), page):
+                raise _QueryError("command-unavailable")
+            resolved = visible_leaf(cast("Preview", self), page, body.get("command_id"), body.get("path"))
+            if resolved is None:
+                raise _QueryError("command-unavailable")
+            root, path, leaf = resolved
+            entry = entry_for_leaf(root, path, leaf)
+            if body.get("schema_fingerprint") != entry["schemaFingerprint"]:
+                raise _QueryError("command-changed")
+            invocation = entry["invocation"]
+            if kind == "autocomplete_command":
+                focused = body.get("focused")
+                value = body.get("value")
+                raw_options = body.get("options")
+                if (
+                    not isinstance(focused, str)
+                    or not isinstance(value, str)
+                    or not isinstance(raw_options, Mapping)
+                ):
+                    raise SetupError("autocomplete command input is unavailable")
+                declared = {option["name"]: option for option in leaf.get("options") or []}
+                focused_option = declared.get(focused)
+                if focused_option is None or not focused_option.get("autocomplete"):
+                    raise _QueryError("command-unavailable")
+                filled: dict[str, Any] = {}
+                for name, raw in raw_options.items():
+                    option = declared.get(name) if isinstance(name, str) else None
+                    if option is None or name == focused:
+                        continue
+                    try:
+                        filled[name] = self._command_option_value(page, invocation, option, raw)
+                    except (OptionError, SetupError, BackendError, ValueError):
+                        continue
+
+                async def run_autocomplete(action: _Action, cursor: int) -> dict[str, Any]:
+                    result = await _autocomplete_result(
+                        actor,
+                        self.channel,
+                        invocation,
+                        focused,
+                        value,
+                        filled,
+                    )
+                    offered = result.autocomplete_choices
+                    answered = offered is not None
+                    action.autocomplete_answered = answered
+                    choices = [
+                        {"name": item["name"], "value": item["value"]}
+                        for item in (offered or [])[:25]
+                        if isinstance(item, Mapping)
+                        and isinstance(item.get("name"), str)
+                        and isinstance(item.get("value"), (str, int, float, bool))
+                    ]
+                    action.record_activity = not answered
+                    finished = self._finish_action(
+                        page,
+                        action,
+                        "settled" if answered else "failed",
+                        cursor,
+                        interaction=result._interaction,
+                        extra_diagnostics=(
+                            []
+                            if answered
+                            else [make_diagnostic("autocomplete-unanswered", correlation=action.correlation)]
+                        ),
+                    )
+                    finished["result"] = {
+                        "command": dict(action.command or {}),
+                        "focused": focused,
+                        "answered": answered,
+                        "choices": choices,
+                    }
+                    action.response = finished
+                    return finished
+
+                return run_autocomplete
+
+            raw_options = body.get("options")
+            if not isinstance(raw_options, Mapping):
+                raise SetupError("command options must be an object")
+            parsed: dict[str, Any] = {}
+            upload_bytes = 0
+            declared = {option["name"]: option for option in leaf.get("options") or []}
+            for name, raw in raw_options.items():
+                if not isinstance(name, str) or name not in declared:
+                    raise OptionError(
+                        "option-unknown", str(name), f"Command '{invocation}' has no such option"
+                    )
+                value = self._command_option_value(page, invocation, declared[name], raw)
+                if OptionType(declared[name]["type"]) == OptionType.ATTACHMENT:
+                    upload_bytes += len(value[1])
+                    if upload_bytes > 25 * 1024 * 1024:
+                        raise OptionError(
+                            "option-type", name, "command attachments exceed the 25 MiB aggregate limit"
+                        )
+                parsed[name] = value
+            parsed = check_options(invocation, leaf, parsed)
+            if isinstance(actor, MemberActor):
+
+                async def run_command(action: _Action, cursor: int) -> dict[str, Any]:
+                    return await self._run_interaction_action(
+                        page,
+                        action,
+                        cursor,
+                        actor.slash(self.channel, invocation, **parsed),
+                        republish_all=True,
+                    )
+            elif (
+                isinstance(actor, UserHandle)
+                and actor._env.backend.dm_channels.get(actor.id) == page.channel_id
+            ):
+
+                async def run_command(action: _Action, cursor: int) -> dict[str, Any]:
+                    return await self._run_interaction_action(
+                        page,
+                        action,
+                        cursor,
+                        actor.slash(invocation, **parsed),
+                        republish_all=True,
+                    )
+            else:
+                raise _QueryError("command-unavailable")
+            return run_command
         if page.status != "current" or not can_access_channel(self.env, page.channel_id, actor, history=True):
             raise SetupError("viewer cannot access current channel history")
         if kind == "modal_submit":
@@ -840,7 +1005,7 @@ class _ActionOps:
             custom_id = str(component["custom_id"])
 
             async def run_click(action: _Action, cursor: int) -> dict[str, Any]:
-                return await self._run_component_action(
+                return await self._run_interaction_action(
                     page,
                     action,
                     cursor,
@@ -857,7 +1022,7 @@ class _ActionOps:
         )
 
         async def run_select(action: _Action, cursor: int) -> dict[str, Any]:
-            return await self._run_component_action(
+            return await self._run_interaction_action(
                 page,
                 action,
                 cursor,
@@ -866,8 +1031,14 @@ class _ActionOps:
 
         return run_select
 
-    async def _run_component_action(
-        self, page: _Page, action: _Action, cursor: int, awaited: Any
+    async def _run_interaction_action(
+        self,
+        page: _Page,
+        action: _Action,
+        cursor: int,
+        awaited: Any,
+        *,
+        republish_all: bool = False,
     ) -> dict[str, Any]:
         result = await awaited
         if result.modal is not None:
@@ -876,7 +1047,12 @@ class _ActionOps:
             page.modal = result
             page.modal_handle = "m_" + secrets.token_urlsafe(12)
         finished = self._finish_action(page, action, "settled", cursor, interaction=result._interaction)
-        self._publish(page)
+        if republish_all:
+            self._publish_message_pages()
+            if page not in self._pages.values():
+                self._publish(page)
+        else:
+            self._publish(page)
         return finished
 
     def _target_message(self, page: _Page, target_id: int | None = None) -> Message:
@@ -891,12 +1067,57 @@ class _ActionOps:
             raise SetupError("authorized target is unavailable")
         return message
 
+    def _command_option_value(self, page: _Page, command_name: str, option: dict[str, Any], raw: Any) -> Any:
+        option_type = OptionType(option["type"])
+        if option_type in {
+            OptionType.USER,
+            OptionType.ROLE,
+            OptionType.CHANNEL,
+            OptionType.MENTIONABLE,
+        }:
+            if not isinstance(raw, str):
+                raise OptionError("option-type", option["name"], "expects an entity ID string")
+            component_type = {
+                OptionType.USER: ComponentType.USER_SELECT,
+                OptionType.ROLE: ComponentType.ROLE_SELECT,
+                OptionType.MENTIONABLE: ComponentType.MENTIONABLE_SELECT,
+                OptionType.CHANNEL: ComponentType.CHANNEL_SELECT,
+            }[option_type]
+            component: dict[str, Any] = {
+                "type": int(component_type),
+                "min_values": 1,
+                "max_values": 1,
+            }
+            if option_type == OptionType.CHANNEL and option.get("channel_types"):
+                component["channel_types"] = list(option["channel_types"])
+            try:
+                values = self._select_values(
+                    page,
+                    None,
+                    [raw],
+                    None,
+                    component_override=component,
+                )
+            except (SetupError, BackendError, ValueError):
+                raise OptionError(
+                    "option-entity", option["name"], "does not reference an authorized entity"
+                ) from None
+            return validate_option_value(command_name, option, values[0])
+        if option_type == OptionType.ATTACHMENT:
+            if isinstance(raw, tuple) and len(raw) == 2 and isinstance(raw[1], bytes):
+                if len(raw[1]) > 10 * 1024 * 1024:
+                    raise OptionError("option-type", option["name"], "exceeds the 10 MiB per-file limit")
+            return validate_option_value(command_name, option, raw)
+        return parse_option_input(command_name, option, raw)
+
     def _select_values(
         self,
         page: _Page,
-        message: Message,
+        message: Message | None,
         values: Any,
         control_key: Any,
+        *,
+        component_override: Mapping[str, Any] | None = None,
     ) -> list[Any]:
         if not isinstance(values, list):
             raise SetupError("select values must be a list")
@@ -905,11 +1126,16 @@ class _ActionOps:
                 raise SetupError("select values must be unique")
         except TypeError as exc:
             raise SetupError("select values must be scalar") from exc
-        component = _find_scoped_component(
-            message,
-            control_key,
-            types=tuple(int(item) for item in SELECT_TYPES),
-        )
+        if component_override is not None:
+            component = dict(component_override)
+        elif message is not None:
+            component = _find_scoped_component(
+                message,
+                control_key,
+                types=tuple(int(item) for item in SELECT_TYPES),
+            )
+        else:
+            raise SetupError("select control is unavailable")
         kind = ComponentType(component["type"])
         minimum = component.get("min_values", 1)
         maximum = component.get("max_values", 1)
@@ -1091,6 +1317,7 @@ class _ActionOps:
         error: BaseException | None = None,
         *,
         interaction: Interaction | None = None,
+        extra_diagnostics: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         interaction = interaction or action.interaction
         errors = self.env.errors_since(cursor)
@@ -1103,6 +1330,15 @@ class _ActionOps:
             diagnostics.append(make_diagnostic("action-timeout", correlation=action.correlation))
         elif settlement == "cancelled":
             diagnostics.append(make_diagnostic("action-cancelled", correlation=action.correlation))
+        diagnostics.extend(extra_diagnostics or [])
+        if action.kind == "autocomplete_command":
+            if action.autocomplete_answered is False or errors or error is not None:
+                if not any(item.get("code") == "autocomplete-unanswered" for item in diagnostics):
+                    diagnostics.append(
+                        make_diagnostic("autocomplete-unanswered", correlation=action.correlation)
+                    )
+            if errors or error is not None:
+                action.record_activity = True
         action.dispatched = action.dispatched or interaction is not None
         dispatch = "dispatched" if action.dispatched else "not_dispatched"
         ack = (
@@ -1130,11 +1366,23 @@ class _ActionOps:
             uncertain=action.uncertain,
             correlation=action.correlation,
             outcomes=action.outcomes,
+            command=action.command,
         )
+        if action.kind == "autocomplete_command":
+            result["result"] = {
+                "command": dict(action.command or {}),
+                "focused": action.autocomplete_focused or "",
+                "answered": action.autocomplete_answered is True,
+                "choices": [],
+            }
         page.last_action = result
         action.response = result
-        self._append_activity(page, result, action)
-        page.pending_receipt_revision = settlement == "settled" and action.kind != "close"
+        if action.record_activity:
+            self._append_activity(page, result, action)
+        page.pending_receipt_revision = settlement == "settled" and action.kind not in {
+            "close",
+            "autocomplete_command",
+        }
         return result
 
 

@@ -1786,6 +1786,24 @@ def _candidates(
                 )
             )
         component.pop("default_values", None)
+    for control_key in tuple(page.candidate_queries):
+        if not control_key.startswith("command:"):
+            continue
+        try:
+            component, modal_handle = candidate_control(preview, page, control_key, None)
+            result[control_key] = _candidate_descriptor(
+                preview, page, component, control_key, modal_handle=modal_handle
+            )
+        except _QueryError as exc:
+            if exc.code == "stale-cursor":
+                page.candidate_queries[control_key]["cursor"] = None
+                component, modal_handle = candidate_control(preview, page, control_key, None)
+                result[control_key] = _candidate_descriptor(
+                    preview, page, component, control_key, modal_handle=modal_handle
+                )
+                diagnostics.append(make_diagnostic("stale-cursor", state="recovered"))
+            else:
+                diagnostics.append(make_diagnostic("command-unavailable", state="recovered"))
     page.candidate_queries = {key: value for key, value in page.candidate_queries.items() if key in result}
     return result
 
@@ -1795,6 +1813,53 @@ def candidate_control(
 ) -> tuple[dict[str, Any], str | None]:
     if not can_access_channel(preview.env, page.channel_id, page.viewer, history=True):
         raise _QueryError("control-unavailable")
+    if control_key.startswith("command:"):
+        match = re.fullmatch(
+            r"command:([0-9]{1,20}):([a-z0-9_-]+(?:\.[a-z0-9_-]+)*):option:([a-z0-9_-]+)",
+            control_key,
+        )
+        if (
+            match is None
+            or modal_handle is not None
+            or page.modal is not None
+            or str(int(match.group(1))) != match.group(1)
+            or page.layout != "channel"
+            or page.status != "current"
+        ):
+            raise _QueryError("control-unavailable")
+        command_id, dotted_path, option_name = match.groups()
+        entry_key = f"{command_id}:{dotted_path}"
+        entries = page.command_catalog.get("entries", [])
+        catalog_entry = next(
+            (entry for entry in entries if isinstance(entry, Mapping) and entry.get("key") == entry_key),
+            None,
+        )
+        if catalog_entry is None:
+            raise _QueryError("control-unavailable")
+        from ._commands import entry_for_leaf, visible_leaf
+
+        resolved = visible_leaf(preview, page, command_id, dotted_path.split("."))
+        if resolved is None:
+            raise _QueryError("control-unavailable")
+        root, path, leaf = resolved
+        if entry_for_leaf(root, path, leaf)["schemaFingerprint"] != catalog_entry.get("schemaFingerprint"):
+            raise _QueryError("control-unavailable")
+        option = next(
+            (
+                item
+                for item in leaf.get("options") or []
+                if item.get("name") == option_name and int(item.get("type", -1)) in {6, 7, 8, 9}
+            ),
+            None,
+        )
+        if option is None:
+            raise _QueryError("control-unavailable")
+        option_type = int(option["type"])
+        component_type = {6: 5, 8: 6, 9: 7, 7: 8}[option_type]
+        component: dict[str, Any] = {"type": component_type}
+        if option_type == 7 and option.get("channel_types"):
+            component["channel_types"] = list(option["channel_types"])
+        return component, None
     roots: Any
     scope: str
     if modal_handle is not None:
@@ -1840,6 +1905,10 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         channel = None
     allowed = channel is not None and can_access_channel(env, channel.id, page.viewer, history=True)
     page.referenced_assets.clear()
+    application = page.command_catalog.get("application")
+    if isinstance(application, Mapping) and isinstance(application.get("avatarAssetId"), str):
+        if application["avatarAssetId"] in page.assets:
+            page.referenced_assets.add(application["avatarAssetId"])
     page.referenced_messages.clear()
     visible: list[Message] = []
     if channel is not None and allowed:
@@ -2003,8 +2072,22 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
                 make_diagnostic("sticker-asset-unavailable", subject={"messageId": message_id})
             )
     candidates = _candidates(preview, page, candidate_components, diagnostics) if allowed else {}
+    if not allowed:
+        for key in tuple(page.candidate_queries):
+            if key.startswith("command:"):
+                page.candidate_queries.pop(key, None)
+                diagnostics.append(make_diagnostic("command-unavailable", state="recovered"))
     diagnostics = list({item["id"]: item for item in diagnostics}.values())
     can_send = channel is not None and allowed and _can_send_message(preview, page, channel)
+    from ._commands import command_permission
+
+    can_use_commands = channel is not None and allowed and command_permission(preview, page)
+    catalog = page.command_catalog
+    command_manifest = {
+        "state": catalog.get("state", "unavailable" if not allowed else "empty"),
+        "fingerprint": catalog.get("fingerprint", "cf_" + hashlib.sha256(b"[]").hexdigest()[:32]),
+        "count": len(catalog.get("entries", [])) if allowed else 0,
+    }
     exact_profile = {"width": page.width, "height": page.height}
     host = {"width": page.host_width, "height": page.host_height}
     viewport = (
@@ -2037,6 +2120,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         },
         "protocolVersion": _PROTOCOL_VERSION,
         "publishedRevision": page.revision,
+        "commands": command_manifest,
         "context": {"id": page.id, "generation": page.generation},
         "botGeneration": env._generation,
         "viewers": [
@@ -2061,6 +2145,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             "type": int(channel.type) if channel is not None and allowed else None,
             "topic": channel.topic if channel is not None and allowed else None,
             "canSendMessages": can_send,
+            "canUseApplicationCommands": can_use_commands,
         },
         "targetId": target_id,
         "messages": projected,

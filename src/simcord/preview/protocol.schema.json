@@ -8,7 +8,7 @@
     "runtimeVersion", "protocolVersion", "publishedRevision", "publication", "context", "botGeneration", "viewers",
     "viewerId", "channelId", "channel", "layout", "targetId", "messageIndex", "navigation", "messages",
     "timeline", "history", "modal", "entities", "candidates", "assets", "profile", "presentation",
-    "status", "diagnostics", "lastAction", "activity"
+    "status", "diagnostics", "lastAction", "activity", "commands"
   ],
   "properties": {
     "runtimeVersion": { "type": "string" },
@@ -27,12 +27,21 @@
     "layout": { "enum": ["message", "channel"] },
     "channel": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "name", "recipient", "guildId", "type", "topic", "canSendMessages"],
+      "required": ["id", "name", "recipient", "guildId", "type", "topic", "canSendMessages", "canUseApplicationCommands"],
       "properties": {
         "id": { "type": "string" }, "name": { "type": ["string", "null"] },
         "recipient": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/identity" }] },
         "guildId": { "type": ["string", "null"] }, "type": { "type": ["integer", "null"] },
-        "topic": { "type": ["string", "null"] }, "canSendMessages": { "type": "boolean" }
+        "topic": { "type": ["string", "null"] }, "canSendMessages": { "type": "boolean" },
+        "canUseApplicationCommands": { "type": "boolean" }
+      }
+    },
+    "commands": {
+      "type": "object", "additionalProperties": false, "required": ["state", "fingerprint", "count"],
+      "properties": {
+        "state": { "enum": ["available", "empty", "unavailable"] },
+        "fingerprint": { "type": "string", "pattern": "^cf_[a-f0-9]{32}$" },
+        "count": { "type": "integer", "minimum": 0, "maximum": 1000 }
       }
     },
     "targetId": { "type": ["string", "null"] },
@@ -141,13 +150,56 @@
         "id": { "type": "string" }, "code": { "type": "string" }, "category": { "type": "string" },
         "severity": { "enum": ["info", "warning", "error", "critical"] }, "state": { "enum": ["current", "recovered"] },
         "complete": { "type": "boolean" }, "message": { "type": "string" }, "remediation": { "type": "string" },
-        "subject": { "type": "object", "additionalProperties": false, "required": ["messageId"], "properties": { "messageId": { "type": "string" }, "controlKey": { "type": "string" } } },
+        "subject": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": false, "required": ["messageId"], "properties": { "messageId": { "type": "string" }, "controlKey": { "type": "string" } } },
+            { "type": "object", "additionalProperties": false, "required": ["commandOption"], "properties": { "commandOption": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" } } }
+          ]
+        },
         "correlation": { "type": "string" }
       }
     },
     "actionTarget": {
       "type": ["object", "null"], "additionalProperties": false,
       "required": ["messageId", "controlKey"], "properties": { "messageId": { "type": "string" }, "controlKey": { "type": ["string", "null"] } }
+    },
+    "commandReceipt": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["commandId", "invocation"],
+      "properties": { "commandId": { "type": "string", "pattern": "^[0-9]{1,20}$" }, "invocation": { "type": "string" } }
+    },
+    "commandCatalog": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "fingerprint", "state", "truncated", "application", "entries"],
+      "properties": {
+        "protocolVersion": { "const": 3 }, "fingerprint": { "type": "string", "pattern": "^cf_[a-f0-9]{32}$" },
+        "state": { "enum": ["available", "empty", "unavailable"] }, "truncated": { "type": "boolean" },
+        "application": { "oneOf": [{ "type": "null" }, { "type": "object", "additionalProperties": false, "required": ["id", "name", "avatarAssetId"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "avatarAssetId": { "type": ["string", "null"] } } }] },
+        "entries": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/commandEntry" } }
+      }
+    },
+    "commandEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "commandId", "path", "invocation", "description", "scope", "schemaFingerprint", "options"],
+      "properties": {
+        "key": { "type": "string" }, "commandId": { "type": "string", "pattern": "^[0-9]{1,20}$" },
+        "path": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "invocation": { "type": "string" },
+        "description": { "type": "string" }, "scope": { "enum": ["guild", "global"] },
+        "schemaFingerprint": { "type": "string", "pattern": "^sf_[a-f0-9]{32}$" },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/commandOption" } }
+      }
+    },
+    "commandOption": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "description", "type", "required", "choices", "autocomplete", "minLength", "maxLength", "minValue", "maxValue", "channelTypes", "fileTypes"],
+      "properties": {
+        "name": { "type": "string" }, "description": { "type": "string" },
+        "type": { "enum": ["string", "integer", "number", "boolean", "user", "channel", "role", "mentionable", "attachment"] },
+        "required": { "type": "boolean" }, "choices": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string" }, "value": { "anyOf": [{ "type": "string" }, { "type": "number" }] } } } },
+        "autocomplete": { "type": "boolean" }, "minLength": { "type": ["integer", "null"] }, "maxLength": { "type": ["integer", "null"] },
+        "minValue": { "type": ["number", "null"] }, "maxValue": { "type": ["number", "null"] },
+        "channelTypes": { "type": ["array", "null"], "items": { "type": "integer" } },
+        "fileTypes": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
     },
     "outcome": {
       "type": "object", "additionalProperties": false, "required": ["kind"],
@@ -158,7 +210,7 @@
     },
     "actionReceipt": {
       "type": "object", "additionalProperties": false,
-      "required": ["requestId", "sequence", "expectedSequence", "rejected", "dispatched", "dispatch", "acknowledgement", "settlement", "presentation", "revision", "diagnostics", "target", "uncertain", "correlation", "outcomes"],
+      "required": ["requestId", "sequence", "expectedSequence", "rejected", "dispatched", "dispatch", "acknowledgement", "settlement", "presentation", "revision", "diagnostics", "target", "command", "uncertain", "correlation", "outcomes"],
       "properties": {
         "requestId": { "type": ["string", "null"] }, "sequence": { "type": ["integer", "null"] }, "expectedSequence": { "type": "integer", "minimum": 0 },
         "rejected": { "type": "boolean" }, "dispatched": { "type": "boolean" },
@@ -167,7 +219,8 @@
         "settlement": { "enum": ["pending", "settled", "rejected", "failed", "timeout", "cancelled"] },
         "presentation": { "enum": ["current", "stale", "access_denied"] }, "revision": { "type": "integer", "minimum": 0 },
         "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } }, "target": { "$ref": "#/$defs/actionTarget" },
-        "uncertain": { "type": "boolean" }, "correlation": { "type": "string" }, "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } }
+        "command": { "$ref": "#/$defs/commandReceipt" }, "uncertain": { "type": "boolean" },
+        "correlation": { "type": "string" }, "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } }
       }
     },
     "actionRequest": {
@@ -180,7 +233,7 @@
         "selected_values": { "type": ["array", "null"], "maxItems": 25, "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9]{1,20}$" } }
       },
       "allOf": [{
-        "if": { "properties": { "kind": { "enum": ["click", "select", "modal_submit", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "browse_messages", "browse_candidates", "configure_presentation"] } } },
+        "if": { "properties": { "kind": { "enum": ["click", "select", "modal_submit", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "browse_messages", "browse_candidates", "configure_presentation", "autocomplete_command", "run_command"] } } },
         "then": { "required": ["published_revision"] }
       }, {
         "if": { "properties": { "kind": { "enum": ["click", "select", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned"] } } },
@@ -190,6 +243,8 @@
         { "properties": { "kind": { "const": "click" }, "control_key": { "type": "string" } }, "required": ["control_key"] },
         { "properties": { "kind": { "const": "select" }, "control_key": { "type": "string" }, "values": { "type": "array", "items": { "type": "string" } } }, "required": ["control_key", "values"] },
         { "properties": { "kind": { "const": "modal_submit" }, "modal_handle": { "type": "string" }, "values": { "type": "object" } }, "required": ["modal_handle", "values"] },
+        { "properties": { "kind": { "const": "autocomplete_command" }, "command_id": { "type": "string", "pattern": "^[0-9]{1,20}$" }, "path": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }, "schema_fingerprint": { "type": "string", "pattern": "^sf_[a-f0-9]{32}$" }, "focused": { "type": "string" }, "value": { "type": "string" }, "options": { "type": "object" } }, "required": ["command_id", "path", "schema_fingerprint", "focused", "value", "options"] },
+        { "properties": { "kind": { "const": "run_command" }, "command_id": { "type": "string", "pattern": "^[0-9]{1,20}$" }, "path": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }, "schema_fingerprint": { "type": "string", "pattern": "^sf_[a-f0-9]{32}$" }, "options": { "type": "object" } }, "required": ["command_id", "path", "schema_fingerprint", "options"] },
         { "properties": { "kind": { "const": "viewer" }, "viewer_id": { "type": ["string", "integer"] } }, "required": ["viewer_id"] },
         { "properties": { "kind": { "const": "focus" } } },
         { "properties": { "kind": { "enum": ["refresh", "close"] } } },
@@ -213,14 +268,19 @@
         { "type": "object", "additionalProperties": false, "required": ["control_key", "candidate"], "properties": {
           "control_key": { "type": "string" }, "candidate": { "$ref": "#/$defs/candidateDescriptor" }
         } },
-        { "type": "object", "additionalProperties": false, "required": ["presentation"], "properties": { "presentation": { "$ref": "#/$defs/presentation" } } }
+        { "type": "object", "additionalProperties": false, "required": ["presentation"], "properties": { "presentation": { "$ref": "#/$defs/presentation" } } },
+        { "type": "object", "additionalProperties": false, "required": ["command", "focused", "answered", "choices"], "properties": {
+          "command": { "type": "object", "additionalProperties": false, "required": ["commandId", "invocation"], "properties": { "commandId": { "type": "string" }, "invocation": { "type": "string" } } },
+          "focused": { "type": "string" }, "answered": { "type": "boolean" },
+          "choices": { "type": "array", "maxItems": 25, "items": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string" }, "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } } } }
+        } }
       ]
     },
     "actionResponse": {
       "type": "object", "additionalProperties": false,
       "required": [
         "requestId", "sequence", "expectedSequence", "rejected", "dispatched", "dispatch",
-        "acknowledgement", "settlement", "presentation", "revision", "diagnostics", "target",
+        "acknowledgement", "settlement", "presentation", "revision", "diagnostics", "target", "command",
         "uncertain", "correlation", "outcomes"
       ],
       "properties": {
@@ -231,7 +291,8 @@
         "settlement": { "enum": ["pending", "settled", "rejected", "failed", "timeout", "cancelled"] },
         "presentation": { "enum": ["current", "stale", "access_denied"] }, "revision": { "type": "integer", "minimum": 0 },
         "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
-        "target": { "$ref": "#/$defs/actionTarget" }, "uncertain": { "type": "boolean" },
+        "target": { "$ref": "#/$defs/actionTarget" }, "command": { "$ref": "#/$defs/commandReceipt" },
+        "uncertain": { "type": "boolean" },
         "correlation": { "type": "string" }, "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } },
         "result": { "$ref": "#/$defs/queryActionResult" }
       }
@@ -273,7 +334,7 @@
         "diagnostics": { "type": "array", "maxItems": 40, "items": { "$ref": "#/$defs/safeReportDiagnostic" } }
       }
     },
-    "actionKind": { "enum": ["click", "select", "modal_submit", "viewer", "focus", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "refresh", "close", "browse_messages", "browse_candidates", "configure_presentation"] },
+    "actionKind": { "enum": ["click", "select", "modal_submit", "autocomplete_command", "run_command", "viewer", "focus", "history", "send_message", "edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned", "refresh", "close", "browse_messages", "browse_candidates", "configure_presentation"] },
     "browserProfile": {
       "type": "object", "required": ["theme", "width", "height", "locale", "timezone", "fontStatus"],
       "properties": { "theme": { "type": "string" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 }, "locale": { "type": "string" }, "timezone": { "type": "string" }, "presentationTime": { "type": "string", "format": "date-time" }, "fontStatus": { "type": "object" } }
@@ -341,7 +402,7 @@
     "safeReportDiagnostic": {
       "type": "object", "additionalProperties": false, "required": ["code", "severity", "state", "remediation"],
       "properties": {
-        "code": { "enum": ["bad-envelope", "unsupported-protocol", "stale-sequence", "sequence-gap", "conflicting-request", "busy", "stale-context", "stale-generation", "stale-revision", "unknown-kind", "validation-failed", "query-invalid", "stale-cursor", "control-unavailable", "context-unavailable", "asset-unavailable", "access-denied", "action-callback-error", "action-timeout", "action-cancelled", "message-type-unknown", "premium-sku-metadata-missing", "sticker-asset-unavailable", "target-unavailable", "font-platform-inspection", "internal-error", "preview-render", "preview-fonts", "modal-validation", "viewport-invalid", "missing-capability", "bootstrap-failed", "state-poll-unavailable", "state-refresh-unavailable", "action-response-unavailable", "action-receipt-unavailable", "premium-sku-icon-unavailable", "invalid-link", "unsupported-component", "unsupported-modal-component", "media-rejected", "media-unavailable", "unsupported-media-type", "media-process-memory-limit-unavailable"] },
+        "code": { "enum": ["bad-envelope", "unsupported-protocol", "stale-sequence", "sequence-gap", "conflicting-request", "busy", "stale-context", "stale-generation", "stale-revision", "unknown-kind", "validation-failed", "query-invalid", "stale-cursor", "control-unavailable", "context-unavailable", "asset-unavailable", "access-denied", "commands-unsynced", "command-unavailable", "command-changed", "command-option-invalid", "autocomplete-unanswered", "action-callback-error", "action-timeout", "action-cancelled", "message-type-unknown", "premium-sku-metadata-missing", "sticker-asset-unavailable", "target-unavailable", "font-platform-inspection", "internal-error", "preview-render", "preview-fonts", "modal-validation", "viewport-invalid", "missing-capability", "bootstrap-failed", "state-poll-unavailable", "state-refresh-unavailable", "action-response-unavailable", "action-receipt-unavailable", "premium-sku-icon-unavailable", "invalid-link", "unsupported-component", "unsupported-modal-component", "media-rejected", "media-unavailable", "unsupported-media-type", "media-process-memory-limit-unavailable"] },
         "severity": { "enum": ["info", "warning", "error", "critical"] }, "state": { "enum": ["current", "recovered"] }, "remediation": { "type": "string" },
         "path": { "type": "string", "maxLength": 160, "pattern": "^(message|modal|viewport|media)(\\.(components|component|accessory|items|embeds|attachments)|\\[[0-9]+\\])*$" },
         "correlation": { "type": "string", "pattern": "^c_[A-Za-z0-9_-]{8,64}$" }

@@ -441,6 +441,19 @@ async def _autocomplete(
     value: str,
     filled: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    result = await _autocomplete_result(actor, channel, name, option, value, filled)
+    return result.autocomplete_choices or []
+
+
+async def _autocomplete_result(
+    actor: Any,
+    channel: ChannelHandle,
+    name: str,
+    option: str,
+    value: str,
+    filled: dict[str, Any],
+) -> InteractionResult:
+    """Dispatch autocomplete while retaining answered-versus-unanswered state."""
     parts = name.split()
     root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
     leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
@@ -465,7 +478,7 @@ async def _autocomplete(
     result = await _dispatch_actor_interaction(
         actor, InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE, channel, data
     )
-    return result.autocomplete_choices or []
+    return result
 
 
 def _channel_id_of(message: MessageLike, fallback: int | None = None) -> int:

@@ -47,6 +47,7 @@ class _Page:
     referenced_assets: set[str] = field(default_factory=set)
     referenced_messages: set[tuple[int, int]] = field(default_factory=set)
     snapshot: dict[str, Any] = field(default_factory=dict)
+    command_catalog: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
     layout: str = "message"
@@ -270,6 +271,7 @@ class _PageOps:
         if not isinstance(receipt, dict):
             return
         receipt["target"] = None
+        receipt["command"] = None
         receipt["outcomes"] = []
         receipt["presentation"] = "access_denied"
         receipt.pop("result", None)
@@ -320,6 +322,11 @@ class _PageOps:
     @staticmethod
     def _denied_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload.update(
+            commands={
+                "state": "unavailable",
+                "fingerprint": "cf_" + hashlib.sha256(b"[]").hexdigest()[:32],
+                "count": 0,
+            },
             messageIndex=[],
             navigation={
                 "query": "",
@@ -346,7 +353,13 @@ class _PageOps:
         )
         if isinstance(payload.get("channel"), dict):
             payload["channel"].update(
-                name=None, recipient=None, guildId=None, type=None, topic=None, canSendMessages=False
+                name=None,
+                recipient=None,
+                guildId=None,
+                type=None,
+                topic=None,
+                canSendMessages=False,
+                canUseApplicationCommands=False,
             )
         payload["status"] = "access_denied"
         payload["lastAction"] = None

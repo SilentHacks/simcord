@@ -99,6 +99,19 @@ class Interactions(commands.Cog):
     async def tag_autocomplete(self, interaction: discord.Interaction, current: str):
         return [app_commands.Choice(name=t, value=t) for t in TAGS if current in t]
 
+    @app_commands.command(description="Search tags with a bounded result count")
+    async def suggest(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 5],
+        query: str,
+    ) -> None:
+        await interaction.response.send_message(f"{query}:{limit}")
+
+    @suggest.autocomplete("query")
+    async def suggest_autocomplete(self, interaction: discord.Interaction, current: str):
+        return [app_commands.Choice(name=t, value=t) for t in TAGS if current in t]
+
     @app_commands.command(description="Receive an uploaded file")
     async def upload(self, interaction: discord.Interaction, attachment: discord.Attachment) -> None:
         assert isinstance(attachment, discord.Attachment)

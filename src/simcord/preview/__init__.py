@@ -230,6 +230,16 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                     receipt["revision"] = page.revision
                     receipt["presentation"] = page.status
             page.pending_receipt_revision = False
+        from ._commands import build_catalog, unsynced_commands
+
+        page.command_catalog = build_catalog(self, page)
+        page.diagnostics = [
+            item
+            for item in page.diagnostics
+            if not isinstance(item, Mapping) or item.get("code") != "commands-unsynced"
+        ]
+        if page.status != "access_denied" and unsynced_commands(self, page):
+            page.diagnostics.append({"code": "commands-unsynced"})
         page.snapshot = build_snapshot(self, page)
 
     def _advance_presentation_time(self) -> None:

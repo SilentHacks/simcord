@@ -127,6 +127,7 @@ class PreviewServer:
         app.router.add_post("/api/pages", self._pages)
         app.router.add_delete("/api/pages/{context_id}", self._delete_page)
         app.router.add_get("/api/state", self._state)
+        app.router.add_get("/api/commands", self._commands)
         app.router.add_post("/api/action", self._action)
         app.router.add_get("/api/assets/{asset_id}", self._asset)
         self.runner = web.AppRunner(app, access_log=None)
@@ -250,6 +251,31 @@ class PreviewServer:
             )
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
+    async def _commands(self, request: Any) -> Any:
+        from ..backend.access import can_access_channel
+        from ._commands import unavailable_catalog
+
+        context_id = request.headers.get("X-Simcord-Context")
+        if not self._authorized(request, context=context_id):
+            raise web.HTTPUnauthorized()
+        try:
+            page = self.preview._get_page(context_id)
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=410, headers=self._SECURITY_HEADERS
+            )
+        if page.snapshot.get("commands", {}).get("state") == "unavailable" or not can_access_channel(
+            self.preview.env, page.channel_id, page.viewer, history=True
+        ):
+            catalog = unavailable_catalog()
+        else:
+            catalog = page.command_catalog
+        return web.json_response(
+            catalog,
+            headers=self._SECURITY_HEADERS,
+            dumps=lambda value: json.dumps(value, separators=(",", ":")),
+        )
+
     async def _action(self, request: Any) -> Any:
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
@@ -308,6 +334,18 @@ class PreviewServer:
                     raise web.HTTPRequestEntityTooLarge(max_size=25 * 1024 * 1024, actual_size=aggregate)
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="multipart payload is required")
+        if payload.get("kind") == "run_command":
+            options = payload.get("options")
+            if not isinstance(options, dict):
+                raise web.HTTPBadRequest(text="multipart command options are required")
+            for index, (option_name, uploads) in enumerate(files.items()):
+                if len(uploads) != 1 or not option_name:
+                    raise web.HTTPBadRequest(text="each command attachment option needs exactly one file")
+                reference = options.get(option_name)
+                if not isinstance(reference, dict) or reference != {"upload": index}:
+                    raise web.HTTPBadRequest(text="command upload references must match multipart file order")
+                options[option_name] = uploads[0]
+            return payload
         values = payload.get("values")
         if not isinstance(values, dict):
             raise web.HTTPBadRequest(text="multipart values are required")
