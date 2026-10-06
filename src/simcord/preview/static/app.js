@@ -223,6 +223,7 @@ const commandPicker = createCommandPicker({
     if (enabled) state.replyToId = null;
     else if (replyToId) state.replyToId = replyToId;
     if (state.snapshot) composer.update(state.snapshot);
+    updateActionStatus();
   },
   assets: state.snapshot?.assets || {},
   loadAsset,
@@ -1251,7 +1252,8 @@ function updateActionStatus() {
   const waiting = Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision;
   const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
   ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden
-    || (!state.editTargetId && !state.snapshot?.channel?.canSendMessages);
+    || (!state.editTargetId && !(composer.input().dataset.commandMode === "true"
+      ? state.snapshot?.channel?.canUseApplicationCommands : state.snapshot?.channel?.canSendMessages));
   // Keep callback buttons focusable so closing a modal can still restore its opener.
   document.querySelectorAll("button.component-button:not(.button-style-5):not(.button-style-6)").forEach((button) => {
     button.setAttribute("aria-disabled", String(blocked || button.disabled));

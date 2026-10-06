@@ -402,10 +402,10 @@ export function createCommandPicker({
       focused: required[0]?.name || null, values: {}, added: new Set(), errors: {}, droppedOptions: [], version: 0,
       openOptionsOnRender: entry.options.length > 0 && required.length === 0 };
     detachedReply = getState().replyToId;
-    onCommandMode?.(true);
     ensurePopup();
     if (required.length) renderCompose({ focus: true });
     else { draft.focused = null; renderCompose({ focus: true }); }
+    onCommandMode?.(true);
     announce?.(required.length ? `/${entry.invocation}; ${required.length} required options missing` : `/${entry.invocation}`);
     refreshStatus();
   }
@@ -575,7 +575,7 @@ export function createCommandPicker({
   }
   function renderCompose({ focus = false } = {}) {
     if (!draft) return;
-    mode = "composing";
+    mode = getState().pendingAction?.kind === "run_command" ? "pending" : "composing";
     const entry = context();
     if (!commandRow || !commandRow.isConnected) {
       commandRow = node("div", "command-row");
@@ -725,7 +725,7 @@ export function createCommandPicker({
           } else if (option.autocomplete) {
             queryAutocomplete(option, field.value);
             renderPopup(field, `OPTIONS MATCHING ${field.value.toUpperCase()}`, autocompleteResults.get(autocompleteKey(draft, option.name, field.value)) || [], (choice) => chooseValue(option, choice));
-          } else if (option.choices?.length) {
+          } else if (option.type === "boolean" || option.choices?.length) {
             renderPopup(field, "OPTIONS", optionChoices(option).filter((choice) => String(choice.name).toLowerCase().includes(field.value.toLowerCase()) || String(choice.value).toLowerCase().includes(field.value.toLowerCase())).map((choice) => ({ name: String(choice.name), value: choice.value })), (choice) => chooseValue(option, choice));
           }
           refreshStatus();
@@ -837,25 +837,17 @@ export function createCommandPicker({
       return Boolean(suggestionListbox?.handleKey(event));
     }
     if (event.key === "Escape") { clearPopup(); return true; }
-    if (event.key === "Tab") {
-      const active = event.target instanceof HTMLElement ? event.target.closest("[data-option]")?.dataset.option : null;
-      const options = optionsFor().filter((option) => option.required || draft.added.has(option.name));
-      const index = options.findIndex((option) => option.name === active);
-      if (event.shiftKey && index <= 0) { draft.focused = null; renderCompose(); commandRow.querySelector(".command-chip")?.focus(); return true; }
-      const next = options[(index + (event.shiftKey ? -1 : 1) + options.length) % options.length];
-      if (next) { draft.focused = next.name; renderCompose({ focus: true }); return true; }
-      draft.focused = null; renderCompose(); commandRow.querySelector(".command-chip")?.focus(); return true;
-    }
     if (event.key === "Backspace" && event.target === commandRow.querySelector(".command-chip")) { exitCommand(); return true; }
     if (event.key === "Backspace" && event.target instanceof HTMLInputElement && !event.target.value && draft.focused === optionsFor()[0]?.name) {
       draft.focused = null; renderCompose(); commandRow.querySelector(".command-chip")?.focus(); return true;
     }
     if (event.key === "Enter") {
-      if (popup && !popup.hidden && currentPopupOwner) {
+      if (popup && !popup.hidden && currentPopupOwner === event.target) {
         const list = popup.querySelector('[role="listbox"]');
         const active = list?.querySelector('[aria-selected="true"]');
         if (active) { active.click(); return true; }
       }
+      if (event.target instanceof HTMLButtonElement && !event.target.matches(".command-chip")) return false;
       validateAndRun(); return true;
     }
     return false;

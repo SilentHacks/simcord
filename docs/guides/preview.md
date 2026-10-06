@@ -294,13 +294,16 @@ command as a real interaction through the viewer's SimCord actor. The existing r
 surfaces report the result; **View response**, followup links and modal presentation use the existing
 Preview flow. Ephemeral output remains visible only to its authorized invoker through the existing
 View response and receipt rules. A deferred command is not shown as a “thinking…” timeline message.
+Commands remain submittable when the viewer can use application commands but cannot send ordinary
+messages. A failed submission keeps the draft and restores editable controls for correction or retry.
+
 
 | Key | Browsing commands | Composing a command |
 | --- | --- | --- |
 | ↑ / ↓ | Move the active command row | Move through an open suggestion list |
 | Enter | Select the active command | Commit the active suggestion, or validate and run |
-| Tab | Select the active command | Move to the next option pill |
-| Shift+Tab | — | Move to the previous pill; from the first pill, focus the command chip |
+| Tab | Select the active command | Move to the next field or button, including optional controls and Send |
+| Shift+Tab | — | Move to the previous field or button, including Exit command mode |
 | Escape | Close the picker and keep `/` text | Close the suggestion popup only; keep the draft |
 | Backspace | Edit the composer text normally | In an empty first pill, focus the chip; on the chip, exit command mode |
 | × button | — | Exit command mode and restore `/invocation` as text |

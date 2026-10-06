@@ -56,6 +56,7 @@ export function initComposer({
       event.preventDefault();
       return;
     }
+    if (event.target instanceof HTMLButtonElement) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229) {
       event.preventDefault();
       form.requestSubmit();
@@ -93,7 +94,8 @@ export function initComposer({
     if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
     if (currentInput.dataset.commandMode !== "true" && value() !== state.drafts.get(key)) setValue(state.drafts.get(key));
     sendButton.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture
-      || (!state.editTargetId && !snapshot.channel?.canSendMessages);
+      || (!state.editTargetId && !(currentInput.dataset.commandMode === "true"
+        ? snapshot.channel?.canUseApplicationCommands : snapshot.channel?.canSendMessages));
     const sendLabel = state.editTargetId ? "Save" : "Send";
     sendButton.setAttribute("aria-label", sendLabel);
     sendButton.title = `${sendLabel} message (Enter)`;

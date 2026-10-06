@@ -941,3 +941,86 @@ async def test_browser_command_keyboard_focus_covers_attachment_pills(env, chann
                 await page.wait_for_function("() => document.activeElement?.matches('.command-chip')")
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_command_only_channel_keyboard_boolean_and_failed_run_recovery(env, channel, alice):
+    attempts = []
+
+    @app_commands.command(name="picker-retry")
+    async def retry(interaction: discord.Interaction, confirm: bool):
+        attempts.append(confirm)
+        if len(attempts) == 1:
+            raise RuntimeError("First attempt fails")
+        await interaction.response.send_message(f"Confirmed: {confirm}")
+
+    env.bot.tree.add_command(retry)
+    await env.bot.tree.sync()
+    bot_channel = env.bot.get_channel(channel.id)
+    member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+    await bot_channel.set_permissions(member, send_messages=False, use_application_commands=True)
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function(
+                    "() => window.simcordPreview?.commandPicker.catalog.state === 'ready'"
+                )
+                composer = page.locator("#channel-composer-input")
+                send = page.get_by_role("button", name="Send", exact=True)
+                assert await send.is_disabled()
+                await composer.fill("/picker-hold")
+                await composer.press("Enter")
+                chip = page.locator(".command-chip")
+                await chip.press("Tab")
+                await page.wait_for_function("() => document.activeElement?.matches('.send-message')")
+                assert await send.is_enabled()
+                await chip.press("Shift+Tab")
+                await page.wait_for_function(
+                    "() => document.activeElement?.matches('.command-context-close')"
+                )
+                await page.keyboard.press("Enter")
+                await composer.fill("/all-optional")
+                await composer.press("Enter")
+                await chip.press("Tab")
+                await page.wait_for_function("() => document.activeElement?.matches('.command-ghost')")
+                await page.keyboard.press("Enter")
+                await page.keyboard.press("ArrowDown")
+                await page.keyboard.press("Enter")
+                optional = page.locator('.command-option-input[data-option="confirm"]')
+                await optional.wait_for()
+                await optional.press("Tab")
+                await page.wait_for_function(
+                    "() => document.activeElement?.matches('.command-option-remove')"
+                )
+                await page.keyboard.press("Enter")
+                assert await optional.count() == 0
+                await page.get_by_role("button", name="Exit command mode").click()
+                await composer.fill("/picker-retry")
+                await composer.press("Enter")
+                confirm = page.locator('.command-option-input[data-option="confirm"]')
+                await confirm.fill("False")
+                await confirm.press("Enter")
+                assert (
+                    await page.evaluate("() => window.simcordPreview.commandPicker.draft.options[0].display")
+                    is False
+                )
+                await send.click()
+                await page.wait_for_function(
+                    "() => !window.simcordPreview.pendingAction && window.simcordPreview.activity.some("
+                    "item => item.command?.invocation === 'picker-retry' && item.settlement === 'failed')"
+                )
+                assert attempts == [False]
+                [error] = env.errors
+                assert isinstance(error, app_commands.CommandInvokeError)
+                assert isinstance(error.original, RuntimeError)
+                assert await confirm.is_editable()
+                assert await chip.is_enabled()
+                await send.click()
+                await page.locator("#channel-timeline").get_by_text("Confirmed: False", exact=True).wait_for()
+                assert attempts == [False, False]
+                assert await send.is_disabled()
+            finally:
+                await browser.close()
