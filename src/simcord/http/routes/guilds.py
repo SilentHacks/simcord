@@ -103,6 +103,9 @@ def create_guild_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_channels")
+    normalized_body = dict(ctx.body())
+    if normalized_body.get("type") == ChannelType.CATEGORY and normalized_body.get("nsfw") is False:
+        normalized_body.pop("nsfw")
     # Scalar fields mapped 1:1 onto the Channel model; overwrites are applied
     # separately. Anything else discord.py can send on create (video_quality_mode,
     # default_* forum settings, ...) is unmodelled and so fails loudly rather than
@@ -118,6 +121,7 @@ def create_guild_channel(ctx: RequestContext) -> Any:
         "parent_id",
         "position",
         ignore=("permission_overwrites",),
+        body=normalized_body,
     )
     overwrites = [
         Overwrite(

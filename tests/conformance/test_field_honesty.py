@@ -233,6 +233,35 @@ async def test_create_text_channel_rejects_explicit_field_atomically(env, monkey
     assert events == []
 
 
+async def test_category_clone_discards_sdk_default_field(env):
+    guild = env.bot.get_guild(env.guild.id)
+    category = await guild.create_category("original")
+    cloned = await category.clone(name="copy")
+    await env.settle()
+
+    assert isinstance(cloned, discord.CategoryChannel)
+    assert env.bot.get_channel(cloned.id).name == "copy"
+    assert "nsfw" not in vars(env.backend.get_channel(cloned.id))
+    assert "nsfw" not in router.dispatch(env.backend, "GET", f"/channels/{cloned.id}")
+
+
+@pytest.mark.parametrize("value", [True, 0, None])
+async def test_category_create_rejects_nondefault_field_atomically(env, value):
+    channel_ids = set(env.backend.channels)
+    counter = env.backend._counter
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/guilds/{env.guild.id}/channels",
+            json={"name": "explicit", "type": ChannelType.CATEGORY, "nsfw": value},
+        )
+
+    assert exc.value.fields == ["nsfw"]
+    assert set(env.backend.channels) == channel_ids
+    assert env.backend._counter == counter
+
+
 async def test_create_role_colour_applies(env):
     """Role create honours colour — discord.py sends the gradient ``colors``
     object, so reading the legacy ``color`` key would silently drop it."""
