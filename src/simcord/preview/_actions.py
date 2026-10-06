@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from ..actors import MemberActor, _autocomplete_result, _modal_control_map, _modal_submit_nodes
+from ..actors import (
+    MemberActor,
+    _autocomplete_result,
+    _modal_control_map,
+    _modal_submit_nodes,
+    _slash_resolved,
+)
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
@@ -790,14 +796,19 @@ class _ActionOps:
                         continue
 
                 async def run_autocomplete(action: _Action, cursor: int) -> dict[str, Any]:
-                    result = await _autocomplete_result(
-                        actor,
-                        self.channel,
-                        invocation,
-                        focused,
-                        value,
-                        filled,
-                    )
+                    token = self.env._begin_operation("autocomplete")
+                    try:
+                        result = await _autocomplete_result(
+                            actor,
+                            self.channel,
+                            invocation,
+                            focused,
+                            value,
+                            filled,
+                            root=root,
+                        )
+                    finally:
+                        self.env._end_operation(token)
                     offered = result.autocomplete_choices
                     answered = offered is not None
                     action.autocomplete_answered = answered
@@ -852,17 +863,7 @@ class _ActionOps:
                         )
                 parsed[name] = value
             parsed = check_options(invocation, leaf, parsed)
-            if isinstance(actor, MemberActor):
-
-                async def run_command(action: _Action, cursor: int) -> dict[str, Any]:
-                    return await self._run_interaction_action(
-                        page,
-                        action,
-                        cursor,
-                        actor.slash(self.channel, invocation, **parsed),
-                        republish_all=True,
-                    )
-            elif (
+            if isinstance(actor, MemberActor) or (
                 isinstance(actor, UserHandle)
                 and actor._env.backend.dm_channels.get(actor.id) == page.channel_id
             ):
@@ -872,7 +873,7 @@ class _ActionOps:
                         page,
                         action,
                         cursor,
-                        actor.slash(invocation, **parsed),
+                        _slash_resolved(actor, self.channel, invocation, parsed, root),
                         republish_all=True,
                     )
             else:

@@ -16,6 +16,7 @@ export function initComposer({
   channelLabel,
   onDispatch,
   onModeChange,
+  onBeforeEdit,
   rememberFocus,
   setFocusKey,
   onBeforeKey,
@@ -140,6 +141,7 @@ export function initComposer({
   }
 
   function setEditMessage(message) {
+    onBeforeEdit?.();
     state.replyToId = null;
     state.editTargetId = String(message.id);
     const key = `edit:${state.contextId}:${state.editTargetId}`;

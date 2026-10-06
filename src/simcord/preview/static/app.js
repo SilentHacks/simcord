@@ -202,6 +202,7 @@ const composer = initComposer({
   channelLabel,
   onDispatch: (kind, extra) => dispatch(kind, extra),
   onModeChange: () => updatePickers(state.snapshot),
+  onBeforeEdit: () => commandPicker.exit(),
   rememberFocus,
   setFocusKey: (key) => { state.focusKey = key; },
 });
@@ -209,10 +210,10 @@ const commandPicker = createCommandPicker({
   form: ui.composerForm,
   input: ui.composer,
   composer,
-  dispatch: (kind, extra) => dispatch(kind, extra),
-  run: (body, files) => {
+  dispatch: (kind, extra, metadata) => dispatch(kind, extra, metadata),
+  run: (body, files, metadata) => {
     state.commandUploads = files;
-    dispatch("run_command", body);
+    dispatch("run_command", body, { commandDraftId: metadata?.draftId ?? null });
   },
   fetchCatalog: () => request("/api/commands"),
   getSnapshot: () => state.snapshot,
@@ -2188,8 +2189,8 @@ function pageIntent(kind, body) {
   updateActionStatus();
 }
 
-function queueQuery(key, kind, body) {
-  const intent = { key, kind, body, scope: `${state.viewerId}:${state.contextGeneration}`, token: ++state.queryIntent };
+function queueQuery(key, kind, body, metadata = null) {
+  const intent = { key, kind, body, metadata, scope: `${state.viewerId}:${state.contextGeneration}`, token: ++state.queryIntent };
   state.queryIntents.set(key, intent.token);
   state.queuedQueries.set(key, intent);
   state.queuedQuery = intent;
@@ -2289,6 +2290,10 @@ function reconcileUncertainAction(snapshot) {
   if (receipt && terminal) {
     const action = state.uncertainAction;
     state.lastAction = receipt;
+    if (action?.kind === "run_command") {
+      commandPicker.receiveAction("run_command", receipt, action.commandEnvelope, { draftId: action.commandDraftId });
+      state.commandUploads = {};
+    }
     completeActionDrafts(action, receipt);
     if (action?.contextId === state.contextId && snapshot.context?.id === state.contextId) composer.update(snapshot);
     state.lastActionKind = action?.kind || state.lastActionKind;
@@ -2404,7 +2409,7 @@ function queryStatusFingerprint(snapshot) {
 }
 function drainIntents() {
   if (state.commandRetryAfterRevision !== null) {
-    if (state.publishedRevision < state.commandRetryAfterRevision) return;
+    if (state.observedRevision < state.commandRetryAfterRevision) return;
     state.commandRetryAfterRevision = null;
   }
   const uncertain = state.transport.uncertainRequestId;
@@ -2437,7 +2442,7 @@ function drainIntents() {
 function pageAction(kind) {
   return ["close", "refresh", "focus", "viewer", "configure_presentation"].includes(kind);
 }
-async function performAction(kind, extra, queryIntentValue = null) {
+async function performAction(kind, extra, queryIntentValue = null, metadata = queryIntentValue?.metadata || null) {
   const requestId = globalThis.crypto?.randomUUID?.() || `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const sequence = state.sequence + 1;
   const body = {
@@ -2455,6 +2460,8 @@ async function performAction(kind, extra, queryIntentValue = null) {
   }
   state.pendingAction = {
     kind, contextId: state.contextId, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null,
+    commandEnvelope: kind === "run_command" ? clone(extra) : null,
+    commandDraftId: kind === "run_command" ? metadata?.commandDraftId ?? null : null,
     draftVersion: state.draftVersions.get(kind === "send_message" ? `composer:${state.contextId}` : `edit:${state.contextId}:${body.target_id}`) || 0,
     closeProbe: kind === "close" && state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId
       && Boolean(state.transport.uncertainRequestId),
@@ -2486,7 +2493,12 @@ async function performAction(kind, extra, queryIntentValue = null) {
   noteTransportHealthy();
   const busyQuery = Boolean(queryIntentValue && receipt.rejected
     && receipt.diagnostics?.some((item) => item.code === "busy"));
-  if (!busyQuery) commandPicker.receiveAction(kind, receipt, extra);
+  if (!busyQuery) {
+    const actionMetadata = kind === "run_command"
+      ? { draftId: state.pendingAction?.commandDraftId }
+      : queryIntentValue?.metadata;
+    commandPicker.receiveAction(kind, receipt, extra, actionMetadata);
+  }
   if (kind === "run_command") state.commandUploads = {};
   if (busyQuery) receipt = { ...receipt, diagnostics: (receipt.diagnostics || []).filter((item) => item.code !== "busy") };
   if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
@@ -2497,7 +2509,9 @@ async function performAction(kind, extra, queryIntentValue = null) {
     const intent = state.queuedQueries.get(queryIntentValue.key) || queryIntentValue;
     state.queuedQueries.set(queryIntentValue.key, intent);
     state.queuedQuery = intent;
-    state.commandRetryAfterRevision = state.publishedRevision + 1;
+    state.commandRetryAfterRevision = Math.max(
+      Number(body.published_revision || 0), Number(receipt.revision || 0),
+    ) + 1;
   }
   if (Array.isArray(receipt.diagnostics)) receipt.diagnostics.forEach((item) => addDiagnostic(item));
   if (kind === "close" && receipt.rejected && state.pendingAction?.closeProbe) {
@@ -2574,14 +2588,14 @@ async function performAction(kind, extra, queryIntentValue = null) {
   updateActionStatus();
   drainIntents();
 }
-function dispatch(kind, extra = {}) {
+function dispatch(kind, extra = {}, metadata = null) {
   if (["browse_messages", "browse_candidates", "autocomplete_command"].includes(kind)) {
     const key = kind === "browse_messages"
       ? "messages"
       : kind === "browse_candidates"
         ? `candidate:${extra.control_key}:${extra.modal_handle || ""}`
         : `command-autocomplete:${extra.command_id}:${(extra.path || []).join(".")}:${extra.focused}`;
-    queueQuery(key, kind, extra);
+    queueQuery(key, kind, extra, metadata);
     return;
   }
   if (state.closed || !state.contextId || !state.protocolCompatible || state.pinnedCapture) return;
@@ -2605,7 +2619,7 @@ function dispatch(kind, extra = {}) {
   state.externalNotice = null;
   if (kind === "viewer") redactPrivateView();
   if (kind === "configure_presentation") state.host = { width: extra.host_width, height: extra.host_height };
-  performAction(kind, extra);
+  performAction(kind, extra, null, metadata);
 }
 
 async function poll() {
@@ -2618,7 +2632,8 @@ async function poll() {
     const stale = snapshot.context?.id === state.contextId
       && snapshot.context?.generation === state.contextGeneration
       && snapshot.publishedRevision < state.publishedRevision;
-    if (!stale && !state.pendingQuery && !state.queuedQueries.size) {
+    if (!stale && !state.pendingQuery
+      && (!state.queuedQueries.size || state.commandRetryAfterRevision !== null)) {
       const statusFingerprint = queryStatusFingerprint(snapshot);
       if (
         snapshot.publishedRevision !== state.publishedRevision

@@ -27,6 +27,7 @@ _SNOWFLAKE_TYPES = (OptionType.USER, OptionType.CHANNEL, OptionType.ROLE, Option
 _INTEGER_LIMIT = 2**53 - 1
 _NUMBER_LIMIT = 2**53
 _INTEGER_INPUT = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+_NUMBER_INPUT = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?\Z")
 _FILE_TYPE_GROUPS = {
     "image": {".png", ".gif", ".jpg", ".jpeg", ".jfif", ".webp", ".avif"},
     "video": {".mp4", ".mov", ".qt", ".webm"},
@@ -371,12 +372,9 @@ def parse_option_input(command_name: str, option: dict[str, Any], raw: Any) -> A
             )
         value = int(raw)
     elif option_type == OptionType.NUMBER:
-        if not isinstance(raw, str):
+        if not isinstance(raw, str) or _NUMBER_INPUT.fullmatch(raw) is None:
             raise _option_error("option-type", command_name, option, "expects a decimal string")
-        try:
-            value = float(raw)
-        except ValueError:
-            raise _option_error("option-type", command_name, option, "expects a decimal string") from None
+        value = float(raw)
         if not math.isfinite(value):
             raise _option_error("option-type", command_name, option, "expects a finite decimal string")
     elif option_type == OptionType.BOOLEAN:

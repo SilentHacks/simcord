@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -230,6 +231,14 @@ _CATALOG: dict[str, tuple[str, str, bool, str, str]] = {
 _SNOWFLAKE = re.compile(r"[0-9]{1,20}\Z")
 
 
+def valid_command_name(value: str) -> bool:
+    """Return whether a Discord command or option name has a valid shape."""
+    return 1 <= len(value) <= 32 and all(
+        character.isalnum() or character in "-_'" or unicodedata.category(character).startswith("M")
+        for character in value
+    )
+
+
 def make_diagnostic(
     code: str,
     *,
@@ -252,7 +261,7 @@ def make_diagnostic(
             safe_subject = {"messageId": message_id}
             if isinstance(control_key, str) and len(control_key) <= 160:
                 safe_subject["controlKey"] = control_key
-        elif isinstance(command_option, str) and re.fullmatch(r"[a-z0-9_-]{1,32}", command_option):
+        elif isinstance(command_option, str) and valid_command_name(command_option):
             safe_subject = {"commandOption": command_option}
     seed = json.dumps([code, safe_subject, correlation], sort_keys=True, separators=(",", ":"))
     diagnostic: dict[str, Any] = {

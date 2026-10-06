@@ -5,9 +5,11 @@ import json
 from importlib import resources
 from types import SimpleNamespace
 
+import discord
 import jsonschema
 import pytest
 from aiohttp import ClientSession, FormData
+from discord import app_commands
 from preview_helpers import action_body, preview_headers
 
 from simcord.interactions import command_leaves
@@ -50,6 +52,80 @@ def _command_body(page, kind: str, sequence: int, entry: dict, **fields):
         schema_fingerprint=entry["schemaFingerprint"],
         **fields,
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_command_id_selects_colliding_guild_and_global_callbacks(env, channel, alice):
+    async def global_callback(interaction: discord.Interaction, global_value: str) -> None:
+        await interaction.response.send_message(f"global:{global_value}")
+
+    async def guild_callback(interaction: discord.Interaction, guild_value: str) -> None:
+        await interaction.response.send_message(f"guild:{guild_value}")
+
+    global_command = app_commands.Command(
+        name="collision", description="Global collision", callback=global_callback
+    )
+    guild_command = app_commands.Command(
+        name="collision", description="Guild collision", callback=guild_callback
+    )
+
+    async def global_autocomplete(interaction: discord.Interaction, current: str):
+        return [app_commands.Choice(name=f"global:{current}", value=f"global:{current}")]
+
+    async def guild_autocomplete(interaction: discord.Interaction, current: str):
+        return [app_commands.Choice(name=f"guild:{current}", value=f"guild:{current}")]
+
+    global_command.autocomplete("global_value")(global_autocomplete)
+    guild_command.autocomplete("guild_value")(guild_autocomplete)
+    env.bot.tree.add_command(global_command)
+    env.bot.tree.add_command(guild_command, guild=discord.Object(id=env.guild.id))
+    env.backend.register_commands(None, [global_command.to_dict(env.bot.tree)])
+    env.backend.register_commands(env.guild.id, [guild_command.to_dict(env.bot.tree)])
+
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        page = preview._python
+        entries = [entry for entry in page.command_catalog["entries"] if entry["invocation"] == "collision"]
+        assert {entry["scope"] for entry in entries} == {"global", "guild"}
+        assert alice.available_commands(channel).count("collision") == 1
+
+        for sequence, scope, option_name in (
+            (1, "global", "global_value"),
+            (2, "guild", "guild_value"),
+        ):
+            entry = next(item for item in entries if item["scope"] == scope)
+            receipt = await preview._action(
+                page.id,
+                _command_body(
+                    page,
+                    "run_command",
+                    sequence,
+                    entry,
+                    options={option_name: scope},
+                ),
+            )
+            assert receipt["settlement"] == "settled"
+            message_id = receipt["outcomes"][0]["messageId"]
+            assert page.snapshot["messages"][message_id]["content"] == f"{scope}:{scope}"
+
+        for sequence, scope, option_name in (
+            (3, "global", "global_value"),
+            (4, "guild", "guild_value"),
+        ):
+            entry = next(item for item in entries if item["scope"] == scope)
+            receipt = await preview._action(
+                page.id,
+                _command_body(
+                    page,
+                    "autocomplete_command",
+                    sequence,
+                    entry,
+                    focused=option_name,
+                    value="probe",
+                    options={},
+                ),
+            )
+            assert receipt["settlement"] == "settled"
+            assert receipt["result"]["choices"] == [{"name": f"{scope}:probe", "value": f"{scope}:probe"}]
 
 
 @pytest.mark.asyncio
@@ -416,6 +492,72 @@ async def test_command_candidate_scope_pages_and_prunes(env, channel, alice):
             item["code"] == "command-unavailable" and item["state"] == "recovered"
             for item in page.snapshot["diagnostics"]
         )
+
+
+@pytest.mark.asyncio
+async def test_unicode_command_path_candidate_and_diagnostic_subject(env, channel, alice):
+    command = env.backend.register_commands(
+        env.guild.id,
+        [
+            {
+                "name": "问候",
+                "description": "Unicode root",
+                "options": [
+                    {
+                        "name": "挨拶",
+                        "description": "Unicode subcommand",
+                        "type": 1,
+                        "options": [
+                            {
+                                "name": "名前",
+                                "description": "Unicode text option",
+                                "type": 3,
+                                "min_length": 3,
+                            },
+                            {
+                                "name": "利用者",
+                                "description": "Unicode user option",
+                                "type": 6,
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    )[0]
+
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        page = preview._python
+        entry = next(item for item in page.command_catalog["entries"] if item["commandId"] == command["id"])
+        assert entry["path"] == ["问候", "挨拶"]
+        control_key = f"command:{command['id']}:问候.挨拶:option:利用者"
+        candidates = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "browse_candidates",
+                1,
+                control_key=control_key,
+                query="",
+                cursor=None,
+                modal_handle=None,
+            ),
+        )
+        assert candidates["settlement"] == "settled"
+        assert candidates["result"]["candidate"]["type"] == "users"
+
+        invalid = await preview._action(
+            page.id,
+            _command_body(
+                page,
+                "run_command",
+                2,
+                entry,
+                options={"名前": "x"},
+            ),
+        )
+        assert invalid["diagnostics"][0]["code"] == "command-option-invalid"
+        assert invalid["diagnostics"][0]["subject"] == {"commandOption": "名前"}
 
 
 @pytest.mark.asyncio

@@ -139,7 +139,29 @@ async def test_nsfw_visibility_inherits_to_threads(env, channel, alice):
     assert result.response.content == "Age-restricted command"
 
 
+async def test_available_commands_deduplicates_shadowed_names(env, channel, alice):
+    global_command = env.backend.register_commands(None, [{"name": "shadowed", "type": 1}])[0]
+    guild_command = env.backend.register_commands(env.guild.id, [{"name": "shadowed", "type": 1}])[0]
+    assert global_command["id"] != guild_command["id"]
+    assert alice.available_commands(channel).count("shadowed") == 1
+
+    user = env.create_user("command-picker")
+    assert user.available_commands().count("shadowed") == 1
+
+
+async def test_available_commands_respects_view_channel_permission(env, channel, alice):
+    member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+    await env.bot.get_channel(channel.id).set_permissions(member, view_channel=False)
+
+    assert alice.available_commands(channel) == ()
+    with pytest.raises(simcord.backend.errors.BackendError):
+        await alice.slash(channel, "tag", name="python")
+
+
 async def test_picker_commands_match_successful_slash_visibility(env, channel, alice):
+    from fixtures.sample_bot import picker
+
+    picker.picker_action_release.set()
     admin_role = env.guild.create_role("Administrators", permissions=discord.Permissions(administrator=True))
     admin = env.guild.add_member(env.create_user("admin"), roles=[admin_role])
     dm_user = env.create_user("dm-user")

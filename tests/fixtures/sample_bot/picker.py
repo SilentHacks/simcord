@@ -1,13 +1,43 @@
 """Command-picker fixtures covering Discord's application command options."""
 
+import asyncio
 from typing import Literal
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+picker_action_started = asyncio.Event()
+picker_action_release = asyncio.Event()
+
 
 class Picker(commands.Cog):
+    @app_commands.command(name="private-tag", description="Suggest viewer-specific private tags")
+    async def private_tag(self, interaction: discord.Interaction, tag: str) -> None:
+        await interaction.response.send_message(tag)
+
+    @private_tag.autocomplete("tag")
+    async def private_tag_autocomplete(self, interaction: discord.Interaction, current: str):
+        return [
+            app_commands.Choice(
+                name=f"private tag for {interaction.user.name}", value=f"{interaction.user.name}:{current}"
+            )
+        ]
+
+    @app_commands.command(name="picker-hold", description="Wait for the picker busy test to release")
+    async def picker_hold(self, interaction: discord.Interaction) -> None:
+        picker_action_started.set()
+        await picker_action_release.wait()
+        await interaction.response.send_message("Picker hold released")
+
+    @app_commands.command(
+        name="picker-upload-mixed", description="Exercise mixed attachment and text keyboard fields"
+    )
+    async def picker_upload_mixed(
+        self, interaction: discord.Interaction, payload: discord.Attachment, label: str
+    ) -> None:
+        await interaction.response.send_message(f"{payload.filename}:{label}")
+
     @app_commands.command(description="Exercise common slash option types")
     async def picker_options(
         self,

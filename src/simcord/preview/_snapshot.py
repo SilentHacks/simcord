@@ -35,7 +35,7 @@ from ..backend.errors import BackendError, SetupError
 from ..backend.models import EPHEMERAL_FLAG, Message
 from ..components import COMPONENTS_V2_FLAG, walk_components
 from ..enums import AppCommandType, ComponentType, InteractionType, MessageType
-from ._diagnostics import make_diagnostic
+from ._diagnostics import make_diagnostic, valid_command_name
 from ._markdown import markdown_summary, markdown_tokens
 
 if TYPE_CHECKING:
@@ -1814,20 +1814,23 @@ def candidate_control(
     if not can_access_channel(preview.env, page.channel_id, page.viewer, history=True):
         raise _QueryError("control-unavailable")
     if control_key.startswith("command:"):
-        match = re.fullmatch(
-            r"command:([0-9]{1,20}):([a-z0-9_-]+(?:\.[a-z0-9_-]+)*):option:([a-z0-9_-]+)",
-            control_key,
-        )
+        parts = control_key.split(":")
         if (
-            match is None
+            len(parts) != 5
+            or parts[0] != "command"
+            or parts[3] != "option"
+            or not re.fullmatch(r"[0-9]{1,20}", parts[1])
+            or not re.fullmatch(r"[^.]+(?:\.[^.]+)*", parts[2])
+            or not valid_command_name(parts[4])
+            or any(not valid_command_name(segment) for segment in parts[2].split("."))
             or modal_handle is not None
             or page.modal is not None
-            or str(int(match.group(1))) != match.group(1)
+            or str(int(parts[1])) != parts[1]
             or page.layout != "channel"
             or page.status != "current"
         ):
             raise _QueryError("control-unavailable")
-        command_id, dotted_path, option_name = match.groups()
+        command_id, dotted_path, option_name = parts[1], parts[2], parts[4]
         entry_key = f"{command_id}:{dotted_path}"
         entries = page.command_catalog.get("entries", [])
         catalog_entry = next(

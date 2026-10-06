@@ -3,7 +3,8 @@ import { node, renderIdentityAvatar, presenceDot } from "./dom.js";
 
 const INTEGER_INPUT = /^-?(?:0|[1-9][0-9]*)$/;
 const INTEGER_LIMIT = 9007199254740991n;
-const NUMBER_LIMIT = 9007199254740992;
+const NUMBER_LIMIT = 2 ** 53;
+const NUMBER_INPUT = /^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/;
 const ENTITY_TYPES = new Set(["user", "channel", "role", "mentionable"]);
 const FILE_TYPE_GROUPS = {
   image: [".png", ".gif", ".jpg", ".jpeg", ".jfif", ".webp", ".avif"],
@@ -36,9 +37,10 @@ export function validateOptionInput(option, raw) {
     value = Number(exact);
     if (!Number.isSafeInteger(value)) return { code: "option-integer-range" };
   } else if (type === "number") {
-    if (typeof raw !== "string" || !raw.trim()) return { code: "option-type" };
+    if (typeof raw !== "string" || !NUMBER_INPUT.test(raw)) return { code: "option-type" };
     value = Number(raw);
-    if (!Number.isFinite(value) || Math.abs(value) > NUMBER_LIMIT) return { code: "option-type" };
+    if (!Number.isFinite(value)) return { code: "option-type" };
+    if (Math.abs(value) > NUMBER_LIMIT) return { code: "option-integer-range" };
   } else if (type === "boolean") {
     if (typeof raw !== "boolean") return { code: "option-type" };
   } else if (ENTITY_TYPES.has(type)) {
@@ -93,6 +95,7 @@ export function createCommandPicker({
   let catalogState = "idle";
   let catalogFingerprint = null;
   let generation = 0;
+  let draftSequence = 0;
   let contextGeneration = null;
   let contextId = null;
   let viewerId = null;
@@ -240,6 +243,19 @@ export function createCommandPicker({
     };
   }
   function refreshStatus() { onCatalogState?.(catalogState); }
+  function autocompleteKey(commandDraft, optionName, value) {
+    return JSON.stringify([commandDraft.commandId, commandDraft.path, commandDraft.schemaFingerprint, optionName, String(value)]);
+  }
+  function clearAutocompleteState() {
+    for (const [token, timer] of timers) {
+      if (token.startsWith("autocomplete:")) {
+        clearTimeout(timer);
+        timers.delete(token);
+      }
+    }
+    autocompleteResults.clear();
+    autocomplete = { option: null, state: "idle", choiceCount: 0 };
+  }
 
   function renderBrowse() {
     if (!popup) return;
@@ -366,8 +382,9 @@ export function createCommandPicker({
   function select(entry) {
     if (!entry) return;
     closeBrowse();
+    clearAutocompleteState();
     const required = entry.options.filter((option) => option.required);
-    draft = { commandId: entry.commandId, path: [...entry.path], invocation: entry.invocation,
+    draft = { id: ++draftSequence, commandId: entry.commandId, path: [...entry.path], invocation: entry.invocation,
       schemaFingerprint: entry.schemaFingerprint, description: entry.description, available: true,
       focused: required[0]?.name || null, values: {}, added: new Set(), errors: {}, droppedOptions: [], version: 0,
       openOptionsOnRender: entry.options.length > 0 && required.length === 0 };
@@ -375,7 +392,7 @@ export function createCommandPicker({
     onCommandMode?.(true);
     ensurePopup();
     if (required.length) renderCompose({ focus: true });
-    else { draft.focused = null; renderCompose(); }
+    else { draft.focused = null; renderCompose({ focus: true }); }
     announce?.(required.length ? `/${entry.invocation}; ${required.length} required options missing` : `/${entry.invocation}`);
     refreshStatus();
   }
@@ -384,6 +401,7 @@ export function createCommandPicker({
     const invocation = `/${draft.invocation}`;
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
+    clearAutocompleteState();
     draft = null;
     mode = "closed";
     if (popup) popup.hidden = true;
@@ -506,16 +524,19 @@ export function createCommandPicker({
     }, 200));
   }
   function queryAutocomplete(option, value) {
-    const token = `${draft.commandId}:${draft.path.join(".")}:${option.name}`;
+    const commandDraft = draft;
+    const queryValue = String(value);
+    const token = `autocomplete:${commandDraft.id}:${option.name}`;
     if (timers.has(token)) clearTimeout(timers.get(token));
     autocomplete = { option: option.name, state: "loading", choiceCount: 0 };
-    autocompleteResults.set(option.name, []);
     timers.set(token, setTimeout(() => {
       timers.delete(token);
-      if (!draft || draft.focused !== option.name) return;
+      const input = commandRow?.querySelector(`.command-option-input[data-option="${CSS.escape(option.name)}"]`);
+      if (!draft || draft.id !== commandDraft.id || draft.focused !== option.name || input?.value !== queryValue) return;
       const { values } = checkedOptions({ partial: true });
-      dispatch("autocomplete_command", { command_id: draft.commandId, path: draft.path,
-        schema_fingerprint: draft.schemaFingerprint, focused: option.name, value: String(value), options: values });
+      dispatch("autocomplete_command", { command_id: commandDraft.commandId, path: commandDraft.path,
+        schema_fingerprint: commandDraft.schemaFingerprint, focused: option.name, value: queryValue, options: values },
+      { draftId: commandDraft.id, draftVersion: commandDraft.version });
       refreshStatus();
     }, 250));
   }
@@ -581,6 +602,7 @@ export function createCommandPicker({
         const mention = node("button", "command-mention", `${entityMark(option.type)}${value.entity.name || value.entity.label || value.entity.id}`);
         mention.type = "button";
         mention.dataset.controlKey = controlKey(option);
+        mention.dataset.option = option.name;
         mention.setAttribute("aria-label", `${option.name}: ${mention.textContent}; edit`);
         mention.addEventListener("click", () => {
           draft.values[option.name] = { raw: "" };
@@ -592,6 +614,8 @@ export function createCommandPicker({
         const fileInput = node("input", "command-file-input");
         fileInput.type = "file";
         fileInput.dataset.controlKey = controlKey(option);
+        fileInput.dataset.option = option.name;
+        fileInput.tabIndex = -1;
         fileInput.accept = (option.fileTypes || []).map((item) => FILE_TYPE_GROUPS[String(item).toLowerCase()]
           ? `${String(item).toLowerCase()}/*`
           : String(item).startsWith(".") ? item : `.${item}`).join(",");
@@ -616,12 +640,13 @@ export function createCommandPicker({
         });
         const choose = node("button", "command-file-choose", value?.file ? value.file.name : "Choose file");
         choose.type = "button";
+        choose.dataset.option = option.name;
         choose.addEventListener("click", () => fileInput.click());
         pill.append(choose);
         if (option.fileTypes?.length) pill.append(node("small", "command-file-hint", option.fileTypes.join(", ")));
         if (value?.file) {
           const remove = node("button", "command-file-remove", "×");
-          remove.type = "button"; remove.setAttribute("aria-label", `Remove ${value.file.name}`);
+          remove.type = "button"; remove.dataset.option = option.name; remove.setAttribute("aria-label", `Remove ${value.file.name}`);
           remove.addEventListener("click", () => { delete draft.values[option.name]; renderCompose(); });
           pill.append(remove);
         }
@@ -662,8 +687,8 @@ export function createCommandPicker({
           } else if (ENTITY_TYPES.has(option.type)) {
             renderPopup(field, entityCaption(option.type), candidateEntries(option), (candidate) => chooseValue(option, candidate), { entityType: option.type });
           } else if (option.autocomplete) {
-            const choices = autocompleteResults.get(option.name) || [];
             const current = String(field.value || "");
+            const choices = autocompleteResults.get(autocompleteKey(draft, option.name, current)) || [];
             renderPopup(field, `OPTIONS MATCHING ${current.toUpperCase()}`, choices, (choice) => chooseValue(option, choice));
           } else clearPopup();
         });
@@ -676,7 +701,7 @@ export function createCommandPicker({
             renderPopup(field, entityCaption(option.type), candidateEntries(option), (candidate) => chooseValue(option, candidate), { entityType: option.type });
           } else if (option.autocomplete) {
             queryAutocomplete(option, field.value);
-            renderPopup(field, `OPTIONS MATCHING ${field.value.toUpperCase()}`, autocompleteResults.get(option.name) || [], (choice) => chooseValue(option, choice));
+            renderPopup(field, `OPTIONS MATCHING ${field.value.toUpperCase()}`, autocompleteResults.get(autocompleteKey(draft, option.name, field.value)) || [], (choice) => chooseValue(option, choice));
           } else if (option.choices?.length) {
             renderPopup(field, "OPTIONS", optionChoices(option).filter((choice) => String(choice.name).toLowerCase().includes(field.value.toLowerCase()) || String(choice.value).toLowerCase().includes(field.value.toLowerCase())).map((choice) => ({ name: String(choice.name), value: choice.value })), (choice) => chooseValue(option, choice));
           }
@@ -725,14 +750,18 @@ export function createCommandPicker({
       alert.setAttribute("role", "alert"); commandRow.append(alert);
     }
     commandRow.setAttribute("aria-busy", String(autocomplete.state === "loading"));
-    const fieldFor = (name) => commandRow.querySelector(`.command-option-input[data-option="${CSS.escape(name)}"]`);
+    const fieldFor = (name) => commandRow.querySelector(
+      `.command-option-input[data-option="${CSS.escape(name)}"], .command-file-choose[data-option="${CSS.escape(name)}"], .command-mention[data-option="${CSS.escape(name)}"]`,
+    );
     const target = focus && draft.focused ? fieldFor(draft.focused) : restore ? fieldFor(restore.option) : null;
     if (target) {
       target.focus();
-      const end = target.value.length;
-      if (focus) target.setSelectionRange(end, end);
-      else target.setSelectionRange(Math.min(restore.start ?? end, end), Math.min(restore.end ?? end, end));
-    }
+      if (typeof target.setSelectionRange === "function") {
+        const end = target.value.length;
+        if (focus) target.setSelectionRange(end, end);
+        else target.setSelectionRange(Math.min(restore.start ?? end, end), Math.min(restore.end ?? end, end));
+      }
+    } else if (focus && !draft.focused) chip.focus();
     if (draft.openOptionsOnRender) {
       draft.openOptionsOnRender = false;
       openOptions(chip);
@@ -765,10 +794,12 @@ export function createCommandPicker({
     renderCompose();
     const files = {};
     for (const option of optionsFor()) if (draft.values[option.name]?.file) files[option.name] = draft.values[option.name].file;
-    run({ command_id: draft.commandId, path: draft.path, schema_fingerprint: draft.schemaFingerprint, options: values }, files, draft.version);
+    run({ command_id: draft.commandId, path: draft.path, schema_fingerprint: draft.schemaFingerprint, options: values }, files, {
+      draftId: draft.id,
+    });
   }
   function handleKey(event) {
-    if (event.isComposing || event.keyCode === 229) return false;
+    if (event.isComposing || event.keyCode === 229 || getState().editTargetId) return false;
     if (mode === "browsing") {
       if (["ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) {
         if (event.key === "Tab" && !listbox?.activeItem()) listbox?.setActive(0);
@@ -809,7 +840,7 @@ export function createCommandPicker({
   function intercept(event) { return handleKey(event); }
   composer.setKeyInterceptor(intercept);
   form.addEventListener("submit", (event) => {
-    if (!draft) return;
+    if (!draft || getState().editTargetId) return;
     event.preventDefault(); event.stopImmediatePropagation(); validateAndRun();
   }, true);
   input.addEventListener("input", () => { if (!draft) updateBrowse(); });
@@ -824,17 +855,25 @@ export function createCommandPicker({
     const newGeneration = snapshot?.context?.generation ?? null;
     if (reset || (contextId !== null && (contextId !== newContext || contextGeneration !== newGeneration || viewerId !== snapshot.viewerId))) {
       if (draft) exitCommand();
+      clearAutocompleteState();
       closeBrowse();
+      generation += 1;
       catalog = null; catalogFingerprint = null; catalogState = "idle";
     }
     contextId = newContext; contextGeneration = newGeneration; viewerId = snapshot?.viewerId ?? null;
     if (!canOpen(snapshot)) {
       if (!draft) closeBrowse();
-      if (snapshot?.commands?.state !== "available") { catalog = null; catalogState = "idle"; }
+      if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
+      catalog = null; catalogFingerprint = null; catalogState = "idle";
       refreshStatus(); return;
     }
     const fingerprint = snapshot.commands?.fingerprint;
-    if (!fingerprint || fingerprint === catalogFingerprint || catalogState === "loading") return;
+    if (!fingerprint) {
+      catalog = null; catalogFingerprint = null; catalogState = "idle";
+      if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
+      refreshStatus(); return;
+    }
+    if (fingerprint === catalogFingerprint || catalogState === "loading") return;
     catalogFingerprint = fingerprint;
     const requestGeneration = ++generation;
     const requestContext = contextId, requestRevisionFingerprint = fingerprint;
@@ -846,8 +885,10 @@ export function createCommandPicker({
       const previous = catalog;
       catalog = next;
       catalogState = next.state === "unavailable" ? "failed" : "ready";
+      if (catalogState === "failed") catalogFingerprint = null;
       if (draft) {
-        const entry = next.entries.find((item) => item.commandId === draft.commandId && item.path.join("\u0000") === draft.path.join("\u0000"));
+        const entry = next.state === "unavailable" ? null
+          : next.entries?.find((item) => item.commandId === draft.commandId && item.path.join("\u0000") === draft.path.join("\u0000"));
         if (!entry) { draft.available = false; renderCompose(); }
         else if (entry.schemaFingerprint !== draft.schemaFingerprint) {
           const old = draft;
@@ -860,11 +901,17 @@ export function createCommandPicker({
             added: new Set([...old.added].filter((name) => entry.options.some((item) => item.name === name && !item.required))), errors: {}, available: true };
           if (draft.droppedOptions.length) { liveNote = `Dropped values for ${draft.droppedOptions.join(", ")} because the command changed.`; announce?.(liveNote); }
           renderCompose();
+        } else if (draft.available === false) {
+          draft.available = true;
+          renderCompose();
         }
       }
       if (mode === "browsing") updateBrowse();
     } catch (_) {
-      if (requestGeneration === generation) catalogState = "failed";
+      if (requestGeneration === generation) {
+        catalog = null; catalogFingerprint = null; catalogState = "failed";
+        if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
+      }
     }
     refreshStatus();
   }
@@ -879,30 +926,38 @@ export function createCommandPicker({
       }
     }
   }
-  function receiveAction(kind, receipt, body) {
-    if (kind === "autocomplete_command" && body.command_id === draft?.commandId && body.focused === draft?.focused) {
+  function receiveAction(kind, receipt, body, metadata = null) {
+    if (kind === "autocomplete_command" && metadata?.draftId === draft?.id
+      && metadata?.draftVersion === draft?.version
+      && body.command_id === draft?.commandId
+      && body.path?.join("\u0000") === draft?.path.join("\u0000")
+      && body.schema_fingerprint === draft?.schemaFingerprint
+      && body.focused === draft?.focused) {
       const input = commandRow?.querySelector(`.command-option-input[data-option="${CSS.escape(body.focused)}"]`);
-      if (input && input.value !== String(body.value ?? "")) return;
+      if (!input || input.value !== String(body.value ?? "")) return;
+      const key = autocompleteKey(draft, body.focused, body.value);
       const result = receipt?.result;
       if (result?.answered) {
         const choices = Array.isArray(result.choices) ? result.choices.map((choice) => ({ name: choice.name, value: choice.value })) : [];
-        autocompleteResults.set(body.focused, choices);
+        autocompleteResults.set(key, choices);
         autocomplete = { option: body.focused, state: "answered", choiceCount: choices.length };
       } else {
-        autocompleteResults.set(body.focused, []);
+        autocompleteResults.set(key, []);
         autocomplete = { option: body.focused, state: "failed", choiceCount: 0 };
       }
-      if (input) renderPopup(input, `OPTIONS MATCHING ${input.value.toUpperCase()}`, autocompleteResults.get(body.focused) || [], (choice) => chooseValue(optionsFor().find((item) => item.name === body.focused), choice));
+      renderPopup(input, `OPTIONS MATCHING ${input.value.toUpperCase()}`, autocompleteResults.get(key), (choice) => chooseValue(optionsFor().find((item) => item.name === body.focused), choice));
     }
-    if (kind === "run_command" && draft && receipt?.settlement === "settled" && !receipt.rejected) {
-      draft = null; mode = "closed"; clearPopup(); contextBar?.remove(); contextBar = null;
+    const submittedDraftIsCurrent = metadata?.draftId === draft?.id;
+    if (kind === "run_command" && submittedDraftIsCurrent && receipt?.settlement === "settled" && !receipt.rejected) {
+      draft = null; mode = "closed"; clearAutocompleteState(); clearPopup(); contextBar?.remove(); contextBar = null;
       composer.replaceInput(input);
       input.value = "";
       input.dispatchEvent(new Event("input", { bubbles: true }));
       onCommandMode?.(false, detachedReply); detachedReply = null;
-    } else if (kind === "run_command" && receipt?.diagnostics?.some((item) => item.code === "command-option-invalid")) {
+    } else if (kind === "run_command" && submittedDraftIsCurrent
+      && receipt?.diagnostics?.some((item) => item.code === "command-option-invalid")) {
       const name = receipt.diagnostics.find((item) => item.code === "command-option-invalid")?.subject?.commandOption;
-      if (name && draft) { draft.errors[name] = "Enter a valid value."; draft.focused = name; renderCompose({ focus: true }); }
+      if (name) { draft.errors[name] = "Enter a valid value."; draft.focused = name; renderCompose({ focus: true }); }
     }
     refreshStatus();
   }
@@ -913,10 +968,17 @@ export function createCommandPicker({
       renderCompose();
     }
   }
-  function clear() { if (draft) exitCommand(); closeBrowse(); catalog = null; catalogState = "idle"; catalogFingerprint = null; }
+  function clear() {
+    if (draft) exitCommand();
+    closeBrowse();
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+    clearAutocompleteState();
+    catalog = null; catalogState = "idle"; catalogFingerprint = null;
+  }
   function isCatalogLoadingOpen() { return mode === "browsing" && catalogState === "loading"; }
   function shouldShowComposer(snapshot) { return Boolean(snapshot?.layout === "channel" && (snapshot.channel?.canSendMessages || snapshot.channel?.canUseApplicationCommands)); }
   function setAvailability(snapshot) { return shouldShowComposer(snapshot); }
 
-  return { update, receiveSnapshot, receiveAction, status, render: () => { if (draft) renderCompose(); else if (mode === "browsing") updateBrowse(); }, setPending, resume, clear, isCatalogLoadingOpen, setAvailability, handleKey };
+  return { update, receiveSnapshot, receiveAction, status, render: () => { if (draft) renderCompose(); else if (mode === "browsing") updateBrowse(); }, setPending, resume, clear, exit: exitCommand, isCatalogLoadingOpen, setAvailability, handleKey };
 }

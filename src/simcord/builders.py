@@ -96,11 +96,13 @@ class UserHandle:
         return to_discord_message(self._env, message)
 
     def available_commands(self) -> tuple[str, ...]:
-        """List exactly the slash invocations that `slash()` accepts in this DM."""
+        """List accepted slash invocations once; guild-shadowed names are DM-global only."""
         from .interactions import command_leaves
 
         commands = self._env.backend.visible_commands(user_id=self.id, channel_id=self.dm_channel.id)
-        return tuple(" ".join(path) for command in commands for path, _leaf in command_leaves(command))
+        return tuple(
+            dict.fromkeys(" ".join(path) for command in commands for path, _leaf in command_leaves(command))
+        )
 
     async def slash(self, name: str, /, **options: Any) -> Any:
         """Invoke a global slash command visible in this user's bot DM."""

@@ -153,7 +153,7 @@
         "subject": {
           "oneOf": [
             { "type": "object", "additionalProperties": false, "required": ["messageId"], "properties": { "messageId": { "type": "string" }, "controlKey": { "type": "string" } } },
-            { "type": "object", "additionalProperties": false, "required": ["commandOption"], "properties": { "commandOption": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" } } }
+            { "type": "object", "additionalProperties": false, "required": ["commandOption"], "properties": { "commandOption": { "type": "string", "pattern": "^[^:.\\s]{1,32}$" } } }
           ]
         },
         "correlation": { "type": "string" }

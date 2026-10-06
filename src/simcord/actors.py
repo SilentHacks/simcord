@@ -17,7 +17,7 @@ from . import interactions as _interactions
 from .backend import serializers
 from .backend.access import can_access_channel, can_access_message
 from .backend.command_access import command_access
-from .backend.errors import SetupError
+from .backend.errors import BackendError, SetupError
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle, _guard_builder_operation
 from .components import validate_modal, walk_components
 from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
@@ -177,15 +177,23 @@ class MemberActor:
         return root, leaf, nesting
 
     async def slash(self, channel: ChannelHandle, name: str, /, **options: Any) -> InteractionResult:
-        """Invoke a synced slash command (use spaces for subcommands: "config set")."""
+        """Invoke a synced slash command; a shadowed name resolves to its guild command."""
         self._check(channel, "view_channel")
         return await _slash(self, channel, name, options)
 
     def available_commands(self, channel: ChannelHandle) -> tuple[str, ...]:
-        """List exactly the slash invocations that `slash()` accepts here."""
+        """List accepted slash invocations once; shadowed names resolve to guild commands."""
+        try:
+            self._check(channel, "view_channel")
+        except (BackendError, SetupError):
+            return ()
         commands = self._env.backend.visible_commands(user_id=self.id, channel_id=channel.id)
         return tuple(
-            " ".join(path) for command in commands for path, _leaf in _interactions.command_leaves(command)
+            dict.fromkeys(
+                " ".join(path)
+                for command in commands
+                for path, _leaf in _interactions.command_leaves(command)
+            )
         )
 
     async def context_menu(
@@ -385,13 +393,7 @@ def _unsynced_fallback(actor: Any, name: str, type: int) -> dict[str, Any]:
     )
 
 
-def _resolve_visible_command(actor: Any, channel_id: int, name: str, type: int) -> dict[str, Any]:
-    """Resolve a command and enforce the same visibility rules as the picker."""
-    guild = getattr(actor, "guild", None)
-    guild_id = guild.id if guild is not None else None
-    root = actor._env.backend.find_command(name, guild_id, type=type)
-    if root is None:
-        root = _unsynced_fallback(actor, name, type)
+def _check_command_access(actor: Any, channel_id: int, name: str, root: dict[str, Any]) -> None:
     access = command_access(actor._env.backend, root, user_id=actor.id, channel_id=channel_id)
     if not access.allowed:
         reason = access.reason or "unknown"
@@ -412,12 +414,32 @@ def _resolve_visible_command(actor: Any, channel_id: int, name: str, type: int) 
             fixes.get(reason, "Adjust the command's visibility settings for this user and channel.")
         )
         raise error
+
+
+def _resolve_visible_command(actor: Any, channel_id: int, name: str, type: int) -> dict[str, Any]:
+    """Resolve a command and enforce the same visibility rules as the picker."""
+    guild = getattr(actor, "guild", None)
+    guild_id = guild.id if guild is not None else None
+    root = actor._env.backend.find_command(name, guild_id, type=type)
+    if root is None:
+        root = _unsynced_fallback(actor, name, type)
+    _check_command_access(actor, channel_id, name, root)
     return root
 
 
-async def _slash(actor: Any, channel: ChannelHandle, name: str, options: dict[str, Any]) -> InteractionResult:
+async def _slash(
+    actor: Any,
+    channel: ChannelHandle,
+    name: str,
+    options: dict[str, Any],
+    *,
+    root: dict[str, Any] | None = None,
+) -> InteractionResult:
     parts = name.split()
-    root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
+    if root is None:
+        root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
+    else:
+        _check_command_access(actor, channel.id, parts[0], root)
     leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
     leaf_options, resolved = _interactions.build_options(actor, name, leaf, options, channel_id=channel.id)
     data: dict[str, Any] = {
@@ -431,6 +453,20 @@ async def _slash(actor: Any, channel: ChannelHandle, name: str, options: dict[st
     if root.get("guild_id"):
         data["guild_id"] = root["guild_id"]
     return await _dispatch_actor_interaction(actor, InteractionType.APPLICATION_COMMAND, channel, data)
+
+
+async def _slash_resolved(
+    actor: Any, channel: ChannelHandle, name: str, options: dict[str, Any], root: dict[str, Any]
+) -> InteractionResult:
+    """Invoke a pre-authorized catalog root under the public slash operation guard."""
+    token = actor._env._begin_operation("slash")
+    try:
+        if isinstance(actor, MemberActor):
+            actor._check(channel, "view_channel")
+        _check_user_dm_channel(actor, channel.id)
+        return await _slash(actor, channel, name, options, root=root)
+    finally:
+        actor._env._end_operation(token)
 
 
 async def _autocomplete(
@@ -452,10 +488,16 @@ async def _autocomplete_result(
     option: str,
     value: str,
     filled: dict[str, Any],
+    *,
+    root: dict[str, Any] | None = None,
 ) -> InteractionResult:
     """Dispatch autocomplete while retaining answered-versus-unanswered state."""
+    _check_user_dm_channel(actor, channel.id)
     parts = name.split()
-    root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
+    if root is None:
+        root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
+    else:
+        _check_command_access(actor, channel.id, parts[0], root)
     leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
     declared = {item["name"]: item for item in leaf.get("options") or []}
     if option not in declared:
@@ -475,10 +517,29 @@ async def _autocomplete_result(
         "type": root.get("type", AppCommandType.CHAT_INPUT),
         "options": _interactions.nest_options(root, nesting, leaf_options),
     }
+    if root.get("guild_id"):
+        data["guild_id"] = root["guild_id"]
     result = await _dispatch_actor_interaction(
         actor, InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE, channel, data
     )
     return result
+
+
+async def _autocomplete_result_resolved(
+    actor: Any,
+    channel: ChannelHandle,
+    name: str,
+    option: str,
+    value: str,
+    filled: dict[str, Any],
+    root: dict[str, Any],
+) -> InteractionResult:
+    """Dispatch catalog autocomplete under the public autocomplete operation guard."""
+    token = actor._env._begin_operation("autocomplete")
+    try:
+        return await _autocomplete_result(actor, channel, name, option, value, filled, root=root)
+    finally:
+        actor._env._end_operation(token)
 
 
 def _channel_id_of(message: MessageLike, fallback: int | None = None) -> int:

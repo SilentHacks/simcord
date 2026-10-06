@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -157,11 +158,11 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                 original_autocomplete = _actions._autocomplete_result
                 fake_interaction = env.backend.new_interaction(4, channel.id, alice.id, env.guild.id)
 
-                async def unanswered(actor, command_channel, invocation, focused, value, options):
+                async def unanswered(actor, command_channel, invocation, focused, value, options, **kwargs):
                     if value == "silent":
                         return SimpleNamespace(autocomplete_choices=None, _interaction=fake_interaction)
                     return await original_autocomplete(
-                        actor, command_channel, invocation, focused, value, options
+                        actor, command_channel, invocation, focused, value, options, **kwargs
                     )
 
                 monkeypatch.setattr(_actions, "_autocomplete_result", unanswered)
@@ -610,5 +611,332 @@ async def test_browser_command_option_validator_matches_shared_cases(env, channe
                 )
                 expected = [case["expect"] for case in _CASES]
                 assert results == expected
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_autocomplete_cache_is_viewer_and_draft_scoped(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    async with env.preview(channel, viewers=[alice, bob], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.catalog.state === 'ready'"
+                )
+                composer = page.locator("#channel-composer-input")
+                await composer.fill("/private-tag")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                tag = page.locator('.command-option-input[data-option="tag"]')
+                await tag.fill("private")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.autocomplete.state === 'answered'"
+                )
+                assert await page.locator(".command-suggestion").inner_text() == "private tag for alice"
+
+                await page.locator("#viewer-picker").select_option(label="bob")
+                await page.wait_for_function(
+                    f"() => window.simcordPreview.viewerId === '{bob.id}' "
+                    "&& window.simcordPreview.commandPicker.draft === null "
+                    "&& window.simcordPreview.commandPicker.catalog.state === 'ready'"
+                )
+                await composer.fill("/private-tag")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                assert "private tag for alice" not in await page.locator(".command-popup").inner_text()
+                tag = page.locator('.command-option-input[data-option="tag"]')
+                await tag.fill("private")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.autocomplete.state === 'answered'"
+                )
+                assert await page.locator(".command-suggestion").inner_text() == "private tag for bob"
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_edit_mode_exits_command_picker_before_save(env, channel, alice):
+    message = await alice.send(channel, "Original edit target")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                edit_requests = []
+
+                def record_edit_request(request):
+                    if request.url.endswith("/api/action") and request.method == "POST":
+                        body = request.post_data_json or {}
+                        if body.get("kind") == "edit_message":
+                            edit_requests.append(body)
+
+                page.on("request", record_edit_request)
+                composer = page.locator("#channel-composer-input")
+                await composer.fill("/config set")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                await page.locator('.command-option-input[data-option="key"]').fill("theme")
+                await page.locator('.command-option-input[data-option="value"]').fill("dark")
+
+                target = page.locator(f'.channel-message[data-message-id="{message.id}"]')
+                await target.hover()
+                await target.get_by_role("button", name="Edit").click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft === null "
+                    "&& window.simcordPreview.commandPicker.state !== 'composing'"
+                )
+                await composer.fill("Edited instead of running the command")
+                await page.get_by_role("button", name="Save").click()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.lastAction?.settlement === 'settled' "
+                    "&& !window.simcordPreview.pendingAction"
+                )
+                await (
+                    page.locator("#channel-timeline")
+                    .get_by_text("Edited instead of running the command", exact=True)
+                    .wait_for()
+                )
+                assert len(edit_requests) == 1
+                assert await page.evaluate(
+                    "requestId => window.simcordPreview.lastAction?.requestId === requestId",
+                    edit_requests[0]["request_id"],
+                )
+                assert not await page.evaluate(
+                    "() => window.simcordPreview.activity.some(item => item.command?.invocation === 'config set')"
+                )
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_autocomplete_busy_retry_uses_observed_revision(env, channel, alice):
+    from fixtures.sample_bot import picker
+
+    picker.picker_action_started = asyncio.Event()
+    picker.picker_action_release = asyncio.Event()
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page_a = await browser.new_page()
+                page_b = await browser.new_page()
+                await asyncio.gather(page_a.goto(preview.url), page_b.goto(preview.url))
+                for page in (page_a, page_b):
+                    await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                    await page.wait_for_function(
+                        "() => window.simcordPreview.commandPicker.catalog.state === 'ready'"
+                    )
+
+                composer_b = page_b.locator("#channel-composer-input")
+                await composer_b.fill("/picker-hold")
+                await composer_b.press("Enter")
+                await page_b.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                await page_b.locator(".command-chip").press("Enter")
+                await asyncio.wait_for(picker.picker_action_started.wait(), timeout=10)
+
+                busy_seen = asyncio.Event()
+
+                async def observe_busy(route):
+                    body = route.request.post_data_json or {}
+                    if body.get("kind") == "autocomplete_command":
+                        response = await route.fetch()
+                        receipt = await response.json()
+                        if any(item.get("code") == "busy" for item in receipt.get("diagnostics", [])):
+                            busy_seen.set()
+                        await route.fulfill(response=response)
+                    else:
+                        await route.continue_()
+
+                await page_a.route("**/api/action", observe_busy)
+                composer_a = page_a.locator("#channel-composer-input")
+                await composer_a.fill("/tag")
+                await composer_a.press("Enter")
+                await page_a.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                tag = page_a.locator('.command-option-input[data-option="name"]')
+                await tag.fill("p")
+                await tag.fill("py")
+                await asyncio.wait_for(busy_seen.wait(), timeout=10)
+
+                picker.picker_action_release.set()
+                await page_b.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft === null "
+                    "&& window.simcordPreview.activity.some(item => item.command?.invocation === 'picker-hold')"
+                )
+                await page_a.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.autocomplete.state === 'answered' "
+                    "&& window.simcordPreview.commandPicker.autocomplete.choiceCount === 2"
+                )
+                assert await page_a.locator(".command-suggestion").count() == 2
+                assert await tag.input_value() == "py"
+            finally:
+                picker.picker_action_release.set()
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_catalog_permission_recovery_preserves_command_draft(env, channel, alice):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.catalog.state === 'ready'"
+                )
+                composer = page.locator("#channel-composer-input")
+                await composer.fill("/config set")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                await page.locator('.command-option-input[data-option="key"]').fill("theme")
+                await page.locator('.command-option-input[data-option="value"]').fill("night")
+                assert await page.evaluate("() => window.simcordPreview.commandPicker.draft.submittable")
+
+                member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+                bot_channel = env.bot.get_channel(channel.id)
+                await bot_channel.set_permissions(member, use_application_commands=False)
+                await preview.refresh()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft?.available === false"
+                )
+                assert await page.get_by_role("alert").get_by_text("no longer available").count() == 1
+
+                await bot_channel.set_permissions(member, use_application_commands=True)
+                await preview.refresh()
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.catalog.state === 'ready' "
+                    "&& window.simcordPreview.commandPicker.draft?.available === true "
+                    "&& window.simcordPreview.commandPicker.draft.submittable"
+                )
+                assert await page.locator('.command-option-input[data-option="key"]').input_value() == "theme"
+                assert (
+                    await page.locator('.command-option-input[data-option="value"]').input_value() == "night"
+                )
+                await page.get_by_role("button", name="Send").click()
+                await page.wait_for_function("() => window.simcordPreview.commandPicker.draft === null")
+                await page.locator("#channel-timeline").get_by_text("theme=night", exact=True).wait_for()
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_lost_run_command_receipt_recovers_and_completes_draft(env, channel, alice):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                requests = []
+                delivered = asyncio.Event()
+
+                async def lose_run_receipt(route):
+                    body = route.request.post_data_json or {}
+                    if body.get("kind") == "run_command":
+                        requests.append(body)
+                        await route.fetch()
+                        delivered.set()
+                        await route.abort("failed")
+                    else:
+                        await route.continue_()
+
+                await page.route("**/api/action", lose_run_receipt)
+                composer = page.locator("#channel-composer-input")
+                await composer.fill("/config set")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.state === 'composing'"
+                )
+                await page.locator('.command-option-input[data-option="key"]').fill("recover")
+                await page.locator('.command-option-input[data-option="value"]').fill("once")
+                await page.get_by_role("button", name="Send").click()
+                await asyncio.wait_for(delivered.wait(), timeout=10)
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft === null "
+                    "&& window.simcordPreview.transport.recoveries > 0 "
+                    "&& !window.simcordPreview.pendingAction"
+                )
+                await page.locator("#channel-timeline").get_by_text("recover=once", exact=True).wait_for()
+                assert len(requests) == 1
+                await composer.press("Enter")
+                await page.wait_for_timeout(500)
+                assert len(requests) == 1
+                assert (
+                    await page.evaluate(
+                        "() => window.simcordPreview.activity.filter(item => item.command?.invocation === 'config set').length"
+                    )
+                    == 1
+                )
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_command_keyboard_focus_covers_attachment_pills(env, channel, alice):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.catalog.state === 'ready'"
+                )
+                composer = page.locator("#channel-composer-input")
+                await composer.fill("/upload")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft?.invocation === 'upload'"
+                )
+                choose = page.locator(".command-file-choose")
+                await page.wait_for_function("() => document.activeElement?.matches('.command-file-choose')")
+                assert await choose.inner_text() == "Choose file"
+                await page.locator(".command-chip").press("Tab")
+                await page.wait_for_function("() => document.activeElement?.matches('.command-file-choose')")
+                await page.get_by_role("button", name="Exit command mode").click()
+
+                await composer.fill("/picker-upload-mixed")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft?.invocation === 'picker-upload-mixed'"
+                )
+                await page.wait_for_function("() => document.activeElement?.matches('.command-file-choose')")
+                label = page.locator('.command-option-input[data-option="label"]')
+                await page.locator(".command-file-choose").press("Tab")
+                await page.wait_for_function(
+                    "element => document.activeElement === element", arg=await label.element_handle()
+                )
+                await label.press("Shift+Tab")
+                await page.wait_for_function("() => document.activeElement?.matches('.command-file-choose')")
+                await page.get_by_role("button", name="Exit command mode").click()
+
+                await composer.fill("/all-optional")
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.simcordPreview.commandPicker.draft?.invocation === 'all-optional'"
+                )
+                await page.wait_for_function("() => document.activeElement?.matches('.command-chip')")
             finally:
                 await browser.close()
