@@ -13,8 +13,10 @@ import io
 import struct
 import zlib
 from pathlib import Path
+from typing import Literal
 
 import discord
+from discord import app_commands
 
 REFERENCE_IDS = (
     "REF-00-INDEX",
@@ -26,6 +28,136 @@ REFERENCE_IDS = (
     "REF-40-V2-LAYOUT-MEDIA",
     "REF-50-MODALS",
 )
+
+
+def register_picker_commands(tree: app_commands.CommandTree) -> None:
+    """Register deterministic slash-picker fixtures on a discord.py command tree."""
+
+    @app_commands.command(description="Exercise common slash option types")
+    async def picker_options(
+        interaction: discord.Interaction,
+        text: app_commands.Range[str, 2, 20],
+        count: app_commands.Range[int, 1, 5],
+        ratio: app_commands.Range[float, 0.0, 1.0],
+        enabled: bool,
+        user: discord.User,
+        channel: discord.TextChannel,
+        role: discord.Role,
+        mentionable: discord.User | discord.Role,
+        color: Literal["red", "blue"],
+    ) -> None:
+        await interaction.response.send_message(
+            f"{text}:{count}:{ratio}:{enabled}:{user.name}:{channel.name}:"
+            f"{role.name}:{mentionable.name}:{color}"
+        )
+
+    @app_commands.command(name="all-optional", description="Exercise optional slash options")
+    async def all_optional(
+        interaction: discord.Interaction,
+        note: str | None = None,
+        count: int | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        await interaction.response.send_message(f"{note}:{count}:{enabled}")
+
+    @app_commands.command(name="no-option", description="Run a command with no options")
+    async def no_option(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("No-option command ran")
+
+    @app_commands.command(description="Look up a tag")
+    async def tag(interaction: discord.Interaction, name: str) -> None:
+        await interaction.response.send_message(f"Tag: {name}")
+
+    @tag.autocomplete("name")
+    async def tag_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return [
+            app_commands.Choice(name=value, value=value)
+            for value in ("Falcon", "Forest", "Fjord")
+            if current.casefold() in value.casefold()
+        ]
+
+    @app_commands.command(description="Search tags with a bounded result count")
+    async def suggest(
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 5],
+        query: str,
+    ) -> None:
+        await interaction.response.send_message(f"{query}:{limit}")
+
+    @suggest.autocomplete("query")
+    async def suggest_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return [
+            app_commands.Choice(name=value, value=value)
+            for value in ("Falcon", "Forest", "Fjord")
+            if current.casefold() in value.casefold()
+        ]
+
+    @app_commands.command(description="Receive an uploaded file")
+    async def upload(interaction: discord.Interaction, attachment: discord.Attachment) -> None:
+        await interaction.response.send_message(f"Received {attachment.filename}")
+
+    @app_commands.command(name="option-check", description="Check slash option constraints")
+    async def option_check(
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 10],
+        label: app_commands.Range[str, 2, 5],
+    ) -> None:
+        await interaction.response.send_message(f"{label}:{limit}")
+
+    config = app_commands.Group(name="config", description="Configuration")
+
+    @config.command(name="set", description="Set a key")
+    async def set_key(interaction: discord.Interaction, key: str, value: str) -> None:
+        await interaction.response.send_message(f"{key}={value}")
+
+    @config.command(name="remove", description="Remove a key")
+    async def remove_key(interaction: discord.Interaction, key: str) -> None:
+        await interaction.response.send_message(f"Removed {key}")
+
+    @app_commands.command(name="manage_settings", description="Manage guild settings")
+    @app_commands.default_permissions(manage_guild=True)
+    async def manage_settings(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Settings updated")
+
+    @app_commands.command(description="Only available in age-restricted channels", nsfw=True)
+    async def age_gate(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Age-restricted command")
+
+    @app_commands.command(description="A command available in guilds and bot DMs")
+    @app_commands.allowed_contexts(guilds=True, dms=True)
+    async def dm_greeting(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Hello from the bot", ephemeral=True)
+
+    @app_commands.command(description="Only available in guilds")
+    @app_commands.guild_only()
+    async def guild_greeting(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Hello from the guild")
+
+    @app_commands.command(description="Only available in bot DMs")
+    @app_commands.dm_only()
+    async def dm_whisper(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Hello privately")
+
+    for command in (
+        picker_options,
+        all_optional,
+        no_option,
+        tag,
+        suggest,
+        upload,
+        option_check,
+        manage_settings,
+        age_gate,
+        dm_greeting,
+        guild_greeting,
+        dm_whisper,
+        config,
+    ):
+        tree.add_command(command)
 
 
 def _png(

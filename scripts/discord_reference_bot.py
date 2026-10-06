@@ -140,6 +140,7 @@ def create_bot(guild_id: int, sku_id: int | None = None, *, output_dir: Path | N
         intents=discord.Intents.none(),
         allowed_mentions=discord.AllowedMentions.none(),
     )
+    _CATALOG.register_picker_commands(bot.tree)
 
     @bot.tree.command(name="visual_references", description="Post the labelled component reference gallery")
     @app_commands.guild_only()
@@ -169,7 +170,7 @@ def create_bot(guild_id: int, sku_id: int | None = None, *, output_dir: Path | N
         guild = discord.Object(id=guild_id)
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
-        print(f"Synced /visual_references to guild {guild_id} ({len(synced)} command).")
+        print(f"Synced reference and picker commands to guild {guild_id} ({len(synced)} commands).")
 
     bot.setup_hook = setup_hook  # type: ignore[method-assign]
     return bot
@@ -220,6 +221,11 @@ def _component_types(value: object) -> set[int]:
 
 def _check() -> None:
     assert len(REFERENCE_IDS) == len(set(REFERENCE_IDS))
+    bot = create_bot(1)
+    command_names = {command.name for command in bot.tree.get_commands()}
+    assert {"visual_references", "picker_options", "all-optional", "tag", "upload", "config"} <= command_names
+    for command in bot.tree.get_commands():
+        command.to_dict(bot.tree)
     assert _png(2, 2, (0, 0, 0), (255, 255, 255)).startswith(b"\x89PNG\r\n\x1a\n")
     layout, files = _layout_view()
     fixtures = (
