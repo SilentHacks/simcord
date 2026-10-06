@@ -27,6 +27,7 @@ from ..enums import SELECT_TYPES, ComponentType, OptionType
 from ..interactions import OptionError, check_options, parse_option_input, validate_option_value
 from ..results import ResponseMessage
 from ._diagnostics import make_diagnostic
+from ._pages import HISTORY_STEP, HISTORY_WINDOW_SIZE
 
 if TYPE_CHECKING:
     from ..backend.models import Interaction, Message
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
     from ..results import InteractionResult
     from . import Preview
     from ._pages import _Page
+
+_ACTIVITY_LIMIT = 20
 
 
 def _component_key(component: Mapping[str, Any], path: str, message_id: int) -> str | None:
@@ -260,9 +263,9 @@ class _ActionOps:
     def _append_activity(page: _Page, receipt: dict[str, Any], action: _Action | None) -> None:
         page.activity.append({key: value for key, value in receipt.items() if key != "result"})
         page.activity_actions.append(action)
-        if len(page.activity) > 20:
-            del page.activity[:-20]
-            del page.activity_actions[:-20]
+        if len(page.activity) > _ACTIVITY_LIMIT:
+            del page.activity[:-_ACTIVITY_LIMIT]
+            del page.activity_actions[:-_ACTIVITY_LIMIT]
 
     def _reject(
         self,
@@ -411,7 +414,7 @@ class _ActionOps:
             isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))
         ):
             return self._reject(page, "target-unavailable", request_id=request_id, sequence=sequence)
-        token = self.env._begin_operation("preview.action")
+        self.env._begin_operation("preview.action")
         try:
             # Kind, control resolution, and values are validated before the
             # sequence is consumed; only a validated plan may be admitted.
@@ -491,7 +494,7 @@ class _ActionOps:
             action.response = result
             return dict(result)
         finally:
-            self.env._end_operation(token)
+            self.env._end_operation()
             self._active_action = None
             self._active_task = None
             self._action_page = None
@@ -679,17 +682,17 @@ class _ActionOps:
             ]
             ids = [item.id for item in visible]
             end = len(ids) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
-            start = max(0, end - 50)
+            start = max(0, end - HISTORY_WINDOW_SIZE)
             if direction == "older":
                 if start == 0:
                     raise SetupError("there is no earlier authorized history")
-                next_end = min(end, start + 25)
+                next_end = min(end, start + HISTORY_STEP)
                 next_anchor = ids[next_end - 1]
             elif direction == "newer":
                 if end == len(ids):
                     raise SetupError("there is no newer authorized history")
-                next_start = min(len(ids) - 1, start + 25)
-                next_end = min(len(ids), next_start + 50)
+                next_start = min(len(ids) - 1, start + HISTORY_STEP)
+                next_end = min(len(ids), next_start + HISTORY_WINDOW_SIZE)
                 next_anchor = None if next_end == len(ids) else ids[next_end - 1]
             else:
                 next_anchor = None
@@ -801,7 +804,7 @@ class _ActionOps:
                         continue
 
                 async def run_autocomplete(action: _Action, cursor: int) -> dict[str, Any]:
-                    token = self.env._begin_operation("autocomplete")
+                    self.env._begin_operation("autocomplete")
                     try:
                         result = await _autocomplete_result(
                             actor,
@@ -813,7 +816,7 @@ class _ActionOps:
                             root=root,
                         )
                     finally:
-                        self.env._end_operation(token)
+                        self.env._end_operation()
                     offered = result.autocomplete_choices
                     answered = offered is not None
                     action.autocomplete_answered = answered

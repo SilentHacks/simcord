@@ -450,14 +450,14 @@ async def _slash_resolved(
     actor: Any, channel: ChannelHandle, name: str, options: dict[str, Any], root: dict[str, Any]
 ) -> InteractionResult:
     """Invoke a pre-authorized catalog root under the public slash operation guard."""
-    token = actor._env._begin_operation("slash")
+    actor._env._begin_operation("slash")
     try:
         if isinstance(actor, MemberActor):
             actor._check(channel, "view_channel")
         _check_user_dm_channel(actor, channel.id)
         return await _slash(actor, channel, name, options, root=root)
     finally:
-        actor._env._end_operation(token)
+        actor._env._end_operation()
 
 
 async def _autocomplete(
@@ -526,11 +526,11 @@ async def _autocomplete_result_resolved(
     root: dict[str, Any],
 ) -> InteractionResult:
     """Dispatch catalog autocomplete under the public autocomplete operation guard."""
-    token = actor._env._begin_operation("autocomplete")
+    actor._env._begin_operation("autocomplete")
     try:
         return await _autocomplete_result(actor, channel, name, option, value, filled, root=root)
     finally:
-        actor._env._end_operation(token)
+        actor._env._end_operation()
 
 
 def _channel_id_of(message: MessageLike, fallback: int | None = None) -> int:
@@ -689,8 +689,8 @@ def _component_interaction_data_id(component: dict[str, Any], data: dict[str, An
         data["id"] = component["id"]
 
 
-def _modal_components(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return interactive modal leaves, retaining each layout wrapper."""
+def _modal_controls(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return interactive controls without their layout wrappers."""
     supported = {
         ComponentType.TEXT_INPUT,
         *SELECT_TYPES,
@@ -718,7 +718,7 @@ def _modal_components(spec: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _modal_control_map(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     controls = {}
-    for control in _modal_components(spec):
+    for control in _modal_controls(spec):
         custom_id = control.get("custom_id")
         if not custom_id:
             raise SetupError("Modal control is missing custom_id")

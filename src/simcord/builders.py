@@ -647,21 +647,21 @@ def _guard_builder_operation(method: Any) -> Any:
 
         @wraps(method)
         async def guarded_async(self: Any, *args: Any, **kwargs: Any) -> Any:
-            token = self._env._begin_operation(method.__name__)
+            self._env._begin_operation(method.__name__)
             try:
                 return await method(self, *args, **kwargs)
             finally:
-                self._env._end_operation(token)
+                self._env._end_operation()
 
         return guarded_async
 
     @wraps(method)
     def guarded_sync(self: Any, *args: Any, **kwargs: Any) -> Any:
-        token = self._env._begin_operation(method.__name__)
+        self._env._begin_operation(method.__name__)
         try:
             return method(self, *args, **kwargs)
         finally:
-            self._env._end_operation(token)
+            self._env._end_operation()
 
     return guarded_sync
 

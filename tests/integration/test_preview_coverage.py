@@ -311,12 +311,12 @@ async def test_preview_rejected_overlap_does_not_consume_action(env, channel, al
         release = asyncio.Event()
 
         async def hold_operation():
-            token = env._begin_operation("held")
+            env._begin_operation("held")
             started.set()
             try:
                 await release.wait()
             finally:
-                env._end_operation(token)
+                env._end_operation()
 
         holder = asyncio.create_task(hold_operation())
         await started.wait()

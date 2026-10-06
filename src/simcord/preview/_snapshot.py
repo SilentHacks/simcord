@@ -37,6 +37,7 @@ from ..components import COMPONENTS_V2_FLAG, walk_components
 from ..enums import AppCommandType, ComponentType, InteractionType, MessageType
 from ._diagnostics import make_diagnostic, valid_command_name
 from ._markdown import markdown_summary, markdown_tokens
+from ._pages import HISTORY_WINDOW_SIZE
 
 if TYPE_CHECKING:
     from ..env import Env
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from ._pages import _Page
 
 _PROTOCOL_VERSION = 3
+QUERY_PAGE_SIZE = 50
 _ENTITY_TYPES = {
     int(ComponentType.USER_SELECT): "users",
     int(ComponentType.ROLE_SELECT): "roles",
@@ -1440,9 +1442,9 @@ def _paginate(
                 else:
                     yield item
 
-        matches = heapq.nsmallest(51, after_pivot(), key=key)
-        rows = matches[:50]
-        has_next = len(matches) > 50
+        matches = heapq.nsmallest(QUERY_PAGE_SIZE + 1, after_pivot(), key=key)
+        rows = matches[:QUERY_PAGE_SIZE]
+        has_next = len(matches) > QUERY_PAGE_SIZE
     elif direction == "before":
 
         def before_pivot() -> Iterable[Any]:
@@ -1454,13 +1456,13 @@ def _paginate(
                 else:
                     yield item
 
-        matches = heapq.nlargest(51, before_pivot(), key=key)
-        rows = list(reversed(matches[:50]))
-        has_previous = len(matches) > 50
+        matches = heapq.nlargest(QUERY_PAGE_SIZE + 1, before_pivot(), key=key)
+        rows = list(reversed(matches[:QUERY_PAGE_SIZE]))
+        has_previous = len(matches) > QUERY_PAGE_SIZE
     else:
-        matches = heapq.nsmallest(51, source(), key=key)
-        rows = matches[:50]
-        has_next = len(matches) > 50
+        matches = heapq.nsmallest(QUERY_PAGE_SIZE + 1, source(), key=key)
+        rows = matches[:QUERY_PAGE_SIZE]
+        has_next = len(matches) > QUERY_PAGE_SIZE
     if not rows:
         return [], False, False, None, None
     previous = (
@@ -1928,12 +1930,12 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     if page.layout == "channel":
         if target_index is not None and page.window_end_id == page.target_id:
             start = max(0, target_index - 24)
-            end = min(len(visible), start + 50)
-            start = max(0, end - 50)
+            end = min(len(visible), start + HISTORY_WINDOW_SIZE)
+            start = max(0, end - HISTORY_WINDOW_SIZE)
             page.window_end_id = ids[end - 1] if end and end < len(visible) else None
         else:
             end = len(visible) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
-            start = max(0, end - 50)
+            start = max(0, end - HISTORY_WINDOW_SIZE)
         if page.window_end_id is not None and page.window_end_id not in ids:
             page.window_end_id = ids[end - 1] if end else None
         window = visible[start:end]

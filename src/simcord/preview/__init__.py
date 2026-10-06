@@ -283,7 +283,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         """
         if not self._active or self._python is None:
             raise SetupError("Preview is not active")
-        token = self.env._begin_operation("preview.show")
+        self.env._begin_operation("preview.show")
         try:
             page = self._python
             target_id, modal = self._resolve_target(page.viewer, target)
@@ -302,13 +302,13 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             page.candidate_queries.clear()
             self._publish(page, reason="navigation")
         finally:
-            self.env._end_operation(token)
+            self.env._end_operation()
 
     async def refresh(self) -> None:
         """Settle pending bot work and republish every open page."""
         if not self._active or self._closed:
             raise SetupError("Preview is not active")
-        token = self.env._begin_operation("preview.refresh")
+        self.env._begin_operation("preview.refresh")
         try:
             await self.env._settle_internal()
             self._advance_presentation_time()
@@ -316,7 +316,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 if page.id in self._pages:  # earlier publishes prune expired pages
                     self._publish(page, reason="refresh")
         finally:
-            self.env._end_operation(token)
+            self.env._end_operation()
 
     async def snapshot(self) -> dict[str, Any]:
         """Settle bot work, republish, and return the detached JSON projection.
@@ -329,13 +329,13 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         """
         if not self._active or self._python is None:
             raise SetupError("Preview is not active")
-        token = self.env._begin_operation("preview.snapshot")
+        self.env._begin_operation("preview.snapshot")
         try:
             await self.env._settle_internal()
             self._publish(self._python, reason="snapshot")
             return self._page_payload(self._python)
         finally:
-            self.env._end_operation(token)
+            self.env._end_operation()
 
     async def wait_closed(self) -> None:
         """Return once the session ends via End preview session, ``close()``, or env shutdown."""

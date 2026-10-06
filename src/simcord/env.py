@@ -211,7 +211,7 @@ class Env:
             if task.done() and self._pre_shutdown_task is task:
                 self._pre_shutdown_task = None
 
-    def _begin_operation(self, label: str) -> asyncio.Task[Any] | None:
+    def _begin_operation(self, label: str) -> None:
         scope = _BOT_SCOPE.get()
         if scope is not None and scope[0] is self:
             raise SetupError(f"bot-owned work cannot call simcord operation {label}")
@@ -223,9 +223,8 @@ class Env:
             self._operation_task = current
             self._operation_label = label
         self._operation_depth += 1
-        return current
 
-    def _end_operation(self, _token: asyncio.Task[Any] | None) -> None:
+    def _end_operation(self) -> None:
         if self._operation_depth:
             self._operation_depth -= 1
         if not self._operation_depth:
@@ -238,7 +237,7 @@ class Env:
                 self._preview._mark_action_dispatched()
 
     async def start(self) -> None:
-        token = self._begin_operation("start")
+        self._begin_operation("start")
         try:
             if self._started:
                 raise SetupError("Env already started")
@@ -246,11 +245,11 @@ class Env:
             self._loop = asyncio.get_running_loop()
             await self._attach_bot(self.bot)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     async def restart_bot(self, bot: discord.Client | None = None) -> None:
         """Drain the old generation, detach it, and attach a fresh bot."""
-        token = self._begin_operation("restart_bot")
+        self._begin_operation("restart_bot")
         try:
             if not self._started:
                 raise SetupError("Env not started; use restart_bot() only inside simcord.run()")
@@ -263,7 +262,7 @@ class Env:
                     self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
             await self._settle_internal(timeout=5.0)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     def _resolve_shards(self, bot: discord.Client) -> tuple[int, tuple[int, ...]]:
         requested = self.requested_shard_count
@@ -598,12 +597,12 @@ class Env:
 
     async def shutdown(self) -> None:
         await self._run_pre_shutdown()
-        token = self._begin_operation("shutdown")
+        self._begin_operation("shutdown")
         try:
             await self._detach_bot()
             self._started = False
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     async def _detach_bot(self) -> None:
         """Detach bot machinery and cancel bot-owned work only."""
@@ -701,11 +700,11 @@ class Env:
         idle: float = 0.05,
     ) -> None:
         """Join all runnable bot-owned work, leaving only recognized waits."""
-        token = self._begin_operation("settle")
+        self._begin_operation("settle")
         try:
             await self._settle_internal(timeout=timeout, idle=idle)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     async def _settle_internal(
         self,
@@ -1022,7 +1021,7 @@ class Env:
 
         if seconds < 0:
             raise SetupError("seconds must be a finite non-negative number")
-        token = self._begin_operation("advance_time")
+        self._begin_operation("advance_time")
         try:
             assert self._loop is not None
             amount = float(seconds)
@@ -1039,7 +1038,7 @@ class Env:
             self._virtual_time = max(self._virtual_time, target)
             await self._settle_internal()
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     @property
     def error_cursor(self) -> int:
@@ -1139,7 +1138,7 @@ class Env:
             raise SetupError("Env is not running")
         if self._preview is not None and not self._preview._closed:
             raise SetupError("Only one active Preview is allowed per Env")
-        token = self._begin_operation("preview")
+        self._begin_operation("preview")
         try:
             from .preview import make_preview
 
@@ -1159,7 +1158,7 @@ class Env:
                 port=port,
             )
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     # -------------------------------------------------------------- builders
 
@@ -1341,11 +1340,11 @@ class Env:
 def _guard_env_sync(method: Any) -> Any:
     @wraps(method)
     def guarded(self: Env, *args: Any, **kwargs: Any) -> Any:
-        token = self._begin_operation(method.__name__)
+        self._begin_operation(method.__name__)
         try:
             return method(self, *args, **kwargs)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     return guarded
 

@@ -652,7 +652,7 @@ class _CaptureOps:
         self._capture_task = asyncio.current_task()
         pin: CapturePin | None = None
         try:
-            token = self.env._begin_operation("preview.screenshot")
+            self.env._begin_operation("preview.screenshot")
             try:
                 await self.env._settle_internal()
                 if self._closed or not self._active:
@@ -669,7 +669,7 @@ class _CaptureOps:
                     cast(Literal["message", "channel"], selected_layout),
                 )
             finally:
-                self.env._end_operation(token)
+                self.env._end_operation()
             png: bytes | None = None
             if destination is None:
                 with tempfile.TemporaryDirectory(prefix="simcord-capture-") as temporary_dir:

@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from . import Preview
     from ._actions import _Action
 
+HISTORY_WINDOW_SIZE = 50
+HISTORY_STEP = 25
+
 
 @dataclass(slots=True)
 class _Page:
