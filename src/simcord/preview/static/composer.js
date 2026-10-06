@@ -38,6 +38,7 @@ export function initComposer({
   function resizeComposer() {
     if (form.hidden || !currentInput.style || typeof currentInput.scrollHeight !== "number") return;
     currentInput.style.height = "auto";
+    if (currentInput.dataset.commandMode === "true") return;
     currentInput.style.height = `${Math.min(160, Math.max(44, currentInput.scrollHeight))}px`;
   }
 

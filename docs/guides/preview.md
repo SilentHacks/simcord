@@ -260,7 +260,8 @@ application commands. If no command matches, the popup closes and the text remai
 message draft. If the viewer can use commands but cannot send messages, the composer remains visible,
 the ordinary Send action is disabled, and its placeholder says that application commands are available.
 
-The browsing popup has the bot/application heading and one row per visible command leaf. It filters
+The browsing popup spans the composer and has an application rail, the bot/application heading,
+and one row per visible command leaf. The rail returns to the application's first command. It filters
 locally as you type; path-prefix matches rank first, then segment-prefix and substring matches, with
 invocation and command ID breaking ties. Selecting a row changes the composer into command mode and
 focuses its first required option; all-optional commands open `OPTIONS` immediately, while commands
@@ -273,7 +274,9 @@ closes a suggestion popup but does not discard a command draft.
 
 Suggestions use `OPTIONS` for choices, Boolean values and optional options; entity suggestions use
 `MEMBERS`, `ROLES` or `CHANNELS`; autocomplete results use `OPTIONS MATCHING <value>`. Entity choices
-are authorized candidates for this viewer, not a locally copied member list. Attachment options use
+are authorized candidates for this viewer, not a locally copied member list, and load when the field
+receives focus, without requiring a search first. Boolean pills display `True`/`False` and accept
+those typed values case-insensitively. Attachment options use
 a file picker and show a removable filename. Each file is limited to 10 MiB and all command
 attachments together to 25 MiB per run; declared `file_types` are checked by extension. Command runs
 with attachments use multipart parts named `file:<optionName>`.
@@ -307,8 +310,11 @@ and only bot-DM commands visible to that viewer are offered. If the bot command 
 chat-input commands that have not been registered with SimCord, `commands-unsynced` advises calling
 `await bot.tree.sync()`. The picker lists only registered commands even when `strict_sync=False`.
 
-The match ranking, autocomplete debounce timing and visual details are uncalibrated: there is no
-Discord reference capture for this picker, and the human screen-reader walkthrough is still pending.
+Picker spacing, colors, option pills and composer framing follow the seven user-supplied Discord
+screenshots dated October 6, 2026. They are visual references, not measured pixel-parity certification:
+SimCord uses packaged Noto fonts and the current bot's commands/avatar. There is no fabricated
+Frequently Used history or unrelated application rail entries. Match ranking and autocomplete timing
+remain uncalibrated, and the human screen-reader walkthrough is still pending.
 This feature does not add a picker to message layout, built-in Discord commands, context-menu Apps,
 a deferred “thinking…” timeline message or translated names; command and option names use their
 untranslated defaults. There is no channel/DM navigation inside one Preview session.

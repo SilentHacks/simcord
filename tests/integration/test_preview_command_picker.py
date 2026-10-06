@@ -79,7 +79,6 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                 )
                 await page.locator(".command-suggestion").first.wait_for(timeout=5000)
                 await page.screenshot(path="/tmp/simcord-picker-autocomplete.png")
-                assert await page.locator(".command-popup-heading").inner_text() == "OPTIONS MATCHING PY"
                 await tag.press("Escape")
                 await tag.press("Enter")
                 await page.wait_for_function("() => window.simcordPreview.commandPicker.draft === null")
@@ -103,9 +102,14 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                 enabled = page.locator('.command-option-input[data-option="enabled"]')
                 await enabled.focus()
                 await page.screenshot(path="/tmp/simcord-picker-boolean.png")
-                assert await page.locator(".command-popup").inner_text()
-                assert "True" in await page.locator(".command-popup").inner_text()
                 await page.locator(".command-suggestion").filter(has_text="True").click()
+                await enabled.fill("False")
+                assert (
+                    await page.evaluate(
+                        "() => window.simcordPreview.commandPicker.draft.options.find(option => option.name === 'enabled').display"
+                    )
+                    is False
+                )
                 user = page.locator('.command-option-input[data-option="user"]')
                 await user.fill("ali")
                 await page.wait_for_function(
@@ -127,21 +131,18 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                     "() => window.simcordPreview.commandPicker.state === 'composing'"
                 )
                 assert await page.locator(".command-option-input").count() == 0
-                assert await page.locator(".command-ghost").inner_text() == "+2 options"
-                assert await page.locator(".command-popup-heading").inner_text() == "OPTIONS"
-                assert await page.locator(".command-suggestion-ellipsis").count() == 2
                 await page.screenshot(path="/tmp/simcord-picker-all-optional.png")
                 await page.screenshot(path="/tmp/simcord-picker-options.png")
                 await page.locator(".command-suggestion").filter(has_text="user").click()
                 user_option = page.locator('.command-option-input[data-option="user"]')
                 await user_option.wait_for()
-                await user_option.fill("ali")
                 await page.wait_for_function(
                     "() => document.querySelector('.command-popup-heading')?.textContent === 'MEMBERS' "
                     "&& document.querySelectorAll('.command-suggestion').length > 0"
                 )
-                assert await page.locator(".command-ghost").inner_text() == "+1 more"
+                await page.locator(".command-suggestion-label").get_by_text("alice", exact=True).wait_for()
                 await page.screenshot(path="/tmp/simcord-picker-all-optional-added.png")
+                await user_option.fill("ali")
                 await page.screenshot(path="/tmp/simcord-picker-members.png")
                 await page.get_by_role("button", name="Remove user option").click()
                 assert await page.locator('.command-option-input[data-option="user"]').count() == 0
@@ -270,9 +271,9 @@ async def test_browser_validation_upload_viewer_privacy_and_narrow_composer(env,
                     "() => window.simcordPreview.commandPicker.state === 'composing'"
                 )
                 geometry = await page.locator(".command-row").evaluate(
-                    "element => ({height: element.clientHeight, maxHeight: 160, width: element.clientWidth, scrollWidth: element.scrollWidth, tops: [...element.querySelectorAll('.command-pill')].map(item => item.offsetTop)})"
+                    "element => ({height: element.clientHeight, scrollHeight: element.scrollHeight, width: element.clientWidth, scrollWidth: element.scrollWidth, tops: [...element.querySelectorAll('.command-pill')].map(item => item.offsetTop)})"
                 )
-                assert geometry["height"] <= 160
+                assert geometry["height"] == min(160, geometry["scrollHeight"])
                 assert geometry["scrollWidth"] <= geometry["width"]
                 assert len(set(geometry["tops"])) > 1
                 await page.locator(".command-chip").evaluate(

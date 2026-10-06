@@ -260,13 +260,25 @@ export function createCommandPicker({
   function renderBrowse() {
     if (!popup) return;
     popup.replaceChildren();
-    const heading = node("div", "command-popup-heading", catalog?.application?.name || "COMMANDS");
+    popup.classList.add("is-browsing");
+    const rail = node("div", "command-app-rail");
+    const heading = node("div", "command-popup-heading command-app-heading", catalog?.application?.name || "COMMANDS");
     const identity = catalog?.application ? { name: catalog.application.name, avatar: catalog.application.avatarAssetId, bot: true } : null;
     if (identity) {
       const rendered = renderIdentityAvatar(identity, { assets, loadAsset }, "command-avatar");
       heading.prepend(rendered.element);
+      const appButton = node("button", "command-app-button");
+      appButton.type = "button";
+      appButton.setAttribute("aria-label", `Show ${catalog.application.name} commands`);
+      appButton.append(renderIdentityAvatar(identity, { assets, loadAsset }, "command-avatar").element);
+      appButton.addEventListener("click", () => {
+        list.scrollTop = 0;
+        input.focus();
+      });
+      rail.append(appButton);
     }
-    popup.append(heading);
+    const content = node("div", "command-browse-content");
+    content.append(heading);
     const list = node("div", "command-popup-list");
     list.id = "command-picker-listbox";
     list.setAttribute("role", "listbox");
@@ -296,7 +308,8 @@ export function createCommandPicker({
       truncated.setAttribute("aria-disabled", "true");
       list.append(truncated);
     }
-    popup.append(list);
+    content.append(list);
+    popup.append(rail, content);
     listbox = createListbox({
       list, owner: input, idPrefix: "command-entry", activeClass: "is-active", wrap: false,
       onNavigate: (item) => {
@@ -326,14 +339,14 @@ export function createCommandPicker({
   }
   function positionPopup() {
     if (!popup || popup.hidden) return;
-    const anchor = mode === "browsing" ? input : contextBar?.isConnected ? contextBar : commandRow;
+    const anchor = form;
     const rect = anchor?.getBoundingClientRect();
     if (!rect) return;
     const width = Math.min(Math.max(rect.width, 320), innerWidth - 16);
     popup.style.width = `${width}px`;
     popup.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 8))}px`;
-    const available = Math.max(120, rect.top - 16);
-    popup.style.maxHeight = `${Math.min(360, available)}px`;
+    const available = Math.max(0, rect.top - 16);
+    popup.style.maxHeight = `${Math.min(mode === "browsing" ? 416 : 280, available)}px`;
     popup.style.bottom = `${Math.max(8, innerHeight - rect.top + 8)}px`;
     popup.style.top = "auto";
   }
@@ -442,6 +455,7 @@ export function createCommandPicker({
   }
   function renderPopup(owner, heading, items, onChoose, { entityType = null, optional = false } = {}) {
     ensurePopup();
+    popup.classList.remove("is-browsing");
     popup.replaceChildren(node("div", "command-popup-heading", heading));
     const list = node("div", "command-popup-list");
     list.setAttribute("role", "listbox");
@@ -451,9 +465,12 @@ export function createCommandPicker({
       const item = node("div", `command-suggestion${value.kind ? " command-entity-suggestion" : ""}`);
       item.dataset.value = String(value.value ?? value.id ?? value.name ?? "");
       if (value.kind === "user") {
+        const avatar = node("span", "command-entity-avatar");
         const rendered = renderIdentityAvatar(value, { assets, loadAsset }, "command-avatar");
-        item.append(rendered.element);
-        if (presenceDot(value)) item.append(presenceDot(value));
+        avatar.append(rendered.element);
+        const presence = presenceDot(value);
+        if (presence) avatar.append(presence);
+        item.append(avatar);
       } else if (value.kind === "role") {
         const swatch = node("span", "command-role-swatch");
         const color = Number(value.color ?? value.icon_color ?? 0) >>> 0;
@@ -665,7 +682,9 @@ export function createCommandPicker({
         field.spellcheck = false;
         field.dataset.option = option.name;
         field.dataset.controlKey = controlKey(option);
-        field.value = value?.raw == null ? "" : String(value.raw);
+        field.value = typeof value?.raw === "boolean" ? (value.raw ? "True" : "False") : String(value?.raw ?? "");
+        const resizeField = () => { field.style.width = `${Math.min(24, Math.max(2, [...field.value].length + 1))}ch`; };
+        resizeField();
         field.setAttribute("aria-label", `${option.name}${option.required ? ", required" : ""}`);
         field.setAttribute("aria-describedby", `command-context-description${draft.errors[option.name] ? ` command-error-${option.name}` : ""}`);
         if (draft.errors[option.name]) {
@@ -686,6 +705,7 @@ export function createCommandPicker({
             renderPopup(field, "OPTIONS", choices, (choice) => chooseValue(option, choice));
           } else if (ENTITY_TYPES.has(option.type)) {
             renderPopup(field, entityCaption(option.type), candidateEntries(option), (candidate) => chooseValue(option, candidate), { entityType: option.type });
+            queryEntity(option, field.value);
           } else if (option.autocomplete) {
             const current = String(field.value || "");
             const choices = autocompleteResults.get(autocompleteKey(draft, option.name, current)) || [];
@@ -693,7 +713,10 @@ export function createCommandPicker({
           } else clearPopup();
         });
         field.addEventListener("input", () => {
-          draft.values[option.name] = { raw: field.value };
+          const raw = option.type === "boolean" && /^(true|false)$/i.test(field.value)
+            ? field.value.toLowerCase() === "true" : field.value;
+          draft.values[option.name] = { raw };
+          resizeField();
           clearOptionError(option, field);
           draft.version += 1;
           if (ENTITY_TYPES.has(option.type)) {
