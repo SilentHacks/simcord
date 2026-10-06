@@ -393,10 +393,6 @@ def get_state(client: discord.Client) -> Any:
     return client._connection
 
 
-def parsers(client: discord.Client) -> dict[str, Any]:
-    return get_state(client).parsers
-
-
 def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:
     """Wake a member-chunk request whose guild vanished before it was answered.
 

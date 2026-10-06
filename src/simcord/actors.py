@@ -163,20 +163,6 @@ class MemberActor:
         """Find and visibility-check a registered command by exact name."""
         return _resolve_visible_command(self, channel_id, name, type)
 
-    def _resolve_command(
-        self, name: str, type: int, channel_id: int
-    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-        """Resolve "root [group] [sub]" to (root command, leaf spec, nesting path).
-
-        Only slash commands nest, so the space-separated parts are walked as a
-        subcommand path; context menus (whose names contain spaces) resolve by
-        full name via :meth:`_resolve_root` instead.
-        """
-        parts = name.split()
-        root = self._resolve_root(parts[0], type, channel_id)
-        leaf, nesting = _interactions.walk_to_subcommand(root, parts[1:])
-        return root, leaf, nesting
-
     async def slash(self, channel: ChannelHandle, name: str, /, **options: Any) -> InteractionResult:
         """Invoke a synced slash command; a shadowed name resolves to its guild command."""
         self._check(channel, "view_channel")

@@ -133,8 +133,6 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self._active_task: asyncio.Task[Any] | None = None
         self._capture_manager = ManagedCapture(self)
         self._capture_task: asyncio.Task[Any] | None = None
-        self._capture_page: _Page | None = None
-        self._capture_generation = 0
 
     @property
     def url(self) -> str:
@@ -385,7 +383,6 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
             self._pending_page_closes.clear()
             self._blobs.clear()
             self._retained_media_bytes = 0
-            self._capture_page = None
             if self.env._preview is self:
                 self.env._preview = None
         finally:

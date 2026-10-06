@@ -2,6 +2,12 @@
 
 This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
+## Unreleased
+
+### Miscellaneous
+
+- Remove unused internal command resolution, parser forwarding, capture bookkeeping, and unmatched Preview CSS without changing supported behavior.
+
 <!-- towncrier release notes start -->
 
 ## 3.0.1 (2026-10-05)

@@ -724,7 +724,7 @@ class Env:
             self._run_due_virtual_callbacks(deadline)
             await asyncio.sleep(0)
             pending = [task for task in self._owned_tasks() if not task.done()]
-            callbacks = self._active_callbacks(deadline)
+            callbacks = self._active_callbacks()
             if not pending and not callbacks:
                 stable_empty += 1
                 if stable_empty >= 2:
@@ -744,7 +744,7 @@ class Env:
                 self._virtualize_recognized_waits(again)
                 again_callbacks = [
                     record
-                    for record in self._active_callbacks(deadline)
+                    for record in self._active_callbacks()
                     if not self._callback_is_parked(record, deadline)
                 ]
                 if not again_callbacks and all(self._is_parked(task, deadline) for task in again):
@@ -767,7 +767,7 @@ class Env:
                 parked = [task for task in pending if self._is_parked(task, deadline)]
                 active_callbacks = [
                     record
-                    for record in self._active_callbacks(deadline)
+                    for record in self._active_callbacks()
                     if not self._callback_is_parked(record, deadline)
                 ]
                 if active_callbacks or len(parked) != len(pending):
@@ -897,7 +897,7 @@ class Env:
     def _owned_tasks(self) -> list[asyncio.Task[Any]]:
         return [task for task in self._task_records if not task.done()]
 
-    def _active_callbacks(self, _deadline: float) -> list[_CallbackRecord]:
+    def _active_callbacks(self) -> list[_CallbackRecord]:
         live = [
             record
             for record in self._callbacks

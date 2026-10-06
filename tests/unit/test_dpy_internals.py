@@ -391,7 +391,6 @@ async def test_state_helpers_and_install_http() -> None:
     state = SimpleNamespace(parsers={"message_create": object()})
     client: Any = SimpleNamespace(_connection=state, tree=SimpleNamespace())
     assert _dpy_internals.get_state(client) is state
-    assert _dpy_internals.parsers(client) is state.parsers
 
     http: Any = SimpleNamespace()
     _dpy_internals.install_http(client, http)
