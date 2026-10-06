@@ -1,7 +1,13 @@
 import { renderModal } from "./components.js";
 import { renderMessage } from "./messages.js";
 import { closeLightbox } from "./media.js";
+import { initComposer } from "./composer.js";
+import { createCommandPicker } from "./commands.js";
 import { icon } from "./dom.js";
+import { initWorkbench } from "./workbench.js";
+import { initSelectDrafts } from "./select-drafts.js";
+import { initTimeline } from "./timeline.js";
+import { initTransport } from "./transport.js";
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -19,6 +25,8 @@ const ui = {
   inspectorTabCount: $("inspector-tab-count"),
   captureOpen: $("capture-open"),
   channelContextName: $("channel-context-name"),
+  channelContextHash: document.querySelector(".channel-context-hash"),
+  channelHash: document.querySelector(".channel-hash"),
   layoutLabel: $("layout-label"),
   surface: $("focused-content"),
   modal: $("modal-root"),
@@ -81,14 +89,8 @@ for (const [id, name] of [["messages-toggle", "messages"], ["refresh", "refresh"
   $(id).prepend(icon(name));
 }
 
-const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
-const inspectorPanels = {
-  activity: $("activity-panel"),
-  diagnostics: $("diagnostics-panel"),
-  capture: $("capture-panel"),
-};
-
 const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+window.addEventListener("hashchange", () => window.location.reload());
 const state = {
   capability: hash,
   snapshot: null,
@@ -111,6 +113,8 @@ const state = {
   queuedQuery: null,
   queuedQueries: new Map(),
   queuedPageIntents: {},
+  commandUploads: {},
+  commandRetryAfterRevision: null,
   queryIntent: 0,
   queryIntents: new Map(),
   observedRevision: 0,
@@ -155,6 +159,7 @@ const state = {
   replyToId: null,
   editTargetId: null,
   pollDrafts: new Map(),
+  pollResults: new Set(),
   closed: false,
   authorized: true,
   pinnedCapture: false,
@@ -181,6 +186,45 @@ const state = {
   scrollCorrection: null,
   lastAnnouncement: "",
 };
+
+const composer = initComposer({
+  form: ui.composerForm,
+  input: ui.composer,
+  inputContainer: ui.composer.parentElement,
+  sendButton: ui.send,
+  replyContext: ui.replyContext,
+  replyLabel: ui.replyLabel,
+  replyCancel: ui.replyCancel,
+  state,
+  channelLabel,
+  onDispatch: (kind, extra) => dispatch(kind, extra),
+  onModeChange: () => updatePickers(state.snapshot),
+  onBeforeEdit: () => commandPicker.exit(),
+  rememberFocus,
+  setFocusKey: (key) => { state.focusKey = key; },
+});
+const commandPicker = createCommandPicker({
+  form: ui.composerForm,
+  input: ui.composer,
+  composer,
+  dispatch: (kind, extra, metadata) => dispatch(kind, extra, metadata),
+  run: (body, files, metadata) => {
+    state.commandUploads = files;
+    dispatch("run_command", body, { commandDraftId: metadata?.draftId ?? null });
+  },
+  fetchCatalog: () => request("/api/commands"),
+  getSnapshot: () => state.snapshot,
+  getState: () => state,
+  announce: (message) => announceStatus(message),
+  onCommandMode: (enabled, replyToId) => {
+    if (enabled) state.replyToId = null;
+    else if (replyToId) state.replyToId = replyToId;
+    if (state.snapshot) composer.update(state.snapshot);
+    updateActionStatus();
+  },
+  assets: state.snapshot?.assets || {},
+  loadAsset,
+});
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -275,6 +319,7 @@ function statusObject() {
       key, state.pendingSelectValidations.has(key) ? [] : [...values],
     ])),
     selectStates: selectStates(),
+    commandPicker: commandPicker.status(),
     lastAction: state.authorized ? clone(state.lastAction) : null,
     pendingAction: state.pendingAction ? {
       kind: state.pendingAction.kind,
@@ -284,7 +329,8 @@ function statusObject() {
       targetId: state.authorized ? state.pendingAction.targetId : null,
     } : null,
     pendingQuery: state.authorized ? clone(state.pendingQuery) : null,
-    ready: state.ready && !state.pendingAction && !Object.keys(state.queuedPageIntents).length,
+    ready: state.ready && !state.pendingAction && !Object.keys(state.queuedPageIntents).length
+      && !commandPicker.isCatalogLoadingOpen(),
     awaitingRevision: state.awaitingRevision,
     queryResultRevision: state.queryResultRevision,
     geometry: (() => {
@@ -448,6 +494,13 @@ function messageTime(createdAt) {
   }
 }
 
+function channelLabel(snapshot) {
+  if (!state.authorized) return { name: "Unavailable channel", glyph: "#" };
+  const recipient = snapshot.channel?.recipient;
+  if (recipient) return { name: recipient.name || "Unavailable channel", glyph: "@" };
+  return { name: snapshot.channel?.name || "Unavailable channel", glyph: "#" };
+}
+
 function updatePickers(snapshot) {
   ui.viewer.replaceChildren();
   const viewers = Array.isArray(snapshot.viewers) && snapshot.viewers.length ? snapshot.viewers : [{ id: snapshot.viewerId }];
@@ -536,14 +589,17 @@ function updatePickers(snapshot) {
   ].filter(Boolean).join(" · ") || "Current authorized page";
   const channelLayout = snapshot.layout === "channel";
   const target = targetId ? snapshot.messages?.[targetId] : null;
-  const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
-  ui.channelContextName.textContent = channelName;
+  const channel = channelLabel(snapshot);
+  ui.channelContextHash.textContent = channel.glyph;
+  ui.channelHash.textContent = channel.glyph;
+  ui.channelContextName.textContent = channel.name;
   ui.layoutLabel.textContent = channelLayout ? "Conversation" : "Isolate message";
   ui.channel.hidden = !channelLayout;
-  ui.channelName.textContent = channelName;
+  ui.channelName.textContent = channel.name;
   ui.channelTopic.textContent = state.authorized ? snapshot.channel?.topic || "" : "";
   ui.channelTopic.hidden = !state.authorized || !snapshot.channel?.topic;
-  ui.composerForm.hidden = !channelLayout || !(state.authorized && (snapshot.channel?.canSendMessages || state.editTargetId));
+  ui.composerForm.hidden = !channelLayout || !(state.authorized
+    && (snapshot.channel?.canSendMessages || snapshot.channel?.canUseApplicationCommands || state.editTargetId));
   ui.surface.classList.toggle("message-surface", !channelLayout);
   ui.surface.hidden = channelLayout || !target;
   ui.empty.hidden = channelLayout || Boolean(target);
@@ -552,48 +608,10 @@ function updatePickers(snapshot) {
     : "No visible messages.";
   ui.pickerEmpty.hidden = Boolean(messageRows.length);
   ui.pickerEmpty.textContent = "No visible messages.";
-  updateComposer(snapshot);
+  composer.update(snapshot);
+  commandPicker.update(snapshot);
+  commandPicker.receiveSnapshot(snapshot);
 }
-
-function resizeComposer() {
-  if (ui.composerForm.hidden) return;
-  ui.composer.style.height = "auto";
-  ui.composer.style.height = `${Math.min(160, Math.max(44, ui.composer.scrollHeight))}px`;
-}
-function updateComposer(snapshot) {
-  if (snapshot.layout !== "channel") return;
-  const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
-  const key = editKey || `composer:${state.contextId}`;
-  ui.composer.dataset.controlKey = key;
-  const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
-  if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
-  if (ui.composer.value !== state.drafts.get(key)) ui.composer.value = state.drafts.get(key);
-  ui.send.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
-  const sendLabel = state.editTargetId ? "Save" : "Send";
-  ui.send.setAttribute("aria-label", sendLabel);
-  ui.send.title = `${sendLabel} message (Enter)`;
-  if (ui.send.dataset.mode !== sendLabel) {
-    ui.send.replaceChildren(icon(state.editTargetId ? "check" : "send"));
-    ui.send.dataset.mode = sendLabel;
-  }
-  resizeComposer();
-  const channelName = state.authorized ? snapshot.channel?.name || "Unavailable channel" : "Unavailable channel";
-  ui.composer.placeholder = state.editTargetId ? "Edit message" : `Message #${channelName}`;
-  const messageRows = state.authorized ? snapshot.messageIndex || [] : [];
-  const reply = state.replyToId
-    ? messageRows.find((item) => String(item.id) === state.replyToId)
-    : null;
-  ui.replyContext.hidden = !state.replyToId && !state.editTargetId;
-  ui.replyLabel.textContent = state.editTargetId
-    ? `Editing message ${state.editTargetId}`
-    : state.replyToId
-      ? reply
-        ? `Replying to ${reply.author?.name || "Unknown author"}: ${String(reply.excerpt || "").slice(0, 100)}`
-        : `Replying to message ${state.replyToId}`
-      : "";
-  ui.replyCancel.setAttribute("aria-label", state.editTargetId ? "Cancel edit" : "Cancel reply");
-}
-
 
 function revokeAssets() {
   closeLightbox();
@@ -690,82 +708,9 @@ function clearRenderDiagnostics(owner) {
   renderDiagnostics();
 }
 
-function recoverActionTransportDiagnostics(message = "The matching action receipt was observed; transport failure remains in history.") {
-  const codes = new Set(["action-response-unavailable", "action-receipt-unavailable"]);
-  state.localDiagnostics = state.localDiagnostics.map((item) => codes.has(item.code)
-    && item.category === "transport" && item.state === "current"
-    ? { ...item, state: "recovered", severity: "warning", complete: true, message }
-    : item);
-}
-
-
-function noteTransportFailure(code, requestId = null, sequence = null) {
-  state.transport.failures += 1;
-  const uncertain = Boolean(requestId || state.transport.uncertainRequestId);
-  state.transport.state = uncertain ? "uncertain" : "error";
-  if (requestId && !state.transport.uncertainRequestId) {
-    state.transport.uncertainRequestId = requestId;
-    state.transport.uncertainSequence = Number.isInteger(sequence) ? sequence : null;
-  }
-  state.transport.history.push({ state: state.transport.state, code, at: Date.now() });
-  state.transport.history = state.transport.history.slice(-20);
-  addDiagnostic({
-    id: `local:transport:${code}`,
-    code,
-    category: "transport",
-    severity: "error",
-    state: "current",
-    complete: false,
-    message: "A preview network request did not complete.",
-    remediation: "Wait for a successful state refresh before continuing.",
-  });
-  renderTransportStatus();
-  updateActionStatus();
-  announceStatus(uncertain ? "Action outcome is uncertain; it will not be retried." : "Connection lost; polling will continue.");
-}
-
-function noteTransportHealthy() {
-  if (state.transport.state === "error") {
-    state.transport.recoveries += 1;
-    state.transport.state = "recovered";
-    state.transport.history.push({ state: "recovered", code: "transport-restored", at: Date.now() });
-    const recovered = new Set(["state-poll-unavailable", "state-refresh-unavailable", "bootstrap-failed"]);
-    state.localDiagnostics = state.localDiagnostics.map((item) => item.category === "transport"
-      && recovered.has(item.code) && item.state === "current"
-      ? { ...item, state: "recovered", severity: "warning", complete: true, message: "Transport recovered; failure remains in history." }
-      : item);
-    renderDiagnostics();
-  } else if (state.transport.state === "idle") {
-    state.transport.state = "healthy";
-  }
-  renderTransportStatus();
-  state.transport.lastSuccessfulRead = new Date().toISOString();
-  if (state.transport.state === "recovered") announceStatus("Connection restored.");
-  updateActionStatus();
-}
-
-function renderTransportStatus() {
-  if (!ui.transportStatus) return;
-  const stateText = {
-    idle: "Transport has not checked in yet.",
-    healthy: "Transport is healthy.",
-    recovered: "Transport recovered; previous failure remains in history.",
-    error: "Transport unavailable. The preview will continue polling.",
-    uncertain: "Action outcome is uncertain. It will not be retried.",
-  }[state.transport.state];
-  ui.transportStatus.replaceChildren(Object.assign(document.createElement("p"), {
-    textContent: `${stateText} Published snapshot; backend changes require Refresh. Publication: ${state.snapshot?.publication?.publishedAt || "unknown"}. Presentation time: ${state.profile.presentationTime || "unknown"}.`,
-  }));
-  if (state.transport.history.length) {
-    const list = document.createElement("ol");
-    state.transport.history.forEach((item) => {
-      const row = document.createElement("li");
-      row.textContent = `${item.state}: ${item.code}`;
-      list.append(row);
-    });
-    ui.transportStatus.append(list);
-  }
-}
+const { recoverActionTransportDiagnostics, noteTransportFailure, noteTransportHealthy, renderTransportStatus, authHeaders, request, requestAction, reconcileUncertainAction } = initTransport({
+  state, ui, addDiagnostic, renderDiagnostics, updateActionStatus, announceStatus, completeActionDrafts, composer, commandPicker
+});
 function announceStatus(message, urgent = false) {
   if (message === state.lastAnnouncement) return;
   state.lastAnnouncement = message;
@@ -942,85 +887,12 @@ function loadAsset(assetId, options = {}) {
   return request;
 }
 
-function authHeaders(context = state.contextId) {
-  const headers = { "X-Simcord-Capability": state.capability };
-  if (context) headers["X-Simcord-Context"] = context;
-  return headers;
-}
-
-async function request(path, method = "GET", body, context = state.contextId) {
-  const headers = { ...authHeaders(context) };
-  const init = { method, headers, cache: "no-store" };
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
-  }
-  const response = await fetch(path, init);
-  if (!response.ok) throw new Error("preview request failed");
-  return response.status === 204 ? null : response.json();
-}
-
-async function requestAction(body) {
-  const values = body.values;
-  const uploads = [];
-  const payload = { ...body, values: { ...(values || {}) } };
-  Object.entries(payload.values || {}).forEach(([id, value]) => {
-    if (!Array.isArray(value) || !value.some((item) => item instanceof File)) return;
-    payload.values[id] = [];
-    value.forEach((item) => { if (item instanceof File) uploads.push([id, item]); });
-  });
-  if (!uploads.length) return request("/api/action", "POST", body);
-  const form = new FormData();
-  form.append("payload", JSON.stringify(payload));
-  uploads.forEach(([id, file]) => form.append(`file:${id}`, file, file.name));
-  const response = await fetch("/api/action", { method: "POST", headers: authHeaders(), body: form, cache: "no-store" });
-  if (!response.ok) throw new Error("preview request failed");
-  return response.json();
-}
 
 function fingerprint(value) {
   return value ? JSON.stringify(value) : "";
 }
 
 
-function setReplyTo(message) {
-  state.editTargetId = null;
-  state.replyToId = String(message.id);
-  updatePickers(state.snapshot);
-  state.focusKey = `composer:${state.contextId}`;
-  ui.composer.focus();
-  ui.composer.setSelectionRange(ui.composer.value.length, ui.composer.value.length);
-}
-
-function setEditMessage(message) {
-  state.replyToId = null;
-  state.editTargetId = String(message.id);
-  const key = `edit:${state.contextId}:${state.editTargetId}`;
-  if (!state.drafts.has(key)) state.drafts.set(key, String(message.content || ""));
-  updatePickers(state.snapshot);
-  state.focusKey = key;
-  ui.composer.focus();
-  ui.composer.setSelectionRange(ui.composer.value.length, ui.composer.value.length);
-}
-
-function localMessageDay(message) {
-  const date = new Date(message.timestamp);
-  if (!Number.isFinite(date.getTime())) return null;
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: state.profile.timezone || "UTC",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return {
-    key: `${value.year}-${value.month}-${value.day}`,
-    label: new Intl.DateTimeFormat(state.profile.locale || "en-US", {
-      timeZone: state.profile.timezone || "UTC",
-      dateStyle: "full",
-    }).format(date),
-  };
-}
 
 function messageRenderOptions(snapshot, generation, pendingMedia, message, channelLayout) {
   const pollKey = (item) => `poll:${state.contextId}:${item.id}`;
@@ -1083,8 +955,8 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
     onLocalRender: () => localRender(true),
     pendingMedia,
     channelLayout,
-    onReply: channelLayout && snapshot.channel?.canSendMessages ? setReplyTo : null,
-    onEdit: channelLayout ? setEditMessage : null,
+    onReply: channelLayout && snapshot.channel?.canSendMessages ? (message) => composer.setReplyTo(message) : null,
+    onEdit: channelLayout ? (message) => composer.setEditMessage(message) : null,
     onDelete: channelLayout ? (item) => {
       if (window.confirm("Delete this message? This cannot be undone.")) {
         dispatch("delete_message", { target_id: String(item.id), confirmed: true });
@@ -1104,6 +976,12 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
       });
     },
     pollAnswers: (item) => state.pollDrafts.get(pollKey(item)),
+    pollShowingResults: (item) => state.pollResults.has(pollKey(item)),
+    onPollResults: (item, showing) => {
+      if (showing) state.pollResults.add(pollKey(item));
+      else state.pollResults.delete(pollKey(item));
+      localRender(true);
+    },
     onPollDraft: (item, answers) => {
       state.pollDrafts.set(pollKey(item), answers.map(String));
       localRender(true);
@@ -1115,95 +993,9 @@ function messageRenderOptions(snapshot, generation, pendingMedia, message, chann
   };
 }
 
-function setMessageOrder(nodes) {
-  let current = ui.messageList.firstElementChild;
-  for (const element of nodes) {
-    if (element === current) current = current.nextElementSibling;
-    else ui.messageList.insertBefore(element, current);
-  }
-  while (current) {
-    const next = current.nextElementSibling;
-    current.remove();
-    current = next;
-  }
-}
-
-function renderChannelTimeline(snapshot, generation, previousTargetId, force = false) {
-  const ids = (snapshot.timeline || []).map(String);
-  const active = new Set(ids);
-  const previousIds = [...state.messageNodes.keys()];
-  const lastPrevious = previousIds.reduce((last, id) => BigInt(id) > BigInt(last) ? id : last, "0");
-  const hasNewTail = previousIds.length > 0 && ids.some((id) => !state.messageNodes.has(id) && BigInt(id) > BigInt(lastPrevious));
-  const desired = [];
-  const dayKeys = new Set();
-  const pendingMedia = [];
-  let previousDay = null;
-
-  for (const id of ids) {
-    const message = snapshot.messages?.[id];
-    if (!message) continue;
-    const day = localMessageDay(message);
-    if (day && day.key !== previousDay) {
-      dayKeys.add(day.key);
-      let divider = state.dayNodes.get(day.key);
-      if (!divider) {
-        divider = document.createElement("div");
-        divider.className = "timeline-day-divider";
-        divider.setAttribute("role", "separator");
-        state.dayNodes.set(day.key, divider);
-      }
-      divider.textContent = day.label;
-      desired.push(divider);
-    }
-    previousDay = day?.key || null;
-
-    let record = state.messageNodes.get(id);
-    if (!record) {
-      const element = document.createElement("article");
-      element.className = "channel-message";
-      element.dataset.messageId = id;
-      record = { element, fingerprint: "", pendingMedia: [] };
-      state.messageNodes.set(id, record);
-    }
-    const openKey = state.dropdown?.key;
-    const loading = Boolean(openKey?.startsWith(`message:${id}:`) && candidateLoading(openKey));
-    const value = `${fingerprint(message)}:${state.candidateFingerprints.get(`message:${id}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}`;
-    if (force || record.fingerprint !== value) {
-      record.fingerprint = value;
-      clearRenderDiagnostics(`message:${id}`);
-      record.pendingMedia = [];
-      renderMessage(
-        record.element,
-        message,
-        messageRenderOptions(snapshot, generation, record.pendingMedia, message, true),
-      );
-    }
-    pendingMedia.push(...record.pendingMedia);
-    record.element.classList.toggle("message-surface", id === String(snapshot.targetId || ""));
-    desired.push(record.element);
-  }
-
-  for (const [id, record] of state.messageNodes) {
-    if (!active.has(id)) {
-      record.element.remove();
-      clearRenderDiagnostics(`message:${id}`);
-      state.messageNodes.delete(id);
-    }
-  }
-  for (const [key, divider] of state.dayNodes) {
-    if (!dayKeys.has(key)) state.dayNodes.delete(key);
-    else if (!desired.includes(divider)) divider.remove();
-  }
-  setMessageOrder(desired);
-  ui.channelEmpty.hidden = ids.length > 0;
-  state.scrollIntent = snapshot.targetId && String(snapshot.targetId) !== String(previousTargetId || "")
-    ? { policy: "target", targetId: String(snapshot.targetId) } : state.scrollIntent || captureScrollIntent();
-  if ((snapshot.history?.hasAfter || hasNewTail) && state.scrollIntent?.policy === "anchor") ui.newMessages.hidden = false;
-  else if (state.scrollIntent?.policy === "bottom") ui.newMessages.hidden = true;
-  ui.historyOlder.hidden = !snapshot.history?.hasBefore;
-  ui.historyNewer.hidden = !snapshot.history?.hasAfter;
-  return pendingMedia;
-}
+const { renderChannelTimeline, captureScrollIntent, reconcileScrollIntent } = initTimeline({
+  state, ui, candidateLoading, fingerprint, clearRenderDiagnostics, messageRenderOptions
+});
 
 function actionResultMessage(action, kind) {
   if (action?.uncertain || state.transport.uncertainRequestId) return "Action outcome uncertain. It will not be retried.";
@@ -1233,7 +1025,9 @@ function actionResultMessage(action, kind) {
 function updateActionStatus() {
   const waiting = Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision;
   const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
-  ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden;
+  ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden
+    || (!state.editTargetId && !(composer.input().dataset.commandMode === "true"
+      ? state.snapshot?.channel?.canUseApplicationCommands : state.snapshot?.channel?.canSendMessages));
   // Keep callback buttons focusable so closing a modal can still restore its opener.
   document.querySelectorAll("button.component-button:not(.button-style-5):not(.button-style-6)").forEach((button) => {
     button.setAttribute("aria-disabled", String(blocked || button.disabled));
@@ -1429,71 +1223,9 @@ function renderPresentationStatus() {
   ui.preset.value = presets.includes(key) ? key : "custom";
 }
 
-function currentDrafts(key) {
-  return state.modalDrafts.has(key) || (state.dropdown?.key === key && state.dropdown.modal)
-    ? state.modalDrafts
-    : state.drafts;
-}
-
-function initDraft(key, value, drafts = currentDrafts(key)) {
-  if (!drafts.has(key)) drafts.set(key, value);
-}
-
-function initSelectDraft(key, value, drafts = currentDrafts(key)) {
-  initDraft(key, value, drafts);
-  const current = drafts.get(key);
-  if (Array.isArray(current)) {
-    state.selectDrafts.set(key, current.map(String));
-    if (state.snapshot?.candidates?.[key] && !state.selectValidationRevisions.has(key)) {
-      state.selectValidationRevisions.set(key, state.publishedRevision);
-      state.selectVerifiedValues.set(key, current.map(String));
-    }
-  }
-}
-
-function identityEntries(key) {
-  return [...(state.candidateIdentities.get(key)?.values() || [])];
-}
-function reconcileCandidateSelection(key, selected, requested, revision) {
-  const authorized = new Map(selected.map((entry) => [String(entry.value ?? entry.id), entry]));
-  const values = requested.filter((value) => authorized.has(String(value))).map(String);
-  currentDrafts(key).set(key, values);
-  state.selectDrafts.set(key, values);
-  const identities = new Map(values.map((id) => [id, authorized.get(id)]));
-  if (identities.size) state.candidateIdentities.set(key, identities);
-  else state.candidateIdentities.delete(key);
-  state.selectValidationRevisions.set(key, Number(revision));
-  state.selectVerifiedValues.set(key, values);
-  state.pendingSelectValidations.delete(key);
-  if (values.length !== requested.length) {
-    state.selectStatuses.set(key, {
-      fingerprint: JSON.stringify(["authorization", values]),
-      message: "One or more selected options are no longer available.",
-      authorization: true,
-    });
-  } else if (state.selectStatuses.get(key)?.authorization) {
-    state.selectStatuses.delete(key);
-  }
-}
-function clearModalDrafts() {
-  for (const [timerKey, timer] of state.selectQueryTimers) {
-    if (timerKey.includes("modal:")) {
-      clearTimeout(timer);
-      state.selectQueryTimers.delete(timerKey);
-    }
-  }
-  for (const key of state.modalDrafts.keys()) {
-    state.selectDrafts.delete(key);
-    state.selectStatuses.delete(key);
-    state.candidateIdentities.delete(key);
-    state.candidateQueries.delete(key);
-    state.selectValidationRevisions.delete(key);
-    state.selectVerifiedValues.delete(key);
-    state.pendingSelectValidations.delete(key);
-  }
-  state.modalDrafts.clear();
-  state.modalTouched.clear();
-}
+const { initSelectDraft, identityEntries, reconcileCandidateSelection, clearModalDrafts, openDropdown, updateDraft, navigateDropdown, clearSelection, commitDropdown, cancelDropdown, fitOpenDropdowns } = initSelectDrafts({
+  state, rememberFocus, restoreFocus, localRender, queueCandidateQuery, dispatch, clearModalValidation
+});
 
 function localRender(renderDom = true) {
   rememberFocus();
@@ -1506,34 +1238,6 @@ function localRender(renderDom = true) {
   }
 }
 
-function captureScrollIntent() {
-  const bounds = ui.timeline.getBoundingClientRect();
-  const elements = [...ui.messageList.querySelectorAll("[data-message-id]")];
-  const anchor = elements.find((item) => item.getBoundingClientRect().bottom > bounds.top);
-  return { policy: ui.timeline.scrollHeight - ui.timeline.scrollTop - ui.timeline.clientHeight <= 1 ? "bottom" : "anchor",
-    anchorId: anchor?.dataset.messageId, anchorTop: anchor ? anchor.getBoundingClientRect().top - bounds.top : 0,
-    oldScrollTop: ui.timeline.scrollTop, survivingIds: elements.map((item) => item.dataset.messageId) };
-}
-function reconcileScrollIntent() {
-  const intent = state.scrollIntent;
-  if (!intent || ui.channel.hidden) return;
-  const bounds = ui.timeline.getBoundingClientRect();
-  if (intent.policy === "bottom") {
-    ui.timeline.scrollTop = ui.timeline.scrollHeight - ui.timeline.clientHeight;
-  } else if (intent.policy === "target") {
-    const target = state.messageNodes.get(intent.targetId)?.element;
-    if (!target) return;
-    const rect = target.getBoundingClientRect();
-    if (rect.height > bounds.height || rect.top < bounds.top) ui.timeline.scrollTop += rect.top - bounds.top;
-    else if (rect.bottom > bounds.bottom) ui.timeline.scrollTop += rect.bottom - bounds.bottom;
-  } else {
-    const id = state.messageNodes.has(intent.anchorId) ? intent.anchorId
-      : intent.survivingIds?.find((value) => state.messageNodes.has(value));
-    const anchor = state.messageNodes.get(id)?.element;
-    if (anchor) ui.timeline.scrollTop += anchor.getBoundingClientRect().top - bounds.top - intent.anchorTop;
-    else ui.timeline.scrollTop = intent.oldScrollTop || 0;
-  }
-}
 function scheduleScrollCorrection() {
   if (state.scrollCorrection !== null) return;
   state.scrollCorrection = requestAnimationFrame(() => {
@@ -1541,179 +1245,6 @@ function scheduleScrollCorrection() {
     reconcileScrollIntent();
     fitOpenDropdowns();
   });
-}
-function openDropdown(key, selected, multi, minimum, maximum, highlight, entries = [], modal = false) {
-  rememberFocus();
-  if (state.dropdown?.key === key) {
-    if (multi) commitDropdown(key);
-    else cancelDropdown(key);
-    return;
-  }
-  if (state.dropdown) {
-    const previousKey = state.dropdown.key;
-    if (state.dropdown.multi) {
-      if (!commitDropdown(previousKey)) return;
-    } else cancelDropdown(previousKey);
-  }
-  const firstAvailable = entries.find((entry) => (
-    !multi || selected.includes(String(entry.value ?? entry.id ?? "")) || selected.length < maximum
-  ));
-  state.dropdown = {
-    key,
-    selected: [...selected],
-    multi,
-    minimum,
-    maximum,
-    modal,
-    optional: modal && [...document.querySelectorAll(".preview-select")]
-      .find((item) => item.dataset.controlKey === key)?.dataset.optional === "true",
-    highlight: highlight ?? selected[0] ?? firstAvailable?.value ?? firstAvailable?.id ?? null,
-  };
-  const descriptor = state.snapshot?.candidates?.[key];
-  if (descriptor) queueCandidateQuery(key, state.candidateQueries.get(key) ?? descriptor.query ?? "", null, modal ? state.modalHandle : null);
-  localRender(true);
-  fitOpenDropdowns(true);
-  state.focusKey = key;
-  const trigger = [...document.querySelectorAll(".select-trigger")].find(
-    (item) => item.dataset.controlKey === key,
-  );
-  trigger?.focus();
-}
-
-function announceSelectStatus(key, fingerprint, message) {
-  if (state.selectStatuses.get(key)?.fingerprint === fingerprint) return;
-  state.selectStatuses.set(key, { fingerprint, message });
-  const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
-  const status = wrap?.querySelector(".select-guidance");
-  if (status) { status.textContent = message; status.hidden = false; }
-}
-
-function announceInvalidSelection(key, values, minimum, maximum) {
-  const fingerprint = JSON.stringify([values, minimum, maximum]);
-  const message = values.length < minimum
-    ? `Choose at least ${minimum} option${minimum === 1 ? "" : "s"}.`
-    : `Choose no more than ${maximum} options.`;
-  announceSelectStatus(key, fingerprint, message);
-  const status = state.selectStatuses.get(key);
-  if (status) status.invalid = true;
-  const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
-  wrap?.querySelector(".select-trigger")?.setAttribute("aria-invalid", "true");
-}
-
-function updateDraft(key, value, multi, minimum, maximum, selected, entry) {
-  const drafts = currentDrafts(key);
-  const current = Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : [...selected];
-  const id = String(value);
-  const next = multi ? (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]) : [id];
-  if (next.length > maximum) {
-    announceInvalidSelection(key, next, minimum, maximum);
-    return;
-  }
-  drafts.set(key, next);
-  state.selectDrafts.set(key, [...next]);
-  if (state.snapshot?.candidates?.[key]) {
-    const identities = state.candidateIdentities.get(key) || new Map();
-    if (entry && next.includes(id)) identities.set(id, entry);
-    for (const candidateId of identities.keys()) {
-      if (!next.includes(candidateId)) identities.delete(candidateId);
-    }
-    if (identities.size) state.candidateIdentities.set(key, identities);
-    else state.candidateIdentities.delete(key);
-  }
-  state.selectStatuses.delete(key);
-  if (state.dropdown) state.dropdown.highlight = id;
-  localRender(true);
-  fitOpenDropdowns(true);
-}
-
-function navigateDropdown(key, highlight) {
-  if (state.dropdown?.key !== key) return;
-  state.dropdown.highlight = highlight;
-  localRender(true);
-  fitOpenDropdowns(true);
-}
-
-function clearSelection(key, minimum = 1) {
-  const modal = state.modalDrafts.has(key) || (state.dropdown?.key === key && state.dropdown.modal);
-  if (modal) {
-    clearModalValidation();
-    state.modalTouched.add(key);
-  }
-  currentDrafts(key).set(key, []);
-  state.selectDrafts.set(key, []);
-  if (state.snapshot?.candidates?.[key]) {
-    state.selectValidationRevisions.set(key, state.publishedRevision);
-    state.selectVerifiedValues.set(key, []);
-  }
-  state.pendingSelectValidations.delete(key);
-  state.selectStatuses.delete(key);
-  state.candidateIdentities.delete(key);
-  if (state.dropdown?.key === key) state.dropdown = null;
-  localRender(true);
-  if (!modal && minimum <= 0) dispatch("select", { control_key: key, values: [] });
-}
-
-function commitDropdown(key) {
-  const dropdown = state.dropdown;
-  if (!dropdown || dropdown.key !== key) return false;
-  const values = [...(currentDrafts(key).get(key) || [])].map(String);
-  if (state.pendingAction) {
-    announceSelectStatus(
-      key,
-      JSON.stringify(["pending", state.pendingAction.requestId, values]),
-      "Wait for the current action to finish before applying.",
-    );
-    return false;
-  }
-  if ((values.length < dropdown.minimum && !(dropdown.optional && !values.length)) || values.length > dropdown.maximum) {
-    announceInvalidSelection(key, values, dropdown.minimum, dropdown.maximum);
-    return false;
-  }
-  const previous = dropdown.selected || [];
-  const changed = values.length !== previous.length || values.some((value, index) => value !== previous[index]);
-  state.selectStatuses.delete(key);
-  state.dropdown = null;
-  const wrap = [...document.querySelectorAll(".preview-select")].find((item) => item.dataset.controlKey === key);
-  const list = wrap?.querySelector(".select-list");
-  const restoreTrigger = dropdown.modal || list?.contains(document.activeElement);
-  const trigger = wrap?.querySelector(".select-trigger");
-  if (list) {
-    if (typeof list.hidePopover === "function" && list.matches(":popover-open")) list.hidePopover();
-    list.hidden = true;
-  }
-  if (trigger) {
-    trigger.setAttribute("aria-expanded", "false");
-    trigger.removeAttribute("aria-activedescendant");
-  } else localRender(true);
-  wrap?.classList.remove("is-open", "opens-up");
-  if (restoreTrigger) {
-    state.focusKey = key;
-    restoreFocus(key);
-  }
-  if (!dropdown.modal && !state.modalDrafts.has(key) && changed) dispatch("select", { control_key: key, values });
-  return true;
-}
-
-function cancelDropdown(key) {
-  const dropdown = state.dropdown;
-  if (!dropdown || dropdown.key !== key) return;
-  const restoreTrigger = [...document.querySelectorAll(".preview-select")].some(
-    (element) => element.dataset.controlKey === key && element.contains(document.activeElement),
-  );
-  const values = [...dropdown.selected];
-  currentDrafts(key).set(key, values);
-  state.selectDrafts.set(key, values);
-  state.selectStatuses.delete(key);
-  const identities = state.candidateIdentities.get(key);
-  if (identities) for (const candidateId of identities.keys()) {
-    if (!values.includes(candidateId)) identities.delete(candidateId);
-  }
-  state.dropdown = null;
-  localRender(true);
-  if (restoreTrigger) {
-    state.focusKey = key;
-    restoreFocus(key);
-  }
 }
 
 function clearModalValidation() {
@@ -1784,6 +1315,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.spoilerState.clear();
     resetInteractionState();
     state.pollDrafts.clear();
+    state.pollResults.clear();
     state.editTargetId = null;
     state.replyToId = null;
     state.dropdown = null;
@@ -1840,7 +1372,7 @@ function renderSnapshot(snapshot, generation, force = false) {
     const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
     const selectedKey = selected ? String(selected.id) : null;
     const loading = Boolean(openKey?.startsWith(`message:${selectedKey}:`) && candidateLoading(openKey));
-    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}`;
+    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}:${selected?.poll ? state.profile.presentationTime : ""}`;
     const shouldRenderMessage =
       force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
     if (shouldRenderMessage) {
@@ -1966,50 +1498,14 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.activityReturnKey = null;
     restoreFocus(key);
   });
-  if (!nextHandle && !previousHandle) requestAnimationFrame(() => restoreFocus());
-}
-
-function fitOpenDropdowns(scrollHighlighted = false) {
-  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
-  for (const wrap of document.querySelectorAll(".preview-select.is-open")) {
-    const trigger = wrap.querySelector(".select-trigger");
-    const list = wrap.querySelector(".select-list");
-    if (!trigger || !list) continue;
-    if (typeof list.showPopover === "function" && !list.matches(":popover-open")) list.showPopover();
-    const rect = trigger.getBoundingClientRect();
-    const modal = wrap.closest(".modal-dialog");
-    const boundary = modal?.getBoundingClientRect();
-    const footer = modal?.querySelector(".modal-actions")?.getBoundingClientRect();
-    const top = Math.max(0, boundary?.top || 0);
-    const bottom = Math.min(viewportHeight, footer?.top ?? viewportHeight);
-    if (rect.bottom <= 0 || rect.top >= viewportHeight) {
-      cancelDropdown(wrap.dataset.controlKey);
-      continue;
-    }
-    const gutter = 8, gap = 4;
-    const width = Math.max(0, Math.min(rect.width, viewportWidth - gutter * 2));
-    const left = Math.max(gutter, Math.min(rect.left, viewportWidth - width - gutter));
-    const below = Math.max(0, bottom - rect.bottom - gap - gutter);
-    const above = Math.max(0, rect.top - top - gap - gutter);
-    const desired = Math.min(list.scrollHeight, 220);
-    const opensUp = below < desired && above > below;
-    const available = opensUp ? above : below;
-    const height = Math.min(220, available);
-    list.style.left = `${left}px`;
-    list.style.top = `${opensUp ? Math.max(top + gutter, rect.top - gap - height) : Math.max(top + gutter, Math.min(bottom - gutter - height, rect.bottom + gap))}px`;
-    list.style.width = `${width}px`;
-    list.style.maxHeight = `${height}px`;
-    wrap.classList.toggle("opens-up", opensUp);
-    const active = list.querySelector(".select-option.is-highlighted");
-    if (active && scrollHighlighted === true) {
-      if (active.offsetTop < list.scrollTop) list.scrollTop = active.offsetTop;
-      else if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) {
-        list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight;
-      }
-    }
+  if (!nextHandle && !previousHandle) {
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) restoreFocus();
+    });
   }
 }
+
 window.addEventListener("resize", fitOpenDropdowns);
 document.addEventListener("scroll", (event) => {
   if (!(event.target instanceof Element) || !event.target.closest(".select-list")) fitOpenDropdowns();
@@ -2165,8 +1661,8 @@ function pageIntent(kind, body) {
   updateActionStatus();
 }
 
-function queueQuery(key, kind, body) {
-  const intent = { key, kind, body, scope: `${state.viewerId}:${state.contextGeneration}`, token: ++state.queryIntent };
+function queueQuery(key, kind, body, metadata = null) {
+  const intent = { key, kind, body, metadata, scope: `${state.viewerId}:${state.contextGeneration}`, token: ++state.queryIntent };
   state.queryIntents.set(key, intent.token);
   state.queuedQueries.set(key, intent);
   state.queuedQuery = intent;
@@ -2243,56 +1739,19 @@ function queuePresentation() {
   drainIntents();
 }
 
-function receiptFor(snapshot, requestId) {
-  if (!requestId) return null;
-  return [snapshot?.lastAction, ...(snapshot?.activity || [])]
-    .find((receipt) => receipt?.requestId === requestId) || null;
-}
 
 function completeActionDrafts(action, receipt) {
   if (!action || receipt.rejected || receipt.settlement !== "settled") return;
-  const { kind, contextId, targetId } = action;
-  const draftKey = kind === "send_message" ? `composer:${contextId}` : `edit:${contextId}:${targetId}`;
-  const unchanged = (state.draftVersions.get(draftKey) || 0) === action.draftVersion;
-  if ((["send_message", "edit_message"].includes(kind) && unchanged) || kind === "delete_message") state.drafts.delete(draftKey);
-  if (kind === "set_poll_votes") state.pollDrafts.delete(`poll:${contextId}:${targetId}`);
-  if (contextId !== state.contextId) return;
-  if ((kind === "send_message" && unchanged) || (kind === "delete_message" && state.replyToId === String(targetId))) state.replyToId = null;
-  if ((kind === "edit_message" && unchanged || kind === "delete_message") && state.editTargetId === String(targetId)) state.editTargetId = null;
+  composer.completeActionDrafts(action, receipt);
+  if (action.kind === "set_poll_votes") {
+    state.pollDrafts.delete(`poll:${action.contextId}:${action.targetId}`);
+    state.pollResults.delete(`poll:${action.contextId}:${action.targetId}`);
+  }
 }
 
-function reconcileUncertainAction(snapshot) {
-  const requestId = state.transport.uncertainRequestId;
-  const receipt = receiptFor(snapshot, requestId);
-  const terminal = receipt?.rejected === true
-    || (typeof receipt?.settlement === "string" && receipt.settlement !== "pending");
-  if (receipt && terminal) {
-    const action = state.uncertainAction;
-    state.lastAction = receipt;
-    completeActionDrafts(action, receipt);
-    if (action?.contextId === state.contextId && snapshot.context?.id === state.contextId) updateComposer(snapshot);
-    state.lastActionKind = action?.kind || state.lastActionKind;
-    state.uncertainAction = null;
-    if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
-    state.transport.uncertainRequestId = null;
-    state.transport.uncertainSequence = null;
-    state.transport.uncertainCloseAttemptFor = null;
-    state.transport.state = "recovered";
-    state.transport.recoveries += 1;
-    state.transport.history.push({ state: "recovered", code: "action-receipt-observed", at: Date.now() });
-    state.transport.history = state.transport.history.slice(-20);
-    recoverActionTransportDiagnostics();
-    renderTransportStatus();
-    updateActionStatus();
-    renderDiagnostics();
-  }
-  if (Number.isInteger(state.awaitingRevision) && snapshot.publishedRevision >= state.awaitingRevision) {
-    state.awaitingRevision = null;
-    state.queryResultRevision = null;
-  }
-}
 
 function resetInteractionState() {
+  commandPicker.clear();
   for (const timer of state.selectQueryTimers.values()) clearTimeout(timer);
   state.selectQueryTimers.clear();
   state.queuedQueries.clear();
@@ -2311,6 +1770,7 @@ function resetInteractionState() {
   state.selectVerifiedValues.clear();
   state.pendingSelectValidations.clear();
   state.pollDrafts.clear();
+  state.pollResults.clear();
   clearModalDrafts();
   state.editTargetId = null;
   state.replyToId = null;
@@ -2334,6 +1794,8 @@ function redactPrivateView() {
   ui.search.value = "";
   ui.channelName.textContent = "Unavailable channel";
   ui.channelContextName.textContent = "Unavailable channel";
+  ui.channelContextHash.textContent = "#";
+  ui.channelHash.textContent = "#";
   ui.channelTopic.textContent = "";
   ui.channelTopic.hidden = true;
   ui.channel.hidden = true;
@@ -2379,6 +1841,10 @@ function queryStatusFingerprint(snapshot) {
   });
 }
 function drainIntents() {
+  if (state.commandRetryAfterRevision !== null) {
+    if (state.observedRevision < state.commandRetryAfterRevision) return;
+    state.commandRetryAfterRevision = null;
+  }
   const uncertain = state.transport.uncertainRequestId;
   const canClose = Boolean(uncertain && "close" in state.queuedPageIntents
     && state.transport.uncertainCloseAttemptFor !== uncertain);
@@ -2409,7 +1875,7 @@ function drainIntents() {
 function pageAction(kind) {
   return ["close", "refresh", "focus", "viewer", "configure_presentation"].includes(kind);
 }
-async function performAction(kind, extra, queryIntentValue = null) {
+async function performAction(kind, extra, queryIntentValue = null, metadata = queryIntentValue?.metadata || null) {
   const requestId = globalThis.crypto?.randomUUID?.() || `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const sequence = state.sequence + 1;
   const body = {
@@ -2427,13 +1893,16 @@ async function performAction(kind, extra, queryIntentValue = null) {
   }
   state.pendingAction = {
     kind, contextId: state.contextId, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null,
+    commandEnvelope: kind === "run_command" ? clone(extra) : null,
+    commandDraftId: kind === "run_command" ? metadata?.commandDraftId ?? null : null,
     draftVersion: state.draftVersions.get(kind === "send_message" ? `composer:${state.contextId}` : `edit:${state.contextId}:${body.target_id}`) || 0,
     closeProbe: kind === "close" && state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId
       && Boolean(state.transport.uncertainRequestId),
   };
   if (queryIntentValue) {
-    state.pendingQuery = { kind, key: queryIntentValue.key, controlKey: extra.control_key || null, requestId, sequence, query: extra.query };
+    state.pendingQuery = { kind, key: queryIntentValue.key, controlKey: extra.control_key || null, requestId, sequence, query: extra.query ?? extra.value ?? "" };
   }
+  if (kind === "run_command") commandPicker.setPending();
   localRender(false);
   let receipt;
   try {
@@ -2455,9 +1924,27 @@ async function performAction(kind, extra, queryIntentValue = null) {
     return;
   }
   noteTransportHealthy();
+  const busyQuery = Boolean(queryIntentValue && receipt.rejected
+    && receipt.diagnostics?.some((item) => item.code === "busy"));
+  if (!busyQuery) {
+    const actionMetadata = kind === "run_command"
+      ? { draftId: state.pendingAction?.commandDraftId }
+      : queryIntentValue?.metadata;
+    commandPicker.receiveAction(kind, receipt, extra, actionMetadata);
+  }
+  if (kind === "run_command") state.commandUploads = {};
+  if (busyQuery) receipt = { ...receipt, diagnostics: (receipt.diagnostics || []).filter((item) => item.code !== "busy") };
   if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
   if (Number.isInteger(receipt.revision) && receipt.revision > state.publishedRevision) {
     state.awaitingRevision = receipt.revision;
+  }
+  if (busyQuery) {
+    const intent = state.queuedQueries.get(queryIntentValue.key) || queryIntentValue;
+    state.queuedQueries.set(queryIntentValue.key, intent);
+    state.queuedQuery = intent;
+    state.commandRetryAfterRevision = Math.max(
+      Number(body.published_revision || 0), Number(receipt.revision || 0),
+    ) + 1;
   }
   if (Array.isArray(receipt.diagnostics)) receipt.diagnostics.forEach((item) => addDiagnostic(item));
   if (kind === "close" && receipt.rejected && state.pendingAction?.closeProbe) {
@@ -2530,15 +2017,18 @@ async function performAction(kind, extra, queryIntentValue = null) {
   state.pendingAction = null;
   state.pendingQuery = null;
   queuePendingCandidateValidations();
+  commandPicker.resume();
   updateActionStatus();
   drainIntents();
 }
-function dispatch(kind, extra = {}) {
-  if (["browse_messages", "browse_candidates"].includes(kind)) {
+function dispatch(kind, extra = {}, metadata = null) {
+  if (["browse_messages", "browse_candidates", "autocomplete_command"].includes(kind)) {
     const key = kind === "browse_messages"
       ? "messages"
-      : `candidate:${extra.control_key}:${extra.modal_handle || ""}`;
-    queueQuery(key, kind, extra);
+      : kind === "browse_candidates"
+        ? `candidate:${extra.control_key}:${extra.modal_handle || ""}`
+        : `command-autocomplete:${extra.command_id}:${(extra.path || []).join(".")}:${extra.focused}`;
+    queueQuery(key, kind, extra, metadata);
     return;
   }
   if (state.closed || !state.contextId || !state.protocolCompatible || state.pinnedCapture) return;
@@ -2562,7 +2052,7 @@ function dispatch(kind, extra = {}) {
   state.externalNotice = null;
   if (kind === "viewer") redactPrivateView();
   if (kind === "configure_presentation") state.host = { width: extra.host_width, height: extra.host_height };
-  performAction(kind, extra);
+  performAction(kind, extra, null, metadata);
 }
 
 async function poll() {
@@ -2575,7 +2065,8 @@ async function poll() {
     const stale = snapshot.context?.id === state.contextId
       && snapshot.context?.generation === state.contextGeneration
       && snapshot.publishedRevision < state.publishedRevision;
-    if (!stale && !state.pendingQuery && !state.queuedQueries.size) {
+    if (!stale && !state.pendingQuery
+      && (!state.queuedQueries.size || state.commandRetryAfterRevision !== null)) {
       const statusFingerprint = queryStatusFingerprint(snapshot);
       if (
         snapshot.publishedRevision !== state.publishedRevision
@@ -2648,125 +2139,7 @@ async function bootstrap() {
 }
 
 ui.viewer.addEventListener("change", () => dispatch("viewer", { viewer_id: ui.viewer.value }));
-function isMobileWorkbench() {
-  return window.matchMedia("(max-width: 760px)").matches;
-}
-
-function updateWorkbenchIsolation(modalOpen = Boolean(state.modalHandle)) {
-  const mobile = isMobileWorkbench();
-  if (mobile) ui.shell.classList.remove("messages-closed");
-  else ui.shell.classList.remove("messages-open");
-  const drawerOpen = ui.shell.classList.contains("messages-open");
-  const sidebarClosed = mobile ? !drawerOpen : ui.shell.classList.contains("messages-closed");
-  const inspectorOpen = !ui.panel.hidden;
-  ui.toolbar.inert = modalOpen;
-  ui.sidebar.inert = modalOpen || sidebarClosed || (mobile && inspectorOpen);
-  ui.sidebar.setAttribute("aria-hidden", String(modalOpen || sidebarClosed || (mobile && inspectorOpen)));
-  ui.panel.inert = modalOpen || !inspectorOpen;
-  ui.stage.inert = !modalOpen && mobile && (drawerOpen || inspectorOpen);
-  ui.drawerScrim.hidden = !mobile || !drawerOpen || modalOpen;
-  ui.messagesToggle.setAttribute("aria-expanded", String(!sidebarClosed));
-  ui.inspectorToggle.setAttribute("aria-expanded", String(inspectorOpen));
-}
-
-function setInspectorTab(name) {
-  inspectorTabs.forEach((button) => {
-    const selected = button.dataset.inspectorTab === name;
-    button.setAttribute("aria-selected", String(selected));
-    button.tabIndex = selected ? 0 : -1;
-    inspectorPanels[button.dataset.inspectorTab].hidden = !selected;
-  });
-}
-
-function closeMessagesDrawer(restore = true) {
-  if (!ui.shell.classList.contains("messages-open")) return;
-  ui.shell.classList.remove("messages-open");
-  updateWorkbenchIsolation();
-  if (restore) (state.drawerOpener?.isConnected ? state.drawerOpener : ui.messagesToggle).focus({ preventScroll: true });
-  state.drawerOpener = null;
-}
-
-function openInspector(name = "activity", opener = document.activeElement) {
-  if (ui.panel.hidden) state.panelOpener = opener instanceof HTMLElement ? opener : ui.inspectorToggle;
-  closeMessagesDrawer(false);
-  ui.panel.hidden = false;
-  ui.shell.classList.add("inspector-open");
-  setInspectorTab(name);
-  updateWorkbenchIsolation();
-  requestAnimationFrame(() => inspectorTabs.find((button) => button.dataset.inspectorTab === name)?.focus());
-}
-
-function closeInspector(restore = true) {
-  if (ui.panel.hidden) return;
-  ui.panel.hidden = true;
-  ui.shell.classList.remove("inspector-open");
-  updateWorkbenchIsolation();
-  if (restore) {
-    const target = state.panelOpener instanceof HTMLElement && state.panelOpener.isConnected
-      && !state.panelOpener.inert ? state.panelOpener : ui.inspectorToggle;
-    target.focus({ preventScroll: true });
-  }
-  state.panelOpener = null;
-}
-
-function openMessagesDrawer() {
-  closeInspector(false);
-  if (isMobileWorkbench()) {
-    state.drawerOpener = ui.messagesToggle;
-    ui.shell.classList.add("messages-open");
-    updateWorkbenchIsolation();
-    ui.search.focus({ preventScroll: true });
-  } else {
-    ui.shell.classList.remove("messages-closed");
-    updateWorkbenchIsolation();
-  }
-}
-
-ui.messagesToggle.addEventListener("click", () => {
-  const closed = isMobileWorkbench()
-    ? !ui.shell.classList.contains("messages-open")
-    : ui.shell.classList.contains("messages-closed");
-  if (closed) openMessagesDrawer();
-  else if (isMobileWorkbench()) closeMessagesDrawer();
-  else {
-    ui.shell.classList.add("messages-closed");
-    updateWorkbenchIsolation();
-    ui.messagesToggle.focus({ preventScroll: true });
-  }
-});
-ui.drawerScrim.addEventListener("click", () => closeMessagesDrawer());
-ui.inspectorToggle.addEventListener("click", () => {
-  if (ui.panel.hidden) openInspector();
-  else closeInspector();
-});
-ui.captureOpen.addEventListener("click", () => openInspector("capture", ui.captureOpen));
-ui.inspectorClose.addEventListener("click", () => closeInspector());
-inspectorTabs.forEach((button, index) => {
-  button.addEventListener("click", () => setInspectorTab(button.dataset.inspectorTab));
-  button.addEventListener("keydown", (event) => {
-    let next = index;
-    if (event.key === "ArrowRight") next = (index + 1) % inspectorTabs.length;
-    else if (event.key === "ArrowLeft") next = (index + inspectorTabs.length - 1) % inspectorTabs.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = inspectorTabs.length - 1;
-    else return;
-    event.preventDefault();
-    setInspectorTab(inspectorTabs[next].dataset.inspectorTab);
-    inspectorTabs[next].focus();
-  });
-});
-document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || event.defaultPrevented || state.modalHandle) return;
-  if (!ui.panel.hidden) {
-    event.preventDefault();
-    closeInspector();
-  } else if (ui.shell.classList.contains("messages-open")) {
-    event.preventDefault();
-    closeMessagesDrawer();
-  }
-});
-window.addEventListener("resize", () => updateWorkbenchIsolation());
-updateWorkbenchIsolation();
+const { updateWorkbenchIsolation } = initWorkbench({ state, ui });
 function updateViewport(field, minimum, maximum) {
   const value = Number(field.value);
   if (!Number.isInteger(value) || value < minimum || value > maximum
@@ -2875,38 +2248,6 @@ ui.refresh.addEventListener("click", () => dispatch("refresh"));
 ui.close.addEventListener("click", () => dispatch("close"));
 ui.historyOlder.addEventListener("click", () => dispatch("history", { direction: "older" }));
 ui.historyNewer.addEventListener("click", () => dispatch("history", { direction: "newer" }));
-ui.replyCancel.addEventListener("click", () => {
-  state.replyToId = null;
-  state.editTargetId = null;
-  updatePickers(state.snapshot);
-  ui.composer.focus();
-});
-ui.composer.addEventListener("input", () => {
-  state.drafts.set(ui.composer.dataset.controlKey, ui.composer.value);
-  const key = ui.composer.dataset.controlKey;
-  state.draftVersions.set(key, (state.draftVersions.get(key) || 0) + 1);
-  resizeComposer();
-  rememberFocus();
-});
-ui.composer.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
-    event.preventDefault();
-    ui.composerForm.requestSubmit();
-  }
-});
-ui.composerForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const content = ui.composer.value;
-  if (state.editTargetId) {
-    dispatch("edit_message", { target_id: state.editTargetId, content });
-  } else if (content.trim()) {
-    dispatch("send_message", {
-      target_id: state.targetId,
-      content,
-      reply_to_id: state.replyToId,
-    });
-  }
-});
 ui.modal.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (state.dropdown) { event.preventDefault(); cancelDropdown(state.dropdown.key); return; }

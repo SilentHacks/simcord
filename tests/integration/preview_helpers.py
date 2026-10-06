@@ -130,6 +130,8 @@ def action_body(page: Any, kind: str, sequence: Any, **fields: Any) -> dict[str,
         "browse_messages",
         "browse_candidates",
         "configure_presentation",
+        "autocomplete_command",
+        "run_command",
     }:
         body.setdefault(
             "published_revision",

@@ -30,6 +30,69 @@ async def _action(preview, page, kind, sequence, target_id, **fields):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("multiselect", [False, True])
+async def test_preview_poll_browser_vote_results_and_removal(env, channel, alice, multiselect):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright, expect
+
+    poll = _poll(env, multiselect=multiselect)
+    poll.expiry = env.backend.iso_after(3 * 3600)
+    env.backend.create_message(channel.id, env.backend.bot_user.id, "", poll=poll)
+    await env.settle()
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                card = page.locator(".message-poll")
+                vote = card.get_by_role("button", name="Vote", exact=True)
+                await expect(vote).to_be_disabled()
+                await expect(card.locator(".poll-time")).to_have_text("2h left")
+                await env.advance_time(3600)
+                await preview.refresh()
+                await expect(card.locator(".poll-time")).to_have_text("1h left")
+                await card.locator(".poll-answer").nth(0).click()
+                await card.locator(".poll-answer").nth(1).click()
+                await expect(card.locator(".poll-answer.is-selected")).to_have_count(2 if multiselect else 1)
+                await card.get_by_role("button", name="Show results", exact=True).click()
+                await expect(card.locator(".poll-answer-percentage")).to_have_text(["0%", "0%"])
+                assert poll.votes == {}
+                await card.get_by_role("button", name="Go back to vote", exact=True).click()
+                await expect(vote).to_be_enabled()
+                await vote.click()
+                await expect(card.get_by_role("button", name="Remove Vote", exact=True)).to_be_visible()
+                await expect(card.locator(".poll-answer-percentage")).to_have_text(
+                    ["50%", "50%"] if multiselect else ["0%", "100%"]
+                )
+                assert {answer for answer, voters in poll.votes.items() if alice.id in voters} == (
+                    {1, 2} if multiselect else {2}
+                )
+                await card.evaluate("element => element.style.width = '144px'")
+                assert await card.locator(".poll-answer").evaluate_all(
+                    """rows => rows.every(row => {
+                        const bounds = row.getBoundingClientRect();
+                        return [...row.children].filter(child => !child.classList.contains('poll-result-fill'))
+                            .every(child => {
+                                const rect = child.getBoundingClientRect();
+                                return rect.left >= bounds.left && rect.right <= bounds.right;
+                            });
+                    })"""
+                )
+                await card.evaluate("element => element.style.width = ''")
+                await card.get_by_role("button", name="Remove Vote", exact=True).click()
+                await expect(vote).to_be_disabled()
+                assert all(alice.id not in voters for voters in poll.votes.values())
+                await env.advance_time(3 * 3600)
+                await preview.refresh()
+                await expect(card.locator(".poll-answer-percentage")).to_have_text(["0%", "0%"])
+                await expect(card.get_by_role("button")).to_have_count(0)
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_preview_send_timeout_records_mutation_and_replay_is_safe(env, channel, alice):
     started, release = asyncio.Event(), asyncio.Event()
     env.settle_timeout = 0.05

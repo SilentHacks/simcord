@@ -31,7 +31,12 @@ async def test_ping(simcord_env):
     assert channel.last_message.content == "Pong!"
 ```
 
-[![Real SimCord example suite running in pytest](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/simcord-terminal-demo.gif)](https://github.com/SilentHacks/simcord/tree/master/examples)
+[![SimCord Preview rendering Components V2, rich embeds, interactive buttons, a booking modal, and a Discord-style poll](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/simcord-showcase-poll-refresh.gif)](https://simcord.readthedocs.io/en/latest/guides/preview/)
+
+**Your bot's real callbacks, in a local browser.** Explore Components V2 layouts and
+rich embeds, click buttons, submit a modal, and vote in a poll — entirely offline, without a Discord token.
+
+[See screenshots of supported renderers](#preview-render-gallery).
 
 The [bundled example bot](https://github.com/SilentHacks/simcord/tree/master/examples) is executable, tested, and covers prefix commands,
 slash commands, permissions, cooldowns, modals, buttons, and persistent views.
@@ -69,17 +74,14 @@ uv add --dev "simcord[pytest]"
 ```
 
 Requires **Python >=3.11** (tested on **3.11–3.14**) and **discord.py >=2.7.1,<3**.
-The locked CI matrix tests discord.py 2.7.1; a separate weekly workflow checks upstream
-`master`, rather than continuously testing every released 2.x version. The base simulation
-adds no runtime dependency beyond discord.py.
+The base simulation adds no runtime dependency beyond discord.py.
 
 For an authenticated local browser page showing real component callbacks, install
 `simcord[preview]` (a Preview now requires its full extra); for deterministic PNGs
 install `simcord[screenshot]` and run `playwright install --with-deps chromium`.
 See the [component preview and screenshots guide](https://simcord.readthedocs.io/en/latest/guides/preview/)
 for the protocol-3 snapshot, navigation, candidate and receipt contracts; lifecycle,
-security, bounded media and deterministic capture. Private Discord reference comparison
-and human screen-reader review remain blocked release gates; no parity certification is claimed.
+security, bounded media and deterministic capture.
 
 ## Quickstart
 
@@ -129,7 +131,7 @@ test framework.
 
 ## AI coding agents
 
-Give Claude Code, Codex, Copilot, Cursor, or another coding agent a deterministic Discord
+Give Claude Code, Codex, Cursor, or another coding agent a deterministic Discord
 runtime instead of letting it invent mocks that confirm its own assumptions.
 
 Add this requirement to the task:
@@ -196,6 +198,26 @@ exposing `acknowledged`, `deferred`, `ephemeral`, `response`, `followups` and `m
 permissions, role hierarchy, intents and audit logs are modelled too. The
 [parity matrix](https://simcord.readthedocs.io/en/latest/parity-matrix/) records exactly what's
 implemented.
+
+## Preview render gallery
+
+Real screenshots from SimCord's local Preview, using actual `discord.py` messages and components.
+
+| Supported rendering | Screenshot |
+| --- | --- |
+| **Buttons** — styles, links, emoji and disabled states | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/buttons.png" width="420" alt="Primary, secondary, success, danger, link, disabled and emoji buttons">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/buttons.png) |
+| **Embeds** — author, fields, thumbnail, image and footer | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/embeds.png" width="420" alt="Rich embed with Markdown, inline fields, thumbnail, image and timestamped footer">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/embeds.png) |
+| **Select menus** — options, descriptions, emoji and multi-selection | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/selects.png" width="420" alt="Open destination select with emoji, descriptions and a selected option">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/selects.png) |
+| **Entity selectors** — users, roles, mentionables and channels | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/entities.png" width="420" alt="User, role, mentionable and text-channel select controls">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/entities.png) |
+| **Slash command picker** — browse available commands in the channel composer | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/slash-commands.png" width="420" alt="Open slash-command picker showing available commands, descriptions and the channel composer">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/slash-commands.png) |
+| **Modals** — short and paragraph text inputs | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/modals.png" width="420" alt="Feedback modal with populated name and comment inputs, Cancel and Submit buttons">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/modals.png) |
+| **Markdown & mentions** — formatting, links, spoilers and code | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/markdown.png" width="420" alt="Formatted message with mention, link, concealed spoiler, quote and highlighted Python code">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/markdown.png) |
+| **Images & files** — inline media, text previews and downloads | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/attachments.png" width="420" alt="Inline image and text attachment with preview and download controls">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/attachments.png) |
+| **Components V2** — containers, sections, separators and accessories | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/layouts.png" width="420" alt="Accented component container with heading, separator, section and accessory buttons">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/layouts.png) |
+| **Polls** — answer choices, voting and results | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/polls.png" width="420" alt="Three-answer poll with emoji, vote counts, percentages and result bars">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/polls.png) |
+| **Replies & reactions** — referenced messages and reaction counts | [<img src="https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/replies.png" width="420" alt="Reply to a bot message with checkmark and celebration reactions">](https://raw.githubusercontent.com/SilentHacks/simcord/master/docs/assets/preview/replies.png) |
+
+See the [Preview guide](https://simcord.readthedocs.io/en/latest/guides/preview/) for setup, callbacks, media limitations and deterministic capture.
 
 ## Configuration & diagnostics
 

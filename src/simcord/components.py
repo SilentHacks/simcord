@@ -14,6 +14,19 @@ from typing import Any
 # discord.MessageFlags.components_v2.  Kept numeric to avoid importing discord.py
 # (and to keep this module usable by the in-memory backend on its own).
 COMPONENTS_V2_FLAG = 1 << 15
+SUPPRESS_EMBEDS_FLAG = 1 << 2
+EDITABLE_MESSAGE_FLAGS = SUPPRESS_EMBEDS_FLAG | COMPONENTS_V2_FLAG
+
+
+def merge_edit_flags(previous: int, requested: int) -> int:
+    """Keep immutable flags on edit.
+
+    Discord's Edit Message docs: only SUPPRESS_EMBEDS may change, and IS_COMPONENTS_V2 may be set but
+    not removed (the removal check lives in ``validate_message_state``).
+    """
+    return (int(requested) & EDITABLE_MESSAGE_FLAGS) | (int(previous) & ~EDITABLE_MESSAGE_FLAGS)
+
+
 _MAX_COMPONENT_ID = (1 << 32) - 1
 _COMPONENT_TYPES = {*range(1, 15), 17, 18, 19, 21, 22, 23}
 
@@ -526,23 +539,16 @@ def validate_components(components: Any, *, flags: int = 0) -> list[dict[str, An
         if v2:
             if kind not in ({1, *_V2_TYPES}):
                 raise _fail(f"[{index}]", "legacy interactive components cannot be mixed with V2 layouts")
-            _check_component(
-                component,
-                f"[{index}]",
-                custom_ids=custom_ids,
-                explicit_ids=explicit_ids,
-                text_total=text_total,
-            )
         else:
             if kind != 1:
                 raise _fail(f"[{index}]", "legacy messages may contain only action rows")
-            _check_component(
-                component,
-                f"[{index}]",
-                custom_ids=custom_ids,
-                explicit_ids=explicit_ids,
-                text_total=text_total,
-            )
+        _check_component(
+            component,
+            f"[{index}]",
+            custom_ids=custom_ids,
+            explicit_ids=explicit_ids,
+            text_total=text_total,
+        )
 
     if v2:
         _assign_ids(normalized, explicit_ids)

@@ -36,7 +36,6 @@ class Channel:
     overwrites: list[Overwrite] = field(default_factory=list)
     topic: str | None = None
     parent_id: int | None = None
-    nsfw: bool = False
     rate_limit_per_user: int = 0
     last_message_id: int | None = None
     recipient_ids: list[int] = field(default_factory=list)  # DM channels

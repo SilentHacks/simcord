@@ -101,7 +101,6 @@ class CapturePin:
 
     page: Any
     snapshot: dict[str, Any]
-    bot_generation: int
     published_revision: int
     viewer_id: str
     channel_id: str
@@ -480,8 +479,6 @@ class _CaptureOps:
     _closed: bool
     _capture_manager: ManagedCapture
     _capture_task: asyncio.Task[Any] | None
-    _capture_page: _Page | None
-    _capture_generation: int
     _publish: Callable[[_Page], None]
     _clear_page_assets: Callable[[_Page], None]
     _viewer: Callable[[Any], Any]
@@ -571,13 +568,11 @@ class _CaptureOps:
             # snapshot retained so they cannot leak until close().
             self._clear_page_assets(capture_page)
             raise
-        self._capture_generation += 1
         profile = dict(snapshot.get("profile", {}))
         profile.update({"deviceScale": 1, "reducedMotion": True})
         return CapturePin(
             capture_page,
             capture_page.pinned_snapshot,
-            self.env._generation,
             int(snapshot.get("publishedRevision", source.revision)),
             str(snapshot.get("viewerId", viewer.id)),
             str(snapshot.get("channelId", self.channel.id)),
@@ -657,7 +652,7 @@ class _CaptureOps:
         self._capture_task = asyncio.current_task()
         pin: CapturePin | None = None
         try:
-            token = self.env._begin_operation("preview.screenshot")
+            self.env._begin_operation("preview.screenshot")
             try:
                 await self.env._settle_internal()
                 if self._closed or not self._active:
@@ -674,8 +669,7 @@ class _CaptureOps:
                     cast(Literal["message", "channel"], selected_layout),
                 )
             finally:
-                self.env._end_operation(token)
-            self._capture_page = pin.page
+                self.env._end_operation()
             png: bytes | None = None
             if destination is None:
                 with tempfile.TemporaryDirectory(prefix="simcord-capture-") as temporary_dir:
@@ -721,7 +715,6 @@ class _CaptureOps:
                 removed = self._pages.pop(pin.page.id, None)
                 if removed is not None:
                     self._clear_page_assets(removed)
-            self._capture_page = None
             self._capture_task = None
 
 

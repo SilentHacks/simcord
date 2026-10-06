@@ -87,12 +87,12 @@ async def test_restart_rejects_overlapping_external_operation(env):
     started = asyncio.Event()
 
     async def external_operation() -> None:
-        token = env._begin_operation("external probe")
+        env._begin_operation("external probe")
         try:
             started.set()
             await release.wait()
         finally:
-            env._end_operation(token)
+            env._end_operation()
 
     operation = asyncio.create_task(external_operation())
     await started.wait()

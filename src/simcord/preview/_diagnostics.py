@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -121,6 +122,41 @@ _CATALOG: dict[str, tuple[str, str, bool, str, str]] = {
         "This preview asset is unavailable.",
         "Reload the page and check its current authorization.",
     ),
+    "commands-unsynced": (
+        "command",
+        "warning",
+        True,
+        "Application commands in the command tree have not been synced to SimCord.",
+        "Call `await bot.tree.sync()`.",
+    ),
+    "command-unavailable": (
+        "command",
+        "warning",
+        True,
+        "This command is unavailable in the current page.",
+        "Refresh the command catalog and choose a command visible to this viewer.",
+    ),
+    "command-changed": (
+        "command",
+        "warning",
+        True,
+        "This command schema changed after it was selected.",
+        "Refresh the command catalog and review the current options.",
+    ),
+    "command-option-invalid": (
+        "command",
+        "warning",
+        True,
+        "A command option does not match its declared type or constraints.",
+        "Correct the indicated command option and retry.",
+    ),
+    "autocomplete-unanswered": (
+        "command",
+        "warning",
+        True,
+        "The command did not answer the autocomplete request.",
+        "Review the command's autocomplete callback and try again.",
+    ),
     "access-denied": (
         "authorization",
         "error",
@@ -195,6 +231,14 @@ _CATALOG: dict[str, tuple[str, str, bool, str, str]] = {
 _SNOWFLAKE = re.compile(r"[0-9]{1,20}\Z")
 
 
+def valid_command_name(value: str) -> bool:
+    """Return whether a Discord command or option name has a valid shape."""
+    return 1 <= len(value) <= 32 and all(
+        character.isalnum() or character in "-_'" or unicodedata.category(character).startswith("M")
+        for character in value
+    )
+
+
 def make_diagnostic(
     code: str,
     *,
@@ -212,10 +256,13 @@ def make_diagnostic(
     if isinstance(subject, Mapping):
         message_id = subject.get("messageId")
         control_key = subject.get("controlKey")
+        command_option = subject.get("commandOption")
         if isinstance(message_id, str) and _SNOWFLAKE.fullmatch(message_id):
             safe_subject = {"messageId": message_id}
             if isinstance(control_key, str) and len(control_key) <= 160:
                 safe_subject["controlKey"] = control_key
+        elif isinstance(command_option, str) and valid_command_name(command_option):
+            safe_subject = {"commandOption": command_option}
     seed = json.dumps([code, safe_subject, correlation], sort_keys=True, separators=(",", ":"))
     diagnostic: dict[str, Any] = {
         "id": "d_" + hashlib.sha256(seed.encode()).hexdigest()[:16],

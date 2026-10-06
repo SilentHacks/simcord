@@ -6,7 +6,12 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from ...components import ComponentValidationError, component_mentions, validate_message_state
+from ...components import (
+    ComponentValidationError,
+    component_mentions,
+    merge_edit_flags,
+    validate_message_state,
+)
 from ...enums import MessageType
 from .. import errors, permissions, serializers
 from ..models import (
@@ -284,9 +289,10 @@ class MessageMixin(BackendBase):
         attachments = fields["attachments"] if "attachments" in fields else message.attachments
         policy = fields.get("allowed_mentions", message.allowed_mentions)
         try:
-            flags = (
+            requested_flags = (
                 int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
             )
+            flags = merge_edit_flags(message.flags, requested_flags)
             normalized_components = validate_message_state(
                 [] if components is None else components,
                 flags=flags,

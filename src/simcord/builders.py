@@ -95,6 +95,33 @@ class UserHandle:
         await self._env._settle_internal(dispatch="USER.send_dm")
         return to_discord_message(self._env, message)
 
+    def available_commands(self) -> tuple[str, ...]:
+        """List accepted slash invocations once; guild-shadowed names are DM-global only."""
+        from .interactions import command_leaves
+
+        commands = self._env.backend.visible_commands(user_id=self.id, channel_id=self.dm_channel.id)
+        return tuple(
+            dict.fromkeys(" ".join(path) for command in commands for path, _leaf in command_leaves(command))
+        )
+
+    async def slash(self, name: str, /, **options: Any) -> Any:
+        """Invoke a global slash command visible in this user's bot DM."""
+        from .actors import _check_user_dm_channel, _slash
+
+        channel = self.dm_channel
+        _check_user_dm_channel(self, channel.id)
+        return await _slash(self, channel, name, options)
+
+    async def autocomplete(
+        self, name: str, option: str, value: str, /, **filled: Any
+    ) -> list[dict[str, Any]]:
+        """Type into an autocomplete option in this user's bot DM."""
+        from .actors import _autocomplete, _check_user_dm_channel
+
+        channel = self.dm_channel
+        _check_user_dm_channel(self, channel.id)
+        return await _autocomplete(self, channel, name, option, value, filled)
+
     async def edit(self, message: Any, content: str) -> None:
         from .actors import _visible_message
 
@@ -157,7 +184,7 @@ class UserHandle:
 
     async def submit_modal(self, shown: Any, values: dict[str, Any]) -> Any:
         """Submit a DM modal using strings, entity handles, booleans, or file tuples."""
-        from .actors import _submit_modal
+        from ._modal import _submit_modal
 
         return await _submit_modal(self, shown, values)
 
@@ -620,21 +647,21 @@ def _guard_builder_operation(method: Any) -> Any:
 
         @wraps(method)
         async def guarded_async(self: Any, *args: Any, **kwargs: Any) -> Any:
-            token = self._env._begin_operation(method.__name__)
+            self._env._begin_operation(method.__name__)
             try:
                 return await method(self, *args, **kwargs)
             finally:
-                self._env._end_operation(token)
+                self._env._end_operation()
 
         return guarded_async
 
     @wraps(method)
     def guarded_sync(self: Any, *args: Any, **kwargs: Any) -> Any:
-        token = self._env._begin_operation(method.__name__)
+        self._env._begin_operation(method.__name__)
         try:
             return method(self, *args, **kwargs)
         finally:
-            self._env._end_operation(token)
+            self._env._end_operation()
 
     return guarded_sync
 
@@ -648,6 +675,8 @@ for _operation_name in (
     "click",
     "select",
     "submit_modal",
+    "slash",
+    "autocomplete",
 ):
     setattr(UserHandle, _operation_name, _guard_builder_operation(getattr(UserHandle, _operation_name)))
 WebhookHandle.send = _guard_builder_operation(WebhookHandle.send)

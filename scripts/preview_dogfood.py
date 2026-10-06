@@ -1,6 +1,6 @@
 """Checkout-only manual preview audit gallery; no Discord token required.
 
-Run: uv run python scripts/preview_dogfood.py [--channel | --dm]
+Run: uv run python scripts/preview_dogfood.py [--channel | --dm | --picker]
 Check: uv run python scripts/preview_dogfood.py --check
 The printed local URL is a capability: do not share it or put it in reports.
 """
@@ -34,6 +34,15 @@ def check_catalog() -> None:
     if len(set(scenario_ids)) != len(scenario_ids):
         raise ValueError("dogfood scenario IDs must be unique")
 
+    picker_bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    catalog.register_picker_commands(picker_bot.tree)
+    picker_commands = picker_bot.tree.get_commands()
+    picker_names = {command.name for command in picker_commands}
+    if not {"picker_options", "all-optional", "tag", "upload", "config", "no-option"} <= picker_names:
+        raise ValueError("the shared picker catalog is missing a reference scenario command")
+    for command in picker_commands:
+        command.to_dict(picker_bot.tree)
+
     coverage_path = Path(__file__).resolve().parents[1] / "tests/fixtures/preview/coverage.json"
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
     rows = coverage.get("rows")
@@ -64,6 +73,9 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local preview dogfood gallery.")
     parser.add_argument("--channel", action="store_true", help="show channel history instead of one message")
     parser.add_argument("--dm", action="store_true", help="open the DM-only D01 UserSelect scenario")
+    parser.add_argument(
+        "--picker", action="store_true", help="open a Conversation preview with slash-command picker fixtures"
+    )
     parser.add_argument("--check", action="store_true", help="validate scenario registration and factories")
     args = parser.parse_args()
     if args.check:
@@ -72,8 +84,27 @@ async def main() -> None:
 
     preview_assets: dict[str, tuple[str, bytes]] = {}
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+    catalog.register_picker_commands(bot.tree)
     async with simcord.run(bot) as env:
-        if args.dm:
+        await bot.tree.sync()
+        if args.picker:
+            guild = env.create_guild("Slash-command picker dogfood")
+            channel = guild.create_text_channel("command-picker")
+            alice = guild.add_member(env.create_user("alice"))
+            guild.add_member(env.create_user("bob"))
+            for index in range(12):
+                guild.add_member(env.create_user(f"member-{index:02}"))
+            for name in ("Reviewer", "Operator", "Guest"):
+                guild.create_role(name, color=0x5865F2)
+            guild.create_text_channel("announcements")
+            guild.create_text_channel("support")
+            target = env.bot.get_channel(channel.id)
+            message_target = await target.send(
+                "PICKER-DOGFOOD: type / in the composer to browse and try the slash-command fixtures."
+            )
+            channel_handle = channel
+            viewers = [alice]
+        elif args.dm:
             dm_user = env.create_user("dm-dogfood")
             await dm_user.send_dm("D01 DM-only UserSelect scenario")
             target = await env.bot.fetch_channel(dm_user.dm_channel.id)
@@ -186,9 +217,9 @@ async def main() -> None:
             channel_handle,
             viewers=viewers,
             assets=preview_assets,
-            layout="channel" if args.channel else "message",
+            layout="channel" if args.channel or args.picker else "message",
         ) as preview:
-            await preview.show(channel_handle.last_message if args.channel else message_target)
+            await preview.show(channel_handle.last_message if args.channel or args.picker else message_target)
             print(f"PREVIEW_URL={preview.url}", flush=True)
             await preview.wait_closed()
 

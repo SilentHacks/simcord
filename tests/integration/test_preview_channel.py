@@ -1,12 +1,75 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from importlib import resources
+from urllib.parse import urlsplit
 
 import discord
+import jsonschema
 import pytest
 from preview_helpers import action_body
 
 import simcord
+
+
+@pytest.mark.asyncio
+async def test_dm_and_guild_channel_recipients_validate_against_schema(env, channel, alice):
+    await alice.send_dm("hello")
+    dm = alice.user.dm_channel
+    schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+
+    async with env.preview(dm, viewers=[alice.user], layout="channel") as preview:
+        dm_snapshot = await preview.snapshot()
+        recipient = dm_snapshot["channel"]["recipient"]
+        assert recipient["id"] == str(env.backend.bot_user.id)
+        assert recipient["name"]
+        validator.validate(dm_snapshot)
+
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        guild_snapshot = await preview.snapshot()
+        assert guild_snapshot["channel"]["recipient"] is None
+        validator.validate(guild_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_dm_composer_label_and_hash_change_load_second_preview(env, channel, alice):
+    pytest.importorskip("playwright")
+    from playwright.async_api import async_playwright
+
+    await alice.send_dm("hello")
+    dm = alice.user.dm_channel
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            async with env.preview(dm, viewers=[alice.user], layout="channel") as first:
+                first_url = first.url
+                port = urlsplit(first_url).port
+                await page.goto(first_url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                first_context_id = await page.evaluate("() => window.simcordPreview.contextId")
+                placeholder = await page.locator("#channel-composer-input").get_attribute("placeholder")
+                assert placeholder is not None and placeholder.startswith("Message @")
+
+            async with env.preview(channel, viewers=[alice], layout="channel", port=port) as second:
+                second_url = second.url
+                assert (
+                    urlsplit(first_url)._replace(fragment="").geturl()
+                    == urlsplit(second_url)._replace(fragment="").geturl()
+                )
+                await page.evaluate(
+                    "(fragment) => { window.location.hash = fragment; }", urlsplit(second_url).fragment
+                )
+                await page.wait_for_function(
+                    "(previous) => window.simcordPreview?.ready && window.simcordPreview.contextId !== previous",
+                    arg=first_context_id,
+                )
+                second_context_id = await page.evaluate("() => window.simcordPreview.contextId")
+                assert second_context_id in second._pages
+        finally:
+            await browser.close()
 
 
 @pytest.mark.asyncio
@@ -436,8 +499,14 @@ async def test_channel_composer_sends_replies_and_preserves_live_dom_state(env, 
                 member = env.bot.get_guild(env.guild.id).get_member(alice.id)
                 await bot_channel.set_permissions(member, send_messages=False)
                 await preview.refresh()
-                await page.wait_for_function("() => document.getElementById('channel-composer').hidden")
+                await page.wait_for_function(
+                    "() => !document.getElementById('channel-composer').hidden && document.getElementById('send-message').disabled && !window.simcordPreview.pendingAction"
+                )
                 assert await page.locator("#channel-composer-input").input_value() == "retain after denial"
+                assert (
+                    await page.locator("#channel-composer-input").get_attribute("placeholder")
+                    == "You can use application commands here"
+                )
                 denied_revision = await page.evaluate("() => window.simcordPreview?.publishedRevision")
                 await bot_channel.set_permissions(member, send_messages=True)
                 await preview.refresh()
@@ -598,5 +667,55 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
                 assert channel.last_message.content == "Send exactly once"
                 assert await composer.input_value() == newer_draft
                 assert len(submissions) == 1
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_channel_focus_preserves_message_geometry_and_group_spacing(env, alice):
+    from playwright.async_api import async_playwright
+
+    channel = env.guild.create_text_channel("general", topic="Long channel context. " * 40)
+    first = await alice.send(channel, "Wrapping stays stable when selecting this message. " * 12)
+    await alice.send(channel, "A continuation by the same author.")
+    await env.bot.get_channel(channel.id).send("A new author group.")
+    await env.bot.get_channel(channel.id).send("🙂")
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={"width": 1280, "height": 800})
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready")
+                geometry = """() => [...document.querySelectorAll('.channel-message')].map(element => {
+                    const bounds = node => {
+                        if (!node) return null;
+                        const {x, y, width, height} = node.getBoundingClientRect();
+                        return {x, y, width, height};
+                    };
+                    return {
+                        message: bounds(element),
+                        content: bounds(element.querySelector('.message-content')),
+                        avatar: bounds(element.querySelector('.message-avatar')),
+                    };
+                })"""
+                before = await page.evaluate(geometry)
+                continuation_gap = before[1]["message"]["y"] - (
+                    before[0]["message"]["y"] + before[0]["message"]["height"]
+                )
+                author_gap = before[2]["message"]["y"] - (
+                    before[1]["message"]["y"] + before[1]["message"]["height"]
+                )
+                assert author_gap > continuation_gap
+                assert len({item["content"]["x"] for item in before}) == 1
+                assert await page.locator(".channel-heading h1").evaluate(
+                    "heading => heading.scrollWidth <= heading.clientWidth"
+                )
+                await page.locator(f".message-row[data-message-id='{first.id}']").click()
+                await page.wait_for_function(
+                    "id => window.simcordPreview.targetId === id && window.simcordPreview.ready",
+                    arg=str(first.id),
+                )
+                assert await page.evaluate(geometry) == before
             finally:
                 await browser.close()

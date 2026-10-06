@@ -71,7 +71,10 @@ assert reply[-1].content.startswith("Hi")
 ```
 
 `alice.user.dm_channel` is the user's DM channel with the bot; `.history()` returns the
-conversation as real `discord.Message` objects.
+conversation as real `discord.Message` objects. A `UserHandle` can also invoke global slash
+commands and autocomplete in that DM when their command contexts allow `BOT_DM`; these
+interactions carry `context == 1`. Use `user.available_commands()` to list the slash invocations
+visible there. See [slash command visibility and DM commands](testing-slash-commands.md#bot-dm-slash-commands-and-visible-command-lists).
 
 Guild actors can edit/delete their messages and pin with `set_pinned`. In the user's bot DM,
 `UserHandle` supports their own message edits/deletes, desired reactions, and poll votes:

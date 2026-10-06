@@ -321,6 +321,58 @@ def _inspect_lottie(blob: bytes, media_time: float | None = None) -> MediaInfo:
     )
 
 
+def _configure_encoders(
+    av: Any,
+    output_container: Any,
+    video: Any,
+    audio: Any,
+    oriented_width: int,
+    oriented_height: int,
+) -> tuple[Any, Any, Any]:
+    video_encoder: Any = None
+    audio_encoder: Any = None
+    audio_encoder_resampler: Any = None
+    if video is not None:
+        rate = video.average_rate or video.guessed_rate or 30
+        video_encoder = output_container.add_stream("libvpx-vp9", rate=rate)
+        video_encoder.width = oriented_width
+        video_encoder.height = oriented_height
+        video_encoder.pix_fmt = "yuv420p"
+        for name in ("color_range", "colorspace", "color_primaries", "color_trc"):
+            color = getattr(video.codec_context, name, None)
+            if color is not None:
+                setattr(video_encoder.codec_context, name, color)
+    if audio is not None:
+        audio_encoder = output_container.add_stream("libopus", rate=48_000)
+        layout = str(audio.codec_context.layout.name or "stereo")
+        audio_encoder.layout = layout
+        audio_encoder_resampler = av.AudioResampler(format="fltp", layout=layout, rate=48_000)
+    return video_encoder, audio_encoder, audio_encoder_resampler
+
+
+def _accumulate_waveform(
+    mono: Any,
+    audio: Any,
+    duration: float,
+    waveform_totals: list[float],
+    waveform_counts: list[int],
+) -> None:
+    raw = memoryview(mono.planes[0])
+    step = max(2, (mono.samples // 16) * 2)
+    sample_rate = int(
+        mono.sample_rate or (audio.codec_context.sample_rate if audio is not None else 48_000) or 48_000
+    )
+    frame_time = (
+        float(mono.pts * mono.time_base) if mono.pts is not None and mono.time_base is not None else 0.0
+    )
+    for offset in range(0, len(raw) - 1, step):
+        sample = abs(int.from_bytes(raw[offset : offset + 2], "little", signed=True))
+        sample_time = max(0.0, frame_time + (offset // 2) / sample_rate)
+        bucket = min(63, int(sample_time / duration * 64))
+        waveform_totals[bucket] += sample / 32768
+        waveform_counts[bucket] += 1
+
+
 def _inspect_av(blob: bytes, media_time: float | None) -> MediaInfo:
     try:
         import av
@@ -439,21 +491,9 @@ def _inspect_av(blob: bytes, media_time: float | None) -> MediaInfo:
                             output_stream.metadata["rotate"] = str(rotation)
                         remux_streams[stream.index] = output_stream
                 else:
-                    if video is not None:
-                        rate = video.average_rate or video.guessed_rate or 30
-                        video_encoder = output_container.add_stream("libvpx-vp9", rate=rate)
-                        video_encoder.width = oriented_width
-                        video_encoder.height = oriented_height
-                        video_encoder.pix_fmt = "yuv420p"
-                        for name in ("color_range", "colorspace", "color_primaries", "color_trc"):
-                            color = getattr(video.codec_context, name, None)
-                            if color is not None:
-                                setattr(video_encoder.codec_context, name, color)
-                    if audio is not None:
-                        audio_encoder = output_container.add_stream("libopus", rate=48_000)
-                        layout = str(audio.codec_context.layout.name or "stereo")
-                        audio_encoder.layout = layout
-                        audio_encoder_resampler = av.AudioResampler(format="fltp", layout=layout, rate=48_000)
+                    video_encoder, audio_encoder, audio_encoder_resampler = _configure_encoders(
+                        av, output_container, video, audio, oriented_width, oriented_height
+                    )
             except Exception as exc:
                 raise MediaError(f"required canonical {target_format} encoder is unavailable") from exc
 
@@ -497,24 +537,7 @@ def _inspect_av(blob: bytes, media_time: float | None) -> MediaInfo:
                     audio_frames += 1
                     if waveform_resampler is not None:
                         for mono in waveform_resampler.resample(frame):
-                            raw = memoryview(mono.planes[0])
-                            step = max(2, (mono.samples // 16) * 2)
-                            sample_rate = int(
-                                mono.sample_rate
-                                or (audio.codec_context.sample_rate if audio is not None else 48_000)
-                                or 48_000
-                            )
-                            frame_time = (
-                                float(mono.pts * mono.time_base)
-                                if mono.pts is not None and mono.time_base is not None
-                                else 0.0
-                            )
-                            for offset in range(0, len(raw) - 1, step):
-                                sample = abs(int.from_bytes(raw[offset : offset + 2], "little", signed=True))
-                                sample_time = max(0.0, frame_time + (offset // 2) / sample_rate)
-                                bucket = min(63, int(sample_time / duration * 64))
-                                waveform_totals[bucket] += sample / 32768
-                                waveform_counts[bucket] += 1
+                            _accumulate_waveform(mono, audio, duration, waveform_totals, waveform_counts)
                     if transformation == "transcode" and audio_encoder is not None:
                         for converted in audio_encoder_resampler.resample(frame):
                             for packet in audio_encoder.encode(converted):

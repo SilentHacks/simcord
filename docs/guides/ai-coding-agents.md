@@ -24,6 +24,7 @@ Copy the following into your project's `AGENTS.md`, `CLAUDE.md`, or equivalent a
   views, gateway listeners, cache-dependent behavior, or sharding.
 - Exercise behavior through `simcord_env` builders and actors. Do not call a
   command callback directly when the contract depends on discord.py dispatch.
+- Slash, autocomplete, and context-menu actor calls enforce command visibility; inspect `available_commands()` or arrange permissions and contexts in the fixture, and use `UserHandle.slash()` / `.autocomplete()` for bot-DM commands.
 - Keep tests offline. Never request, invent, log, or connect with a Discord token.
 - Assert observable results from SimCord handles or the bot's real discord.py cache.
 - Keep pure business logic in ordinary unit tests and mock only application-owned
@@ -118,9 +119,10 @@ When a change affects a panel, modal, or other component presentation, install
 dispatches the real callback; do not replace it with a DOM mock. Use `await preview.refresh()` after
 Python-side mutations, wait for `window.simcordPreview.ready`, and inspect `lastAction`,
 `complete`, `calibration`, and `diagnostics` separately. Prefer `await preview.snapshot()` for
-assertions and text-only agents: it settles, republishes, and returns the protocol-2 projection dict
+assertions and text-only agents: it settles, republishes, and returns the protocol-3 projection dict
 (`messages[targetId]`, `messageIndex`, `timeline`, `diagnostics`, `lastAction`, …) without a browser.
 Browser tooling can read `viewerId`/`targetId` on `window.simcordPreview` alongside `ready`.
+For the Conversation-layout slash-command picker, read `window.simcordPreview.commandPicker` and fetch the page-authorized catalog from `GET /api/commands`.
 Pass `port=` to `env.preview` for a repeatable capability URL across reruns and pre-created SSH
 forwards. Managed captures require `simcord[screenshot]` plus `playwright install --with-deps chromium`;
 never put the capability-bearing `preview.url` in agent logs or artifacts.

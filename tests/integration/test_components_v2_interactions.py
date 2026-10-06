@@ -389,6 +389,58 @@ async def test_modal_upload_and_checkbox_validation_is_reported_through_actor_ap
     assert result.response.content == "ok"
 
 
+async def test_ephemeral_v2_edits_preserve_visibility_for_update_and_original_response():
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+    def updated_panel():
+        view = discord.ui.LayoutView()
+        view.add_item(discord.ui.Container(discord.ui.TextDisplay("Updated private panel")))
+        return view
+
+    @app_commands.command(name="update-panel")
+    async def update_panel(interaction: discord.Interaction) -> None:
+        async def update_message(click: discord.Interaction) -> None:
+            await click.response.edit_message(view=updated_panel())
+
+        button = discord.ui.Button(label="Update", custom_id="private-update")
+        button.callback = update_message
+        section = discord.ui.Section(discord.ui.TextDisplay("Private panel"), accessory=button)
+        view = discord.ui.LayoutView()
+        view.add_item(discord.ui.Container(section))
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+    @app_commands.command(name="original-panel")
+    async def original_panel(interaction: discord.Interaction) -> None:
+        view = discord.ui.LayoutView()
+        view.add_item(discord.ui.Container(discord.ui.TextDisplay("Private panel")))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        await interaction.edit_original_response(view=updated_panel())
+
+    bot.tree.add_command(update_panel)
+    bot.tree.add_command(original_panel)
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        channel = guild.create_text_channel("general")
+        alice = guild.add_member(env.create_user("alice"))
+        bob = guild.add_member(env.create_user("bob"))
+        await env.bot.tree.sync()
+
+        result = await alice.slash(channel, "update-panel")
+        assert result.response is not None and result.response.ephemeral
+        await alice.click(result.response.message, custom_id="private-update")
+        edited = env.backend.get_message(channel.id, result.response.id)
+        assert edited.is_ephemeral
+        assert edited.visible_to(alice.id)
+        assert not edited.visible_to(bob.id)
+
+        result = await alice.slash(channel, "original-panel")
+        assert result.response is not None and result.response.ephemeral
+        edited = env.backend.get_message(channel.id, result.response.id)
+        assert edited.is_ephemeral
+        assert edited.visible_to(alice.id)
+        assert not edited.visible_to(bob.id)
+
+
 async def test_optional_modal_upload_and_checkbox_group_clear_to_empty(env, channel, alice):
     captured = {}
 

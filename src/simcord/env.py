@@ -10,78 +10,39 @@ import time
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import discord
 
 from . import _dpy_internals
-from . import intents as _intents
+from ._runtime import _BOT_SCOPE, _attach_bot, _current_task, _TaskRecord
+from ._settlement import (
+    _active_callbacks,
+    _callback_is_parked,
+    _is_parked,
+    _next_virtual_timer,
+    _owned_tasks,
+    _run_due_virtual_callbacks,
+    _settle_timeout_message,
+    _virtualize_recognized_waits,
+)
 from .backend import Backend, serializers
 from .backend.errors import SetupError
 from .builders import GuildHandle, UserHandle
-from .gateway import ShardRouter
-from .http import FakeHTTPClient, FakeWebhookAdapter
 from .types import HttpLogEntry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from ._runtime import _CallbackRecord
     from .actors import MemberActor
     from .builders import ChannelHandle
     from .preview import Preview
 
-_BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.ContextVar(
-    "simcord_bot_scope", default=None
-)
-
-# Cap on virtual callbacks drained per settle turn so self-rescheduling
-# zero-delay chains cannot starve the settlement deadline check.
-_DUE_CALLBACK_BATCH = 64
 
 _C = TypeVar("_C", bound=Callable[..., Any])
-
-
-@dataclass(slots=True)
-class _TaskRecord:
-    generation: int
-    label: str
-    owner: weakref.ReferenceType[asyncio.Task[Any]] | None
-    inspection_waiting: bool = False
-
-
-@dataclass(slots=True)
-class _CallbackRecord:
-    handle: asyncio.TimerHandle | asyncio.Handle | None
-    when: float | None
-    label: str
-    real_handle: asyncio.TimerHandle | None = None
-
-
-def _current_task() -> asyncio.Task[Any] | None:
-    try:
-        return asyncio.current_task()
-    except RuntimeError:
-        return None
-
-
-class _VirtualTime:
-    __slots__ = ("_env", "_real")
-
-    def __init__(self, env: Env, real: Any) -> None:
-        self._env = env
-        self._real = real
-
-    def monotonic(self) -> float:
-        scope = _BOT_SCOPE.get()
-        if scope is not None and scope[0] is self._env:
-            return self._env._virtual_time
-        return self._real.monotonic()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
 
 
 class Env:
@@ -133,7 +94,7 @@ class Env:
         self._adapter_token: Any = None
         self._gateway_feed: Any = None
         self._shard_count = 1
-        self._shard_ids = (0,)
+        self._shard_ids: tuple[int, ...] = (0,)
         self._started = False
         self._last_dispatch: str | None = None
 
@@ -211,7 +172,7 @@ class Env:
             if task.done() and self._pre_shutdown_task is task:
                 self._pre_shutdown_task = None
 
-    def _begin_operation(self, label: str) -> asyncio.Task[Any] | None:
+    def _begin_operation(self, label: str) -> None:
         scope = _BOT_SCOPE.get()
         if scope is not None and scope[0] is self:
             raise SetupError(f"bot-owned work cannot call simcord operation {label}")
@@ -223,9 +184,8 @@ class Env:
             self._operation_task = current
             self._operation_label = label
         self._operation_depth += 1
-        return current
 
-    def _end_operation(self, _token: asyncio.Task[Any] | None) -> None:
+    def _end_operation(self) -> None:
         if self._operation_depth:
             self._operation_depth -= 1
         if not self._operation_depth:
@@ -238,32 +198,32 @@ class Env:
                 self._preview._mark_action_dispatched()
 
     async def start(self) -> None:
-        token = self._begin_operation("start")
+        self._begin_operation("start")
         try:
             if self._started:
                 raise SetupError("Env already started")
             self._started = True
             self._loop = asyncio.get_running_loop()
-            await self._attach_bot(self.bot)
+            await _attach_bot(self, self.bot)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     async def restart_bot(self, bot: discord.Client | None = None) -> None:
         """Drain the old generation, detach it, and attach a fresh bot."""
-        token = self._begin_operation("restart_bot")
+        self._begin_operation("restart_bot")
         try:
             if not self._started:
                 raise SetupError("Env not started; use restart_bot() only inside simcord.run()")
             await self._settle_internal()
             await self._detach_bot()
-            await self._attach_bot(bot or self.bot)
+            await _attach_bot(self, bot or self.bot)
             for handle in self._guilds:
                 guild = self.backend.get_guild(handle.id)
                 with self._bot_scope():
                     self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
             await self._settle_internal(timeout=5.0)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     def _resolve_shards(self, bot: discord.Client) -> tuple[int, tuple[int, ...]]:
         requested = self.requested_shard_count
@@ -355,255 +315,14 @@ class Env:
 
         task.add_done_callback(done)
 
-    def _track_callback(
-        self,
-        original: Any,
-        callback: Any,
-        args: tuple[Any, ...],
-        *,
-        context: contextvars.Context | None,
-        when: float | None,
-        schedule_args: tuple[Any, ...] = (),
-        real_call_at: Any = None,
-        real_monotonic: Any = None,
-    ) -> asyncio.Handle:
-        bound_task = getattr(callback, "__self__", None)
-        if isinstance(bound_task, asyncio.Task):
-            # A task resumption callback (__step/__wakeup) must run in the exact
-            # Context the task was scheduled with — scheduling a copy resumes the
-            # coroutine in a different Context object, where ContextVar.reset of
-            # a pre-suspension token raises "created in a different Context".
-            # Ownership is already carried by the task's own context.
-            owner_record = self._task_records.get(bound_task)
-            scope = (
-                (self, owner_record.generation)
-                if owner_record is not None
-                else context.get(_BOT_SCOPE)
-                if context is not None
-                else None
-            )
-            schedule_context = context
-        else:
-            scope = _BOT_SCOPE.get()
-            schedule_context = self._context_for_scope(context, scope) if context is not None else context
-        if scope is None or scope[0] is not self:
-            return original(*schedule_args, callback, *args, context=schedule_context)
-        label = getattr(callback, "__qualname__", None) or getattr(
-            callback, "__name__", type(callback).__name__
-        )
-        record = _CallbackRecord(None, when, label)
-        called = False
-
-        def invoke(*call_args: Any) -> None:
-            nonlocal called
-            called = True
-            if record.real_handle is not None:
-                record.real_handle.cancel()
-            if record.handle is not None:
-                try:
-                    self._callbacks.remove(record)
-                except ValueError:
-                    pass
-            try:
-                callback(*call_args)
-            except BaseException as error:
-                self._record_error(error)
-                raise
-
-        invoke.__simcord_original_callback__ = callback
-        if when is None:
-            handle = original(*schedule_args, invoke, *args, context=schedule_context)
-        else:
-            assert self._loop is not None
-            handle = asyncio.TimerHandle(when, invoke, args, self._loop, context=schedule_context)
-
-            def run_real() -> None:
-                if record.handle is not None and not record.handle.cancelled():
-                    if self._wakes_recognized_wait(record):
-                        # The task suspended on a recognized wait after this
-                        # timer was scheduled: the wake-up now belongs to the
-                        # virtual clock alone.
-                        record.real_handle = None
-                        return
-                    # The real clock reached this timer: sync the virtual clock
-                    # so code observing monotonic() (e.g. View timeouts) sees
-                    # the elapsed delay too.
-                    if record.when is not None and record.when > self._virtual_time:
-                        self._virtual_time = record.when
-                    record.handle._run()
-
-            assert real_call_at is not None and real_monotonic is not None
-            remaining = max(when - self._virtual_time, 0.0)
-            current = _current_task()
-            virtual_birth = current is not None and (
-                (current in self._external_waits and _dpy_internals.is_wakeup_shaped(callback))
-                or _dpy_internals.is_intentional_wait_wakeup(self.bot, callback, args, current)
-            )
-            if not virtual_birth:
-                # Wake-up timers behind a recognized wait are virtual from
-                # birth — only advance_time() may ever fire them.
-                record.real_handle = real_call_at(
-                    real_monotonic() + remaining, run_real, context=schedule_context
-                )
-        record.handle = handle
-        if not called:
-            self._callbacks.append(record)
-        return handle
-
-    async def _attach_bot(self, bot: discord.Client) -> None:
-        """Install fakes, start a new bot generation, and bring it to READY."""
-        self.bot = bot
-        loop = self._loop
-        assert loop is not None
-        _dpy_internals.verify_loop(loop)
-        self._generation += 1
-        self._shard_count, self._shard_ids = self._resolve_shards(bot)
-
-        # Locals as well as attributes: patched callables must keep working if
-        # an out-of-order detach restores one of them after _orig_* is cleared.
-        orig_create_task = self._orig_create_task = loop.create_task
-        orig_call_soon = self._orig_call_soon = loop.call_soon
-        orig_call_later = self._orig_call_later = loop.call_later
-        orig_call_at = self._orig_call_at = loop.call_at
-        orig_call_soon_threadsafe = self._orig_call_soon_threadsafe = loop.call_soon_threadsafe
-        orig_run_in_executor = self._orig_run_in_executor = loop.run_in_executor
-        orig_monotonic = self._orig_monotonic = time.monotonic
-
-        def tracking_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
-            scope = _BOT_SCOPE.get()
-            context = kwargs.get("context")
-            if context is not None:
-                kwargs["context"] = self._context_for_scope(context, scope)
-            label = _dpy_internals.task_label(coro) if scope is not None and scope[0] is self else None
-            task = orig_create_task(coro, **kwargs)
-            if not isinstance(task, asyncio.Task):
-                raise SetupError("simcord requires the loop task factory to return asyncio.Task objects")
-            if label is not None:
-                assert scope is not None
-                self._track_task(task, scope[1], label)
-            return task
-
-        def call_soon(
-            callback: Any, *args: Any, context: contextvars.Context | None = None
-        ) -> asyncio.Handle:
-            return self._track_callback(orig_call_soon, callback, args, context=context, when=None)
-
-        def call_later(
-            delay: float, callback: Any, *args: Any, context: contextvars.Context | None = None
-        ) -> asyncio.TimerHandle:
-            return cast(
-                asyncio.TimerHandle,
-                self._track_callback(
-                    orig_call_later,
-                    callback,
-                    args,
-                    context=context,
-                    when=self._virtual_time + max(delay, 0.0),
-                    schedule_args=(delay,),
-                    real_call_at=orig_call_at,
-                    real_monotonic=orig_monotonic,
-                ),
-            )
-
-        def call_at(
-            when: float, callback: Any, *args: Any, context: contextvars.Context | None = None
-        ) -> asyncio.TimerHandle:
-            return cast(
-                asyncio.TimerHandle,
-                self._track_callback(
-                    orig_call_at,
-                    callback,
-                    args,
-                    context=context,
-                    when=self._virtual_time + max(when - loop.time(), 0.0),
-                    schedule_args=(when,),
-                    real_call_at=orig_call_at,
-                    real_monotonic=orig_monotonic,
-                ),
-            )
-
-        def call_soon_threadsafe(
-            callback: Any, *args: Any, context: contextvars.Context | None = None
-        ) -> asyncio.Handle:
-            return self._track_callback(orig_call_soon_threadsafe, callback, args, context=context, when=None)
-
-        def run_in_executor(executor: Any, func: Any, *args: Any) -> Any:
-            scope = _BOT_SCOPE.get()
-            if scope is None or scope[0] is not self:
-                return orig_run_in_executor(executor, func, *args)
-
-            def owned_call(*call_args: Any) -> Any:
-                token = _BOT_SCOPE.set(scope)
-                try:
-                    return func(*call_args)
-                finally:
-                    _BOT_SCOPE.reset(token)
-
-            return orig_run_in_executor(executor, owned_call, *args)
-
-        loop.create_task = tracking_create_task  # type: ignore[method-assign]
-        loop.call_soon = call_soon  # type: ignore[method-assign]
-        loop.call_later = call_later  # type: ignore[method-assign]
-        loop.call_at = call_at  # type: ignore[method-assign]
-        loop.call_soon_threadsafe = call_soon_threadsafe  # type: ignore[method-assign]
-        loop.run_in_executor = run_in_executor  # type: ignore[method-assign]
-
-        if self._virtual_time == 0.0:
-            self._virtual_time = loop.time()
-
-        def monotonic() -> float:
-            scope = _BOT_SCOPE.get()
-            if scope is not None and scope[0] is self:
-                return self._virtual_time
-            return orig_monotonic()
-
-        time.monotonic = monotonic
-        self._orig_view_time = _dpy_internals.view_time()
-        _dpy_internals.swap_view_time(_VirtualTime(self, self._orig_view_time))
-        _dpy_internals.install_http(bot, FakeHTTPClient(self.backend, loop))
-        _dpy_internals.set_guild_ready_timeout(bot, 0.0)
-        self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
-
-        state = _dpy_internals.get_state(bot)
-        state.shard_count = self._shard_count
-        state.shard_ids = list(self._shard_ids)
-        router = ShardRouter(self.backend, state, bot.dispatch, self._shard_count, self._shard_ids)
-        raw_feed = router.feed
-
-        def windowed_feed(event: str, payload: Any) -> None:
-            with self._bot_scope():
-                raw_feed(event, payload)
-
-        self._gateway_feed = windowed_feed
-        self.backend.subscribers.append(windowed_feed)
-        if not isinstance(bot, discord.AutoShardedClient):
-            _dpy_internals.install_websocket(bot, router.websockets[0])
-        try:
-            self._capture_errors()
-            if self.approved_intents is not None and _intents.missing_privileged_intents(
-                bot.intents, self.approved_intents
-            ):
-                raise discord.PrivilegedIntentsRequired(shard_id=self._shard_ids[0])
-            with self._bot_scope():
-                await bot.login("simcord.fake.token")
-                if isinstance(bot, discord.AutoShardedClient):
-                    bot.shard_count = self._shard_count
-                    _dpy_internals.install_shards(bot, router.shards)
-                for shard_id in self._shard_ids:
-                    router.identify(shard_id)
-            await self._settle_internal(timeout=5.0)
-        except BaseException:
-            await self._detach_bot()
-            raise
-
     async def shutdown(self) -> None:
         await self._run_pre_shutdown()
-        token = self._begin_operation("shutdown")
+        self._begin_operation("shutdown")
         try:
             await self._detach_bot()
             self._started = False
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     async def _detach_bot(self) -> None:
         """Detach bot machinery and cancel bot-owned work only."""
@@ -701,11 +420,11 @@ class Env:
         idle: float = 0.05,
     ) -> None:
         """Join all runnable bot-owned work, leaving only recognized waits."""
-        token = self._begin_operation("settle")
+        self._begin_operation("settle")
         try:
             await self._settle_internal(timeout=timeout, idle=idle)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     async def _settle_internal(
         self,
@@ -721,39 +440,55 @@ class Env:
         deadline = self._loop.time() + effective
         stable_empty = 0
         while True:
-            self._run_due_virtual_callbacks(deadline)
+            _run_due_virtual_callbacks(self, deadline)
             await asyncio.sleep(0)
-            pending = [task for task in self._owned_tasks() if not task.done()]
-            callbacks = self._active_callbacks(deadline)
+            pending = [
+                task
+                for task in _owned_tasks(
+                    self,
+                )
+                if not task.done()
+            ]
+            callbacks = _active_callbacks(
+                self,
+            )
             if not pending and not callbacks:
                 stable_empty += 1
                 if stable_empty >= 2:
                     return
                 continue
             stable_empty = 0
-            self._virtualize_recognized_waits(pending)
-            parked = [task for task in pending if self._is_parked(task, deadline)]
+            _virtualize_recognized_waits(self, pending)
+            parked = [task for task in pending if _is_parked(self, task, deadline)]
             active_callbacks = [
-                record for record in callbacks if not self._callback_is_parked(record, deadline)
+                record for record in callbacks if not _callback_is_parked(self, record, deadline)
             ]
             if not active_callbacks and len(parked) == len(pending):
                 # Recheck after another loop turn so a resumed continuation or
                 # callback scheduled by a just-finished task cannot escape.
                 await asyncio.sleep(0)
-                again = [task for task in self._owned_tasks() if not task.done()]
-                self._virtualize_recognized_waits(again)
+                again = [
+                    task
+                    for task in _owned_tasks(
+                        self,
+                    )
+                    if not task.done()
+                ]
+                _virtualize_recognized_waits(self, again)
                 again_callbacks = [
                     record
-                    for record in self._active_callbacks(deadline)
-                    if not self._callback_is_parked(record, deadline)
+                    for record in _active_callbacks(
+                        self,
+                    )
+                    if not _callback_is_parked(self, record, deadline)
                 ]
-                if not again_callbacks and all(self._is_parked(task, deadline) for task in again):
+                if not again_callbacks and all(_is_parked(self, task, deadline) for task in again):
                     return
                 continue
             remaining = deadline - self._loop.time()
             if remaining <= 0:
                 stuck = [task for task in pending if task not in parked]
-                raise TimeoutError(self._settle_timeout_message(stuck, pending, effective, active_callbacks))
+                raise TimeoutError(_settle_timeout_message(self, stuck, pending, effective, active_callbacks))
             wait_for = min(interval, remaining)
             if pending:
                 await asyncio.wait(pending, timeout=wait_for, return_when=asyncio.FIRST_COMPLETED)
@@ -762,17 +497,26 @@ class Env:
             # A busy task can make progress forever. The deadline is absolute,
             # so progress never extends it.
             if self._loop.time() >= deadline:
-                pending = [task for task in self._owned_tasks() if not task.done()]
-                self._virtualize_recognized_waits(pending)
-                parked = [task for task in pending if self._is_parked(task, deadline)]
+                pending = [
+                    task
+                    for task in _owned_tasks(
+                        self,
+                    )
+                    if not task.done()
+                ]
+                _virtualize_recognized_waits(self, pending)
+                parked = [task for task in pending if _is_parked(self, task, deadline)]
                 active_callbacks = [
                     record
-                    for record in self._active_callbacks(deadline)
-                    if not self._callback_is_parked(record, deadline)
+                    for record in _active_callbacks(
+                        self,
+                    )
+                    if not _callback_is_parked(self, record, deadline)
                 ]
                 if active_callbacks or len(parked) != len(pending):
                     raise TimeoutError(
-                        self._settle_timeout_message(
+                        _settle_timeout_message(
+                            self,
                             [task for task in pending if task not in parked],
                             pending,
                             effective,
@@ -780,249 +524,13 @@ class Env:
                         )
                     )
 
-    def _run_due_virtual_callbacks(self, deadline: float) -> None:
-        # Bounded per settle turn: a callback rescheduling itself with
-        # call_later(0) must yield to the loop and the settlement deadline.
-        assert self._loop is not None
-        ran = 0
-        while True:
-            due = next(
-                (
-                    record
-                    for record in self._callbacks
-                    if record.when is not None
-                    and record.when <= self._virtual_time
-                    and record.handle is not None
-                    and not record.handle.cancelled()
-                ),
-                None,
-            )
-            if due is None:
-                return
-            assert due.handle is not None
-            try:
-                due.handle._run()
-            except Exception:
-                # The real loop routes callback failures to its exception
-                # handler; advancing virtual timers must keep that behavior.
-                pass
-            ran += 1
-            if ran >= _DUE_CALLBACK_BATCH or self._loop.time() >= deadline:
-                return
-
-    def _callback_fire_time(self, record: _CallbackRecord) -> float:
-        """Real-clock time at which the callback fires without advance_time().
-
-        ``-inf`` for already-due/immediate callbacks, ``+inf`` when only
-        ``advance_time()`` can still reach it (no live real fallback left).
-        """
-        if record.when is None or record.when <= self._virtual_time:
-            return -math.inf
-        real = record.real_handle
-        if real is None or real.cancelled():
-            return math.inf
-        return real.when()
-
-    def _is_virtual_sleep_waiter(self, waiter: Any, deadline: float) -> bool:
-        if waiter is None or waiter.done():
-            return False
-        for record in self._callbacks:
-            handle = record.handle
-            if record.when is None or handle is None or handle.cancelled():
-                continue
-            if self._callback_fire_time(record) <= deadline:
-                continue
-            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
-            if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and any(
-                arg is waiter for arg in getattr(handle, "_args", ())
-            ):
-                return True
-        return False
-
-    def _timer_records_waking(self, task: asyncio.Task[Any], waiter: Any) -> list[_CallbackRecord]:
-        """Tracked timers whose only effect is resuming this task's current wait."""
-        found: list[_CallbackRecord] = []
-        for record in self._callbacks:
-            handle = record.handle
-            if record.when is None or handle is None or handle.cancelled():
-                continue
-            if record.when <= self._virtual_time:
-                continue  # already due — the due-callback pass fires it this turn
-            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
-            if _dpy_internals.is_wakeup_callback(callback, getattr(handle, "_args", ()), waiter, task):
-                found.append(record)
-        return found
-
-    def _recognized_wait(self, task: asyncio.Task[Any], waiter: Any) -> bool:
-        return (
-            task in self._external_waits
-            or _dpy_internals.is_listener_future(self.bot, waiter)
-            or _dpy_internals.is_wait_for_listener(self.bot, task)
-            or _dpy_internals.is_view_wait_future(self.bot, waiter)
-            or _dpy_internals.view_expiry_task(self.bot, task, waiter)
-            or _dpy_internals.tasks_loop_sleep(task, waiter)
-        )
-
-    def _wakes_recognized_wait(self, record: _CallbackRecord) -> bool:
-        """True when a timer about to fire only resumes a currently recognized wait."""
-        handle = record.handle
-        if handle is None or handle.cancelled():
-            return False
-        callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
-        args = getattr(handle, "_args", ())
-        for task in self._owned_tasks():
-            waiter = getattr(task, "_fut_waiter", None)
-            if _dpy_internals.is_wakeup_callback(callback, args, waiter, task) and self._recognized_wait(
-                task, waiter
-            ):
-                return True
-        return False
-
-    def _virtualize_recognized_waits(self, pending: list[asyncio.Task[Any]]) -> None:
-        """Strip the real fallback from timers that only resume a recognized wait.
-
-        A wait parked on purpose must fire exclusively through advance_time(): a
-        wall-clock fallback would let it expire mid-operation and reintroduce the
-        nondeterminism settlement exists to remove.
-        """
-        for task in pending:
-            waiter = getattr(task, "_fut_waiter", None)
-            if not self._recognized_wait(task, waiter):
-                continue
-            for record in self._timer_records_waking(task, waiter):
-                real = record.real_handle
-                if real is not None and not real.cancelled():
-                    real.cancel()
-
-    def _owned_tasks(self) -> list[asyncio.Task[Any]]:
-        return [task for task in self._task_records if not task.done()]
-
-    def _active_callbacks(self, _deadline: float) -> list[_CallbackRecord]:
-        live = [
-            record
-            for record in self._callbacks
-            if record.handle is not None and not record.handle.cancelled()
-        ]
-        self._callbacks = live
-        return live
-
-    def _callback_is_parked(self, record: _CallbackRecord, deadline: float) -> bool:
-        return record.when is not None and self._callback_fire_time(record) > deadline
-
-    def _is_parked(self, task: asyncio.Task[Any], deadline: float) -> bool:
-        return self._park_reason(task, deadline) is not None
-
-    def _park_reason(
-        self, task: asyncio.Task[Any], deadline: float, seen: set[int] | None = None
-    ) -> str | None:
-        if task.done():
-            return "completed"
-        seen = set() if seen is None else seen
-        if id(task) in seen:
-            return None
-        seen.add(id(task))
-        waiter = getattr(task, "_fut_waiter", None)
-        if waiter is None or waiter.done():
-            return None
-        reason = self._external_waits.get(task)
-        if reason:
-            return reason
-        if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
-            self.bot, task
-        ):
-            return "discord Client.wait_for listener"
-        if _dpy_internals.is_view_wait_future(self.bot, waiter):
-            return "discord View/Modal completion"
-        if _dpy_internals.view_expiry_task(self.bot, task, waiter) and self._timer_records_waking(
-            task, waiter
-        ):
-            return "discord View/Modal expiry timer"
-        if _dpy_internals.tasks_loop_sleep(task, waiter) and self._timer_records_waking(task, waiter):
-            return "discord.ext.tasks loop interval"
-        dependencies = _dpy_internals.composed_tasks(task, waiter)
-        unresolved = [dependency for dependency in dependencies if not dependency.done()]
-        if unresolved:
-            reasons: list[str] = []
-            for dependency in unresolved:
-                if isinstance(dependency, asyncio.Task):
-                    if dependency not in self._task_records:
-                        break
-                    reason = self._park_reason(dependency, deadline, seen)
-                elif _dpy_internals.is_listener_future(self.bot, dependency):
-                    reason = "discord Client.wait_for listener"
-                elif _dpy_internals.is_view_wait_future(self.bot, dependency):
-                    reason = "discord View/Modal completion"
-                else:
-                    break
-                if reason is None:
-                    break
-                reasons.append(reason)
-            else:
-                if reasons and all(reason is not None for reason in reasons):
-                    return "composed external wait"
-        if self._is_virtual_sleep_waiter(waiter, deadline) or _dpy_internals.is_sleep_waiter(
-            waiter, self._loop, deadline
-        ):
-            return "sleep timer beyond settlement deadline"
-
-    def _settle_timeout_message(
-        self,
-        stuck: list[asyncio.Task[Any]],
-        all_pending: list[asyncio.Task[Any]],
-        effective: float,
-        callbacks: list[_CallbackRecord],
-    ) -> str:
-        lines = ["bot did not settle"]
-        if self._last_dispatch:
-            lines[0] += f" after {self._last_dispatch}"
-        lines[0] += (
-            f" (timeout={effective:g}s); state may already have changed and outstanding work remains tracked"
-        )
-        for task in stuck:
-            record = self._task_records.get(task)
-            label = record.label if record is not None else _dpy_internals.task_label(task.get_coro())
-            waiter = getattr(task, "_fut_waiter", None)
-            reason = self._external_waits.get(task)
-            if reason is None:
-                if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
-                    self.bot, task
-                ):
-                    reason = "Client.wait_for listener"
-                elif _dpy_internals.is_view_wait_future(self.bot, waiter):
-                    reason = "View/Modal completion"
-                elif waiter is None:
-                    reason = "runnable continuation"
-                else:
-                    reason = f"unknown wait ({type(waiter).__name__})"
-            generation = record.generation if record is not None else self._generation
-            lines.append(f"  bot-owned generation {generation} {label}: {reason}")
-        if callbacks:
-            lines.append("  bot-owned callbacks pending:")
-            for record in callbacks:
-                lines.append(f"    {record.label}")
-        lines.append(
-            "  use await env.external_wait(...) for intentional external input; "
-            "use await env.advance_time(...) for virtual timers"
-        )
-        if len(all_pending) > len(stuck):
-            lines.append(f"  {len(all_pending) - len(stuck)} recognized waits remain parked")
-        return "\n".join(lines)
-
-    def _next_virtual_timer(self) -> float | None:
-        times = [
-            record.when
-            for record in self._callbacks
-            if record.when is not None and record.handle is not None and not record.handle.cancelled()
-        ]
-        return min(times) if times else None
-
     async def advance_time(self, seconds: float) -> None:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
             raise SetupError("seconds must be a finite non-negative number")
 
         if seconds < 0:
             raise SetupError("seconds must be a finite non-negative number")
-        token = self._begin_operation("advance_time")
+        self._begin_operation("advance_time")
         try:
             assert self._loop is not None
             amount = float(seconds)
@@ -1031,7 +539,11 @@ class Env:
             self.backend.advance_clock(amount)
             self.backend.expire_due_polls()
             self.backend.activate_due_scheduled_events()
-            while (next_timer := self._next_virtual_timer()) is not None and next_timer <= target:
+            while (
+                next_timer := _next_virtual_timer(
+                    self,
+                )
+            ) is not None and next_timer <= target:
                 # max(): a real fallback firing during settle may already have
                 # pushed the clock past this timer — virtual time never regresses.
                 self._virtual_time = max(self._virtual_time, next_timer)
@@ -1039,7 +551,7 @@ class Env:
             self._virtual_time = max(self._virtual_time, target)
             await self._settle_internal()
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     @property
     def error_cursor(self) -> int:
@@ -1139,7 +651,7 @@ class Env:
             raise SetupError("Env is not running")
         if self._preview is not None and not self._preview._closed:
             raise SetupError("Only one active Preview is allowed per Env")
-        token = self._begin_operation("preview")
+        self._begin_operation("preview")
         try:
             from .preview import make_preview
 
@@ -1159,7 +671,7 @@ class Env:
                 port=port,
             )
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     # -------------------------------------------------------------- builders
 
@@ -1341,11 +853,11 @@ class Env:
 def _guard_env_sync(method: Any) -> Any:
     @wraps(method)
     def guarded(self: Env, *args: Any, **kwargs: Any) -> Any:
-        token = self._begin_operation(method.__name__)
+        self._begin_operation(method.__name__)
         try:
             return method(self, *args, **kwargs)
         finally:
-            self._end_operation(token)
+            self._end_operation()
 
     return guarded
 

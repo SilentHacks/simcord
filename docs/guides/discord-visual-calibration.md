@@ -35,12 +35,12 @@ uv run python scripts/discord_reference_bot.py --guild-id 123456789012345678 --p
 
 Enter **only the test bot token** at the hidden local prompt. Never put any token into chat, a handoff prompt, source, screenshots, or shell command history. Existing `DISCORD_TOKEN`/`DISCORD_GUILD_ID` environment configuration remains supported. Premium controls require an active SKU owned by this application via `DISCORD_SKU_ID`; otherwise premium is explicitly outside this batch.
 
-Wait for the “Synced /visual_references” message. **Manually** invoke `/visual_references` in the test channel. This posts eight labelled messages, then writes:
+Wait for the “Synced reference and picker commands” message. **Manually** invoke `/visual_references` in the test channel. This posts eight labelled messages, then writes:
 
 - `bot-batch-01/bot-fixtures.json`: normalized input payloads and hashes, asset hashes, message/channel IDs, author, timestamps and predecessor context;
 - `bot-batch-01/assets/`: the exact attachment bytes generated for those posts.
 
-The bot now uses the same `gallery_payload()` factories as the SimCord capture runner. Mention normalization substitutes `@simcord-viewer` for the invoking user; these hashes are **new local input hashes**, not historical ledger hashes or a claim about Discord's complete wire representation.
+The same guild sync registers the shared picker fixtures: `/picker_options`, `/all-optional`, `/tag`, `/upload`, `/config set`, `/manage_settings`, the DM-context commands, and `/no-option`. Use those commands in the test channel for manual picker captures; invoke `/visual_references` only when posting the component gallery. The bot uses the same `gallery_payload()` factories as the SimCord capture runner. Mention normalization substitutes `@simcord-viewer` for the invoking user; these hashes are **new local input hashes**, not historical ledger hashes or a claim about Discord's complete wire representation.
 
 For exports, the bot fetches its own guild member once through the official bot API, so guild nicknames and guild avatars are recorded even without guild intents. Keep the bot's display identity stable during the batch.
 
@@ -82,6 +82,7 @@ Start with this batch rather than all historical rows:
 | REF-31-ENTITY-SELECTS | `user-open`, `role-open`, `mentionable-open`, `channel-open`, `user-selected` | Exact visible candidate labels/decorations, availability, selected value and callback receipt. |
 | REF-50-MODALS | `text-empty`, `text-focus`, `text-validation`, `text-filled` | Open the text modal manually; attempt invalid submission; note browser/client validation and callback outcome. |
 | REF-40-V2-LAYOUT-MEDIA | `idle-top`, `idle-media`, `spoiler-revealed` | Name sections honestly; manually reveal spoilers. Record precisely which image/container was revealed. |
+| `planned.slash_commands.*` | `browsing`, `all-optional-options`, `choice-suggestions`, `entity-members`, `boolean`, `autocomplete-f`, `validation-error`, `attachment`, `no-option`, `narrow-360x640` | **Blocked pending authorized Discord captures.** Capture the Conversation channel and composer together, including the picker overlay; record actual option values, visible suggestions, validation, and the 360x640 CSS-pixel viewport. The six maintainer screenshots are informal design references, not calibration evidence. |
 
 REF-00 and REF-11 remain available for context/attachment follow-up. More modal families, upload states, pressed-state timing and premium states can be captured when their prerequisites are available. Never infer blocked states from another family. Enter `q` to finish; a fresh output directory is required for another session, while the dedicated login profile can be reused.
 

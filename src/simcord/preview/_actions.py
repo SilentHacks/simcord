@@ -6,18 +6,28 @@ import asyncio
 import hashlib
 import json
 import secrets
-from bisect import bisect_right
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from ..actors import MemberActor, _modal_control_map, _modal_submit_nodes
+from .._modal import _modal_control_map, _modal_submit_nodes
+from ..actors import MemberActor
 from ..backend.access import can_access_channel, can_access_message
 from ..backend.errors import BackendError, SetupError
 from ..builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle
 from ..components import validate_modal
-from ..enums import SELECT_TYPES, ComponentType
-from ..results import ResponseMessage
+from ..enums import SELECT_TYPES, ComponentType, OptionType
+from ..interactions import OptionError, parse_option_input, validate_option_value
+from ._action_plans import (
+    _find_scoped_component,
+    _prepare_command_action,
+    _prepare_component_action,
+    _prepare_message_action,
+    _prepare_modal_action,
+    _prepare_page_action,
+    _prepare_send_action,
+)
 from ._diagnostics import make_diagnostic
 
 if TYPE_CHECKING:
@@ -27,55 +37,51 @@ if TYPE_CHECKING:
     from . import Preview
     from ._pages import _Page
 
-
-def _component_key(component: Mapping[str, Any], path: str, message_id: int) -> str | None:
-    if component.get("type") not in {
-        int(ComponentType.BUTTON),
-        int(ComponentType.STRING_SELECT),
-        int(ComponentType.USER_SELECT),
-        int(ComponentType.ROLE_SELECT),
-        int(ComponentType.MENTIONABLE_SELECT),
-        int(ComponentType.CHANNEL_SELECT),
-    }:
-        return None
-    wire_id = component.get("id")
-    identity = (
-        str(wire_id) if isinstance(wire_id, int) and not isinstance(wire_id, bool) and wire_id > 0 else path
-    )
-    return f"message:{message_id}:component:{identity}"
+_ACTIVITY_LIMIT = 20
 
 
-def _component_paths(value: Any, path: str = "0") -> Any:
-    if not isinstance(value, dict):
-        return
-    yield path, value
-    children = value.get("components")
-    if isinstance(children, list):
-        for index, child in enumerate(children):
-            yield from _component_paths(child, f"{path}.components.{index}")
-    for child_name in ("accessory", "component"):
-        child = value.get(child_name)
-        if isinstance(child, dict):
-            yield from _component_paths(child, f"{path}.{child_name}")
+@dataclass(frozen=True)
+class ActionSpec:
+    revision_bound: bool = False
+    mutating: bool = False
+    requires_target: bool = False
+    records_target: bool = False
+    page_intent: bool = False
 
 
-def _find_scoped_component(
-    message: Message,
-    control_key: Any,
-    *,
-    types: tuple[int, ...],
-) -> dict[str, Any]:
-    if not isinstance(control_key, str):
-        raise SetupError("control_key is required")
-    for root_index, root in enumerate(message.components):
-        for path, component in _component_paths(root, str(root_index)):
-            if component.get("type") not in types:
-                continue
-            if _component_key(component, path, message.id) == control_key:
-                if component.get("disabled"):
-                    raise SetupError("control is unavailable")
-                return component
-    raise SetupError("control is unavailable")
+ACTION_SPECS: Mapping[str, ActionSpec] = MappingProxyType(
+    {
+        "click": ActionSpec(revision_bound=True, mutating=True, requires_target=True, records_target=True),
+        "select": ActionSpec(revision_bound=True, mutating=True, requires_target=True, records_target=True),
+        "modal_submit": ActionSpec(revision_bound=True, mutating=True),
+        "autocomplete_command": ActionSpec(revision_bound=True),
+        "run_command": ActionSpec(revision_bound=True, mutating=True),
+        "viewer": ActionSpec(page_intent=True),
+        "focus": ActionSpec(records_target=True, page_intent=True),
+        "history": ActionSpec(revision_bound=True, mutating=True),
+        "send_message": ActionSpec(revision_bound=True, mutating=True),
+        "edit_message": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "delete_message": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "set_reaction": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "set_poll_votes": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "set_pinned": ActionSpec(
+            revision_bound=True, mutating=True, requires_target=True, records_target=True
+        ),
+        "refresh": ActionSpec(page_intent=True),
+        "close": ActionSpec(page_intent=True),
+        "browse_messages": ActionSpec(revision_bound=True),
+        "browse_candidates": ActionSpec(revision_bound=True),
+        "configure_presentation": ActionSpec(revision_bound=True, page_intent=True),
+    }
+)
 
 
 @dataclass(slots=True)
@@ -88,6 +94,10 @@ class _Action:
     interaction: Interaction | None = None
     correlation: str = field(default_factory=lambda: "c_" + secrets.token_urlsafe(12))
     target: dict[str, str | None] | None = None
+    command: dict[str, str] | None = None
+    autocomplete_focused: str | None = None
+    autocomplete_answered: bool | None = None
+    record_activity: bool = True
     dispatched: bool = False
     uncertain: bool = False
     outcomes: list[dict[str, Any]] = field(default_factory=list)
@@ -118,43 +128,12 @@ class _ActionOps:
     _advance_presentation_time: Callable[[], None]
 
     _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "click",
-            "select",
-            "modal_submit",
-            "history",
-            "send_message",
-            "edit_message",
-            "delete_message",
-            "set_reaction",
-            "set_poll_votes",
-            "set_pinned",
-        }
+        kind for kind, spec in ACTION_SPECS.items() if spec.mutating
     )
-    _REVISION_KINDS: ClassVar[frozenset[str]] = _MUTATING_KINDS | frozenset(
-        {"browse_messages", "browse_candidates", "configure_presentation"}
+    _REVISION_KINDS: ClassVar[frozenset[str]] = frozenset(
+        kind for kind, spec in ACTION_SPECS.items() if spec.revision_bound
     )
-    _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "click",
-            "select",
-            "modal_submit",
-            "viewer",
-            "focus",
-            "history",
-            "send_message",
-            "edit_message",
-            "delete_message",
-            "set_reaction",
-            "set_poll_votes",
-            "set_pinned",
-            "refresh",
-            "close",
-            "browse_messages",
-            "browse_candidates",
-            "configure_presentation",
-        }
-    )
+    _ACTION_KINDS: ClassVar[frozenset[str]] = frozenset(ACTION_SPECS)
 
     def _on_dispatch(self, interaction: Interaction) -> None:
         task = asyncio.current_task()
@@ -170,6 +149,20 @@ class _ActionOps:
         for page in tuple(self._pages.values()):
             if page.id in self._pages:
                 self._publish(page, reason=reason)
+
+    def _require_current_history(self, page: _Page) -> None:
+        if page.status != "current" or not can_access_channel(
+            self.env, page.channel_id, page.viewer, history=True
+        ):
+            raise SetupError("viewer cannot access current channel history")
+
+    def _finish_message_edit(
+        self, page: _Page, action: _Action, cursor: int, message: Message
+    ) -> dict[str, Any]:
+        action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
+        result = self._finish_action(page, action, "settled", cursor)
+        self._publish_message_pages()
+        return result
 
     @staticmethod
     def _reset_queries(page: _Page) -> None:
@@ -192,8 +185,10 @@ class _ActionOps:
         uncertain: bool = False,
         correlation: str | None = None,
         outcomes: list[dict[str, Any]] | None = None,
+        command: dict[str, str] | None = None,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "requestId": request_id,
             "sequence": sequence,
             "expectedSequence": page.last_sequence,
@@ -206,18 +201,22 @@ class _ActionOps:
             "revision": page.revision,
             "diagnostics": diagnostics,
             "target": target,
+            "command": command,
             "uncertain": uncertain,
             "correlation": correlation or "c_" + secrets.token_urlsafe(12),
             "outcomes": outcomes or [],
         }
+        if result is not None:
+            payload["result"] = result
+        return payload
 
     @staticmethod
     def _append_activity(page: _Page, receipt: dict[str, Any], action: _Action | None) -> None:
         page.activity.append({key: value for key, value in receipt.items() if key != "result"})
         page.activity_actions.append(action)
-        if len(page.activity) > 20:
-            del page.activity[:-20]
-            del page.activity_actions[:-20]
+        if len(page.activity) > _ACTIVITY_LIMIT:
+            del page.activity[:-_ACTIVITY_LIMIT]
+            del page.activity_actions[:-_ACTIVITY_LIMIT]
 
     def _reject(
         self,
@@ -226,6 +225,7 @@ class _ActionOps:
         *,
         request_id: Any = None,
         sequence: Any = None,
+        subject: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """A pre-admission rejection: never consumes the per-page sequence."""
         correlation = "c_" + secrets.token_urlsafe(12)
@@ -237,7 +237,7 @@ class _ActionOps:
             dispatch="not_dispatched",
             acknowledgement="pending",
             settlement="rejected",
-            diagnostics=[make_diagnostic(code, correlation=correlation)],
+            diagnostics=[make_diagnostic(code, correlation=correlation, subject=subject)],
             correlation=correlation,
         )
         page.last_action = result
@@ -271,7 +271,7 @@ class _ActionOps:
             result["messageIndex"] = rows
             response["result"] = result
         elif action.kind == "browse_candidates":
-            from ._snapshot import _candidate_descriptor, candidate_control
+            from ._queries import _candidate_descriptor, candidate_control
 
             control_key = result.get("control_key")
             state = page.candidate_queries.get(control_key) if isinstance(control_key, str) else None
@@ -337,6 +337,7 @@ class _ActionOps:
                         uncertain=latest.uncertain,
                         correlation=latest.correlation,
                         outcomes=latest.outcomes,
+                        command=latest.command,
                     )
                 return self._replay_response(page, latest)
             return self._reject(page, "stale-sequence", request_id=request_id, sequence=sequence)
@@ -351,7 +352,8 @@ class _ActionOps:
         kind = body.get("kind")
         if not isinstance(kind, str) or kind not in self._ACTION_KINDS:
             return self._reject(page, "unknown-kind", request_id=request_id, sequence=sequence)
-        if kind in self._REVISION_KINDS:
+        spec = ACTION_SPECS[kind]
+        if spec.revision_bound:
             published_revision = body.get("published_revision")
             if (
                 isinstance(published_revision, bool)
@@ -359,42 +361,48 @@ class _ActionOps:
                 or published_revision != page.revision
             ):
                 return self._reject(page, "stale-revision", request_id=request_id, sequence=sequence)
-        if kind in {
-            "click",
-            "select",
-            "edit_message",
-            "delete_message",
-            "set_reaction",
-            "set_poll_votes",
-            "set_pinned",
-        } and (isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))):
+        if spec.requires_target and (
+            isinstance(body.get("target_id"), bool) or not isinstance(body.get("target_id"), (str, int))
+        ):
             return self._reject(page, "target-unavailable", request_id=request_id, sequence=sequence)
-        token = self.env._begin_operation("preview.action")
+        self.env._begin_operation("preview.action")
         try:
             # Kind, control resolution, and values are validated before the
             # sequence is consumed; only a validated plan may be admitted.
             try:
                 plan = self._prepare_action(page, kind, body)
             except (SetupError, BackendError, ValueError) as exc:
-                from ._snapshot import _QueryError
+                from ._queries import _QueryError
 
+                code = (
+                    exc.code
+                    if isinstance(exc, _QueryError)
+                    else "command-option-invalid"
+                    if kind == "run_command" and isinstance(exc, OptionError)
+                    else "validation-failed"
+                )
+                subject = (
+                    {"commandOption": exc.option}
+                    if kind == "run_command" and isinstance(exc, OptionError) and exc.option is not None
+                    else None
+                )
                 return self._reject(
                     page,
-                    exc.code if isinstance(exc, _QueryError) else "validation-failed",
+                    code,
                     request_id=request_id,
                     sequence=sequence,
+                    subject=subject,
                 )
             action = _Action(sequence, request_id, fingerprint, kind)
-            if kind in {
-                "click",
-                "select",
-                "focus",
-                "edit_message",
-                "delete_message",
-                "set_reaction",
-                "set_poll_votes",
-                "set_pinned",
-            } and isinstance(body.get("target_id"), (str, int)):
+            if kind in {"autocomplete_command", "run_command"}:
+                path = cast(list[str], body["path"])
+                action.command = {
+                    "commandId": cast(str, body["command_id"]),
+                    "invocation": " ".join(path),
+                }
+                if kind == "autocomplete_command":
+                    action.autocomplete_focused = cast(str, body["focused"])
+            if spec.records_target and isinstance(body.get("target_id"), (str, int)):
                 target_id = self._target_id(body.get("target_id"), page.viewer)
                 if target_id is not None:
                     control_key = body.get("control_key")
@@ -437,7 +445,7 @@ class _ActionOps:
             action.response = result
             return dict(result)
         finally:
-            self.env._end_operation(token)
+            self.env._end_operation()
             self._active_action = None
             self._active_task = None
             self._action_page = None
@@ -446,430 +454,42 @@ class _ActionOps:
                 self._close_page(page.id)
 
     def _prepare_action(self, page: _Page, kind: str, body: Mapping[str, Any]) -> Any:
-        """Validate everything that can fail pre-admission.
-
-        Returns a coroutine function performing the admitted dispatch. No page
-        state is mutated here; validation failures become rejections.
-        """
-        if kind == "configure_presentation":
-            layout, display = body.get("layout"), body.get("display")
-            if (
-                not isinstance(layout, str)
-                or layout not in {"message", "channel"}
-                or not isinstance(display, str)
-                or display not in {"responsive", "fixed"}
-            ):
-                raise SetupError("presentation configuration is unavailable")
-            from ._capture import ManagedCapture
-
-            width, height = ManagedCapture._validate_dimensions(body.get("width"), body.get("height"))
-            host_width, host_height = ManagedCapture._validate_dimensions(
-                body.get("host_width"), body.get("host_height")
-            )
-
-            async def run_presentation(action: _Action, cursor: int) -> dict[str, Any]:
-                if page.layout != layout:
-                    page.generation += 1
-                    page.navigation_cursor = None
-                    page.candidate_queries.clear()
-                    if layout == "channel":
-                        page.window_end_id = page.target_id
-                page.layout = layout
-                page.display = display
-                page.width, page.height = width, height
-                page.host_width, page.host_height = host_width, host_height
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="presentation")
-                result["result"] = {"presentation": page.snapshot["presentation"]}
-                return result
-
-            return run_presentation
-        if kind == "browse_messages":
-            from ._snapshot import validate_message_query
-
-            if page.status != "current" or not can_access_channel(
-                self.env, page.channel_id, page.viewer, history=True
-            ):
-                raise SetupError("viewer cannot access current channel history")
-            query, cursor_value = validate_message_query(
-                page, body.get("query"), body.get("filter"), body.get("cursor")
-            )
-
-            async def run_browse_messages(action: _Action, cursor: int) -> dict[str, Any]:
-                page.navigation_query = query
-                page.navigation_cursor = cursor_value
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="query")
-                result["result"] = {
-                    "navigation": page.snapshot["navigation"],
-                    "messageIndex": page.snapshot["messageIndex"],
-                }
-                return result
-
-            return run_browse_messages
-        if kind == "browse_candidates":
-            from ._snapshot import validate_candidate_query
-
-            if page.status != "current" or not can_access_channel(
-                self.env, page.channel_id, page.viewer, history=True
-            ):
-                raise SetupError("viewer cannot access current channel history")
-            control_key = body.get("control_key")
-            query, cursor_value, modal_handle = validate_candidate_query(
-                cast("Preview", self),
-                page,
-                control_key,
-                body.get("modal_handle"),
-                body.get("query"),
-                body.get("cursor"),
-            )
-            control_key = cast(str, control_key)
-            selected_values = body.get("selected_values")
-            if selected_values is not None and (
-                not isinstance(selected_values, list)
-                or len(selected_values) > 25
-                or any(
-                    not isinstance(value, str)
-                    or not value.isascii()
-                    or not value.isdecimal()
-                    or len(value) > 20
-                    for value in selected_values
-                )
-                or len(set(selected_values)) != len(selected_values)
-            ):
-                from ._snapshot import _QueryError
-
-                raise _QueryError("query-invalid")
-
-            async def run_browse_candidates(action: _Action, cursor: int) -> dict[str, Any]:
-                page.candidate_queries[control_key] = {
-                    "query": query,
-                    "cursor": cursor_value,
-                    "modal_handle": modal_handle,
-                    "selected_values": selected_values,
-                }
-                if modal_handle is None:
-                    target_id = control_key.split(":", 2)[1]
-                    action.target = {"messageId": target_id, "controlKey": control_key}
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="query")
-                result["result"] = {
-                    "control_key": control_key,
-                    "candidate": page.snapshot["candidates"].get(control_key),
-                }
-                return result
-
-            return run_browse_candidates
-        if kind == "close":
-
-            async def run_close(action: _Action, cursor: int) -> dict[str, Any]:
-                result = self._finish_action(page, action, "settled", cursor)
-                self._close_task = asyncio.create_task(self.close())
-                return result
-
-            return run_close
-        if kind == "viewer":
-            viewer = self._viewer(body.get("viewer_id"))
-
-            async def run_viewer(action: _Action, cursor: int) -> dict[str, Any]:
-                self._clear_page_assets(page)
-                page.viewer = viewer
-                page.generation += 1
-                self._reset_queries(page)
-                page.target_id = self._initial_target(page.viewer, page.channel_id)
-                page.window_end_id = page.target_id if page.layout == "channel" else page.window_end_id
-                page.modal = None
-                page.modal_handle = None
-                page.status = "current"
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="navigation")
-                return result
-
-            return run_viewer
-        if kind == "focus":
-            target = self._target_id(body.get("target_id"), page.viewer)
-            if target is None:
-                raise SetupError("target message is unavailable")
-
-            async def run_focus(action: _Action, cursor: int) -> dict[str, Any]:
-                self._clear_page_assets(page)
-                page.target_id = target
-                page.window_end_id = target if page.layout == "channel" else page.window_end_id
-                page.generation += 1
-                page.navigation_cursor = None
-                page.candidate_queries.clear()
-                page.modal = None
-                page.modal_handle = None
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="navigation")
-                return result
-
-            return run_focus
-        if kind == "refresh":
-
-            async def run_refresh(action: _Action, cursor: int) -> dict[str, Any]:
-                await self.env._settle_internal()
-                self._advance_presentation_time()
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="refresh")
-                return result
-
-            return run_refresh
-        if kind == "history":
-            if page.layout != "channel":
-                raise SetupError("history navigation requires channel layout")
-            if page.status != "current" or not can_access_channel(
-                self.env, page.channel_id, page.viewer, history=True
-            ):
-                raise SetupError("viewer cannot access current channel history")
-            direction = body.get("direction")
-            if not isinstance(direction, str) or direction not in {"older", "newer", "latest"}:
-                raise SetupError("history direction is unavailable")
-            visible = [
-                item
-                for item in sorted(
-                    self.env.backend.messages.get(page.channel_id, {}).values(), key=lambda item: item.id
-                )
-                if can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
-            ]
-            ids = [item.id for item in visible]
-            end = len(ids) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
-            start = max(0, end - 50)
-            if direction == "older":
-                if start == 0:
-                    raise SetupError("there is no earlier authorized history")
-                next_end = min(end, start + 25)
-                next_anchor = ids[next_end - 1]
-            elif direction == "newer":
-                if end == len(ids):
-                    raise SetupError("there is no newer authorized history")
-                next_start = min(len(ids) - 1, start + 25)
-                next_end = min(len(ids), next_start + 50)
-                next_anchor = None if next_end == len(ids) else ids[next_end - 1]
-            else:
-                next_anchor = None
-
-            async def run_history(action: _Action, cursor: int) -> dict[str, Any]:
-                page.window_end_id = next_anchor
-                page.target_id = None
-                page.generation += 1
-                page.navigation_cursor = None
-                page.candidate_queries.clear()
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish(page, reason="navigation")
-                return result
-
-            return run_history
+        """Validate before admission; return a lazy dispatch coroutine function."""
+        if kind in {
+            "configure_presentation",
+            "browse_messages",
+            "browse_candidates",
+            "close",
+            "viewer",
+            "focus",
+            "refresh",
+            "history",
+        }:
+            return _prepare_page_action(cast("Preview", self), page, kind, body)
         if kind == "send_message":
-            actor = page.viewer
-            if (
-                page.layout != "channel"
-                or page.status != "current"
-                or not can_access_channel(self.env, page.channel_id, actor, history=True)
-            ):
-                raise SetupError("sending requires current channel access and channel layout")
-            content = body.get("content")
-            if not isinstance(content, str) or not content.strip() or len(content) > 2000:
-                raise SetupError("message content must contain 1 to 2000 characters")
-            reply_to = None
-            reply_id = body.get("reply_to_id")
-            if reply_id is not None:
-                if isinstance(reply_id, bool) or not isinstance(reply_id, (str, int)):
-                    raise SetupError("reply target is unavailable")
-                reply_id = self._target_id(reply_id, page.viewer)
-                if reply_id is None:
-                    raise SetupError("reply target is unavailable")
-                reply_to = self._target_message(page, reply_id)
-            if not isinstance(actor, (MemberActor, UserHandle)) or (
-                isinstance(actor, UserHandle) and actor.dm_channel.id != page.channel_id
-            ):
-                raise SetupError("viewer cannot send to this channel")
-
-            async def run_send(action: _Action, cursor: int) -> dict[str, Any]:
-                if isinstance(actor, MemberActor):
-                    response = await actor.send(
-                        self.channel,
-                        content,
-                        reply_to=ResponseMessage(self.env, reply_to) if reply_to is not None else None,
-                    )
-                else:
-                    reference = (
-                        {"channel_id": str(page.channel_id), "message_id": str(reply_to.id)}
-                        if reply_to is not None
-                        else None
-                    )
-                    response = (
-                        await actor.send_dm(content, reference=reference)
-                        if reference
-                        else await actor.send_dm(content)
-                    )
-                try:
-                    self.env.backend.get_message(page.channel_id, response.id)
-                except BackendError as exc:
-                    raise SetupError("message was not accepted by the channel") from exc
-                action.target = {"messageId": str(response.id), "controlKey": None}
-                action.outcomes = [{"kind": "message", "messageId": str(response.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_send
+            return _prepare_send_action(cast("Preview", self), page, body)
         actor = page.viewer
-        if page.status != "current" or not can_access_channel(self.env, page.channel_id, actor, history=True):
-            raise SetupError("viewer cannot access current channel history")
+        if kind in {"autocomplete_command", "run_command"}:
+            return _prepare_command_action(cast("Preview", self), page, kind, body, actor)
+        self._require_current_history(page)
         if kind == "modal_submit":
-            modal = page.modal
-            if modal is None or body.get("modal_handle") != page.modal_handle:
-                raise SetupError("modal is stale or unavailable")
-            if modal._interaction.modal_consumed:
-                raise SetupError("modal has already been submitted")
-            modal_values = self._modal_values(page, body.get("values"), modal)
-
-            async def run_modal(action: _Action, cursor: int) -> dict[str, Any]:
-                admitted = next(
-                    (
-                        prior
-                        for prior in reversed(page.activity_actions)
-                        if prior is not None and prior.interaction is modal._interaction
-                    ),
-                    None,
-                )
-                if admitted is not None and admitted.target is not None:
-                    action.target = dict(admitted.target)
-                result = await actor.submit_modal(modal, modal_values)
-                page.modal = None
-                page.modal_handle = None
-                finished = self._finish_action(
-                    page, action, "settled", cursor, interaction=result._interaction
-                )
-                self._publish(page)
-                return finished
-
-            return run_modal
+            return _prepare_modal_action(cast("Preview", self), page, body, actor)
         target_id = self._target_id(body.get("target_id"), page.viewer)
         if target_id is None:
             raise SetupError("authorized target is unavailable")
         message = self._target_message(page, target_id)
-        if kind == "edit_message":
-            content = body.get("content")
-            if not isinstance(content, str) or len(content) > 2000:
-                raise SetupError("message content must be a string of at most 2000 characters")
+        if kind in {"edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned"}:
+            return _prepare_message_action(cast("Preview", self), page, kind, body, actor, message)
+        return _prepare_component_action(cast("Preview", self), page, kind, body, actor, message)
 
-            async def run_edit(action: _Action, cursor: int) -> dict[str, Any]:
-                await actor.edit(ResponseMessage(self.env, message), content)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_edit
-        if kind == "delete_message":
-            if body.get("confirmed") is not True:
-                raise SetupError("message deletion requires confirmation")
-
-            async def run_delete(action: _Action, cursor: int) -> dict[str, Any]:
-                await actor.delete(ResponseMessage(self.env, message))
-                action.outcomes = [{"kind": "no_output"}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_delete
-        if kind == "set_reaction":
-            emoji = body.get("emoji")
-            reacted = body.get("reacted")
-            if not isinstance(emoji, str) or not emoji or not isinstance(reacted, bool):
-                raise SetupError("reaction requires an emoji and desired membership")
-            if message.reaction_for(emoji) is None:
-                raise SetupError("reaction is unavailable")
-
-            async def run_reaction(action: _Action, cursor: int) -> dict[str, Any]:
-                await actor.set_reaction(ResponseMessage(self.env, message), emoji, reacted=reacted)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_reaction
-        if kind == "set_poll_votes":
-            raw_answers = body.get("answer_ids")
-            if not isinstance(raw_answers, list):
-                raise SetupError("poll answer ids must be a list")
-            answers: list[int] = []
-            for answer_id in raw_answers:
-                if isinstance(answer_id, bool) or not isinstance(answer_id, (str, int)):
-                    raise SetupError("poll answer ids must be integers")
-                if isinstance(answer_id, str):
-                    if not answer_id.isascii() or not answer_id.isdecimal():
-                        raise SetupError("poll answer ids must be integers")
-                    answer = int(answer_id)
-                else:
-                    answer = answer_id
-                if answer in answers:
-                    raise SetupError("poll answer ids must be unique")
-                answers.append(answer)
-
-            async def run_poll(action: _Action, cursor: int) -> dict[str, Any]:
-                await actor.set_poll_votes(ResponseMessage(self.env, message), answers=answers)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_poll
-        if kind == "set_pinned":
-            pinned = body.get("pinned")
-            if not isinstance(pinned, bool) or not isinstance(actor, MemberActor):
-                raise SetupError("pinning is unavailable")
-
-            async def run_pin(action: _Action, cursor: int) -> dict[str, Any]:
-                await actor.set_pinned(ResponseMessage(self.env, message), pinned)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_pin
-        if kind == "click":
-            control_key = body.get("control_key")
-            component = _find_scoped_component(
-                message,
-                control_key,
-                types=(int(ComponentType.BUTTON),),
-            )
-            if component.get("style") in (5, 6) or not component.get("custom_id"):
-                raise SetupError("control is unavailable")
-            custom_id = str(component["custom_id"])
-
-            async def run_click(action: _Action, cursor: int) -> dict[str, Any]:
-                return await self._run_component_action(
-                    page,
-                    action,
-                    cursor,
-                    actor.click(ResponseMessage(self.env, message), custom_id=custom_id),
-                )
-
-            return run_click
-        control_key = body.get("control_key")
-        select_values = self._select_values(page, message, body.get("values"), control_key)
-        custom_id = str(
-            _find_scoped_component(message, control_key, types=tuple(int(item) for item in SELECT_TYPES))[
-                "custom_id"
-            ]
-        )
-
-        async def run_select(action: _Action, cursor: int) -> dict[str, Any]:
-            return await self._run_component_action(
-                page,
-                action,
-                cursor,
-                actor.select(ResponseMessage(self.env, message), select_values, custom_id=custom_id),
-            )
-
-        return run_select
-
-    async def _run_component_action(
-        self, page: _Page, action: _Action, cursor: int, awaited: Any
+    async def _run_interaction_action(
+        self,
+        page: _Page,
+        action: _Action,
+        cursor: int,
+        awaited: Any,
+        *,
+        republish_all: bool = False,
     ) -> dict[str, Any]:
         result = await awaited
         if result.modal is not None:
@@ -878,7 +498,12 @@ class _ActionOps:
             page.modal = result
             page.modal_handle = "m_" + secrets.token_urlsafe(12)
         finished = self._finish_action(page, action, "settled", cursor, interaction=result._interaction)
-        self._publish(page)
+        if republish_all:
+            self._publish_message_pages()
+            if page not in self._pages.values():
+                self._publish(page)
+        else:
+            self._publish(page)
         return finished
 
     def _target_message(self, page: _Page, target_id: int | None = None) -> Message:
@@ -893,12 +518,57 @@ class _ActionOps:
             raise SetupError("authorized target is unavailable")
         return message
 
+    def _command_option_value(self, page: _Page, command_name: str, option: dict[str, Any], raw: Any) -> Any:
+        option_type = OptionType(option["type"])
+        if option_type in {
+            OptionType.USER,
+            OptionType.ROLE,
+            OptionType.CHANNEL,
+            OptionType.MENTIONABLE,
+        }:
+            if not isinstance(raw, str):
+                raise OptionError("option-type", option["name"], "expects an entity ID string")
+            component_type = {
+                OptionType.USER: ComponentType.USER_SELECT,
+                OptionType.ROLE: ComponentType.ROLE_SELECT,
+                OptionType.MENTIONABLE: ComponentType.MENTIONABLE_SELECT,
+                OptionType.CHANNEL: ComponentType.CHANNEL_SELECT,
+            }[option_type]
+            component: dict[str, Any] = {
+                "type": int(component_type),
+                "min_values": 1,
+                "max_values": 1,
+            }
+            if option_type == OptionType.CHANNEL and option.get("channel_types"):
+                component["channel_types"] = list(option["channel_types"])
+            try:
+                values = self._select_values(
+                    page,
+                    None,
+                    [raw],
+                    None,
+                    component_override=component,
+                )
+            except (SetupError, BackendError, ValueError):
+                raise OptionError(
+                    "option-entity", option["name"], "does not reference an authorized entity"
+                ) from None
+            return validate_option_value(command_name, option, values[0])
+        if option_type == OptionType.ATTACHMENT:
+            if isinstance(raw, tuple) and len(raw) == 2 and isinstance(raw[1], bytes):
+                if len(raw[1]) > 10 * 1024 * 1024:
+                    raise OptionError("option-type", option["name"], "exceeds the 10 MiB per-file limit")
+            return validate_option_value(command_name, option, raw)
+        return parse_option_input(command_name, option, raw)
+
     def _select_values(
         self,
         page: _Page,
-        message: Message,
+        message: Message | None,
         values: Any,
         control_key: Any,
+        *,
+        component_override: Mapping[str, Any] | None = None,
     ) -> list[Any]:
         if not isinstance(values, list):
             raise SetupError("select values must be a list")
@@ -907,11 +577,16 @@ class _ActionOps:
                 raise SetupError("select values must be unique")
         except TypeError as exc:
             raise SetupError("select values must be scalar") from exc
-        component = _find_scoped_component(
-            message,
-            control_key,
-            types=tuple(int(item) for item in SELECT_TYPES),
-        )
+        if component_override is not None:
+            component = dict(component_override)
+        elif message is not None:
+            component = _find_scoped_component(
+                message,
+                control_key,
+                types=tuple(int(item) for item in SELECT_TYPES),
+            )
+        else:
+            raise SetupError("select control is unavailable")
         kind = ComponentType(component["type"])
         minimum = component.get("min_values", 1)
         maximum = component.get("max_values", 1)
@@ -1093,6 +768,7 @@ class _ActionOps:
         error: BaseException | None = None,
         *,
         interaction: Interaction | None = None,
+        extra_diagnostics: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         interaction = interaction or action.interaction
         errors = self.env.errors_since(cursor)
@@ -1105,6 +781,15 @@ class _ActionOps:
             diagnostics.append(make_diagnostic("action-timeout", correlation=action.correlation))
         elif settlement == "cancelled":
             diagnostics.append(make_diagnostic("action-cancelled", correlation=action.correlation))
+        diagnostics.extend(extra_diagnostics or [])
+        if action.kind == "autocomplete_command":
+            if action.autocomplete_answered is False or errors or error is not None:
+                if not any(item.get("code") == "autocomplete-unanswered" for item in diagnostics):
+                    diagnostics.append(
+                        make_diagnostic("autocomplete-unanswered", correlation=action.correlation)
+                    )
+            if errors or error is not None:
+                action.record_activity = True
         action.dispatched = action.dispatched or interaction is not None
         dispatch = "dispatched" if action.dispatched else "not_dispatched"
         ack = (
@@ -1132,11 +817,23 @@ class _ActionOps:
             uncertain=action.uncertain,
             correlation=action.correlation,
             outcomes=action.outcomes,
+            command=action.command,
         )
+        if action.kind == "autocomplete_command":
+            result["result"] = {
+                "command": dict(action.command or {}),
+                "focused": action.autocomplete_focused or "",
+                "answered": action.autocomplete_answered is True,
+                "choices": [],
+            }
         page.last_action = result
         action.response = result
-        self._append_activity(page, result, action)
-        page.pending_receipt_revision = settlement == "settled" and action.kind != "close"
+        if action.record_activity:
+            self._append_activity(page, result, action)
+        page.pending_receipt_revision = settlement == "settled" and action.kind not in {
+            "close",
+            "autocomplete_command",
+        }
         return result
 
 

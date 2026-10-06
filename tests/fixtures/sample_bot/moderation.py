@@ -25,6 +25,7 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(f"Timed out {user.display_name}")
 
     @app_commands.command(name="recent-bans", description="List recently banned users from the audit log")
+    @app_commands.guild_only()
     async def recent_bans(self, interaction: discord.Interaction) -> None:
         names = [
             entry.target.name

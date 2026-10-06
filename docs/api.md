@@ -5,8 +5,8 @@ description: "Complete SimCord API reference: run, Env, the builder handles (Gui
 
 # API reference
 
-The complete public API, generated from the source. Everything here is importable from the
-top-level `simcord` package.
+The public API, generated from the source where possible. Names here are importable from the
+top-level `simcord` package unless a module-qualified path is shown.
 
 !!! tip "New here?"
     Read [Core concepts](concepts.md) first — it explains how these objects relate
@@ -56,6 +56,28 @@ The simulated human that drives your bot. Created by `guild.add_member(...)`. Se
 [Core concepts → Actors](concepts.md#actors-act-as-a-real-user).
 
 ::: simcord.MemberActor
+
+### Slash command helpers
+
+::: simcord.MemberActor.available_commands
+    options:
+      heading_level: 4
+
+::: simcord.UserHandle.available_commands
+    options:
+      heading_level: 4
+
+::: simcord.UserHandle.slash
+    options:
+      heading_level: 4
+
+::: simcord.UserHandle.autocomplete
+    options:
+      heading_level: 4
+
+`UserHandle.slash()` and `.autocomplete()` invoke global commands in the user's bot DM when
+`BOT_DM` is an allowed context. `available_commands()` lists visible leaf invocations for the
+member/channel or user's DM.
 
 ## Local preview
 
@@ -132,6 +154,12 @@ Runner-agnostic helpers whose failure messages print what the bot actually did. 
 ::: simcord.assert_no_errors
 
 ## Errors
+
+::: simcord.OptionError
+
+Its `.code` names the validation failure and `.option` is the option
+name, or `None` for `command-not-leaf`; the [slash command guide](guides/testing-slash-commands.md#validate-slash-options)
+lists the codes.
 
 ::: simcord.BackendError
 
