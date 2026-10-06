@@ -79,8 +79,8 @@ async def test_catalog_command_id_selects_colliding_guild_and_global_callbacks(e
     guild_command.autocomplete("guild_value")(guild_autocomplete)
     env.bot.tree.add_command(global_command)
     env.bot.tree.add_command(guild_command, guild=discord.Object(id=env.guild.id))
-    env.backend.register_commands(None, [global_command.to_dict(env.bot.tree)])
-    env.backend.register_commands(env.guild.id, [guild_command.to_dict(env.bot.tree)])
+    await env.bot.tree.sync()
+    await env.bot.tree.sync(guild=discord.Object(id=env.guild.id))
 
     async with env.preview(channel, viewers=[alice], layout="channel") as preview:
         page = preview._python

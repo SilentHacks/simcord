@@ -21,6 +21,7 @@ from .backend.errors import BackendError, SetupError
 from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle, _guard_builder_operation
 from .components import validate_modal, walk_components
 from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
+from .http.router import dispatch
 from .results import InteractionResult, ResponseMessage, to_discord_message
 
 if TYPE_CHECKING:
@@ -384,9 +385,14 @@ def _unsynced_fallback(actor: Any, name: str, type: int) -> dict[str, Any]:
         )
     cmd, scope = in_tree
     guild_id = guild.id if scope is not None and guild is not None else None
-    registered = actor._env.backend.register_commands(
-        guild_id,
-        [c.to_dict(tree) for c in tree.get_commands(guild=scope)],
+    command_path = f"/applications/{actor._env.backend.application_id}"
+    if guild_id is not None:
+        command_path += f"/guilds/{guild_id}"
+    registered = dispatch(
+        actor._env.backend,
+        "PUT",
+        f"{command_path}/commands",
+        json=[c.to_dict(tree) for c in tree.get_commands(guild=scope)],
     )
     return next(
         c for c in registered if c["name"] == name and c.get("type", AppCommandType.CHAT_INPUT) == type
@@ -404,7 +410,6 @@ def _check_command_access(actor: Any, channel_id: int, name: str, root: dict[str
         fixes = {
             "scope": "Use a command registered for this guild or a global command.",
             "context": "Allow this context with `@app_commands.allowed_contexts(...)` or `@app_commands.guild_only()` / `dm_permission`.",
-            "nsfw": "Use an NSFW channel (threads inherit the parent channel's NSFW setting).",
             "use-application-commands": "Grant this member the `use_application_commands` permission.",
             "channel-denied": "Remove the channel deny or seed an allow with `guild.set_command_permissions(...)`.",
             "override-denied": "Remove the member/role deny or seed an allow with `guild.set_command_permissions(...)`.",

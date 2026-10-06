@@ -99,39 +99,6 @@ def test_scope_and_context(case: str, allowed: bool, reason: str | None) -> None
     assert access == Access(allowed, reason)
 
 
-@pytest.mark.parametrize(
-    ("case", "allowed", "reason"),
-    [
-        ("nsfw-ordinary-channel", False, "nsfw"),
-        ("nsfw-age-restricted-channel", True, None),
-        ("nsfw-dm", False, "nsfw"),
-        ("thread-parent-nsfw", True, None),
-        ("thread-parent-not-nsfw", False, "nsfw"),
-    ],
-)
-def test_nsfw_and_thread_parent(case: str, allowed: bool, reason: str | None) -> None:
-    world = make_world()
-    command = make_command(nsfw=True)
-    channel_id = world.channel_id
-    if case == "nsfw-age-restricted-channel":
-        world.backend.get_channel(world.channel_id).nsfw = True
-    elif case == "nsfw-dm":
-        channel_id = world.dm_channel_id
-    elif case.startswith("thread-"):
-        parent = world.backend.get_channel(world.channel_id)
-        parent.nsfw = case == "thread-parent-nsfw"
-        thread = world.backend.create_channel(
-            world.guild_id,
-            "thread",
-            type=ChannelType.PUBLIC_THREAD,
-            parent_id=parent.id,
-            announce=False,
-        )
-        channel_id = thread.id
-
-    assert result(world, command, channel_id=channel_id) == Access(allowed, reason)
-
-
 def test_thread_channel_override_uses_parent_channel() -> None:
     world = make_world()
     command = make_command()
@@ -293,3 +260,23 @@ def test_visible_commands_guild_global_union_and_sort_order() -> None:
     assert [command["name"] for command in visible] == ["alpha", "beta", "shared", "shared", "zeta"]
     dm_visible = backend.visible_commands(user_id=world.user_id, channel_id=world.dm_channel_id)
     assert [command["name"] for command in dm_visible] == ["alpha", "shared", "zeta"]
+
+
+def test_register_commands_rejects_unknown_fields_before_mutating_store() -> None:
+    world = make_world()
+    backend = world.backend
+    backend.register_commands(None, [{"name": "existing", "description": "before"}])
+    previous = dict(backend.commands[None])
+    counter = backend._counter
+
+    with pytest.raises(ValueError, match="Unsupported command field"):
+        backend.register_commands(
+            None,
+            [
+                {"name": "new"},
+                {"name": "existing", "description": "after", "unmodeled": True},
+            ],
+        )
+
+    assert backend.commands[None] == previous
+    assert backend._counter == counter

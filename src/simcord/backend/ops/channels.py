@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import fields as dataclass_fields
 from typing import TYPE_CHECKING, Any, cast
 
 from ...enums import ChannelType, MessageType
@@ -80,6 +81,10 @@ class ChannelMixin(BackendBase):
     ) -> Channel:
         """Apply field/overwrite changes to a channel and announce the update."""
         channel = self.get_channel(channel_id)
+        allowed = {field.name for field in dataclass_fields(Channel)}
+        unsupported = sorted(set(changes) - allowed)
+        if unsupported:
+            raise ValueError(f"Unsupported channel field(s): {', '.join(unsupported)}")
         old_name = channel.name
         for attr, value in changes.items():
             setattr(channel, attr, value)

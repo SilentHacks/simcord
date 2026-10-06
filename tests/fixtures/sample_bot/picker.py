@@ -72,10 +72,6 @@ class Picker(commands.Cog):
     async def manage_settings(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Settings updated")
 
-    @app_commands.command(description="Only available in age-restricted channels", nsfw=True)
-    async def age_gate(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message("Age-restricted command")
-
     @app_commands.command(description="A command available in guilds and bot DMs")
     @app_commands.allowed_contexts(guilds=True, dms=True)
     async def dm_greeting(self, interaction: discord.Interaction) -> None:

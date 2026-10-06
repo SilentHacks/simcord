@@ -79,14 +79,6 @@ def command_access(backend: Any, command: dict[str, Any], *, user_id: int, chann
     ):
         return _result(False, "context")
 
-    # Discord Developer Documentation, Application Commands: nsfw commands require an age-restricted channel.
-    if command.get("nsfw"):
-        if guild_id is None:
-            return _result(False, "nsfw")
-        permission_channel_id = channel.permission_channel_id()
-        if not backend.get_channel(permission_channel_id).nsfw:
-            return _result(False, "nsfw")
-
     # Backend permission validators (backend/ops/permissions.py) likewise treat DMs as having no guild permissions.
     if guild_id is None:
         return _result(True)

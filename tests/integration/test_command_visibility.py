@@ -1,4 +1,5 @@
 import asyncio
+import copy
 
 import discord
 import pytest
@@ -7,8 +8,8 @@ from discord.ext import commands
 
 import simcord
 from simcord.backend.models import Overwrite
-from simcord.builders import ChannelHandle
 from simcord.enums import AppCommandType
+from simcord.http import router
 from simcord.interactions import command_leaves
 
 
@@ -17,7 +18,6 @@ def _seed_denial(env, command, channel, user, reason):
     env.backend.command_permissions.pop((env.guild.id, command_id), None)
     command.pop("guild_id", None)
     command.pop("contexts", None)
-    command["nsfw"] = False
     command["default_member_permissions"] = None
 
     if reason == "scope":
@@ -27,8 +27,6 @@ def _seed_denial(env, command, channel, user, reason):
         return other_channel
     if reason == "context":
         command["contexts"] = [1]
-    elif reason == "nsfw":
-        command["nsfw"] = True
     elif reason == "use-application-commands":
         channel._env.backend.set_overwrite(
             channel.id,
@@ -53,7 +51,6 @@ def _seed_denial(env, command, channel, user, reason):
     [
         "scope",
         "context",
-        "nsfw",
         "use-application-commands",
         "channel-denied",
         "override-denied",
@@ -76,7 +73,6 @@ async def test_slash_and_autocomplete_refuse_invisible_commands(env, channel, al
     [
         "scope",
         "context",
-        "nsfw",
         "use-application-commands",
         "channel-denied",
         "override-denied",
@@ -91,6 +87,57 @@ async def test_context_menu_refuses_invisible_commands(env, channel, alice, reas
 
     with pytest.raises(simcord.SetupError, match=f"reason: {reason}"):
         await alice.context_menu(invoke_channel, "Report Member", target)
+
+
+async def test_command_sync_discards_default_field_at_http_boundary(env):
+    await env.bot.tree.sync()
+    sync_request = next(
+        request
+        for request in reversed(env.backend.http_requests)
+        if request.method == "PUT" and request.path.endswith("/commands")
+    )
+    assert sync_request.json
+    assert all(command.get("nsfw") is False for command in sync_request.json)
+
+    response = router.dispatch(
+        env.backend,
+        sync_request.method,
+        sync_request.path,
+        json=sync_request.json,
+    )
+    assert all("nsfw" not in command for command in response)
+    assert all("nsfw" not in command for command in env.backend.commands[None].values())
+
+    fetched = router.dispatch(
+        env.backend,
+        "GET",
+        f"/applications/{env.backend.application_id}/commands",
+    )
+    assert all("nsfw" not in command for command in fetched)
+
+
+@pytest.mark.parametrize("scope", ["global", "guild"])
+@pytest.mark.parametrize("field_value", [True, 0, None])
+async def test_marked_command_batch_rejected_atomically(env, scope, field_value):
+    guild_id = None if scope == "global" else env.guild.id
+    path = (
+        f"/applications/{env.backend.application_id}/commands"
+        if guild_id is None
+        else f"/applications/{env.backend.application_id}/guilds/{guild_id}/commands"
+    )
+    env.backend.register_commands(guild_id, [{"name": "preserved"}])
+    previous = copy.deepcopy(env.backend.commands[guild_id])
+
+    with pytest.raises(router.UnsupportedField) as exc:
+        router.dispatch(
+            env.backend,
+            "PUT",
+            path,
+            json=[{"name": "new-before-marked"}, {"name": "marked", "nsfw": field_value}],
+        )
+
+    assert exc.value.fields == ["nsfw"]
+    assert env.backend.commands[guild_id] == previous
 
 
 async def test_guild_command_scope_reason_for_slash_and_autocomplete(env, channel, alice):
@@ -123,20 +170,6 @@ async def test_admin_bypasses_command_defaults_and_overrides(env, channel, alice
 
     result = await admin.slash(channel, "manage_settings")
     assert result.response.content == "Settings updated"
-
-
-async def test_nsfw_visibility_inherits_to_threads(env, channel, alice):
-    command = env.backend.find_command("age_gate", None)
-    assert command is not None
-    command["nsfw"] = True
-    with pytest.raises(simcord.SetupError, match="reason: nsfw"):
-        await alice.slash(channel, "age_gate")
-
-    env.backend.get_channel(channel.id).nsfw = True
-    thread_model = env.backend.create_thread(channel.id, "age-gated", env.backend.bot_user.id)
-    thread = ChannelHandle(env, env.guild, thread_model)
-    result = await alice.slash(thread, "age_gate")
-    assert result.response.content == "Age-restricted command"
 
 
 async def test_available_commands_deduplicates_shadowed_names(env, channel, alice):
@@ -261,7 +294,6 @@ async def test_real_discord_py_command_metadata_matches_visibility(env):
     assert commands_by_name["manage_settings"]["default_member_permissions"] == (
         discord.Permissions(manage_guild=True).value
     )
-    assert commands_by_name["age_gate"]["nsfw"] is True
     assert 0 in commands_by_name["dm_greeting"]["contexts"]
     assert 1 in commands_by_name["dm_greeting"]["contexts"]
     assert commands_by_name["guild_greeting"]["dm_permission"] is False

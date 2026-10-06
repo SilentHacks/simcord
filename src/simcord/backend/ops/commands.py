@@ -10,11 +10,29 @@ from ..command_access import command_access
 from ..models import Interaction
 from .base import BackendBase
 
+COMMAND_FIELDS = (
+    "name",
+    "description",
+    "type",
+    "options",
+    "default_member_permissions",
+    "dm_permission",
+    "contexts",
+    "integration_types",
+    "name_localizations",
+    "description_localizations",
+)
+
 
 class CommandsMixin(BackendBase):
     # --------------------------------------------------- application commands
 
     def register_commands(self, guild_id: int | None, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        allowed = set(COMMAND_FIELDS)
+        unsupported = sorted({key for payload in payloads for key in payload if key not in allowed})
+        if unsupported:
+            raise ValueError(f"Unsupported command field(s): {', '.join(unsupported)}")
+
         registered = {}
         existing = self.commands.get(guild_id, {})
         for payload in payloads:
@@ -26,7 +44,6 @@ class CommandsMixin(BackendBase):
             cmd.setdefault("description", "")
             cmd.setdefault("options", [])
             cmd.setdefault("default_member_permissions", None)
-            cmd.setdefault("nsfw", False)
             cmd.setdefault("dm_permission", True)
             if guild_id is not None:
                 cmd["guild_id"] = str(guild_id)

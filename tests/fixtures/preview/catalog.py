@@ -123,10 +123,6 @@ def register_picker_commands(tree: app_commands.CommandTree) -> None:
     async def manage_settings(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Settings updated")
 
-    @app_commands.command(description="Only available in age-restricted channels", nsfw=True)
-    async def age_gate(interaction: discord.Interaction) -> None:
-        await interaction.response.send_message("Age-restricted command")
-
     @app_commands.command(description="A command available in guilds and bot DMs")
     @app_commands.allowed_contexts(guilds=True, dms=True)
     async def dm_greeting(interaction: discord.Interaction) -> None:
@@ -151,7 +147,6 @@ def register_picker_commands(tree: app_commands.CommandTree) -> None:
         upload,
         option_check,
         manage_settings,
-        age_gate,
         dm_greeting,
         guild_greeting,
         dm_whisper,

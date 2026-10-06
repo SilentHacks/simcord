@@ -55,14 +55,13 @@ async def test_greet_slash_command(simcord_env):
 In SimCord 3.0, `MemberActor.slash()`, `.autocomplete()`, `.context_menu()`, and the DM command helpers reject commands a real user could not see. They raise `simcord.SetupError` with `Command '/x' is not visible to this user here — a real user could not run it (reason: <code>)` and a note suggesting a fix. The visibility check follows these rules:
 
 - Guild commands are limited to their guild. Global command `contexts` control guild and bot-DM use (`GUILD=0`, `BOT_DM=1`); when `contexts` is absent, legacy `dm_permission` controls bot DMs.
-- NSFW commands require an age-restricted guild channel. Threads inherit the parent's setting; NSFW commands are never visible in DMs because the user's age setting is not modeled.
-- In guilds, `Administrator` bypasses permission checks after scope, context, and NSFW checks. Other users need `USE_APPLICATION_COMMANDS`.
+- In guilds, `Administrator` bypasses permission checks after scope and context checks. Other users need `USE_APPLICATION_COMMANDS`.
 - Command-level permission overrides take precedence over application-level overrides. Seed them with `guild.set_command_permissions(command, {target: True})`; `@everyone` is the guild ID, All Channels is `guild.id - 1`, and thread channel overrides inherit from the parent. Explicit command-level user/role allows bypass `default_member_permissions`; application-level allows do not. A role allow beats a role deny. `default_member_permissions="0"` allows admins or explicit command-level overrides only.
 - Discord leaves conflicting duplicate channel, user, or `@everyone` overrides for an identical target unspecified; SimCord conservatively hides the command. Role conflicts use allow-over-deny.
 
-The refusal includes one of these reason codes: `scope`, `context`, `nsfw`, `use-application-commands`, `channel-denied`, `override-denied`, or `default-member-permissions`.
+The refusal includes one of these reason codes: `scope`, `context`, `use-application-commands`, `channel-denied`, `override-denied`, or `default-member-permissions`.
 
-If `slash()` says a command is not visible, adjust the fixture or assert that refusal. Grant the required permission, seed an override with `guild.set_command_permissions(...)`, use an NSFW channel, or declare the intended contexts:
+If `slash()` says a command is not visible, adjust the fixture or assert that refusal. Grant the required permission, seed an override with `guild.set_command_permissions(...)`, or declare the intended contexts:
 
 ```python
 @bot.tree.command()

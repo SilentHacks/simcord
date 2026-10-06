@@ -18,11 +18,14 @@ not reach (e.g. forum thread create).
 from __future__ import annotations
 
 import base64
+import copy
 import io
+from dataclasses import fields
 
 import discord
 import pytest
 
+from simcord.backend.models import Channel
 from simcord.enums import ChannelType
 from simcord.http import router
 
@@ -64,14 +67,55 @@ async def test_voice_channel_edit_fields_apply(env):
 async def test_text_channel_edit_supported_fields_apply(env, channel):
     """Common TextChannel.edit fields all take effect (none falsely rejected)."""
     dpy_channel = env.bot.get_channel(channel.id)
-    await dpy_channel.edit(name="renamed", topic="new topic", nsfw=True, slowmode_delay=10)
+    await dpy_channel.edit(name="renamed", topic="new topic", slowmode_delay=10)
     await env.settle()
 
     backend_channel = env.backend.get_channel(channel.id)
     assert backend_channel.name == "renamed"
     assert backend_channel.topic == "new topic"
-    assert backend_channel.nsfw is True
     assert backend_channel.rate_limit_per_user == 10
+
+
+async def test_channel_edit_rejects_unknown_fields_before_mutation(env, channel, monkeypatch):
+    model = env.backend.get_channel(channel.id)
+    before = copy.deepcopy(model)
+    assert "nsfw" not in {field.name for field in fields(Channel)}
+    assert "nsfw" not in router.dispatch(env.backend, "GET", f"/channels/{channel.id}")
+    assert "nsfw_level" not in router.dispatch(env.backend, "GET", f"/guilds/{env.guild.id}")
+    events = []
+    emit = env.backend.emit
+
+    def capture(event, payload):
+        events.append((event, payload))
+        emit(event, payload)
+
+    monkeypatch.setattr(env.backend, "emit", capture)
+    with pytest.raises(ValueError, match="Unsupported channel field"):
+        env.backend.edit_channel(channel.id, {"name": "renamed", "unmodeled": True})
+
+    assert model == before
+    assert events == []
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_text_channel_edit_rejects_explicit_field_atomically(env, channel, monkeypatch, value):
+    dpy_channel = env.bot.get_channel(channel.id)
+    backend_channel = env.backend.get_channel(channel.id)
+    before = copy.deepcopy(backend_channel)
+    events = []
+    emit = env.backend.emit
+
+    def capture(event, payload):
+        events.append((event, payload))
+        emit(event, payload)
+
+    monkeypatch.setattr(env.backend, "emit", capture)
+    with pytest.raises(router.UnsupportedField) as exc:
+        await dpy_channel.edit(name="renamed", nsfw=value)
+
+    assert "nsfw" in exc.value.fields
+    assert backend_channel == before
+    assert events == []
 
 
 async def test_role_edit_supported_fields_apply(env):
@@ -158,13 +202,35 @@ async def test_create_voice_channel_unmodelled_field_rejected(env):
 async def test_create_text_channel_supported_fields_apply(env):
     """TextChannel create fields are wired through, not silently dropped."""
     guild = env.bot.get_guild(env.guild.id)
-    channel = await guild.create_text_channel("support", topic="help here", nsfw=True, slowmode_delay=5)
+    channel = await guild.create_text_channel("support", topic="help here", slowmode_delay=5)
     await env.settle()
 
     backend_channel = env.backend.get_channel(channel.id)
     assert backend_channel.topic == "help here"
-    assert backend_channel.nsfw is True
     assert backend_channel.rate_limit_per_user == 5
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_create_text_channel_rejects_explicit_field_atomically(env, monkeypatch, value):
+    guild = env.bot.get_guild(env.guild.id)
+    backend_guild = env.backend.get_guild(env.guild.id)
+    channel_ids = set(env.backend.channels)
+    guild_channel_ids = list(backend_guild.channel_ids)
+    events = []
+    emit = env.backend.emit
+
+    def capture(event, payload):
+        events.append((event, payload))
+        emit(event, payload)
+
+    monkeypatch.setattr(env.backend, "emit", capture)
+    with pytest.raises(router.UnsupportedField) as exc:
+        await guild.create_text_channel("explicit", nsfw=value)
+
+    assert "nsfw" in exc.value.fields
+    assert set(env.backend.channels) == channel_ids
+    assert backend_guild.channel_ids == guild_channel_ids
+    assert events == []
 
 
 async def test_create_role_colour_applies(env):

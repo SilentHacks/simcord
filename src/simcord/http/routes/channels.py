@@ -29,7 +29,6 @@ def edit_channel(ctx: RequestContext) -> Any:
     editable = (
         "name",
         "topic",
-        "nsfw",
         "rate_limit_per_user",
         "available_tags",
         "bitrate",

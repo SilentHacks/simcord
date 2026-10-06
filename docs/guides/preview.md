@@ -252,10 +252,10 @@ the same action with an accessible Send/Save label.
 In SimCord 3.0, type `/` at the start of the composer to browse registered chat-input commands the
 current viewer can use in this channel. The picker is available only in **Conversation**
 (`layout="channel"`), not **Isolate message** (`layout="message"`). It uses the same command
-visibility rules as `MemberActor.slash()`; permissions, command scope and context,
-NSFW restrictions, and command overrides are not reimplemented as a separate Preview policy. See
-[testing slash commands and interactions](testing-slash-commands.md#command-visibility) for those
-rules and their reason codes. It is also unavailable in edit mode or when the viewer cannot use
+visibility rules as `MemberActor.slash()`; permissions, command scope and context, and command
+overrides are not reimplemented as a separate Preview policy. See [testing slash commands and
+interactions](testing-slash-commands.md#command-visibility) for those rules and their reason codes.
+It is also unavailable in edit mode or when the viewer cannot use
 application commands. If no command matches, the popup closes and the text remains an ordinary
 message draft. If the viewer can use commands but cannot send messages, the composer remains visible,
 the ordinary Send action is disabled, and its placeholder says that application commands are available.

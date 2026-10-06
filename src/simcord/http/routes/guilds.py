@@ -111,7 +111,6 @@ def create_guild_channel(ctx: RequestContext) -> Any:
         "name",
         "type",
         "topic",
-        "nsfw",
         "rate_limit_per_user",
         "bitrate",
         "user_limit",
@@ -130,7 +129,7 @@ def create_guild_channel(ctx: RequestContext) -> Any:
         for o in ctx.body().get("permission_overwrites") or []
     ]
     fields: dict[str, Any] = {}
-    for key in ("topic", "nsfw", "rate_limit_per_user", "bitrate", "user_limit", "rtc_region"):
+    for key in ("topic", "rate_limit_per_user", "bitrate", "user_limit", "rtc_region"):
         if body.get(key) is not None:
             fields[key] = body[key]
     if body.get("parent_id") is not None:
