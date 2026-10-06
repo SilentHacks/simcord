@@ -7,6 +7,7 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 ### Miscellaneous
 
 - Remove unused internal command resolution, parser forwarding, capture bookkeeping, and unmatched Preview CSS without changing supported behavior.
+- Separate internal Preview action preparation, authorized projections and queries, frontend controllers, modal submission, environment runtime bookkeeping, and media decoding steps while retaining supported public APIs and behavior.
 
 <!-- towncrier release notes start -->
 

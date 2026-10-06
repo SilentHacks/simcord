@@ -63,6 +63,11 @@ test ──► builders/actors ──► virtual backend (single source of truth
   discord.py's master branch to catch drift early.
 - **Deterministic snowflakes** with valid embedded timestamps, from a fixed virtual epoch.
 
+`Env` remains the lifecycle and state owner. Private runtime hooks live in `_runtime.py`;
+`_settlement.py` classifies tracked work and manages virtual timer bookkeeping against that
+same state. `_modal.py` handles modal validation and serialization through the existing actor
+permission checks and interaction dispatch.
+
 ## Optional browser presentation
 
 `Env.preview(...)` adds a local presentation layer above the same backend; it is not another
@@ -77,6 +82,11 @@ the environment and republishes current projections; it does not make background
 Optional Pillow media work is bounded and outside Env's loop. Optional Playwright capture pins a
 settled projection and reports geometry, readiness, completeness, calibration, and diagnostics.
 Base imports do not allocate any preview server, worker, or browser.
+
+Preview keeps session/page state in its existing owners. `_action_plans.py` prepares lazy
+actions; identity, component/message projection, and query modules feed `_snapshot.py`'s
+assembly. In the browser, `app.js` retains shared state and action sequencing, with focused
+workbench, select-draft, timeline, and transport modules handling presentation responsibilities.
 
 ## What it will never do
 
