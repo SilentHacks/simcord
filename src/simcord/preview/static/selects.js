@@ -23,9 +23,6 @@ function keyFor(component, path, scope = "message") {
   if (typeof component.id === "number" && component.id > 0) return `${scope}:component:${component.id}`;
   return `${scope}:component:${path}`;
 }
-function appendEmojiText(parent, text) {
-  parent.append(document.createTextNode(String(text ?? "")));
-}
 export function optionDefaults(options) {
   return options.filter((item) => item && item.default === true).map((item) => String(item.value));
 }
@@ -133,9 +130,7 @@ export function renderSelect(component, path, options) {
           chip.append(swatch);
         }
       } else if (entry?.emoji) appendEmojiValue(chip, entry.emoji, options);
-      const chipLabel = node("span", "select-chip-label");
-      appendEmojiText(chipLabel, entry ? (entry.label ?? entry.name ?? value) : value);
-      chip.append(chipLabel);
+      chip.append(node("span", "select-chip-label", entry ? (entry.label ?? entry.name ?? value) : value));
       chips.append(chip);
     }
     valueDisplay.append(chips);
@@ -153,7 +148,7 @@ export function renderSelect(component, path, options) {
   } else {
     if (single?.emoji) { const emoji = node("span", "selected-emoji"); appendEmojiValue(emoji, single.emoji, options); valueDisplay.append(emoji); }
     const valueLabel = node("span", "select-value-label");
-    if (selected.length === 1 && single) appendEmojiText(valueLabel, single.label ?? single.name ?? selected[0]);
+    if (selected.length === 1 && single) valueLabel.textContent = String(single.label ?? single.name ?? selected[0] ?? "");
     else valueLabel.textContent = displaySelection(selected, entries, selectedEntries, label);
     valueDisplay.append(valueLabel);
   }
@@ -338,7 +333,7 @@ export function renderSelect(component, path, options) {
       decorateEntity(option, entry, entry.kind);
     } else {
       if (entry.emoji) { const emoji = node("span", "option-emoji"); appendEmojiValue(emoji, entry.emoji, options); option.append(emoji); }
-      const optionLabel = node("span", "option-label"); appendEmojiText(optionLabel, entry.label ?? entry.name ?? value); option.append(optionLabel);
+      option.append(node("span", "option-label", entry.label ?? entry.name ?? value));
       if (entry.description) option.append(node("small", "option-description", entry.description));
     }
     option.addEventListener("click", () => { if (disabled) return; choose(value); }); list.append(option);

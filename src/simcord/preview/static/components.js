@@ -18,10 +18,6 @@ const TYPE = Object.freeze({
 const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADIO_GROUP, TYPE.CHECKBOX_GROUP, TYPE.CHECKBOX, TYPE.FILE_UPLOAD]);
 const FILE_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
 
-function appendEmojiText(parent, text) {
-  parent.append(document.createTextNode(String(text ?? "")));
-}
-
 function keyFor(component, path, scope = "message") {
   if (typeof component.control_key === "string") return component.control_key;
   if (typeof component.id === "number" && component.id > 0) return `${scope}:component:${component.id}`;
@@ -91,9 +87,7 @@ function renderButton(component, path, options) {
     button.append(emoji);
   }
   if (component.label) {
-    const buttonLabel = node("span", "button-label");
-    appendEmojiText(buttonLabel, component.label);
-    button.append(buttonLabel);
+    button.append(node("span", "button-label", component.label));
   }
   if (style === 5) {
     const href = safeLink(component.url);

@@ -196,6 +196,20 @@ class _ActionOps:
             if page.id in self._pages:
                 self._publish(page, reason=reason)
 
+    def _require_current_history(self, page: _Page) -> None:
+        if page.status != "current" or not can_access_channel(
+            self.env, page.channel_id, page.viewer, history=True
+        ):
+            raise SetupError("viewer cannot access current channel history")
+
+    def _finish_message_edit(
+        self, page: _Page, action: _Action, cursor: int, message: Message
+    ) -> dict[str, Any]:
+        action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
+        result = self._finish_action(page, action, "settled", cursor)
+        self._publish_message_pages()
+        return result
+
     @staticmethod
     def _reset_queries(page: _Page) -> None:
         page.navigation_query = ""
@@ -527,10 +541,7 @@ class _ActionOps:
         if kind == "browse_messages":
             from ._snapshot import validate_message_query
 
-            if page.status != "current" or not can_access_channel(
-                self.env, page.channel_id, page.viewer, history=True
-            ):
-                raise SetupError("viewer cannot access current channel history")
+            self._require_current_history(page)
             query, cursor_value = validate_message_query(
                 page, body.get("query"), body.get("filter"), body.get("cursor")
             )
@@ -550,10 +561,7 @@ class _ActionOps:
         if kind == "browse_candidates":
             from ._snapshot import validate_candidate_query
 
-            if page.status != "current" or not can_access_channel(
-                self.env, page.channel_id, page.viewer, history=True
-            ):
-                raise SetupError("viewer cannot access current channel history")
+            self._require_current_history(page)
             control_key = body.get("control_key")
             query, cursor_value, modal_handle = validate_candidate_query(
                 cast("Preview", self),
@@ -658,10 +666,7 @@ class _ActionOps:
         if kind == "history":
             if page.layout != "channel":
                 raise SetupError("history navigation requires channel layout")
-            if page.status != "current" or not can_access_channel(
-                self.env, page.channel_id, page.viewer, history=True
-            ):
-                raise SetupError("viewer cannot access current channel history")
+            self._require_current_history(page)
             direction = body.get("direction")
             if not isinstance(direction, str) or direction not in {"older", "newer", "latest"}:
                 raise SetupError("history direction is unavailable")
@@ -921,10 +926,7 @@ class _ActionOps:
 
             async def run_edit(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.edit(ResponseMessage(self.env, message), content)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
+                return self._finish_message_edit(page, action, cursor, message)
 
             return run_edit
         if kind == "delete_message":
@@ -949,10 +951,7 @@ class _ActionOps:
 
             async def run_reaction(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.set_reaction(ResponseMessage(self.env, message), emoji, reacted=reacted)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
+                return self._finish_message_edit(page, action, cursor, message)
 
             return run_reaction
         if kind == "set_poll_votes":
@@ -975,10 +974,7 @@ class _ActionOps:
 
             async def run_poll(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.set_poll_votes(ResponseMessage(self.env, message), answers=answers)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
+                return self._finish_message_edit(page, action, cursor, message)
 
             return run_poll
         if kind == "set_pinned":
@@ -988,10 +984,7 @@ class _ActionOps:
 
             async def run_pin(action: _Action, cursor: int) -> dict[str, Any]:
                 await actor.set_pinned(ResponseMessage(self.env, message), pinned)
-                action.outcomes = [{"kind": "source_edit", "messageId": str(message.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
+                return self._finish_message_edit(page, action, cursor, message)
 
             return run_pin
         if kind == "click":

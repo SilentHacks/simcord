@@ -539,23 +539,16 @@ def validate_components(components: Any, *, flags: int = 0) -> list[dict[str, An
         if v2:
             if kind not in ({1, *_V2_TYPES}):
                 raise _fail(f"[{index}]", "legacy interactive components cannot be mixed with V2 layouts")
-            _check_component(
-                component,
-                f"[{index}]",
-                custom_ids=custom_ids,
-                explicit_ids=explicit_ids,
-                text_total=text_total,
-            )
         else:
             if kind != 1:
                 raise _fail(f"[{index}]", "legacy messages may contain only action rows")
-            _check_component(
-                component,
-                f"[{index}]",
-                custom_ids=custom_ids,
-                explicit_ids=explicit_ids,
-                text_total=text_total,
-            )
+        _check_component(
+            component,
+            f"[{index}]",
+            custom_ids=custom_ids,
+            explicit_ids=explicit_ids,
+            text_total=text_total,
+        )
 
     if v2:
         _assign_ids(normalized, explicit_ids)
