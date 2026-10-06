@@ -27,6 +27,16 @@ class Picker(commands.Cog):
             f"{role.name}:{mentionable.name}:{color}"
         )
 
+    @app_commands.command(name="all-optional", description="Exercise optional slash options")
+    @app_commands.describe(user="Who to include", confirm="Confirm this action")
+    async def all_optional(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User | None = None,
+        confirm: bool | None = None,
+    ) -> None:
+        await interaction.response.send_message(f"{user.name if user else 'none'}:{confirm}")
+
     @app_commands.command(description="Manage guild settings")
     @app_commands.default_permissions(manage_guild=True)
     async def manage_settings(self, interaction: discord.Interaction) -> None:
@@ -40,6 +50,11 @@ class Picker(commands.Cog):
     @app_commands.allowed_contexts(guilds=True, dms=True)
     async def dm_greeting(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Hello from the bot", ephemeral=True)
+
+    @app_commands.command(name="dm-member", description="Greet a user in guilds and bot DMs")
+    @app_commands.allowed_contexts(guilds=True, dms=True)
+    async def dm_member(self, interaction: discord.Interaction, user: discord.User) -> None:
+        await interaction.response.send_message(f"Hello {user.name}")
 
     @app_commands.command(description="Only available in guilds")
     @app_commands.guild_only()

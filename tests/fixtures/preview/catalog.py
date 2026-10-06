@@ -52,13 +52,13 @@ def register_picker_commands(tree: app_commands.CommandTree) -> None:
         )
 
     @app_commands.command(name="all-optional", description="Exercise optional slash options")
+    @app_commands.describe(user="Who to include", confirm="Confirm this action")
     async def all_optional(
         interaction: discord.Interaction,
-        note: str | None = None,
-        count: int | None = None,
-        enabled: bool | None = None,
+        user: discord.User | None = None,
+        confirm: bool | None = None,
     ) -> None:
-        await interaction.response.send_message(f"{note}:{count}:{enabled}")
+        await interaction.response.send_message(f"{user.name if user else 'none'}:{confirm}")
 
     @app_commands.command(name="no-option", description="Run a command with no options")
     async def no_option(interaction: discord.Interaction) -> None:

@@ -1687,3 +1687,115 @@ textarea.modal-input { min-height: 90px; resize: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
 }
+
+.command-context {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding: 3px 4px 3px 14px;
+  color: var(--discord-subtle);
+  border-bottom: 1px solid var(--discord-border);
+  font-size: 13px;
+}
+.command-context-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-context-name { margin-right: 8px; color: var(--discord-text); font-weight: 700; }
+.command-context-detail { color: var(--discord-muted); }
+.command-context-close { flex: 0 0 26px; width: 26px; height: 26px; padding: 0 !important; color: var(--discord-muted); background: transparent !important; font-size: 22px; }
+.command-context-close:hover { color: var(--discord-text); }
+.command-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 5px 0;
+}
+.command-row:focus { outline: none; }
+.command-avatar { display: grid; flex: 0 0 32px; place-items: center; width: 32px; height: 32px; overflow: hidden; color: var(--discord-subtle); background: #4f5660; border-radius: 50%; }
+.command-leading-avatar { flex-basis: 28px; width: 28px; height: 28px; margin-right: 2px; }
+.command-avatar-img { width: 100%; height: 100%; object-fit: cover; }
+.command-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.command-chip { flex: 0 0 auto; min-height: 34px; padding: 2px 6px !important; color: var(--discord-text); background: transparent !important; font-weight: 700; }
+.command-chip:hover, .command-ghost:hover { background: var(--discord-hover) !important; }
+.command-pill {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 102px;
+  max-width: min(100%, 360px);
+  min-height: 34px;
+  padding: 3px 7px;
+  color: var(--discord-subtle);
+  background: var(--discord-control);
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+}
+.command-pill.is-focused:not(.has-error) { border-color: var(--discord-brand); box-shadow: 0 0 0 1px var(--discord-brand); }
+.command-pill.has-error { border-color: var(--discord-red); box-shadow: none; }
+.command-pill-label { flex: 0 0 auto; padding-inline: 3px; color: var(--discord-muted); font-size: 12px; }
+.command-option-input { flex: 1 1 56px; width: 72px; min-width: 30px; max-width: 220px; min-height: 26px; padding: 2px 5px; color: var(--discord-text); background: var(--input-surface); border: 0; border-radius: 4px; outline: 0; }
+.command-option-input::placeholder { color: var(--input-placeholder); }
+.command-mention { min-width: 0; max-width: 250px; overflow: hidden; padding: 1px 5px !important; color: #c9cdfb; background: #41446b !important; border-radius: 4px; text-overflow: ellipsis; white-space: nowrap; }
+.command-ghost { flex: 0 0 auto; min-height: 30px; padding: 3px 7px !important; color: var(--discord-muted); background: transparent !important; font-size: 13px; }
+.command-file-choose { max-width: 180px; overflow: hidden; padding: 1px 5px !important; color: var(--discord-text); background: transparent !important; text-overflow: ellipsis; white-space: nowrap; }
+.command-file-remove, .command-option-remove { flex: 0 0 auto; padding: 0 3px !important; color: var(--discord-muted); background: transparent !important; font-size: 18px; }
+.command-file-hint { color: var(--discord-muted); font-size: 10px; }
+.command-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.command-error { position: absolute; z-index: 1; top: calc(100% + 3px); left: 0; max-width: 280px; padding: 3px 6px; color: #fff; background: #8f2028; border-radius: 4px; font-size: 12px; }
+.command-pill { position: relative; }
+.command-unavailable { flex-basis: 100%; color: #ff9ca3; font-size: 12px; }
+.command-popup {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 16px);
+  overflow: hidden auto;
+  padding: 6px;
+  color: var(--discord-text);
+  background: #393a41;
+  border: 1px solid var(--discord-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0008;
+}
+.command-popup[hidden] { display: none !important; }
+.command-popup-heading { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; min-height: 32px; padding: 4px 8px; color: var(--discord-muted); font-size: 11px; font-weight: 700; letter-spacing: .05em; }
+.command-popup-heading .command-avatar { flex-basis: 24px; width: 24px; height: 24px; }
+.command-popup-list { min-height: 0; overflow: auto; }
+.command-entry { display: flex; align-items: center; gap: 12px; min-height: 70px; padding: 8px; border-radius: 5px; cursor: pointer; }
+.command-entry.is-active, .command-entry:hover { background: #474852; }
+.command-entry-text { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 2px; }
+.command-entry-title { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 15px; }
+.command-entry-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-optional-count { padding-left: 9px; color: var(--discord-muted); border-left: 1px solid var(--discord-border); font-weight: 400; white-space: nowrap; }
+.command-entry-description { overflow: hidden; color: var(--discord-subtle); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.command-entry-app { flex: 0 0 auto; max-width: 24%; overflow: hidden; color: var(--discord-subtle); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.command-truncated { padding: 9px; color: var(--discord-muted); font-size: 12px; }
+.command-suggestion { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
+.command-suggestion.is-active, .command-suggestion:hover { background: #474852; }
+.command-suggestion-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-suggestion-meta { flex: 0 0 auto; max-width: 45%; overflow: hidden; color: var(--discord-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.command-suggestion-ellipsis { color: var(--discord-muted); }
+.command-role-swatch { flex: 0 0 12px; width: 12px; height: 12px; border-radius: 50%; }
+.command-channel-mark { color: var(--discord-muted); font-size: 18px; }
+.command-empty { padding: 12px; color: var(--discord-muted); font-size: 13px; }
+.channel-composer:has(.command-row) { position: relative; }
+
+@media (max-width: 440px) {
+  .channel-composer { margin-inline: 8px; padding-inline: 7px; }
+  .command-entry { gap: 7px; padding-inline: 5px; }
+  .command-entry-app { display: none; }
+  .command-pill { max-width: 100%; }
+  .command-option-input { max-width: 140px; }
+}
+@media (forced-colors: active) {
+  .command-pill, .command-popup { border: 1px solid CanvasText; }
+  .command-pill.is-focused, .command-context-close:focus-visible { outline: 2px solid Highlight; }
+  .command-entry.is-active, .command-suggestion.is-active { outline: 1px solid Highlight; }
+}

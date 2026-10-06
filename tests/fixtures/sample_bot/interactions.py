@@ -77,6 +77,14 @@ class PersistentView(discord.ui.View):
         await interaction.response.send_message("pong")
 
 
+class PickerBusyView(discord.ui.View):
+    @discord.ui.button(label="Wait", custom_id="picker:wait")
+    async def wait_for_release(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await asyncio.sleep(1.5)
+        await interaction.followup.send("Picker action released")
+
+
 class FeedbackModal(discord.ui.Modal, title="Feedback"):
     name = discord.ui.TextInput(label="Name", custom_id="name")
 
@@ -97,6 +105,8 @@ class Interactions(commands.Cog):
 
     @tag.autocomplete("name")
     async def tag_autocomplete(self, interaction: discord.Interaction, current: str):
+        if current == "empty":
+            return []
         return [app_commands.Choice(name=t, value=t) for t in TAGS if current in t]
 
     @app_commands.command(description="Search tags with a bounded result count")
@@ -117,6 +127,16 @@ class Interactions(commands.Cog):
         assert isinstance(attachment, discord.Attachment)
         data = await attachment.read()
         await interaction.response.send_message(f"{attachment.filename}:{data.decode()}")
+
+    @app_commands.command(name="upload-bundle", description="Check aggregate attachment limits")
+    async def upload_bundle(
+        self,
+        interaction: discord.Interaction,
+        first: discord.Attachment,
+        second: discord.Attachment,
+        third: discord.Attachment,
+    ) -> None:
+        await interaction.response.send_message(f"{first.filename}:{second.filename}:{third.filename}")
 
     @app_commands.command(name="option-check", description="Check slash option constraints")
     async def option_check(
@@ -163,6 +183,10 @@ class Interactions(commands.Cog):
     @app_commands.command(description="Post a persistent control panel")
     async def panel(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Panel", view=PersistentView())
+
+    @app_commands.command(name="picker-busy-panel", description="Post a releasable action for picker tests")
+    async def picker_busy_panel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Busy control", view=PickerBusyView())
 
     @app_commands.command(description="Give feedback")
     async def feedback(self, interaction: discord.Interaction) -> None:

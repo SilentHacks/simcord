@@ -40,6 +40,7 @@ class PreviewServer:
         "/selects.js": "selects.js",
         "/listbox.js": "listbox.js",
         "/composer.js": "composer.js",
+        "/commands.js": "commands.js",
         "/messages.js": "messages.js",
         "/media.js": "media.js",
         "/text.js": "text.js",

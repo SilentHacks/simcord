@@ -299,7 +299,7 @@
     },
     "browserStatus": {
       "type": "object", "additionalProperties": false,
-      "required": ["schemaVersion", "protocolVersion", "contextId", "contextGeneration", "botGeneration", "viewerId", "targetId", "publishedRevision", "presentation", "lastAction", "ready", "complete", "diagnostics", "geometry", "navigation", "publication", "selectStates", "transport", "pendingAction", "pendingQuery", "authorized"],
+      "required": ["schemaVersion", "protocolVersion", "contextId", "contextGeneration", "botGeneration", "viewerId", "targetId", "publishedRevision", "presentation", "lastAction", "ready", "complete", "diagnostics", "geometry", "navigation", "publication", "selectStates", "transport", "pendingAction", "pendingQuery", "authorized", "commandPicker"],
       "properties": {
         "schemaVersion": { "const": 1 }, "protocolVersion": { "const": 3 }, "contextId": { "type": ["string", "null"] },
         "contextGeneration": { "type": "integer", "minimum": 0 }, "botGeneration": { "type": "integer", "minimum": 0 },
@@ -313,6 +313,7 @@
         "renderGeneration": { "type": "integer", "minimum": 0 }, "renderState": { "type": "object" },
         "selectDrafts": { "type": "object", "additionalProperties": { "type": "array", "maxItems": 25, "items": { "type": "string" } } },
         "selectStates": { "type": "object", "additionalProperties": { "$ref": "#/$defs/selectState" } },
+        "commandPicker": { "$ref": "#/$defs/commandPicker" },
         "lastAction": { "anyOf": [{ "$ref": "#/$defs/actionReceipt" }, { "type": "null" }] },
         "pendingAction": { "$ref": "#/$defs/pendingAction" }, "pendingQuery": { "$ref": "#/$defs/pendingQuery" },
         "ready": { "type": "boolean" }, "complete": { "type": "boolean" }, "authorized": { "type": "boolean" },
@@ -321,6 +322,22 @@
         "activity": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/actionReceipt" } },
         "geometry": { "$ref": "#/$defs/browserGeometry" }, "transport": { "$ref": "#/$defs/transport" },
         "calibration": { "type": "object" }, "profile": { "$ref": "#/$defs/browserProfile" }
+      }
+    },
+    "commandPicker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "catalog", "query", "entryKeys", "activeEntryKey", "draft", "autocomplete"],
+      "properties": {
+        "state": { "enum": ["unavailable", "closed", "browsing", "composing", "pending"] },
+        "catalog": { "type": "object", "additionalProperties": false, "required": ["fingerprint", "state", "truncated"], "properties": { "fingerprint": { "type": ["string", "null"] }, "state": { "enum": ["idle", "loading", "ready", "failed"] }, "truncated": { "type": "boolean" } } },
+        "query": { "type": ["string", "null"] }, "entryKeys": { "type": "array", "maxItems": 50, "items": { "type": "string" } },
+        "activeEntryKey": { "type": ["string", "null"] },
+        "draft": { "anyOf": [{ "type": "null" }, { "type": "object", "additionalProperties": false, "required": ["commandId", "invocation", "schemaFingerprint", "available", "focusedOption", "submittable", "missingRequired", "droppedOptions", "options"], "properties": {
+          "commandId": { "type": "string" }, "invocation": { "type": "string" }, "schemaFingerprint": { "type": "string" }, "available": { "type": "boolean" },
+          "focusedOption": { "type": ["string", "null"] }, "submittable": { "type": "boolean" }, "missingRequired": { "type": "array", "items": { "type": "string" } }, "droppedOptions": { "type": "array", "items": { "type": "string" } },
+          "options": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name", "type", "required", "present", "valid", "error", "display"], "properties": { "name": { "type": "string" }, "type": { "type": "string" }, "required": { "type": "boolean" }, "present": { "type": "boolean" }, "valid": { "type": "boolean" }, "error": { "type": ["string", "null"] }, "display": { "type": ["string", "number", "boolean", "object", "null"] } } } }
+        } }] },
+        "autocomplete": { "type": "object", "additionalProperties": false, "required": ["option", "state", "choiceCount"], "properties": { "option": { "type": ["string", "null"] }, "state": { "enum": ["idle", "loading", "answered", "failed"] }, "choiceCount": { "type": "integer", "minimum": 0, "maximum": 25 } } }
       }
     },
     "supportReport": {
@@ -381,7 +398,7 @@
     },
     "pendingQuery": {
       "type": ["object", "null"], "additionalProperties": false, "required": ["kind", "key", "controlKey", "requestId", "sequence", "query"],
-      "properties": { "kind": { "enum": ["browse_messages", "browse_candidates"] }, "key": { "type": "string" }, "controlKey": { "type": ["string", "null"] }, "requestId": { "type": "string" }, "sequence": { "type": "integer", "minimum": 1 }, "query": { "type": "string", "maxLength": 128 } }
+      "properties": { "kind": { "enum": ["browse_messages", "browse_candidates", "autocomplete_command"] }, "key": { "type": "string" }, "controlKey": { "type": ["string", "null"] }, "requestId": { "type": "string" }, "sequence": { "type": "integer", "minimum": 1 }, "query": { "type": "string", "maxLength": 128 } }
     },
     "selectState": {
       "type": "object", "additionalProperties": false, "required": ["values", "minimum", "maximum", "optional", "valid", "editing", "touched", "pending", "commit"],

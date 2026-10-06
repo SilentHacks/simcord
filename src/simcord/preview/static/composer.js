@@ -41,6 +41,7 @@ export function initComposer({
   }
 
   function onInput() {
+    if (currentInput.dataset.commandMode === "true") return;
     const key = currentInput.dataset.controlKey;
     state.drafts.set(key, value());
     state.draftVersions.set(key, (state.draftVersions.get(key) || 0) + 1);
@@ -88,8 +89,9 @@ export function initComposer({
     currentInput.dataset.controlKey = key;
     const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
     if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
-    if (value() !== state.drafts.get(key)) setValue(state.drafts.get(key));
-    sendButton.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture;
+    if (currentInput.dataset.commandMode !== "true" && value() !== state.drafts.get(key)) setValue(state.drafts.get(key));
+    sendButton.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture
+      || (!state.editTargetId && !snapshot.channel?.canSendMessages);
     const sendLabel = state.editTargetId ? "Save" : "Send";
     sendButton.setAttribute("aria-label", sendLabel);
     sendButton.title = `${sendLabel} message (Enter)`;
@@ -100,7 +102,10 @@ export function initComposer({
     resizeComposer();
     const channel = channelLabel(snapshot);
     if ("placeholder" in currentInput) {
-      currentInput.placeholder = state.editTargetId ? "Edit message" : `Message ${channel.glyph}${channel.name}`;
+      currentInput.placeholder = state.editTargetId ? "Edit message"
+        : !snapshot.channel?.canSendMessages && snapshot.channel?.canUseApplicationCommands
+          ? "You can use application commands here"
+          : `Message ${channel.glyph}${channel.name}`;
     }
     const messageRows = state.authorized ? snapshot.messageIndex || [] : [];
     const reply = state.replyToId

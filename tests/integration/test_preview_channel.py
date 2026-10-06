@@ -499,8 +499,14 @@ async def test_channel_composer_sends_replies_and_preserves_live_dom_state(env, 
                 member = env.bot.get_guild(env.guild.id).get_member(alice.id)
                 await bot_channel.set_permissions(member, send_messages=False)
                 await preview.refresh()
-                await page.wait_for_function("() => document.getElementById('channel-composer').hidden")
+                await page.wait_for_function(
+                    "() => !document.getElementById('channel-composer').hidden && document.getElementById('send-message').disabled && !window.simcordPreview.pendingAction"
+                )
                 assert await page.locator("#channel-composer-input").input_value() == "retain after denial"
+                assert (
+                    await page.locator("#channel-composer-input").get_attribute("placeholder")
+                    == "You can use application commands here"
+                )
                 denied_revision = await page.evaluate("() => window.simcordPreview?.publishedRevision")
                 await bot_channel.set_permissions(member, send_messages=True)
                 await preview.refresh()

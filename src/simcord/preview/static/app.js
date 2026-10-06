@@ -2,6 +2,7 @@ import { renderModal } from "./components.js";
 import { renderMessage } from "./messages.js";
 import { closeLightbox } from "./media.js";
 import { initComposer } from "./composer.js";
+import { createCommandPicker } from "./commands.js";
 import { icon } from "./dom.js";
 
 const $ = (id) => document.getElementById(id);
@@ -115,6 +116,8 @@ const state = {
   queuedQuery: null,
   queuedQueries: new Map(),
   queuedPageIntents: {},
+  commandUploads: {},
+  commandRetryAfterRevision: null,
   queryIntent: 0,
   queryIntents: new Map(),
   observedRevision: 0,
@@ -201,6 +204,27 @@ const composer = initComposer({
   onModeChange: () => updatePickers(state.snapshot),
   rememberFocus,
   setFocusKey: (key) => { state.focusKey = key; },
+});
+const commandPicker = createCommandPicker({
+  form: ui.composerForm,
+  input: ui.composer,
+  composer,
+  dispatch: (kind, extra) => dispatch(kind, extra),
+  run: (body, files) => {
+    state.commandUploads = files;
+    dispatch("run_command", body);
+  },
+  fetchCatalog: () => request("/api/commands"),
+  getSnapshot: () => state.snapshot,
+  getState: () => state,
+  announce: (message) => announceStatus(message),
+  onCommandMode: (enabled, replyToId) => {
+    if (enabled) state.replyToId = null;
+    else if (replyToId) state.replyToId = replyToId;
+    if (state.snapshot) composer.update(state.snapshot);
+  },
+  assets: state.snapshot?.assets || {},
+  loadAsset,
 });
 
 function clone(value) {
@@ -296,6 +320,7 @@ function statusObject() {
       key, state.pendingSelectValidations.has(key) ? [] : [...values],
     ])),
     selectStates: selectStates(),
+    commandPicker: commandPicker.status(),
     lastAction: state.authorized ? clone(state.lastAction) : null,
     pendingAction: state.pendingAction ? {
       kind: state.pendingAction.kind,
@@ -305,7 +330,8 @@ function statusObject() {
       targetId: state.authorized ? state.pendingAction.targetId : null,
     } : null,
     pendingQuery: state.authorized ? clone(state.pendingQuery) : null,
-    ready: state.ready && !state.pendingAction && !Object.keys(state.queuedPageIntents).length,
+    ready: state.ready && !state.pendingAction && !Object.keys(state.queuedPageIntents).length
+      && !commandPicker.isCatalogLoadingOpen(),
     awaitingRevision: state.awaitingRevision,
     queryResultRevision: state.queryResultRevision,
     geometry: (() => {
@@ -573,7 +599,8 @@ function updatePickers(snapshot) {
   ui.channelName.textContent = channel.name;
   ui.channelTopic.textContent = state.authorized ? snapshot.channel?.topic || "" : "";
   ui.channelTopic.hidden = !state.authorized || !snapshot.channel?.topic;
-  ui.composerForm.hidden = !channelLayout || !(state.authorized && (snapshot.channel?.canSendMessages || state.editTargetId));
+  ui.composerForm.hidden = !channelLayout || !(state.authorized
+    && (snapshot.channel?.canSendMessages || snapshot.channel?.canUseApplicationCommands || state.editTargetId));
   ui.surface.classList.toggle("message-surface", !channelLayout);
   ui.surface.hidden = channelLayout || !target;
   ui.empty.hidden = channelLayout || Boolean(target);
@@ -583,6 +610,8 @@ function updatePickers(snapshot) {
   ui.pickerEmpty.hidden = Boolean(messageRows.length);
   ui.pickerEmpty.textContent = "No visible messages.";
   composer.update(snapshot);
+  commandPicker.update(snapshot);
+  commandPicker.receiveSnapshot(snapshot);
 }
 
 function revokeAssets() {
@@ -951,6 +980,17 @@ async function request(path, method = "GET", body, context = state.contextId) {
 }
 
 async function requestAction(body) {
+  if (body.kind === "run_command") {
+    const files = state.commandUploads || {};
+    const entries = Object.entries(files).filter(([, file]) => file instanceof File);
+    if (!entries.length) return request("/api/action", "POST", body);
+    const form = new FormData();
+    form.append("payload", JSON.stringify(body));
+    entries.forEach(([name, file]) => form.append(`file:${name}`, file, file.name));
+    const response = await fetch("/api/action", { method: "POST", headers: authHeaders(), body: form, cache: "no-store" });
+    if (!response.ok) throw new Error("preview request failed");
+    return response.json();
+  }
   const values = body.values;
   const uploads = [];
   const payload = { ...body, values: { ...(values || {}) } };
@@ -1209,7 +1249,8 @@ function actionResultMessage(action, kind) {
 function updateActionStatus() {
   const waiting = Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision;
   const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
-  ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden;
+  ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden
+    || (!state.editTargetId && !state.snapshot?.channel?.canSendMessages);
   // Keep callback buttons focusable so closing a modal can still restore its opener.
   document.querySelectorAll("button.component-button:not(.button-style-5):not(.button-style-6)").forEach((button) => {
     button.setAttribute("aria-disabled", String(blocked || button.disabled));
@@ -1943,7 +1984,12 @@ function renderSnapshot(snapshot, generation, force = false) {
     state.activityReturnKey = null;
     restoreFocus(key);
   });
-  if (!nextHandle && !previousHandle) requestAnimationFrame(() => restoreFocus());
+  if (!nextHandle && !previousHandle) {
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) restoreFocus();
+    });
+  }
 }
 
 function fitOpenDropdowns(scrollHighlighted = false) {
@@ -2267,6 +2313,7 @@ function reconcileUncertainAction(snapshot) {
 }
 
 function resetInteractionState() {
+  commandPicker.clear();
   for (const timer of state.selectQueryTimers.values()) clearTimeout(timer);
   state.selectQueryTimers.clear();
   state.queuedQueries.clear();
@@ -2356,6 +2403,10 @@ function queryStatusFingerprint(snapshot) {
   });
 }
 function drainIntents() {
+  if (state.commandRetryAfterRevision !== null) {
+    if (state.publishedRevision < state.commandRetryAfterRevision) return;
+    state.commandRetryAfterRevision = null;
+  }
   const uncertain = state.transport.uncertainRequestId;
   const canClose = Boolean(uncertain && "close" in state.queuedPageIntents
     && state.transport.uncertainCloseAttemptFor !== uncertain);
@@ -2409,8 +2460,9 @@ async function performAction(kind, extra, queryIntentValue = null) {
       && Boolean(state.transport.uncertainRequestId),
   };
   if (queryIntentValue) {
-    state.pendingQuery = { kind, key: queryIntentValue.key, controlKey: extra.control_key || null, requestId, sequence, query: extra.query };
+    state.pendingQuery = { kind, key: queryIntentValue.key, controlKey: extra.control_key || null, requestId, sequence, query: extra.query ?? extra.value ?? "" };
   }
+  if (kind === "run_command") commandPicker.setPending();
   localRender(false);
   let receipt;
   try {
@@ -2432,9 +2484,20 @@ async function performAction(kind, extra, queryIntentValue = null) {
     return;
   }
   noteTransportHealthy();
+  const busyQuery = Boolean(queryIntentValue && receipt.rejected
+    && receipt.diagnostics?.some((item) => item.code === "busy"));
+  if (!busyQuery) commandPicker.receiveAction(kind, receipt, extra);
+  if (kind === "run_command") state.commandUploads = {};
+  if (busyQuery) receipt = { ...receipt, diagnostics: (receipt.diagnostics || []).filter((item) => item.code !== "busy") };
   if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
   if (Number.isInteger(receipt.revision) && receipt.revision > state.publishedRevision) {
     state.awaitingRevision = receipt.revision;
+  }
+  if (busyQuery) {
+    const intent = state.queuedQueries.get(queryIntentValue.key) || queryIntentValue;
+    state.queuedQueries.set(queryIntentValue.key, intent);
+    state.queuedQuery = intent;
+    state.commandRetryAfterRevision = state.publishedRevision + 1;
   }
   if (Array.isArray(receipt.diagnostics)) receipt.diagnostics.forEach((item) => addDiagnostic(item));
   if (kind === "close" && receipt.rejected && state.pendingAction?.closeProbe) {
@@ -2507,14 +2570,17 @@ async function performAction(kind, extra, queryIntentValue = null) {
   state.pendingAction = null;
   state.pendingQuery = null;
   queuePendingCandidateValidations();
+  commandPicker.resume();
   updateActionStatus();
   drainIntents();
 }
 function dispatch(kind, extra = {}) {
-  if (["browse_messages", "browse_candidates"].includes(kind)) {
+  if (["browse_messages", "browse_candidates", "autocomplete_command"].includes(kind)) {
     const key = kind === "browse_messages"
       ? "messages"
-      : `candidate:${extra.control_key}:${extra.modal_handle || ""}`;
+      : kind === "browse_candidates"
+        ? `candidate:${extra.control_key}:${extra.modal_handle || ""}`
+        : `command-autocomplete:${extra.command_id}:${(extra.path || []).join(".")}:${extra.focused}`;
     queueQuery(key, kind, extra);
     return;
   }
