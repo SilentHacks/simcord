@@ -2,28 +2,35 @@
 
 This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
-## Unreleased
-
-### Miscellaneous
-
-- Remove unused internal command resolution, parser forwarding, capture bookkeeping, and unmatched Preview CSS without changing supported behavior.
-- Separate internal Preview action preparation, authorized projections and queries, frontend controllers, modal submission, environment runtime bookkeeping, and media decoding steps while retaining supported public APIs and behavior.
-
 <!-- towncrier release notes start -->
 
-## 3.0.1 (2026-10-05)
+## 3.0.1 (2026-10-06)
+
+### Features
+
+- Actors now refuse application commands that are not visible to the user in the current context, with stable visibility reason codes. `UserHandle.slash()` and `UserHandle.autocomplete()` exercise bot-DM commands, and `available_commands()` lists the slash-command leaf invocations visible in a channel or DM. Channel mutations and command registration reject unsupported input fields before changing state.
+- Slash commands and autocomplete now enforce Discord option constraints with structured `OptionError` codes, and `ATTACHMENT` options accept `(filename, bytes)` uploads.
+- The local Preview now includes a slash-command picker in Conversation layout, showing only commands available to the active viewer and channel. It supports typed options, choice, entity and autocomplete suggestions, attachments, and validation, then runs a real interaction so responses, followups, modals, and ephemeral visibility appear through the existing Preview receipts and response controls. Its authorized command catalog is fetched separately from the state snapshot.
+  Picker presentation now follows supplied Discord screenshots with a full-composer popup, application rail, compact command rows, framed context bar, and inline option pills. Entity suggestions load on focus; Boolean values display as True/False and can be typed case-insensitively.
+  Keyboard navigation reaches all composer buttons without trapping focus; Boolean suggestions follow typed values. Commands can be submitted in command-only channels, and failed submissions restore the retained draft's editable controls.
 
 ### Bug fixes
 
+- Changing the preview URL fragment now reloads the page and activates the new preview session instead of retaining the previous capability.
+- Direct-message previews now identify the bot as the recipient and use Discord-style @ labels in the channel header and composer.
+- Message edits now preserve immutable Discord flags, including ephemerality, so editing an ephemeral Components V2 message cannot expose it to other viewers.
+- Re-syncing application commands keeps the IDs of existing commands, as Discord's bulk overwrite does.
 - Keep channel-message avatars, text width and wrapping invariant when focus changes; avoid prematurely truncating short channel names, including beside long topics. Separate author groups from compact continuations, tighten initial date-divider placement, enlarge standalone emoji, and soften body-text contrast while retaining the licensed Noto fonts. Format message headers and day dividers using the configured locale and timezone. Managed captures continue to exclude developer controls; these improvements do not certify Discord visual parity.
 - Match preview poll cards to Discord's single-select and multi-select layouts, including selection indicators, full-row percentage fills, vote counts, time remaining, disabled voting, results navigation, and vote removal. Countdown labels update on refresh, and narrow cards reflow results without clipping. Preview polls continue to use the bundled offline text and emoji fonts.
 
 ### Documentation
 
-- Showcase the real offline Preview in the README with Components V2 containers, sections, thumbnails and media galleries, rich embed edits, interactive button states, a booking modal, Discord-style poll voting, and spoiler reveal. Include a render gallery and a reproducible browser recorder using scenery-only artwork, with absolute asset URLs so the showcase also renders on PyPI; the demo establishes functional behavior, not Discord pixel-parity certification.
+- Showcase the real offline Preview in the README with Components V2 containers, sections, thumbnails and media galleries, rich embed edits, interactive button states, a booking modal, Discord-style poll voting, and spoiler reveal. Include a render gallery with a slash-command picker screenshot and a reproducible browser recorder using scenery-only artwork, with absolute asset URLs so the showcase also renders on PyPI; the demo establishes functional behavior, not Discord pixel-parity certification.
 
 ### Miscellaneous
 
+- Remove unused internal command resolution, parser forwarding, capture bookkeeping, and unmatched Preview CSS without changing supported behavior.
+- Separate internal Preview action preparation, authorized projections and queries, frontend controllers, modal submission, environment runtime bookkeeping, and media decoding steps while retaining supported public APIs and behavior.
 - Publish SimCord 3.0 as 3.0.1, the first supported 3.0 release. The mistakenly published 3.0.0 remains yanked on PyPI; its distribution filenames cannot be reused. This release includes the 3.0 features and breaking migrations documented below, together with the latest preview layout and poll fixes.
 
 
