@@ -14,7 +14,7 @@ import pytest
 from discord.ext import tasks as ext_tasks
 
 import simcord
-from simcord import _dpy_internals
+from simcord import _dpy_internals, _runtime
 
 
 def _fake_task(waiter: Any = None) -> Mock:
@@ -292,7 +292,7 @@ async def test_listener_futures_collects_registered_futures() -> None:
 def _record(env: simcord.Env, callback: Any, args: tuple[Any, ...], when: float) -> Any:
     loop = asyncio.new_event_loop()
     handle = asyncio.TimerHandle(when, callback, args, loop)
-    record = simcord.env._CallbackRecord(handle, when, "probe")  # type: ignore[attr-defined]
+    record = _runtime._CallbackRecord(handle, when, "probe")
     env._callbacks.append(record)
     return record
 
