@@ -503,11 +503,35 @@ class _ActionOps:
                 self._close_page(page.id)
 
     def _prepare_action(self, page: _Page, kind: str, body: Mapping[str, Any]) -> Any:
-        """Validate everything that can fail pre-admission.
+        """Validate before admission; return a lazy dispatch coroutine function."""
+        if kind in {
+            "configure_presentation",
+            "browse_messages",
+            "browse_candidates",
+            "close",
+            "viewer",
+            "focus",
+            "refresh",
+            "history",
+        }:
+            return self._prepare_page_action(page, kind, body)
+        if kind == "send_message":
+            return self._prepare_send_action(page, body)
+        actor = page.viewer
+        if kind in {"autocomplete_command", "run_command"}:
+            return self._prepare_command_action(page, kind, body, actor)
+        self._require_current_history(page)
+        if kind == "modal_submit":
+            return self._prepare_modal_action(page, body, actor)
+        target_id = self._target_id(body.get("target_id"), page.viewer)
+        if target_id is None:
+            raise SetupError("authorized target is unavailable")
+        message = self._target_message(page, target_id)
+        if kind in {"edit_message", "delete_message", "set_reaction", "set_poll_votes", "set_pinned"}:
+            return self._prepare_message_action(page, kind, body, actor, message)
+        return self._prepare_component_action(page, kind, body, actor, message)
 
-        Returns a coroutine function performing the admitted dispatch. No page
-        state is mutated here; validation failures become rejections.
-        """
+    def _prepare_page_action(self, page: _Page, kind: str, body: Mapping[str, Any]) -> Any:
         if kind == "configure_presentation":
             layout, display = body.get("layout"), body.get("display")
             if (
@@ -708,220 +732,215 @@ class _ActionOps:
                 return result
 
             return run_history
-        if kind == "send_message":
-            actor = page.viewer
-            if (
-                page.layout != "channel"
-                or page.status != "current"
-                or not can_access_channel(self.env, page.channel_id, actor, history=True)
-            ):
-                raise SetupError("sending requires current channel access and channel layout")
-            content = body.get("content")
-            if not isinstance(content, str) or not content.strip() or len(content) > 2000:
-                raise SetupError("message content must contain 1 to 2000 characters")
-            reply_to = None
-            reply_id = body.get("reply_to_id")
-            if reply_id is not None:
-                if isinstance(reply_id, bool) or not isinstance(reply_id, (str, int)):
-                    raise SetupError("reply target is unavailable")
-                reply_id = self._target_id(reply_id, page.viewer)
-                if reply_id is None:
-                    raise SetupError("reply target is unavailable")
-                reply_to = self._target_message(page, reply_id)
-            if not isinstance(actor, (MemberActor, UserHandle)) or (
-                isinstance(actor, UserHandle) and actor.dm_channel.id != page.channel_id
-            ):
-                raise SetupError("viewer cannot send to this channel")
 
-            async def run_send(action: _Action, cursor: int) -> dict[str, Any]:
-                if isinstance(actor, MemberActor):
-                    response = await actor.send(
-                        self.channel,
-                        content,
-                        reply_to=ResponseMessage(self.env, reply_to) if reply_to is not None else None,
-                    )
-                else:
-                    reference = (
-                        {"channel_id": str(page.channel_id), "message_id": str(reply_to.id)}
-                        if reply_to is not None
-                        else None
-                    )
-                    response = (
-                        await actor.send_dm(content, reference=reference)
-                        if reference
-                        else await actor.send_dm(content)
-                    )
-                try:
-                    self.env.backend.get_message(page.channel_id, response.id)
-                except BackendError as exc:
-                    raise SetupError("message was not accepted by the channel") from exc
-                action.target = {"messageId": str(response.id), "controlKey": None}
-                action.outcomes = [{"kind": "message", "messageId": str(response.id)}]
-                result = self._finish_action(page, action, "settled", cursor)
-                self._publish_message_pages()
-                return result
-
-            return run_send
+    def _prepare_send_action(self, page: _Page, body: Mapping[str, Any]) -> Any:
         actor = page.viewer
-        if kind in {"autocomplete_command", "run_command"}:
-            from ._commands import command_permission, entry_for_leaf, visible_leaf
-            from ._snapshot import _QueryError
+        if (
+            page.layout != "channel"
+            or page.status != "current"
+            or not can_access_channel(self.env, page.channel_id, actor, history=True)
+        ):
+            raise SetupError("sending requires current channel access and channel layout")
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip() or len(content) > 2000:
+            raise SetupError("message content must contain 1 to 2000 characters")
+        reply_to = None
+        reply_id = body.get("reply_to_id")
+        if reply_id is not None:
+            if isinstance(reply_id, bool) or not isinstance(reply_id, (str, int)):
+                raise SetupError("reply target is unavailable")
+            reply_id = self._target_id(reply_id, page.viewer)
+            if reply_id is None:
+                raise SetupError("reply target is unavailable")
+            reply_to = self._target_message(page, reply_id)
+        if not isinstance(actor, (MemberActor, UserHandle)) or (
+            isinstance(actor, UserHandle) and actor.dm_channel.id != page.channel_id
+        ):
+            raise SetupError("viewer cannot send to this channel")
 
-            if page.layout != "channel" or page.status != "current":
-                raise _QueryError("command-unavailable")
-            if not command_permission(cast("Preview", self), page):
-                raise _QueryError("command-unavailable")
-            resolved = visible_leaf(cast("Preview", self), page, body.get("command_id"), body.get("path"))
-            if resolved is None:
-                raise _QueryError("command-unavailable")
-            root, path, leaf = resolved
-            entry = entry_for_leaf(root, path, leaf)
-            if body.get("schema_fingerprint") != entry["schemaFingerprint"]:
-                raise _QueryError("command-changed")
-            invocation = entry["invocation"]
-            if kind == "autocomplete_command":
-                focused = body.get("focused")
-                value = body.get("value")
-                raw_options = body.get("options")
-                if (
-                    not isinstance(focused, str)
-                    or not isinstance(value, str)
-                    or not isinstance(raw_options, Mapping)
-                ):
-                    raise SetupError("autocomplete command input is unavailable")
-                declared = {option["name"]: option for option in leaf.get("options") or []}
-                focused_option = declared.get(focused)
-                if focused_option is None or not focused_option.get("autocomplete"):
-                    raise _QueryError("command-unavailable")
-                filled: dict[str, Any] = {}
-                for name, raw in raw_options.items():
-                    option = declared.get(name) if isinstance(name, str) else None
-                    if option is None or name == focused:
-                        continue
-                    try:
-                        filled[name] = self._command_option_value(page, invocation, option, raw)
-                    except (OptionError, SetupError, BackendError, ValueError):
-                        continue
-
-                async def run_autocomplete(action: _Action, cursor: int) -> dict[str, Any]:
-                    self.env._begin_operation("autocomplete")
-                    try:
-                        result = await _autocomplete_result(
-                            actor,
-                            self.channel,
-                            invocation,
-                            focused,
-                            value,
-                            filled,
-                            root=root,
-                        )
-                    finally:
-                        self.env._end_operation()
-                    offered = result.autocomplete_choices
-                    answered = offered is not None
-                    action.autocomplete_answered = answered
-                    choices = [
-                        {"name": item["name"], "value": item["value"]}
-                        for item in (offered or [])[:25]
-                        if isinstance(item, Mapping)
-                        and isinstance(item.get("name"), str)
-                        and isinstance(item.get("value"), (str, int, float, bool))
-                    ]
-                    action.record_activity = not answered
-                    finished = self._finish_action(
-                        page,
-                        action,
-                        "settled" if answered else "failed",
-                        cursor,
-                        interaction=result._interaction,
-                        extra_diagnostics=(
-                            []
-                            if answered
-                            else [make_diagnostic("autocomplete-unanswered", correlation=action.correlation)]
-                        ),
-                    )
-                    finished["result"] = {
-                        "command": dict(action.command or {}),
-                        "focused": focused,
-                        "answered": answered,
-                        "choices": choices,
-                    }
-                    action.response = finished
-                    return finished
-
-                return run_autocomplete
-
-            raw_options = body.get("options")
-            if not isinstance(raw_options, Mapping):
-                raise SetupError("command options must be an object")
-            parsed: dict[str, Any] = {}
-            upload_bytes = 0
-            declared = {option["name"]: option for option in leaf.get("options") or []}
-            for name, raw in raw_options.items():
-                if not isinstance(name, str) or name not in declared:
-                    raise OptionError(
-                        "option-unknown", str(name), f"Command '{invocation}' has no such option"
-                    )
-                value = self._command_option_value(page, invocation, declared[name], raw)
-                if OptionType(declared[name]["type"]) == OptionType.ATTACHMENT:
-                    upload_bytes += len(value[1])
-                    if upload_bytes > 25 * 1024 * 1024:
-                        raise OptionError(
-                            "option-type", name, "command attachments exceed the 25 MiB aggregate limit"
-                        )
-                parsed[name] = value
-            parsed = check_options(invocation, leaf, parsed)
-            if isinstance(actor, MemberActor) or (
-                isinstance(actor, UserHandle)
-                and actor._env.backend.dm_channels.get(actor.id) == page.channel_id
-            ):
-
-                async def run_command(action: _Action, cursor: int) -> dict[str, Any]:
-                    return await self._run_interaction_action(
-                        page,
-                        action,
-                        cursor,
-                        _slash_resolved(actor, self.channel, invocation, parsed, root),
-                        republish_all=True,
-                    )
+        async def run_send(action: _Action, cursor: int) -> dict[str, Any]:
+            if isinstance(actor, MemberActor):
+                response = await actor.send(
+                    self.channel,
+                    content,
+                    reply_to=ResponseMessage(self.env, reply_to) if reply_to is not None else None,
+                )
             else:
-                raise _QueryError("command-unavailable")
-            return run_command
-        if page.status != "current" or not can_access_channel(self.env, page.channel_id, actor, history=True):
-            raise SetupError("viewer cannot access current channel history")
-        if kind == "modal_submit":
-            modal = page.modal
-            if modal is None or body.get("modal_handle") != page.modal_handle:
-                raise SetupError("modal is stale or unavailable")
-            if modal._interaction.modal_consumed:
-                raise SetupError("modal has already been submitted")
-            modal_values = self._modal_values(page, body.get("values"), modal)
+                reference = (
+                    {"channel_id": str(page.channel_id), "message_id": str(reply_to.id)}
+                    if reply_to is not None
+                    else None
+                )
+                response = (
+                    await actor.send_dm(content, reference=reference)
+                    if reference
+                    else await actor.send_dm(content)
+                )
+            try:
+                self.env.backend.get_message(page.channel_id, response.id)
+            except BackendError as exc:
+                raise SetupError("message was not accepted by the channel") from exc
+            action.target = {"messageId": str(response.id), "controlKey": None}
+            action.outcomes = [{"kind": "message", "messageId": str(response.id)}]
+            result = self._finish_action(page, action, "settled", cursor)
+            self._publish_message_pages()
+            return result
 
-            async def run_modal(action: _Action, cursor: int) -> dict[str, Any]:
-                admitted = next(
-                    (
-                        prior
-                        for prior in reversed(page.activity_actions)
-                        if prior is not None and prior.interaction is modal._interaction
-                    ),
-                    None,
-                )
-                if admitted is not None and admitted.target is not None:
-                    action.target = dict(admitted.target)
-                result = await actor.submit_modal(modal, modal_values)
-                page.modal = None
-                page.modal_handle = None
+        return run_send
+
+    def _prepare_command_action(self, page: _Page, kind: str, body: Mapping[str, Any], actor: Any) -> Any:
+        from ._commands import command_permission, entry_for_leaf, visible_leaf
+        from ._snapshot import _QueryError
+
+        if page.layout != "channel" or page.status != "current":
+            raise _QueryError("command-unavailable")
+        if not command_permission(cast("Preview", self), page):
+            raise _QueryError("command-unavailable")
+        resolved = visible_leaf(cast("Preview", self), page, body.get("command_id"), body.get("path"))
+        if resolved is None:
+            raise _QueryError("command-unavailable")
+        root, path, leaf = resolved
+        entry = entry_for_leaf(root, path, leaf)
+        if body.get("schema_fingerprint") != entry["schemaFingerprint"]:
+            raise _QueryError("command-changed")
+        invocation = entry["invocation"]
+        if kind == "autocomplete_command":
+            focused = body.get("focused")
+            value = body.get("value")
+            raw_options = body.get("options")
+            if (
+                not isinstance(focused, str)
+                or not isinstance(value, str)
+                or not isinstance(raw_options, Mapping)
+            ):
+                raise SetupError("autocomplete command input is unavailable")
+            declared = {option["name"]: option for option in leaf.get("options") or []}
+            focused_option = declared.get(focused)
+            if focused_option is None or not focused_option.get("autocomplete"):
+                raise _QueryError("command-unavailable")
+            filled: dict[str, Any] = {}
+            for name, raw in raw_options.items():
+                option = declared.get(name) if isinstance(name, str) else None
+                if option is None or name == focused:
+                    continue
+                try:
+                    filled[name] = self._command_option_value(page, invocation, option, raw)
+                except (OptionError, SetupError, BackendError, ValueError):
+                    continue
+
+            async def run_autocomplete(action: _Action, cursor: int) -> dict[str, Any]:
+                self.env._begin_operation("autocomplete")
+                try:
+                    result = await _autocomplete_result(
+                        actor,
+                        self.channel,
+                        invocation,
+                        focused,
+                        value,
+                        filled,
+                        root=root,
+                    )
+                finally:
+                    self.env._end_operation()
+                offered = result.autocomplete_choices
+                answered = offered is not None
+                action.autocomplete_answered = answered
+                choices = [
+                    {"name": item["name"], "value": item["value"]}
+                    for item in (offered or [])[:25]
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("name"), str)
+                    and isinstance(item.get("value"), (str, int, float, bool))
+                ]
+                action.record_activity = not answered
                 finished = self._finish_action(
-                    page, action, "settled", cursor, interaction=result._interaction
+                    page,
+                    action,
+                    "settled" if answered else "failed",
+                    cursor,
+                    interaction=result._interaction,
+                    extra_diagnostics=(
+                        []
+                        if answered
+                        else [make_diagnostic("autocomplete-unanswered", correlation=action.correlation)]
+                    ),
                 )
-                self._publish(page)
+                finished["result"] = {
+                    "command": dict(action.command or {}),
+                    "focused": focused,
+                    "answered": answered,
+                    "choices": choices,
+                }
+                action.response = finished
                 return finished
 
-            return run_modal
-        target_id = self._target_id(body.get("target_id"), page.viewer)
-        if target_id is None:
-            raise SetupError("authorized target is unavailable")
-        message = self._target_message(page, target_id)
+            return run_autocomplete
+
+        raw_options = body.get("options")
+        if not isinstance(raw_options, Mapping):
+            raise SetupError("command options must be an object")
+        parsed: dict[str, Any] = {}
+        upload_bytes = 0
+        declared = {option["name"]: option for option in leaf.get("options") or []}
+        for name, raw in raw_options.items():
+            if not isinstance(name, str) or name not in declared:
+                raise OptionError("option-unknown", str(name), f"Command '{invocation}' has no such option")
+            value = self._command_option_value(page, invocation, declared[name], raw)
+            if OptionType(declared[name]["type"]) == OptionType.ATTACHMENT:
+                upload_bytes += len(value[1])
+                if upload_bytes > 25 * 1024 * 1024:
+                    raise OptionError(
+                        "option-type", name, "command attachments exceed the 25 MiB aggregate limit"
+                    )
+            parsed[name] = value
+        parsed = check_options(invocation, leaf, parsed)
+        if isinstance(actor, MemberActor) or (
+            isinstance(actor, UserHandle) and actor._env.backend.dm_channels.get(actor.id) == page.channel_id
+        ):
+
+            async def run_command(action: _Action, cursor: int) -> dict[str, Any]:
+                return await self._run_interaction_action(
+                    page,
+                    action,
+                    cursor,
+                    _slash_resolved(actor, self.channel, invocation, parsed, root),
+                    republish_all=True,
+                )
+        else:
+            raise _QueryError("command-unavailable")
+        return run_command
+
+    def _prepare_modal_action(self, page: _Page, body: Mapping[str, Any], actor: Any) -> Any:
+        modal = page.modal
+        if modal is None or body.get("modal_handle") != page.modal_handle:
+            raise SetupError("modal is stale or unavailable")
+        if modal._interaction.modal_consumed:
+            raise SetupError("modal has already been submitted")
+        modal_values = self._modal_values(page, body.get("values"), modal)
+
+        async def run_modal(action: _Action, cursor: int) -> dict[str, Any]:
+            admitted = next(
+                (
+                    prior
+                    for prior in reversed(page.activity_actions)
+                    if prior is not None and prior.interaction is modal._interaction
+                ),
+                None,
+            )
+            if admitted is not None and admitted.target is not None:
+                action.target = dict(admitted.target)
+            result = await actor.submit_modal(modal, modal_values)
+            page.modal = None
+            page.modal_handle = None
+            finished = self._finish_action(page, action, "settled", cursor, interaction=result._interaction)
+            self._publish(page)
+            return finished
+
+        return run_modal
+
+    def _prepare_message_action(
+        self, page: _Page, kind: str, body: Mapping[str, Any], actor: Any, message: Message
+    ) -> Any:
         if kind == "edit_message":
             content = body.get("content")
             if not isinstance(content, str) or len(content) > 2000:
@@ -990,6 +1009,10 @@ class _ActionOps:
                 return self._finish_message_edit(page, action, cursor, message)
 
             return run_pin
+
+    def _prepare_component_action(
+        self, page: _Page, kind: str, body: Mapping[str, Any], actor: Any, message: Message
+    ) -> Any:
         if kind == "click":
             control_key = body.get("control_key")
             component = _find_scoped_component(
