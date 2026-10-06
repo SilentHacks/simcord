@@ -46,29 +46,9 @@ if TYPE_CHECKING:
 _PROTOCOL_VERSION = 3
 
 
-def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
-    """Build a detached projection for one page; no backend dictionaries escape."""
-    env = preview.env
-    try:
-        channel = env.backend.get_channel(page.channel_id)
-    except BackendError:
-        channel = None
-    allowed = channel is not None and can_access_channel(env, channel.id, page.viewer, history=True)
-    page.referenced_assets.clear()
-    application = page.command_catalog.get("application")
-    if isinstance(application, Mapping) and isinstance(application.get("avatarAssetId"), str):
-        if application["avatarAssetId"] in page.assets:
-            page.referenced_assets.add(application["avatarAssetId"])
-    page.referenced_messages.clear()
-    visible: list[Message] = []
-    if channel is not None and allowed:
-        # Rebuild fixture-sized history; an index would need its own
-        # invalidation and authorization model.
-        visible = [
-            item
-            for item in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id)
-            if can_access_message(env, channel.id, item, page.viewer, history=True)
-        ]
+def _history_window(
+    page: _Page, visible: list[Message]
+) -> tuple[Message | None, list[Message], dict[str, Any]]:
     ids = [item.id for item in visible]
     target_index = next((index for index, item in enumerate(visible) if item.id == page.target_id), None)
     target = visible[target_index] if target_index is not None else None
@@ -93,18 +73,10 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     else:
         window = [target] if target is not None else []
         history = {"hasBefore": False, "hasAfter": False, "windowStartId": None, "windowEndId": None}
-    target_id = str(target.id) if target is not None else None
-    projected: dict[str, dict[str, Any]] = {}
-    candidate_components: list[dict[str, Any]] = []
-    previous = None
-    for item in window:
-        compact = page.layout == "channel" and _is_compact_message(previous, item, preview.timezone, env)
-        value = _message_projection(preview, page, item, compact=compact, channel=channel)
-        projected[str(item.id)] = value
-        candidate_components.extend(value.get("components", []))
-        previous = item
-    message_index, navigation = _message_navigation(preview, page, visible)
+    return target, window, history
 
+
+def _modal_projection(preview: Preview, page: _Page, channel: Any, allowed: bool) -> dict[str, Any] | None:
     modal = None
     if allowed and page.modal is not None:
         payload = _decorate_emoji(deepcopy(page.modal.modal), page)
@@ -120,8 +92,14 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         application = _identity_wire(resolve_identity(preview, page, preview.env.backend.bot_user.id))
         payload["application_identity"] = application
         payload["application_name"] = application["name"]
-        candidate_components.extend(payload.get("components", []))
         modal = {"handle": page.modal_handle, "payload": payload}
+    return modal
+
+
+def _entity_projection(
+    preview: Preview, page: _Page, channel: Any, target: Message | None, allowed: bool
+) -> dict[str, dict[str, dict[str, Any]]]:
+    env = preview.env
     entities: dict[str, dict[str, dict[str, Any]]] = {
         "users": {},
         "members": {},
@@ -195,6 +173,12 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
                             override=referenced.author_name,
                         )
                     )
+    return entities
+
+
+def _snapshot_diagnostics(
+    preview: Preview, page: _Page, projected: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
     for item in page.diagnostics:
         if isinstance(item, Mapping):
@@ -221,6 +205,50 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
             diagnostics.append(
                 make_diagnostic("sticker-asset-unavailable", subject={"messageId": message_id})
             )
+    return diagnostics
+
+
+def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
+    """Build a detached projection for one page; no backend dictionaries escape."""
+    env = preview.env
+    try:
+        channel = env.backend.get_channel(page.channel_id)
+    except BackendError:
+        channel = None
+    allowed = channel is not None and can_access_channel(env, channel.id, page.viewer, history=True)
+    page.referenced_assets.clear()
+    application = page.command_catalog.get("application")
+    if isinstance(application, Mapping) and isinstance(application.get("avatarAssetId"), str):
+        if application["avatarAssetId"] in page.assets:
+            page.referenced_assets.add(application["avatarAssetId"])
+    page.referenced_messages.clear()
+    visible: list[Message] = []
+    if channel is not None and allowed:
+        # Rebuild fixture-sized history; an index would need its own
+        # invalidation and authorization model.
+        visible = [
+            item
+            for item in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id)
+            if can_access_message(env, channel.id, item, page.viewer, history=True)
+        ]
+    target, window, history = _history_window(page, visible)
+    target_id = str(target.id) if target is not None else None
+    projected: dict[str, dict[str, Any]] = {}
+    candidate_components: list[dict[str, Any]] = []
+    previous = None
+    for item in window:
+        compact = page.layout == "channel" and _is_compact_message(previous, item, preview.timezone, env)
+        value = _message_projection(preview, page, item, compact=compact, channel=channel)
+        projected[str(item.id)] = value
+        candidate_components.extend(value.get("components", []))
+        previous = item
+    message_index, navigation = _message_navigation(preview, page, visible)
+
+    modal = _modal_projection(preview, page, channel, allowed)
+    if modal is not None:
+        candidate_components.extend(modal["payload"].get("components", []))
+    entities = _entity_projection(preview, page, channel, target, allowed)
+    diagnostics = _snapshot_diagnostics(preview, page, projected)
     candidates = _candidates(preview, page, candidate_components, diagnostics) if allowed else {}
     if not allowed:
         for key in tuple(page.candidate_queries):

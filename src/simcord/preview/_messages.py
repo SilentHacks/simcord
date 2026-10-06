@@ -177,6 +177,174 @@ def _reaction_emoji_projection(page: _Page, emoji: str) -> dict[str, Any]:
     )
 
 
+def _system_projection(
+    preview: Preview,
+    page: _Page,
+    message: Message,
+    channel: Any,
+    type_info: dict[str, Any],
+    author: dict[str, Any],
+) -> dict[str, Any]:
+    env = preview.env
+    message_kind = MessageType(int(message.type))
+    icon = {
+        MessageType.CHANNEL_NAME_CHANGE: "channel",
+        MessageType.CHANNEL_ICON_CHANGE: "channel",
+        MessageType.PINS_ADD: "pin",
+        MessageType.NEW_MEMBER: "member",
+        MessageType.RECIPIENT_ADD: "member",
+        MessageType.RECIPIENT_REMOVE: "member",
+        MessageType.THREAD_CREATED: "thread",
+        MessageType.THREAD_STARTER_MESSAGE: "thread",
+    }.get(message_kind, "system")
+    system_text = message.content or ""
+    if message_kind == MessageType.CHANNEL_NAME_CHANGE:
+        system_text = f"changed this channel's name: {system_text}."
+    elif message_kind == MessageType.THREAD_CREATED:
+        system_text = f"started a thread: {system_text}."
+    system: dict[str, Any] = {
+        "kind": type_info["name"],
+        "icon": icon,
+        "text": system_text,
+        "text_tokens": markdown_tokens(system_text, "system"),
+        "author": author,
+    }
+    metadata = message.system_metadata
+    if metadata is not None:
+        if metadata.recipient_id is not None and _user_allowed(preview, page, metadata.recipient_id):
+            system["recipient"] = _identity_wire(resolve_identity(preview, page, metadata.recipient_id))
+        if metadata.channel_id is not None:
+            try:
+                target_channel = env.backend.get_channel(metadata.channel_id)
+            except BackendError:
+                target_channel = None
+            if (
+                target_channel is not None
+                and target_channel.guild_id == channel.guild_id
+                and target_channel.guild_id is not None
+                and can_access_channel(env, target_channel.id, page.viewer, history=True)
+            ):
+                system["channel"] = {
+                    "id": str(target_channel.id),
+                    "name": target_channel.name or str(target_channel.id),
+                    "url": _discord_message_link(target_channel.guild_id, target_channel.id),
+                }
+        if metadata.referenced_message_id is not None:
+            reference_channel_id = metadata.referenced_channel_id or message.channel_id
+            try:
+                referenced = env.backend.get_message(reference_channel_id, metadata.referenced_message_id)
+            except BackendError:
+                referenced = None
+            if referenced is not None and can_access_message(
+                env, reference_channel_id, referenced, page.viewer, history=True
+            ):
+                try:
+                    reference_channel = env.backend.get_channel(reference_channel_id)
+                except BackendError:
+                    reference_channel = None
+                if (
+                    reference_channel is not None
+                    and reference_channel.guild_id is not None
+                    and reference_channel.guild_id == channel.guild_id
+                ):
+                    page.referenced_messages.add((reference_channel_id, referenced.id))
+                    system["reference"] = {
+                        "id": str(referenced.id),
+                        "author": _identity_wire(
+                            resolve_identity(
+                                preview,
+                                page,
+                                referenced.author_id,
+                                message=referenced,
+                                override=referenced.author_name,
+                            )
+                        ),
+                        "url": _discord_message_link(
+                            reference_channel.guild_id, reference_channel_id, referenced.id
+                        ),
+                    }
+    return system
+
+
+def _reply_projection(preview: Preview, page: _Page, message: Message) -> dict[str, Any] | None:
+    env = preview.env
+    reference = message.reference
+    if reference:
+        try:
+            reference_message_id = reference.get("message_id")
+            if reference_message_id is None:
+                raise TypeError("reference message id is missing")
+            reference_id = int(reference_message_id)
+            reference_channel = reference.get("channel_id", message.channel_id)
+            if reference_channel is None:
+                raise TypeError("reference channel id is missing")
+            reference_channel_id = int(reference_channel)
+            referenced = env.backend.get_message(reference_channel_id, reference_id)
+        except (BackendError, TypeError, ValueError):
+            referenced = None
+        if referenced is not None and can_access_message(
+            env, reference_channel_id, referenced, page.viewer, history=True
+        ):
+            page.referenced_messages.add((reference_channel_id, referenced.id))
+            referenced_identity = _identity_wire(
+                resolve_identity(
+                    preview,
+                    page,
+                    referenced.author_id,
+                    message=referenced,
+                    override=referenced.author_name,
+                )
+            )
+            reply_channel = env.backend.get_channel(referenced.channel_id)
+            reply_context = _markdown_context(preview, page, referenced, reply_channel)
+            return {
+                "state": "resolved",
+                "message_id": str(referenced.id),
+                "channel_id": str(referenced.channel_id),
+                "channel_name": (
+                    env.backend.get_channel(referenced.channel_id).name
+                    if referenced.channel_id != message.channel_id
+                    else None
+                ),
+                "author": referenced_identity,
+                "excerpt_tokens": _decorate_markdown_emoji(
+                    markdown_tokens(referenced.content[:100], "message", context=reply_context),
+                    page,
+                ),
+                "preview_kind": "message",
+            }
+    return None
+
+
+def _message_texts(message: Message | None, content: str) -> list[str]:
+    texts = [message.content or ""] if message is not None else [content]
+    if message is not None:
+        for embed in message.embeds:
+            for key in ("title", "description"):
+                if isinstance(embed.get(key), str):
+                    texts.append(embed[key])
+            for owner, key in (("author", "name"), ("footer", "text")):
+                value = embed.get(owner)
+                if isinstance(value, dict) and isinstance(value.get(key), str):
+                    texts.append(value[key])
+            fields = embed.get("fields", [])
+            if not isinstance(fields, list):
+                continue
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                for key in ("name", "value"):
+                    if isinstance(field.get(key), str):
+                        texts.append(field[key])
+        texts.extend(
+            component["content"]
+            for component in walk_components(message.components)
+            if int(component.get("type", -1)) == int(ComponentType.TEXT_DISPLAY)
+            and isinstance(component.get("content"), str)
+        )
+    return texts
+
+
 def _message_projection(
     preview: Preview, page: _Page, message: Message, *, compact: bool, channel: Any
 ) -> dict[str, Any]:
@@ -241,84 +409,7 @@ def _message_projection(
     }
     data["mentions"]["users"] = list(data["mention_user_ids"])
     if type_info["kind"] == "system":
-        message_kind = MessageType(int(message.type))
-        icon = {
-            MessageType.CHANNEL_NAME_CHANGE: "channel",
-            MessageType.CHANNEL_ICON_CHANGE: "channel",
-            MessageType.PINS_ADD: "pin",
-            MessageType.NEW_MEMBER: "member",
-            MessageType.RECIPIENT_ADD: "member",
-            MessageType.RECIPIENT_REMOVE: "member",
-            MessageType.THREAD_CREATED: "thread",
-            MessageType.THREAD_STARTER_MESSAGE: "thread",
-        }.get(message_kind, "system")
-        system_text = message.content or ""
-        if message_kind == MessageType.CHANNEL_NAME_CHANGE:
-            system_text = f"changed this channel's name: {system_text}."
-        elif message_kind == MessageType.THREAD_CREATED:
-            system_text = f"started a thread: {system_text}."
-        system: dict[str, Any] = {
-            "kind": type_info["name"],
-            "icon": icon,
-            "text": system_text,
-            "text_tokens": markdown_tokens(system_text, "system"),
-            "author": author,
-        }
-        metadata = message.system_metadata
-        if metadata is not None:
-            if metadata.recipient_id is not None and _user_allowed(preview, page, metadata.recipient_id):
-                system["recipient"] = _identity_wire(resolve_identity(preview, page, metadata.recipient_id))
-            if metadata.channel_id is not None:
-                try:
-                    target_channel = env.backend.get_channel(metadata.channel_id)
-                except BackendError:
-                    target_channel = None
-                if (
-                    target_channel is not None
-                    and target_channel.guild_id == channel.guild_id
-                    and target_channel.guild_id is not None
-                    and can_access_channel(env, target_channel.id, page.viewer, history=True)
-                ):
-                    system["channel"] = {
-                        "id": str(target_channel.id),
-                        "name": target_channel.name or str(target_channel.id),
-                        "url": _discord_message_link(target_channel.guild_id, target_channel.id),
-                    }
-            if metadata.referenced_message_id is not None:
-                reference_channel_id = metadata.referenced_channel_id or message.channel_id
-                try:
-                    referenced = env.backend.get_message(reference_channel_id, metadata.referenced_message_id)
-                except BackendError:
-                    referenced = None
-                if referenced is not None and can_access_message(
-                    env, reference_channel_id, referenced, page.viewer, history=True
-                ):
-                    try:
-                        reference_channel = env.backend.get_channel(reference_channel_id)
-                    except BackendError:
-                        reference_channel = None
-                    if (
-                        reference_channel is not None
-                        and reference_channel.guild_id is not None
-                        and reference_channel.guild_id == channel.guild_id
-                    ):
-                        page.referenced_messages.add((reference_channel_id, referenced.id))
-                        system["reference"] = {
-                            "id": str(referenced.id),
-                            "author": _identity_wire(
-                                resolve_identity(
-                                    preview,
-                                    page,
-                                    referenced.author_id,
-                                    message=referenced,
-                                    override=referenced.author_name,
-                                )
-                            ),
-                            "url": _discord_message_link(
-                                reference_channel.guild_id, reference_channel_id, referenced.id
-                            ),
-                        }
-        data["system"] = system
+        data["system"] = _system_projection(preview, page, message, channel, type_info, author)
     data["mentions"]["roles"] = list(data["mention_role_ids"])
     thread = env.backend.channels.get(message.id)
     if (
@@ -434,51 +525,9 @@ def _message_projection(
     data["mention_channel_ids"] = list(context["channel_ids"])
     data["mention_channel_names"] = dict(context["channels"])
     data["mentions"]["channels"] = list(context["channel_ids"])
-    reference = message.reference
-    if reference:
-        try:
-            reference_message_id = reference.get("message_id")
-            if reference_message_id is None:
-                raise TypeError("reference message id is missing")
-            reference_id = int(reference_message_id)
-            reference_channel = reference.get("channel_id", message.channel_id)
-            if reference_channel is None:
-                raise TypeError("reference channel id is missing")
-            reference_channel_id = int(reference_channel)
-            referenced = env.backend.get_message(reference_channel_id, reference_id)
-        except (BackendError, TypeError, ValueError):
-            referenced = None
-        if referenced is not None and can_access_message(
-            env, reference_channel_id, referenced, page.viewer, history=True
-        ):
-            page.referenced_messages.add((reference_channel_id, referenced.id))
-            referenced_identity = _identity_wire(
-                resolve_identity(
-                    preview,
-                    page,
-                    referenced.author_id,
-                    message=referenced,
-                    override=referenced.author_name,
-                )
-            )
-            reply_channel = env.backend.get_channel(referenced.channel_id)
-            reply_context = _markdown_context(preview, page, referenced, reply_channel)
-            data["reply"] = {
-                "state": "resolved",
-                "message_id": str(referenced.id),
-                "channel_id": str(referenced.channel_id),
-                "channel_name": (
-                    env.backend.get_channel(referenced.channel_id).name
-                    if referenced.channel_id != message.channel_id
-                    else None
-                ),
-                "author": referenced_identity,
-                "excerpt_tokens": _decorate_markdown_emoji(
-                    markdown_tokens(referenced.content[:100], "message", context=reply_context),
-                    page,
-                ),
-                "preview_kind": "message",
-            }
+    reply = _reply_projection(preview, page, message)
+    if reply is not None:
+        data["reply"] = reply
     return data
 
 
@@ -534,29 +583,7 @@ def _markdown_context(
     content: str = "",
 ) -> dict[str, Any]:
     backend = preview.env.backend
-    texts = [message.content or ""] if message is not None else [content]
-    if message is not None:
-        for embed in message.embeds:
-            for key in ("title", "description"):
-                if isinstance(embed.get(key), str):
-                    texts.append(embed[key])
-            for owner, key in (("author", "name"), ("footer", "text")):
-                value = embed.get(owner)
-                if isinstance(value, dict) and isinstance(value.get(key), str):
-                    texts.append(value[key])
-            fields = embed.get("fields", [])
-            if isinstance(fields, list):
-                for field in fields:
-                    if isinstance(field, dict):
-                        for key in ("name", "value"):
-                            if isinstance(field.get(key), str):
-                                texts.append(field[key])
-        texts.extend(
-            component["content"]
-            for component in walk_components(message.components)
-            if int(component.get("type", -1)) == int(ComponentType.TEXT_DISPLAY)
-            and isinstance(component.get("content"), str)
-        )
+    texts = _message_texts(message, content)
     users: dict[str, str] = {}
     for text in texts:
         for match in re.finditer(r"<@!?([0-9]{1,20})>", text):
