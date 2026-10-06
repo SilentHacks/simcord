@@ -36,6 +36,7 @@ class PreviewServer:
     _STATIC_FILES: ClassVar[dict[str, str]] = {
         "/": "index.html",
         "/app.js": "app.js",
+        "/workbench.js": "workbench.js",
         "/components.js": "components.js",
         "/selects.js": "selects.js",
         "/listbox.js": "listbox.js",
@@ -86,6 +87,7 @@ class PreviewServer:
         "preview.css": "text/css",
         "protocol.schema.json": "application/schema+json",
         "app.js": "application/javascript",
+        "workbench.js": "application/javascript",
         "components.js": "application/javascript",
         "media.js": "application/javascript",
         "messages.js": "application/javascript",
