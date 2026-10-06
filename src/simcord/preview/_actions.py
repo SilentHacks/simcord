@@ -270,7 +270,7 @@ class _ActionOps:
             result["messageIndex"] = rows
             response["result"] = result
         elif action.kind == "browse_candidates":
-            from ._snapshot import _candidate_descriptor, candidate_control
+            from ._queries import _candidate_descriptor, candidate_control
 
             control_key = result.get("control_key")
             state = page.candidate_queries.get(control_key) if isinstance(control_key, str) else None
@@ -371,7 +371,7 @@ class _ActionOps:
             try:
                 plan = self._prepare_action(page, kind, body)
             except (SetupError, BackendError, ValueError) as exc:
-                from ._snapshot import _QueryError
+                from ._queries import _QueryError
 
                 code = (
                     exc.code

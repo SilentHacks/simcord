@@ -13,7 +13,7 @@ from ..backend.access import can_access_channel
 from ..backend.errors import BackendError, SetupError
 from ..enums import AppCommandType, OptionType
 from ..interactions import command_leaves
-from ._snapshot import resolve_identity
+from ._identity import resolve_identity
 
 if TYPE_CHECKING:
     from . import Preview

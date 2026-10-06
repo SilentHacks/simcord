@@ -109,7 +109,7 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
 
         return run_presentation
     if kind == "browse_messages":
-        from ._snapshot import validate_message_query
+        from ._queries import validate_message_query
 
         self._require_current_history(page)
         query, cursor_value = validate_message_query(
@@ -129,7 +129,7 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
 
         return run_browse_messages
     if kind == "browse_candidates":
-        from ._snapshot import validate_candidate_query
+        from ._queries import validate_candidate_query
 
         self._require_current_history(page)
         control_key = body.get("control_key")
@@ -152,7 +152,7 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
             )
             or len(set(selected_values)) != len(selected_values)
         ):
-            from ._snapshot import _QueryError
+            from ._queries import _QueryError
 
             raise _QueryError("query-invalid")
 
@@ -334,7 +334,7 @@ def _prepare_command_action(
     self: Preview, page: _Page, kind: str, body: Mapping[str, Any], actor: Any
 ) -> Any:
     from ._commands import command_permission, entry_for_leaf, visible_leaf
-    from ._snapshot import _QueryError
+    from ._queries import _QueryError
 
     if page.layout != "channel" or page.status != "current":
         raise _QueryError("command-unavailable")
