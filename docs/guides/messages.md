@@ -63,7 +63,8 @@ does not ping the original author. Source visibility/history and destination sen
 permissions are enforced; SDK forwarding also requires application-level content access.
 Actor message handles must belong to the same environment; colliding deterministic
 IDs from another environment do not identify a local source. Cross-guild forwarding
-within one environment remains supported.
+within one environment remains supported, including SDK interaction originals and
+webhook followups. Message handles retained across a bot restart remain environment-owned.
 
 Snapshot metadata is copied when the forward is created and detached on observation. Later
 source edits/deletion and mutations of returned objects do not alter it. Existing immutable

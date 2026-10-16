@@ -432,3 +432,40 @@ async def test_dm_actor_rejects_foreign_colliding_message(env, alice, handle_typ
         local = simcord.ResponseMessage(env, env.backend.get_message(alice.user.dm_channel.id, local.id))
     await alice.user.edit(local, "local edit")
     assert alice.user.dm_channel.history()[0].content == "local edit"
+
+
+@pytest.mark.parametrize("handle_type", ["callback", "original", "followup"])
+async def test_actor_accepts_owned_interaction_and_webhook_handles_but_not_foreign_ones(
+    env, channel, alice, handle_type
+):
+    def make_bot():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+        handles = {}
+
+        @bot.tree.command(name="handles")
+        async def handles_command(interaction: discord.Interaction):
+            callback = await interaction.response.send_message("original")
+            handles["callback"] = callback.resource
+            handles["original"] = await interaction.original_response()
+            handles["followup"] = await interaction.followup.send("followup", wait=True)
+
+        return bot, handles
+
+    bot, handles = make_bot()
+    await env.restart_bot(bot)
+    await bot.tree.sync()
+    await alice.slash(channel, "handles")
+    source = handles[handle_type]
+    await alice.react(source, "✅")
+    forwarded = await alice.forward(source, channel)
+    assert forwarded.message_snapshots[0].content == source.content
+    assert env.backend.get_message(channel.id, source.id).reactions[0].user_ids == [alice.id]
+
+    foreign_bot, foreign_handles = make_bot()
+    async with simcord.run(foreign_bot, strict_sync=False) as foreign:
+        guild = foreign.create_guild()
+        foreign_channel = guild.create_text_channel("general")
+        foreign_alice = guild.add_member(foreign.create_user("alice"))
+        await foreign_alice.slash(foreign_channel, "handles")
+        with pytest.raises(simcord.SetupError, match="must belong to this environment"):
+            await alice.forward(foreign_handles[handle_type], channel)
