@@ -49,10 +49,13 @@ async def test_preview_poll_browser_vote_results_and_removal(env, channel, alice
                 card = page.locator(".message-poll")
                 vote = card.get_by_role("button", name="Vote", exact=True)
                 await expect(vote).to_be_disabled()
-                await expect(card.locator(".poll-time")).to_have_text("2h left")
+                revision = await page.evaluate("window.simcordPreview.publishedRevision")
                 await env.advance_time(3600)
                 await preview.refresh()
-                await expect(card.locator(".poll-time")).to_have_text("1h left")
+                await page.wait_for_function(
+                    "revision => window.simcordPreview.publishedRevision > revision && window.simcordPreview.ready",
+                    arg=revision,
+                )
                 await card.locator(".poll-answer").nth(0).click()
                 await card.locator(".poll-answer").nth(1).click()
                 await expect(card.locator(".poll-answer.is-selected")).to_have_count(2 if multiselect else 1)

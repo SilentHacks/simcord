@@ -60,6 +60,18 @@ methods. See [Core concepts → Builders](concepts.md#builders-arrange-the-world
 
 ::: simcord.UserHandle
 
+### SKUs and entitlements
+
+`Env.create_sku()` arranges the catalog; `seed_entitlement()` arranges history without
+CREATE; `await grant_entitlement()` emits a live grant and settles. Recover a committed
+grant by ID with `get_entitlement()`. See [SKUs & entitlements](guides/monetization.md)
+for lifecycle, sandbox provenance and the explicit uncalibrated parity policies.
+
+::: simcord.SKUHandle
+
+::: simcord.EntitlementHandle
+
+
 ## Actors
 
 The simulated human that drives your bot. Created by `guild.add_member(...)`. See

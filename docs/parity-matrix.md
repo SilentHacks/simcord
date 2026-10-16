@@ -42,6 +42,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |
 | Components V2 / `LayoutView` | ✅ | Legal wire-tree nesting, 40-component limit, stable IDs, V2 flag/content invariants, media attachments and webhook `with_components`; arbitrary remote media is metadata-only offline |
+| SKUs & entitlements | ⚠️ | Subscription/generated group, durable/consumable catalog; six REST routes; CREATE/UPDATE/DELETE on shard zero; interaction access, consume, history/replay and restart. Undocumented edge semantics are explicit [simulator policies pending calibration](guides/monetization.md#evidence-and-open-parity-checks), not observed Discord parity. No checkout, Subscription reporting/events, or application plans/credits/trials. |
 | Local component preview | ✅ | Optional loopback page on the protocol-3 contract: bounded authorized message navigation, control-scoped candidate descriptors, typed causal action receipts, explicit refresh and page-local viewers. No protocol-2 compatibility reader; not a Discord client or network connection. |
 | Preview screenshots | ✅ | Optional Playwright capture returns immutable `PreviewCapture` reports (`schema_version=1`, `protocol_version=3`) with exact requested logical viewport, visible-intersection geometry, readiness, diagnostics, completeness and calibration metadata. Surface captures never expand scroll content or include inspector chrome. |
 | Preview embed presentation | ✅ | Safe title/author/provider links and offline-authorized media; adaptive field runs, thumbnail/image composition, author/footer icons and timestamps. External-only media stays unavailable; embed reference geometry remains blocked. |
@@ -52,7 +53,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Preview responsive and lifecycle verification | ⚠️ | Browser checks cover 320/360/420/640/960/1280 px message profiles at 700/900 px heights, long mixed-direction text and zoom, and delayed asset delivery during one viewer's revocation while another viewer stays authorized. These prove local behavior, not Discord geometry or human screen-reader usability. The private reference comparison and human modal/select/reaction/poll screen-reader smoke remain release blockers; no certified parity is claimed. |
 | Preview presentation limits | ✅ | 16 pages, 128 MiB retained media, bounded multipart/raster decoding, 30-second capture deadline; see the [preview guide](guides/preview.md) |
 | Preview fidelity boundary | ⚠️ | Packaged, pinned licensed Noto text/script/emoji faces substitute for proprietary Discord fonts; uncovered glyphs and platform-dependent codecs may fall back. Visible keyboard focus intentionally differs. Offline assets are explicit, premium/provider service actions stay external, and arbitrary captures remain uncalibrated. Browser playback is interactive; managed capture uses deterministic `media_time`. |
-| Bot restart / persistent views | ✅ | `env.restart_bot()` replays the world; persistent views re-attach |
+| Bot restart / persistent views | ✅ | `env.restart_bot()` hydrates current guild state and reattaches persistent views; entitlement state/schedules survive, without automatic entitlement event replay |
 | Members (join/leave, kick/ban/unban, nick, roles, timeout) | ✅ | Hierarchy enforced; `fetch_members` listing; `bulk_ban`, `prune_members`/`estimate_pruned_members` (roleless = inactive); the bot's own nick (`guild.me.edit`) |
 | Roles (create/edit/delete) | ✅ | `Guild.fetch_role`; reorder via `Guild.edit_role_positions` |
 | Guilds (create/edit/delete) | ✅ | `Client.create_guild`, `Guild.edit`, `Guild.delete` (owner-only); `GUILD_UPDATE` audit; `Guild.leave`, `Client.fetch_guilds`, `ClientUser.edit` (bot username); `Guild.vanity_invite` (settable via `guild.set_vanity_url`) |
@@ -67,7 +68,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Invites | ✅ | Create/list/fetch/delete, gateway events |
 | Emojis & stickers | ✅ | Guild expression CRUD, update events; application-owned emojis (`Client.create_application_emoji`, `fetch_application_emojis`) |
 | Auto-moderation | ✅ | Rule CRUD + keyword & mention-spam execution (block/alert) on send |
-| View timeout fast-forward (`advance_time`) | ✅ | Virtual clock; fires view timeouts, cooldowns, sleep chains |
+| Time control (`advance_time`) | ✅ | Shared UTC/monotonic clock, chronological resource deadlines and bot timers, SDK expiry/sleep/calendar loops in selected contexts; allocation does not advance time; one live Env per loop |
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
 | Sharding simulation | ✅ | `AutoShardedClient`/`AutoShardedBot`; full and partial shard sets, Discord guild routing, per-shard READY/chunking/presence/latency/controls; no multi-process IPC |
 
@@ -100,9 +101,9 @@ so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->
 
-**134 routes implemented**, grouped by resource below. Anything else fails loudly with `RouteNotImplemented`.
+**140 routes implemented**, grouped by resource below. Anything else fails loudly with `RouteNotImplemented`.
 
-???+ success "Applications · 10 route(s)"
+???+ success "Applications · 16 route(s)"
 
     | Method | Route |
     | --- | --- |
@@ -113,9 +114,15 @@ so it is exact by construction.
     | `GET` | `/applications/{application_id}/emojis/{emoji_id}` |
     | `PATCH` | `/applications/{application_id}/emojis/{emoji_id}` |
     | `DELETE` | `/applications/{application_id}/emojis/{emoji_id}` |
+    | `GET` | `/applications/{application_id}/entitlements` |
+    | `POST` | `/applications/{application_id}/entitlements` |
+    | `GET` | `/applications/{application_id}/entitlements/{entitlement_id}` |
+    | `DELETE` | `/applications/{application_id}/entitlements/{entitlement_id}` |
+    | `POST` | `/applications/{application_id}/entitlements/{entitlement_id}/consume` |
     | `GET` | `/applications/{application_id}/guilds/{guild_id}/commands` |
     | `PUT` | `/applications/{application_id}/guilds/{guild_id}/commands` |
     | `GET` | `/applications/{application_id}/guilds/{guild_id}/commands/{command_id}/permissions` |
+    | `GET` | `/applications/{application_id}/skus` |
 
 ???+ success "Channels · 40 route(s)"
 
@@ -301,9 +308,9 @@ issue if your bot needs one.
 
 <!-- gaps:begin (generated — do not edit by hand) -->
 
-**53 discord.py REST routes are not yet implemented**, grouped by resource below; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
+**47 discord.py REST routes are not yet implemented**, grouped by resource below; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
 
-???+ warning "Applications · 17 route(s)"
+???+ warning "Applications · 11 route(s)"
 
     | Route | discord.py `HTTPClient` method |
     | --- | --- |
@@ -312,18 +319,12 @@ issue if your bot needs one.
     | `GET /applications/{}/commands/{}` | `get_global_command` |
     | `PATCH /applications/{}/commands/{}` | `edit_global_command` |
     | `DELETE /applications/{}/commands/{}` | `delete_global_command` |
-    | `GET /applications/{}/entitlements` | `get_entitlements` |
-    | `POST /applications/{}/entitlements` | `create_entitlement` |
-    | `GET /applications/{}/entitlements/{}` | `get_entitlement` |
-    | `DELETE /applications/{}/entitlements/{}` | `delete_entitlement` |
-    | `POST /applications/{}/entitlements/{}/consume` | `consume_entitlement` |
     | `POST /applications/{}/guilds/{}/commands` | `upsert_guild_command` |
     | `GET /applications/{}/guilds/{}/commands/permissions` | `get_guild_application_command_permissions` |
     | `GET /applications/{}/guilds/{}/commands/{}` | `get_guild_command` |
     | `PATCH /applications/{}/guilds/{}/commands/{}` | `edit_guild_command` |
     | `DELETE /applications/{}/guilds/{}/commands/{}` | `delete_guild_command` |
     | `PUT /applications/{}/guilds/{}/commands/{}/permissions` | `edit_application_command_permissions` |
-    | `GET /applications/{}/skus` | `get_skus` |
 
 ???+ warning "Authentication · 1 route(s)"
 

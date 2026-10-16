@@ -337,17 +337,17 @@ async def test_preview_capture_target_boundaries(tmp_path, env, channel, alice):
         with pytest.raises(simcord.SetupError, match="directory does not exist"):
             await preview.screenshot(tmp_path / "missing" / "capture.png")
 
-        async with simcord.run(create_bot()) as other:
-            guild = other.create_guild()
-            other_channel = guild.create_text_channel("other")
-            other_alice = guild.add_member(other.create_user("alice"))
-            foreign = simcord.InteractionResult(
-                other, Interaction(1, "token", other_alice.id, other_channel.id, guild.id, 1)
-            )
-            with pytest.raises(simcord.SetupError, match="target belongs to another Env"):
-                await preview.screenshot(tmp_path / "foreign-target.png", target=foreign)
-            with pytest.raises(simcord.SetupError, match="belongs to another Env"):
-                await preview.screenshot(tmp_path / "foreign-viewer.png", viewer=other_alice)
+        other = simcord.Env(create_bot())
+        guild = other.create_guild()
+        other_channel = guild.create_text_channel("other")
+        other_alice = guild.add_member(other.create_user("alice"))
+        foreign = simcord.InteractionResult(
+            other, Interaction(1, "token", other_alice.id, other_channel.id, guild.id, 1)
+        )
+        with pytest.raises(simcord.SetupError, match="target belongs to another Env"):
+            await preview.screenshot(tmp_path / "foreign-target.png", target=foreign)
+        with pytest.raises(simcord.SetupError, match="belongs to another Env"):
+            await preview.screenshot(tmp_path / "foreign-viewer.png", viewer=other_alice)
 
 
 @pytest.mark.asyncio

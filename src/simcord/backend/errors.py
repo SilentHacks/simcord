@@ -131,3 +131,25 @@ def target_not_connected_to_voice() -> BackendError:
 
 def unknown_command_permissions() -> BackendError:
     return BackendError(404, 10066, "Unknown application command permissions")
+
+
+def unknown_sku() -> BackendError:
+    return BackendError(404, 10027, "Unknown SKU")
+
+
+def unknown_entitlement() -> BackendError:
+    return BackendError(404, 10029, "Unknown entitlement")
+
+
+# These 400 statuses are explicit simulator policy; Discord's public catalog
+# documents the JSON codes but not the status pairing for these rejections.
+def not_consumable() -> BackendError:
+    return BackendError(400, 40018, "Only consumable SKUs can be consumed")
+
+
+def not_sandbox_entitlement() -> BackendError:
+    return BackendError(400, 40019, "You can only delete sandbox entitlements.")
+
+
+def entitlement_already_granted() -> BackendError:
+    return BackendError(400, 40074, "An entitlement has already been granted for this resource")

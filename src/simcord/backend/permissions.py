@@ -21,15 +21,15 @@ _ADMINISTRATOR = discord.Permissions.administrator.flag
 _TIMEOUT_MASK = discord.Permissions.view_channel.flag | discord.Permissions.read_message_history.flag
 
 
-def _is_timed_out(guild: Guild, user_id: int) -> bool:
+def _is_timed_out(guild: Guild, user_id: int, now: datetime.datetime) -> bool:
     member = guild.members.get(user_id)
     if member is None or member.timed_out_until is None:
         return False
     until = datetime.datetime.fromisoformat(member.timed_out_until)
-    return until > datetime.datetime.now(datetime.UTC)
+    return until > now
 
 
-def compute(guild: Guild, user_id: int, channel: Channel | None = None) -> int:
+def compute(guild: Guild, user_id: int, channel: Channel | None = None, *, now: datetime.datetime) -> int:
     if guild.owner_id == user_id:
         return _ALL
     member = guild.members.get(user_id)
@@ -61,7 +61,7 @@ def compute(guild: Guild, user_id: int, channel: Channel | None = None) -> int:
         if member_overwrite is not None and member_overwrite.type == OverwriteType.MEMBER:
             base = (base & ~member_overwrite.deny) | member_overwrite.allow
 
-    if _is_timed_out(guild, user_id):
+    if _is_timed_out(guild, user_id, now):
         base &= _TIMEOUT_MASK
 
     return base

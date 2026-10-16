@@ -213,11 +213,17 @@ async def test_restarts_recompute_access_and_other_environments_keep_their_own_a
         env.approved_intents = _approval(True)
         await env.restart_bot(_bot())
         assert (await _request(env, "GET", path))["content"] == "private"
-        async with simcord.run(_bot(), approved_intents=_approval(False)) as other:
-            other_channel, other_alice = _world(other)
-            other_message = _rich(other, other_channel, other_alice.id)
-            _hidden(await _request(other, "GET", f"/channels/{other_channel.id}/messages/{other_message.id}"))
-            assert (await _request(env, "GET", path))["content"] == "private"
+    async with simcord.run(_bot(), approved_intents=_approval(False)) as other:
+        other_channel, other_alice = _world(other)
+        other_message = _rich(other, other_channel, other_alice.id)
+        _hidden(await _request(other, "GET", f"/channels/{other_channel.id}/messages/{other_message.id}"))
+
+    env.bot = _bot()
+    await env.start()
+    try:
+        assert (await _request(env, "GET", path))["content"] == "private"
+    finally:
+        await env.shutdown()
 
 
 async def test_selected_context_target_and_interaction_token_responses_keep_contextual_access():

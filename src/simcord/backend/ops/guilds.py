@@ -37,9 +37,22 @@ class GuildMixin(BackendBase):
     # ---------------------------------------------------------------- guilds
 
     def create_guild(
-        self, name: str, *, id: int | None = None, owner_id: int | None = None, **settings: Any
+        self,
+        name: str,
+        *,
+        id: int | None = None,
+        owner_id: int | None = None,
+        shard_id: int | None = None,
+        shard_count: int = 1,
+        **settings: Any,
     ) -> Guild:
-        guild_id = id if id is not None else self.snowflake()
+        guild_id = (
+            self.reserve_id(id)
+            if id is not None
+            else self.snowflake_for_shard(shard_id, shard_count)
+            if shard_id is not None
+            else self.snowflake()
+        )
         if owner_id is None:
             # A synthetic owner: the bot must never own guilds by default,
             # since owners bypass every permission check.

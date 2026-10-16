@@ -267,7 +267,7 @@ def test_register_commands_rejects_unknown_fields_before_mutating_store() -> Non
     backend = world.backend
     backend.register_commands(None, [{"name": "existing", "description": "before"}])
     previous = dict(backend.commands[None])
-    counter = backend._counter
+    reserved_ids = set(backend._reserved_ids)
 
     with pytest.raises(ValueError, match="Unsupported command field"):
         backend.register_commands(
@@ -279,4 +279,4 @@ def test_register_commands_rejects_unknown_fields_before_mutating_store() -> Non
         )
 
     assert backend.commands[None] == previous
-    assert backend._counter == counter
+    assert backend._reserved_ids == reserved_ids

@@ -71,7 +71,7 @@ def base_payload(
         "channel_id": str(channel_id),
         "channel": dict(serializers.channel_payload(backend, channel)),
         "locale": "en-US",
-        "entitlements": [],
+        "entitlements": backend.interaction_entitlements(user_id, guild_id),
         "authorizing_integration_owners": {},
         "context": 0 if guild_id is not None else 1,
         "attachment_size_limit": 26214400,

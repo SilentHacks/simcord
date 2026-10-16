@@ -22,6 +22,7 @@ from .ops.expressions import ExpressionsMixin
 from .ops.guilds import DEFAULT_EVERYONE_PERMISSIONS, GuildMixin
 from .ops.invites import InviteMixin
 from .ops.messages import MessageMixin
+from .ops.monetization import MonetizationMixin
 from .ops.permissions import PermissionsMixin
 from .ops.polls import PollMixin
 from .ops.reactions import ReactionMixin
@@ -46,5 +47,6 @@ class Backend(
     InviteMixin,
     ExpressionsMixin,
     CommandsMixin,
+    MonetizationMixin,
 ):
     """Assembles the subsystem mixins; all behaviour lives in them + BackendBase."""

@@ -57,10 +57,18 @@ Common builders:
 | `guild.create_text_channel(name, *, overwrites=…, topic=…)` | A `ChannelHandle`. |
 | `guild.create_role(name, *, permissions=…)` | A `RoleHandle`. |
 | `guild.add_member(user, *, roles=…, nick=…)` | A `MemberActor` (the user, now in the guild). |
+| `env.create_sku(name)` | A `SKUHandle`; subscription groups are generated automatically. |
+| `env.seed_entitlement(sku, guild=… / user=…)` | Historical `EntitlementHandle`, without CREATE. |
+| `await env.grant_entitlement(sku, guild=… / user=…)` | Live entitlement, CREATE, and settled bot reactions. |
 
 !!! tip "`env.guild` is a shortcut"
     The first guild you create is available as `env.guild`, for the common single-guild
     test. `env.guild.create_text_channel(...)` reads nicely.
+
+Live entitlement grants are deliberately async: unlike historical seeding, they deliver
+a causal event and settle it. Both handles expose detached real SDK `snapshot()` models.
+The grant may already be committed when settlement times out; recover by ID, do not retry.
+See [SKUs & entitlements](guides/monetization.md) for lifecycle and parity boundaries.
 
 ## Actors — act as a real user
 

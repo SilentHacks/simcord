@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import time
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -14,6 +13,7 @@ import discord
 from . import _dpy_internals
 from . import intents as _intents
 from ._settlement import _wakes_recognized_wait
+from .backend import serializers
 from .backend.errors import SetupError
 from .gateway import ShardRouter
 from .http import FakeHTTPClient, FakeWebhookAdapter
@@ -25,6 +25,19 @@ if TYPE_CHECKING:
 _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.ContextVar(
     "simcord_bot_scope", default=None
 )
+_CLOCK_SCOPE: contextvars.ContextVar[Any] = contextvars.ContextVar("simcord_clock_scope", default=None)
+_LIVE_LOOPS: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
+
+
+def _selected_env(*, driver: bool = True) -> Any:
+    scope = _BOT_SCOPE.get()
+    if scope is not None:
+        env, generation = scope
+        if env._started and env._orig_create_task is not None and generation == env._generation:
+            return env
+        return None
+    env = _CLOCK_SCOPE.get() if driver else None
+    return env if env is not None and env._started and env._orig_create_task is not None else None
 
 
 @dataclass(slots=True)
@@ -48,23 +61,6 @@ def _current_task() -> asyncio.Task[Any] | None:
         return asyncio.current_task()
     except RuntimeError:
         return None
-
-
-class _VirtualTime:
-    __slots__ = ("_env", "_real")
-
-    def __init__(self, env: Env, real: Any) -> None:
-        self._env = env
-        self._real = real
-
-    def monotonic(self) -> float:
-        scope = _BOT_SCOPE.get()
-        if scope is not None and scope[0] is self._env:
-            return self._env._virtual_time
-        return self._real.monotonic()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
 
 
 def _track_callback(
@@ -98,7 +94,7 @@ def _track_callback(
     else:
         scope = _BOT_SCOPE.get()
         schedule_context = self._context_for_scope(context, scope) if context is not None else context
-    if scope is None or scope[0] is not self:
+    if scope is None or scope != (self, self._generation):
         return original(*schedule_args, callback, *args, context=schedule_context)
     label = getattr(callback, "__qualname__", None) or getattr(callback, "__name__", type(callback).__name__)
     record = _CallbackRecord(None, when, label)
@@ -135,12 +131,43 @@ def _track_callback(
                     # virtual clock alone.
                     record.real_handle = None
                     return
-                # The real clock reached this timer: sync the virtual clock
-                # so code observing monotonic() (e.g. View timeouts) sees
-                # the elapsed delay too.
-                if record.when is not None and record.when > self._virtual_time:
-                    self._virtual_time = record.when
-                record.handle._run()
+                # A future fallback can fire while another advance is settling.
+                # Re-arm it: that advance may stop before this timer's instant.
+                if self._advancing or (
+                    self._real_advance_task is not None and not self._real_advance_task.done()
+                ):
+                    if when > self._virtual_time:
+                        assert real_call_at is not None and real_monotonic is not None
+                        record.real_handle = real_call_at(
+                            real_monotonic() + max(when - self._virtual_time, 0.000001),
+                            run_real,
+                            context=schedule_context,
+                        )
+                    return
+
+                async def advance_real() -> None:
+                    assert self._loop is not None
+                    try:
+                        await self._advance_to(
+                            max(self._virtual_time, when), self._loop.time() + self.settle_timeout
+                        )
+                    except TimeoutError:
+                        # This is a settlement failure, not a bot exception.
+                        # The retained task delivers it to the waiting/next operation.
+                        raise
+                    except Exception as error:
+                        if self._operation_task is None:
+                            self._record_error(error)
+                        raise
+
+                task = self._real_advance_task = self._orig_create_task(
+                    advance_real(), context=contextvars.Context()
+                )
+                # The waiting public operation receives the original failure via
+                # result(); otherwise the catch above records asynchronous errors.
+                task.add_done_callback(
+                    lambda finished: None if finished.cancelled() else finished.exception()
+                )
 
         assert real_call_at is not None and real_monotonic is not None
         remaining = max(when - self._virtual_time, 0.0)
@@ -178,14 +205,18 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     orig_call_at = self._orig_call_at = loop.call_at
     orig_call_soon_threadsafe = self._orig_call_soon_threadsafe = loop.call_soon_threadsafe
     orig_run_in_executor = self._orig_run_in_executor = loop.run_in_executor
-    orig_monotonic = self._orig_monotonic = time.monotonic
+    orig_monotonic = _dpy_internals.real_monotonic
 
     def tracking_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
         scope = _BOT_SCOPE.get()
         context = kwargs.get("context")
         if context is not None:
             kwargs["context"] = self._context_for_scope(context, scope)
-        label = _dpy_internals.task_label(coro) if scope is not None and scope[0] is self else None
+        label = (
+            _dpy_internals.task_label(coro)
+            if scope is not None and scope == (self, self._generation)
+            else None
+        )
         task = orig_create_task(coro, **kwargs)
         if not isinstance(task, asyncio.Task):
             raise SetupError("simcord requires the loop task factory to return asyncio.Task objects")
@@ -208,7 +239,9 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
                 callback,
                 args,
                 context=context,
-                when=self._virtual_time + max(delay, 0.0),
+                # A zero-delay timer runs on the next representable UTC tick.
+                # Frozen same-instant wakes otherwise trap SDK clock-drift loops.
+                when=self._virtual_time + max(delay, 0.000001),
                 schedule_args=(delay,),
                 real_call_at=orig_call_at,
                 real_monotonic=orig_monotonic,
@@ -226,7 +259,7 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
                 callback,
                 args,
                 context=context,
-                when=self._virtual_time + max(when - loop.time(), 0.0),
+                when=self._virtual_time + max(when - loop.time(), 0.000001),
                 schedule_args=(when,),
                 real_call_at=orig_call_at,
                 real_monotonic=orig_monotonic,
@@ -240,7 +273,7 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
 
     def run_in_executor(executor: Any, func: Any, *args: Any) -> Any:
         scope = _BOT_SCOPE.get()
-        if scope is None or scope[0] is not self:
+        if scope is None or scope != (self, self._generation):
             return orig_run_in_executor(executor, func, *args)
 
         def owned_call(*call_args: Any) -> Any:
@@ -258,27 +291,15 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     loop.call_at = call_at  # type: ignore[method-assign]
     loop.call_soon_threadsafe = call_soon_threadsafe  # type: ignore[method-assign]
     loop.run_in_executor = run_in_executor  # type: ignore[method-assign]
+    _dpy_internals.acquire_clocks(self)
 
-    if self._virtual_time == 0.0:
-        self._virtual_time = loop.time()
-
-    def monotonic() -> float:
-        scope = _BOT_SCOPE.get()
-        if scope is not None and scope[0] is self:
-            return self._virtual_time
-        return orig_monotonic()
-
-    time.monotonic = monotonic
-    self._orig_view_time = _dpy_internals.view_time()
-    _dpy_internals.swap_view_time(_VirtualTime(self, self._orig_view_time))
     message_content_access = self.approved_intents is None or self.approved_intents.message_content
     _dpy_internals.install_http(
         bot, FakeHTTPClient(self.backend, loop, message_content_access=message_content_access)
     )
     _dpy_internals.set_guild_ready_timeout(bot, 0.0)
-    self._adapter_token = _dpy_internals.set_webhook_adapter(
-        FakeWebhookAdapter(self.backend, message_content_access=message_content_access)
-    )
+    self._webhook_adapter = FakeWebhookAdapter(self.backend, message_content_access=message_content_access)
+    self._adapter_token = _dpy_internals.set_webhook_adapter(self._webhook_adapter)
 
     state = _dpy_internals.get_state(bot)
     self._message_states.add(state)
@@ -308,6 +329,8 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
                 _dpy_internals.install_shards(bot, router.shards)
             for shard_id in self._shard_ids:
                 router.identify(shard_id)
+            for guild in list(self.backend.guilds.values()):
+                self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
         await self._settle_internal(timeout=5.0)
     except BaseException:
         await self._detach_bot()

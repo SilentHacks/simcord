@@ -6,7 +6,6 @@ import asyncio
 import contextvars
 import inspect
 import math
-import time
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -17,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 import discord
 
 from . import _dpy_internals
-from ._runtime import _BOT_SCOPE, _attach_bot, _current_task, _TaskRecord
+from ._runtime import _BOT_SCOPE, _CLOCK_SCOPE, _LIVE_LOOPS, _attach_bot, _current_task, _TaskRecord
 from ._settlement import (
     _active_callbacks,
     _callback_is_parked,
@@ -28,9 +27,10 @@ from ._settlement import (
     _settle_timeout_message,
     _virtualize_recognized_waits,
 )
-from .backend import Backend, serializers
+from .backend import Backend
 from .backend.errors import SetupError
 from .builders import GuildHandle, UserHandle
+from .monetization import EntitlementHandle, SKUHandle, _fixture_id
 from .types import HttpLogEntry
 
 if TYPE_CHECKING:
@@ -85,18 +85,18 @@ class Env:
         self._orig_call_at: Any = None
         self._orig_call_soon_threadsafe: Any = None
         self._orig_run_in_executor: Any = None
-        self._orig_view_time: Any = None
-        self._orig_monotonic: Any = None
-        self._virtual_time = 0.0
+        self._advancing = False
+        self._advance_task: asyncio.Task[Any] | None = None
+        self._real_advance_task: asyncio.Task[None] | None = None
         self._pre_shutdown_hooks: list[Callable[[], Any]] = []
         self._pre_shutdown_task: asyncio.Task[Any] | None = None
         self._pre_shutdown_complete = False
         self._dispatch_observers: list[Callable[[Any], Any]] = []
         self._preview: Preview | None = None
         self._adapter_token: Any = None
+        self._webhook_adapter: Any = None
         self._gateway_feed: Any = None
-        self._shard_count = 1
-        self._shard_ids: tuple[int, ...] = (0,)
+        self._shard_count, self._shard_ids = self._resolve_shards(bot)
         self._started = False
         self._last_dispatch: str | None = None
 
@@ -116,13 +116,38 @@ class Env:
             raise SetupError("idle must be a finite positive number")
         return float(value)
 
+    @property
+    def _virtual_time(self) -> float:
+        return self.backend.clock.elapsed
+
+    def now(self) -> datetime:
+        """Return the shared aware UTC simulation instant."""
+        return self.backend.clock.now()
+
+    @contextmanager
+    def time_context(self) -> Iterator[None]:
+        """Select SDK UTC helpers for driver code without claiming bot work."""
+        token = _CLOCK_SCOPE.set(self)
+        adapter = self._webhook_adapter
+        previous = _dpy_internals.set_webhook_adapter(adapter) if adapter is not None else None
+        try:
+            yield
+        finally:
+            _CLOCK_SCOPE.reset(token)
+            if adapter is not None:
+                _dpy_internals.reset_webhook_adapter(previous)
+
     @contextmanager
     def _bot_scope(self) -> Iterator[None]:
         token = _BOT_SCOPE.set((self, self._generation))
+        adapter = self._webhook_adapter
+        previous = _dpy_internals.set_webhook_adapter(adapter) if adapter is not None else None
         try:
             yield
         finally:
             _BOT_SCOPE.reset(token)
+            if adapter is not None:
+                _dpy_internals.reset_webhook_adapter(previous)
 
     def _register(self, registry: list[_C], item: _C, *, kind: str) -> Callable[[], None]:
         if not callable(item):
@@ -204,9 +229,19 @@ class Env:
         try:
             if self._started:
                 raise SetupError("Env already started")
+            loop = asyncio.get_running_loop()
+            if loop in _LIVE_LOOPS:
+                raise SetupError("Only one live Env is supported per event loop")
+            _LIVE_LOOPS[loop] = self
+            self._loop = loop
             self._started = True
-            self._loop = asyncio.get_running_loop()
-            await _attach_bot(self, self.bot)
+            try:
+                await _attach_bot(self, self.bot)
+            except BaseException:
+                await self._detach_bot()
+                self._started = False
+                _LIVE_LOOPS.pop(loop, None)
+                raise
         finally:
             self._end_operation()
 
@@ -219,11 +254,12 @@ class Env:
             await self._settle_internal()
             await self._detach_bot()
             await _attach_bot(self, bot or self.bot)
-            for handle in self._guilds:
-                guild = self.backend.get_guild(handle.id)
-                with self._bot_scope():
-                    self.backend.emit("GUILD_CREATE", serializers.guild_create_payload(self.backend, guild))
-            await self._settle_internal(timeout=5.0)
+        except BaseException:
+            await self._detach_bot()
+            self._started = False
+            if self._loop is not None and _LIVE_LOOPS.get(self._loop) is self:
+                _LIVE_LOOPS.pop(self._loop, None)
+            raise
         finally:
             self._end_operation()
 
@@ -323,6 +359,8 @@ class Env:
         try:
             await self._detach_bot()
             self._started = False
+            if self._loop is not None and _LIVE_LOOPS.get(self._loop) is self:
+                _LIVE_LOOPS.pop(self._loop, None)
         finally:
             self._end_operation()
 
@@ -339,7 +377,12 @@ class Env:
         if self._adapter_token is not None:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
             self._adapter_token = None
+        self._webhook_adapter = None
         current = _current_task()
+        if self._real_advance_task is not None and self._real_advance_task is not current:
+            self._real_advance_task.cancel()
+            await asyncio.gather(self._real_advance_task, return_exceptions=True)
+            self._real_advance_task = None
         while True:
             to_cancel = [task for task in self._task_records if task is not current and not task.done()]
             if not to_cancel:
@@ -377,12 +420,7 @@ class Env:
             self._orig_call_at = None
             self._orig_call_soon_threadsafe = None
             self._orig_run_in_executor = None
-        if self._orig_view_time is not None:
-            _dpy_internals.swap_view_time(self._orig_view_time)
-            self._orig_view_time = None
-        if self._orig_monotonic is not None:
-            time.monotonic = self._orig_monotonic
-            self._orig_monotonic = None
+        _dpy_internals.release_clocks(self)
         self._task_records.clear()
         self._external_waits.clear()
 
@@ -438,16 +476,26 @@ class Env:
         timeout: float | None = None,  # noqa: ASYNC109
         idle: float = 0.05,
         dispatch: str | None = None,
+        _deadline: float | None = None,
     ) -> None:
         effective = self.settle_timeout if timeout is None else self._validate_timeout(timeout, "timeout")
         interval = self._validate_idle(idle)
         assert self._loop is not None
         self._last_dispatch = dispatch
-        deadline = self._loop.time() + effective
+        deadline = self._loop.time() + effective if _deadline is None else _deadline
         stable_empty = 0
         while True:
             _run_due_virtual_callbacks(self, deadline)
             await asyncio.sleep(0)
+            advancing = self._real_advance_task or self._advance_task
+            if advancing is not None and advancing is not _current_task():
+                done, _ = await asyncio.wait((advancing,), timeout=max(0.0, deadline - self._loop.time()))
+                if not done:
+                    raise TimeoutError("bot did not settle while advancing time")
+                if self._real_advance_task is advancing:
+                    self._real_advance_task = None
+                advancing.result()
+                continue
             pending = [
                 task
                 for task in _owned_tasks(
@@ -530,32 +578,77 @@ class Env:
                         )
                     )
 
-    async def advance_time(self, seconds: float) -> None:
-        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
-            raise SetupError("seconds must be a finite non-negative number")
+    def _next_resource_deadline(self) -> float | None:
+        deadlines = (
+            self.backend.next_poll_deadline(),
+            self.backend.next_scheduled_event_deadline(),
+            self.backend.next_entitlement_deadline(),
+        )
+        return min(
+            (
+                self._virtual_time + max(0.0, (at - self.now()).total_seconds())
+                for at in deadlines
+                if at is not None
+            ),
+            default=None,
+        )
 
-        if seconds < 0:
-            raise SetupError("seconds must be a finite non-negative number")
-        self._begin_operation("advance_time")
-        try:
-            assert self._loop is not None
-            amount = float(seconds)
-            await self._settle_internal()
-            target = self._virtual_time + amount
-            self.backend.advance_clock(amount)
+    def _process_resource_deadlines(self) -> None:
+        with self._bot_scope():
             self.backend.expire_due_polls()
             self.backend.activate_due_scheduled_events()
-            while (
-                next_timer := _next_virtual_timer(
-                    self,
-                )
-            ) is not None and next_timer <= target:
-                # max(): a real fallback firing during settle may already have
-                # pushed the clock past this timer — virtual time never regresses.
-                self._virtual_time = max(self._virtual_time, next_timer)
-                await self._settle_internal()
-            self._virtual_time = max(self._virtual_time, target)
-            await self._settle_internal()
+            self.backend.process_entitlement_deadlines()
+
+    def _move_clock(self, target: float) -> None:
+        amount = max(0.0, target - self._virtual_time)
+        self.backend.advance_clock(amount)
+        self._process_resource_deadlines()
+
+    async def _advance_to(self, target: float, deadline: float) -> None:
+        if self._advance_task is not None:
+            assert self._loop is not None
+            await asyncio.wait_for(
+                asyncio.shield(self._advance_task), timeout=max(0.0, deadline - self._loop.time())
+            )
+        self._advance_task = _current_task()
+        self._advancing = True
+        try:
+            self._process_resource_deadlines()
+            await self._settle_internal(_deadline=deadline)
+            while self._virtual_time < target:
+                if self._loop is not None and self._loop.time() >= deadline:
+                    raise TimeoutError("bot did not settle while advancing time")
+                candidates = [target]
+                for instant in (self._next_resource_deadline(), _next_virtual_timer(self)):
+                    if instant is not None:
+                        candidates.append(max(self._virtual_time, instant))
+                self._move_clock(min(candidates))
+                await self._settle_internal(_deadline=deadline)
+            self._process_resource_deadlines()
+            await self._settle_internal(_deadline=deadline)
+        finally:
+            self._advancing = False
+            self._advance_task = None
+
+    async def advance_time(self, seconds: float) -> None:
+        amount = self._validate_timeout(seconds, "seconds")
+        if not self._started:
+            raise SetupError("Env is not running")
+        self._begin_operation("advance_time")
+        requested = self.now()
+        try:
+            assert self._loop is not None
+            requested = self.now()
+            from datetime import timedelta
+
+            requested += timedelta(seconds=amount)
+            deadline = self._loop.time() + self.settle_timeout
+            await self._advance_to(self._virtual_time + amount, deadline)
+        except TimeoutError as error:
+            error.add_note(
+                f"advance_time requested {requested.isoformat()}; reached {self.now().isoformat()}; partial progress is committed"
+            )
+            raise
         finally:
             self._end_operation()
 
@@ -717,6 +810,111 @@ class Env:
             ),
         )
 
+    def create_sku(
+        self,
+        name: str,
+        *,
+        type: discord.SKUType = discord.SKUType.subscription,
+        flags: discord.SKUFlags | None = None,
+        id: int | None = None,
+        slug: str | None = None,
+    ) -> SKUHandle:
+        """Arrange a catalog SKU; subscriptions also generate a visible group SKU."""
+        if not isinstance(type, discord.SKUType):
+            raise SetupError("type must be a discord.SKUType")
+        if flags is not None and not isinstance(flags, discord.SKUFlags):
+            raise SetupError("flags must be discord.SKUFlags")
+        if flags is None:
+            flags = (
+                discord.SKUFlags(guild_subscription=True)
+                if type == discord.SKUType.subscription
+                else discord.SKUFlags(available=True)
+            )
+        sku = self.backend.create_sku(name, type=type.value, flags=flags.value, id=id, slug=slug)
+        return SKUHandle(self, sku.id)
+
+    def seed_entitlement(
+        self,
+        sku: SKUHandle | int,
+        *,
+        user: UserHandle | MemberActor | int | None = None,
+        guild: GuildHandle | int | None = None,
+        type: discord.EntitlementType | None = None,
+        id: int | None = None,
+        starts_at: datetime | None = None,
+        ends_at: datetime | None = None,
+        deleted: bool = False,
+        consumed: bool = False,
+        scheduled_end_at: datetime | None = None,
+    ) -> EntitlementHandle:
+        """Arrange historical state without emitting CREATE, including before startup."""
+        from .actors import MemberActor
+
+        if type is not None and not isinstance(type, discord.EntitlementType):
+            raise SetupError("type must be a discord.EntitlementType")
+        entitlement = self.backend.seed_entitlement(
+            _fixture_id(self, sku, SKUHandle, "sku"),
+            user_id=_fixture_id(self, user, (UserHandle, MemberActor), "user") if user is not None else None,
+            guild_id=_fixture_id(self, guild, GuildHandle, "guild") if guild is not None else None,
+            type=type.value if type is not None else None,
+            id=id,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            deleted=deleted,
+            consumed=consumed,
+            scheduled_end_at=scheduled_end_at,
+        )
+        return EntitlementHandle(self, entitlement.id)
+
+    async def grant_entitlement(
+        self,
+        sku: SKUHandle | int,
+        *,
+        user: UserHandle | MemberActor | int | None = None,
+        guild: GuildHandle | int | None = None,
+        type: discord.EntitlementType | None = None,
+        id: int | None = None,
+        starts_at: datetime | None = None,
+        scheduled_end_at: datetime | None = None,
+    ) -> EntitlementHandle:
+        """Commit a live grant, emit CREATE and settle. Failures do not roll it back."""
+        from .actors import MemberActor
+
+        self._begin_operation("grant_entitlement")
+        try:
+            if not self._started:
+                raise SetupError("grant_entitlement requires a running Env")
+            if type is not None and not isinstance(type, discord.EntitlementType):
+                raise SetupError("type must be a discord.EntitlementType")
+            entitlement = self.backend.grant_entitlement(
+                _fixture_id(self, sku, SKUHandle, "sku"),
+                user_id=_fixture_id(self, user, (UserHandle, MemberActor), "user")
+                if user is not None
+                else None,
+                guild_id=_fixture_id(self, guild, GuildHandle, "guild") if guild is not None else None,
+                type=type.value if type is not None else None,
+                id=id,
+                starts_at=starts_at,
+                scheduled_end_at=scheduled_end_at,
+            )
+            self._mark_mutation()
+            try:
+                await self._settle_internal(dispatch="ENTITLEMENT_CREATE")
+            except BaseException as error:
+                error.add_note(
+                    f"Entitlement {entitlement.id} was committed; recover with env.get_entitlement({entitlement.id}). Do not retry the grant."
+                )
+                raise
+            return EntitlementHandle(self, entitlement.id)
+        finally:
+            self._end_operation()
+
+    def get_entitlement(self, entitlement_id: int) -> EntitlementHandle:
+        """Recover fixture authority by ID, including after a committed grant times out."""
+        entitlement_id = _fixture_id(self, entitlement_id, EntitlementHandle, "entitlement")
+        self.backend.get_entitlement(entitlement_id)
+        return EntitlementHandle(self, entitlement_id)
+
     def create_guild(
         self,
         name: str = "Test Guild",
@@ -751,9 +949,7 @@ class Env:
                 or not 0 <= shard_id < self._shard_count
             ):
                 raise ValueError(f"shard_id must be between 0 and {self._shard_count - 1}")
-            if id is None:
-                id = self.backend.snowflake_for_shard(shard_id, self._shard_count)
-            elif (id >> 22) % self._shard_count != shard_id:
+            if id is not None and (id >> 22) % self._shard_count != shard_id:
                 raise ValueError(f"id {id} does not belong to shard {shard_id}")
         settings: dict[str, Any] = {}
         if description is not None:
@@ -771,7 +967,12 @@ class Env:
         handle = GuildHandle(
             self,
             self.backend.create_guild(
-                name, id=id, owner_id=owner.id if owner is not None else None, **settings
+                name,
+                id=id,
+                owner_id=owner.id if owner is not None else None,
+                shard_id=shard_id,
+                shard_count=self._shard_count,
+                **settings,
             ),
         )
         self._guilds.append(handle)
@@ -870,6 +1071,8 @@ def _guard_env_sync(method: Any) -> Any:
 
 Env.create_user = _guard_env_sync(Env.create_user)  # type: ignore[method-assign]
 Env.create_guild = _guard_env_sync(Env.create_guild)  # type: ignore[method-assign]
+Env.create_sku = _guard_env_sync(Env.create_sku)  # type: ignore[method-assign]
+Env.seed_entitlement = _guard_env_sync(Env.seed_entitlement)  # type: ignore[method-assign]
 Env.inject_error = _guard_env_sync(Env.inject_error)  # type: ignore[method-assign]
 
 
@@ -905,11 +1108,16 @@ class run:
 
     async def __aenter__(self) -> Env:
         await self._env.start()
+        self._clock_context = self._env.time_context()
+        self._clock_context.__enter__()
         return self._env
 
     async def __aexit__(self, exc_type: Any, *exc_info: Any) -> None:
         env = self._env
-        await env.shutdown()
+        try:
+            await env.shutdown()
+        finally:
+            self._clock_context.__exit__(exc_type, *exc_info)
         # Don't mask an exception already propagating out of the test body.
         if exc_type is None and env.check_errors:
             env._raise_errors_since(env._errors_acknowledged)

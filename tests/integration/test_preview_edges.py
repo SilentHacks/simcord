@@ -75,20 +75,20 @@ async def test_preview_edges_show_target_ownership_and_capture_target_errors(env
     foreign = await env.bot.get_channel(other_channel.id).send("foreign")
     await alice.slash(channel, "panel")
     feedback = await alice.slash(channel, "feedback")
-    async with simcord.run(__import__("fixtures.sample_bot", fromlist=["create_bot"]).create_bot()) as other:
-        guild = other.create_guild()
-        ch = guild.create_text_channel("other")
-        result = simcord.InteractionResult(other, Interaction(1, "token", 2, ch.id, guild.id, 1))
-        async with env.preview(channel, viewers=[alice]) as preview:
-            with pytest.raises(simcord.SetupError, match="another Env"):
-                await preview.show(result)
-            with pytest.raises(simcord.SetupError, match="another channel"):
-                await preview.show(foreign)
-            await preview.show(feedback)
-            with pytest.raises(simcord.SetupError, match="capture target"):
-                await preview.screenshot(tmp_path / "bad.png", target=object())
-            with pytest.raises(simcord.SetupError, match="target is unavailable"):
-                await preview.screenshot(tmp_path / "missing.png", target=999999999999)
+    other = simcord.Env(__import__("fixtures.sample_bot", fromlist=["create_bot"]).create_bot())
+    guild = other.create_guild()
+    ch = guild.create_text_channel("other")
+    result = simcord.InteractionResult(other, Interaction(1, "token", 2, ch.id, guild.id, 1))
+    async with env.preview(channel, viewers=[alice]) as preview:
+        with pytest.raises(simcord.SetupError, match="another Env"):
+            await preview.show(result)
+        with pytest.raises(simcord.SetupError, match="another channel"):
+            await preview.show(foreign)
+        await preview.show(feedback)
+        with pytest.raises(simcord.SetupError, match="capture target"):
+            await preview.screenshot(tmp_path / "bad.png", target=object())
+        with pytest.raises(simcord.SetupError, match="target is unavailable"):
+            await preview.screenshot(tmp_path / "missing.png", target=999999999999)
 
 
 @pytest.mark.asyncio

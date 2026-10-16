@@ -67,8 +67,9 @@ asyncio_mode = "auto"
 
 ## Without pytest
 
-Don't use pytest, or want a second environment in one test? Use `simcord.run` directly — an
-async context manager that yields the same `Env`:
+Use `simcord.run` directly for explicit lifecycle control — an async context manager that
+yields the same `Env`. Only one live environment per event loop is supported; shut it
+down before starting another on that loop.
 
 ```python
 import simcord
@@ -107,6 +108,18 @@ bound login or `setup_hook`. `strict_sync=False` remains an independent opt-out;
 migration bridge does not change command registration.
 
 External waits must be scoped with `await env.external_wait(awaitable, reason="...")`; unknown waits time out. Overlapping actor, builder, lifecycle, and time-control operations reject before mutation. Teardown cancels bot-owned work but leaves caller-owned tasks alive.
+
+Supported SDK UTC helpers use the selected Env clock automatically during the actual
+pytest test call (including fixtures aliased under another name) when there is one
+running Env. Direct `async with simcord.run(...)` also selects it. For manual
+`Env.start()` / `shutdown()` use `with env.time_context():` around driver SDK time reads;
+inject `env.now` for your own application clocks. Custom async fixtures should use manual
+start/shutdown rather than retaining a `run` ContextVar token across `yield`, which older
+pytest-asyncio versions can resume in another context.
+
+Before startup, `create_sku` and `seed_entitlement` can arrange the state that
+`setup_hook` reconciles over REST. Live `grant_entitlement` and handle transitions require
+a running Env. See [SKUs & entitlements](monetization.md).
 
 ```python
 # An isolated unit test that doesn't care about sync, and inspects errors itself:

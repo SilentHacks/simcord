@@ -66,6 +66,8 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the entry point `run` and the `Env` it yields;
 - the world builders — `GuildHandle`, `ChannelHandle`, `UserHandle`,
   `RoleHandle` — and the `MemberActor` that drives simulated users;
+- `SKUHandle`, `EntitlementHandle`, the Env SKU/entitlement fixture methods,
+  `Env.now()` and `Env.time_context()`;
 - the result objects `ResponseMessage` and `InteractionResult`;
 - `Preview`, `PreviewCapture`, and the documented `window.simcordPreview` readiness fields for
   the optional local component preview;
@@ -98,6 +100,16 @@ top-level arrays. `params` and `json` are detached deep snapshots, so later sour
 container mutations do not alter records.
 
 The `pytest` plugin (the `simcord_env` fixture) is part of the public surface too.
+
+The shared clock now advances UTC at intermediate resource/timer deadlines, not just the
+final horizon. Allocating IDs no longer advances time; exact generated IDs change, and
+shard-pinned guild IDs may embed a historical timestamp. Only one live Env per event
+loop is supported and overlap rejects before hook mutation. Selected SDK UTC helpers
+use virtual time without replacing application/global datetime. See
+[time control](guides/time-control.md). Unverified monetization edge rules are explicit
+[simulator policies](guides/monetization.md#evidence-and-open-parity-checks), not captured
+Discord parity; future calibration may correct these policies.
+
 
 ## What is intentionally internal
 

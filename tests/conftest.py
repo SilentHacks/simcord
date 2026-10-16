@@ -20,9 +20,15 @@ pytest_plugins = ["pytester"]
 @pytest_asyncio.fixture
 async def env():
     bot = create_bot()
-    async with simcord.run(bot) as env:
+    env = simcord.Env(bot)
+    await env.start()
+    try:
         env.create_guild()
         yield env
+    finally:
+        await env.shutdown()
+        if env.check_errors:
+            env._raise_errors_since(env._errors_acknowledged)
 
 
 @pytest.fixture

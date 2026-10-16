@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from .env import Env, run
+from .env import Env
 
 try:
     import pytest_asyncio
@@ -43,6 +43,16 @@ def pytest_configure(config):
         "markers",
         "simcord(**options): keyword options forwarded to simcord.run() for the simcord_env fixture",
     )
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_call(item):
+    """Select clocks in the actual test context, never an async fixture task."""
+    envs = {value for value in getattr(item, "funcargs", {}).values() if isinstance(value, Env)}
+    if len(envs) == 1:
+        with next(iter(envs)).time_context():
+            return (yield)
+    return (yield)
 
 
 @pytest.hookimpl(wrapper=True)
@@ -71,5 +81,11 @@ if pytest_asyncio is not None:
     async def simcord_env(simcord_bot, request):
         marker = request.node.get_closest_marker("simcord")
         options = marker.kwargs if marker else {}
-        async with run(simcord_bot, **options) as env:
+        env = Env(simcord_bot, **options)
+        await env.start()
+        try:
             yield env
+        finally:
+            await env.shutdown()
+            if env.check_errors:
+                env._raise_errors_since(env._errors_acknowledged)

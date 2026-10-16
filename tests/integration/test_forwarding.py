@@ -360,84 +360,89 @@ async def test_private_thread_forwarding_honors_moderator_access_without_members
         "system_reference",
     ],
 )
-async def test_actor_message_operations_reject_foreign_colliding_handles(
-    env, channel, alice, monkeypatch, handle_type, operation
-):
-    local = await alice.send(channel, "local source")
+async def test_actor_message_operations_reject_foreign_colliding_handles(monkeypatch, handle_type, operation):
     async with simcord.run(create_bot()) as foreign:
         guild = foreign.create_guild()
         foreign_channel = guild.create_text_channel("general")
         foreign_alice = guild.add_member(foreign.create_user("alice"))
         source = await foreign_alice.send(foreign_channel, "foreign source")
-        assert source.id == local.id
-        assert source.channel.id == local.channel.id
         if handle_type == "response":
             source = simcord.ResponseMessage(
                 foreign, foreign.backend.get_message(foreign_channel.id, source.id)
             )
 
-    def unexpected_lookup(*args, **kwargs):
-        raise AssertionError("Foreign message reached the local message lookup")
+    async with simcord.run(create_bot()) as env:
+        guild = env.create_guild()
+        channel = guild.create_text_channel("general")
+        alice = guild.add_member(env.create_user("alice"))
+        local = await alice.send(channel, "local source")
+        assert source.id == local.id
+        assert foreign_channel.id == local.channel.id
 
-    before = [message.id for message in channel.history()]
-    with monkeypatch.context() as patch:
-        patch.setattr(env.backend, "get_message", unexpected_lookup)
-        with pytest.raises(simcord.SetupError, match="must belong to this environment"):
-            if operation == "system_reference":
-                env.guild.create_system_message(
-                    channel, MessageType.PINS_ADD, author=alice, referenced_message=source
-                )
-            else:
-                actions = {
-                    "forward": lambda: alice.forward(source, channel),
-                    "reply": lambda: alice.send(channel, "reply", reply_to=source),
-                    "edit": lambda: alice.edit(source, "changed"),
-                    "delete": lambda: alice.delete(source),
-                    "react": lambda: alice.react(source, "✅"),
-                    "unreact": lambda: alice.unreact(source, "✅"),
-                    "set_reaction": lambda: alice.set_reaction(source, "✅", reacted=True),
-                    "set_pinned": lambda: alice.set_pinned(source, True),
-                    "set_poll_votes": lambda: alice.set_poll_votes(source, answers=[1]),
-                    "click": lambda: alice.click(source, custom_id="button"),
-                    "select": lambda: alice.select(source, ["value"], custom_id="select"),
-                    "context_menu": lambda: alice.context_menu(channel, "Inspect", source),
-                }
-                await actions[operation]()
-    assert [message.id for message in channel.history()] == before
-    assert channel.history()[0].content == "local source"
+        def unexpected_lookup(*args, **kwargs):
+            raise AssertionError("Foreign message reached the local message lookup")
+
+        before = [message.id for message in channel.history()]
+        with monkeypatch.context() as patch:
+            patch.setattr(env.backend, "get_message", unexpected_lookup)
+            with pytest.raises(simcord.SetupError, match="must belong to this environment"):
+                if operation == "system_reference":
+                    env.guild.create_system_message(
+                        channel, MessageType.PINS_ADD, author=alice, referenced_message=source
+                    )
+                else:
+                    actions = {
+                        "forward": lambda: alice.forward(source, channel),
+                        "reply": lambda: alice.send(channel, "reply", reply_to=source),
+                        "edit": lambda: alice.edit(source, "changed"),
+                        "delete": lambda: alice.delete(source),
+                        "react": lambda: alice.react(source, "✅"),
+                        "unreact": lambda: alice.unreact(source, "✅"),
+                        "set_reaction": lambda: alice.set_reaction(source, "✅", reacted=True),
+                        "set_pinned": lambda: alice.set_pinned(source, True),
+                        "set_poll_votes": lambda: alice.set_poll_votes(source, answers=[1]),
+                        "click": lambda: alice.click(source, custom_id="button"),
+                        "select": lambda: alice.select(source, ["value"], custom_id="select"),
+                        "context_menu": lambda: alice.context_menu(channel, "Inspect", source),
+                    }
+                    await actions[operation]()
+        assert [message.id for message in channel.history()] == before
+        assert channel.history()[0].content == "local source"
 
 
 @pytest.mark.parametrize("handle_type", ["sdk", "response"])
-async def test_dm_actor_rejects_foreign_colliding_message(env, alice, handle_type, monkeypatch):
-    local = await alice.send_dm("local DM")
+async def test_dm_actor_rejects_foreign_colliding_message(handle_type, monkeypatch):
     async with simcord.run(create_bot()) as foreign:
         guild = foreign.create_guild()
         foreign_alice = guild.add_member(foreign.create_user("alice"))
         source = await foreign_alice.send_dm("foreign DM")
-        assert source.id == local.id
-        assert foreign_alice.user.dm_channel.id == alice.user.dm_channel.id
         if handle_type == "response":
             source = simcord.ResponseMessage(
                 foreign, foreign.backend.get_message(foreign_alice.user.dm_channel.id, source.id)
             )
 
-    def unexpected_lookup(*args, **kwargs):
-        raise AssertionError("Foreign DM reached the local message lookup")
+    async with simcord.run(create_bot()) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        local = await alice.send_dm("local DM")
+        assert source.id == local.id
+        assert foreign_alice.user.dm_channel.id == alice.user.dm_channel.id
 
-    with monkeypatch.context() as patch:
-        patch.setattr(env.backend, "get_message", unexpected_lookup)
-        with pytest.raises(simcord.SetupError, match="must belong to this environment"):
-            await alice.user.edit(source, "changed")
-    if handle_type == "response":
-        local = simcord.ResponseMessage(env, env.backend.get_message(alice.user.dm_channel.id, local.id))
-    await alice.user.edit(local, "local edit")
-    assert alice.user.dm_channel.history()[0].content == "local edit"
+        def unexpected_lookup(*args, **kwargs):
+            raise AssertionError("Foreign DM reached the local message lookup")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(env.backend, "get_message", unexpected_lookup)
+            with pytest.raises(simcord.SetupError, match="must belong to this environment"):
+                await alice.user.edit(source, "changed")
+        if handle_type == "response":
+            local = simcord.ResponseMessage(env, env.backend.get_message(alice.user.dm_channel.id, local.id))
+        await alice.user.edit(local, "local edit")
+        assert alice.user.dm_channel.history()[0].content == "local edit"
 
 
 @pytest.mark.parametrize("handle_type", ["callback", "original", "followup"])
-async def test_actor_accepts_owned_interaction_and_webhook_handles_but_not_foreign_ones(
-    env, channel, alice, handle_type
-):
+async def test_actor_accepts_owned_interaction_and_webhook_handles_but_not_foreign_ones(handle_type):
     def make_bot():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
         handles = {}
@@ -451,21 +456,27 @@ async def test_actor_accepts_owned_interaction_and_webhook_handles_but_not_forei
 
         return bot, handles
 
-    bot, handles = make_bot()
-    await env.restart_bot(bot)
-    await bot.tree.sync()
-    await alice.slash(channel, "handles")
-    source = handles[handle_type]
-    await alice.react(source, "✅")
-    forwarded = await alice.forward(source, channel)
-    assert forwarded.message_snapshots[0].content == source.content
-    assert env.backend.get_message(channel.id, source.id).reactions[0].user_ids == [alice.id]
-
     foreign_bot, foreign_handles = make_bot()
     async with simcord.run(foreign_bot, strict_sync=False) as foreign:
         guild = foreign.create_guild()
         foreign_channel = guild.create_text_channel("general")
         foreign_alice = guild.add_member(foreign.create_user("alice"))
+        await foreign_bot.tree.sync()
         await foreign_alice.slash(foreign_channel, "handles")
+
+    bot, handles = make_bot()
+    async with simcord.run(bot) as env:
+        guild = env.create_guild()
+        channel = guild.create_text_channel("general")
+        alice = guild.add_member(env.create_user("alice"))
+        await bot.tree.sync()
+        await alice.slash(channel, "handles")
+        source = handles[handle_type]
+        assert source.id == foreign_handles[handle_type].id
+        assert source.channel.id == foreign_handles[handle_type].channel.id
+        await alice.react(source, "✅")
+        forwarded = await alice.forward(source, channel)
+        assert forwarded.message_snapshots[0].content == source.content
+        assert env.backend.get_message(channel.id, source.id).reactions[0].user_ids == [alice.id]
         with pytest.raises(simcord.SetupError, match="must belong to this environment"):
             await alice.forward(foreign_handles[handle_type], channel)

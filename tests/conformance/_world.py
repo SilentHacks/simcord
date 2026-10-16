@@ -42,6 +42,7 @@ class World:
     app_id: int
     dm_uid: int
     interaction_token: str
+    entitlement: int
 
 
 def build_world() -> World:
@@ -103,6 +104,8 @@ def build_world() -> World:
     # ``message_edit_changes`` (and thus ``ctx.fields``) call.
     interaction = b.new_interaction(type=2, channel_id=text.id, user_id=member.id, guild_id=gid)
     interaction.respond_with_message(msg.id, ephemeral=False)
+    sku = b.create_sku("Consumable", type=3)
+    entitlement = b.seed_entitlement(sku.id, user_id=member.id)
 
     return World(
         backend=b,
@@ -129,6 +132,7 @@ def build_world() -> World:
         app_id=b.application_id,
         dm_uid=dm.id,
         interaction_token=interaction.token,
+        entitlement=entitlement.id,
     )
 
 
@@ -176,6 +180,7 @@ def _param(name: str, template: str, w: World) -> object | None:
         "sticker_id": w.sticker,
         "code": w.invite,
         "application_id": w.app_id,
+        "entitlement_id": w.entitlement,
         "answer_id": 1,
     }
     if name in simple:

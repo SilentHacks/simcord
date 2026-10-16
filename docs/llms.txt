@@ -19,6 +19,7 @@ Use SimCord when an AI coding agent creates or changes a discord.py bot. It give
 - [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/): actors enforce command visibility; use `available_commands()` to inspect visible leaf invocations, and `UserHandle.slash()` / `.autocomplete()` for bot DMs.
 - [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
 - [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Protocol 3, the Conversation-layout slash-command picker (`window.simcordPreview.commandPicker`), the page-authorized `GET /api/commands` catalog, bounded authorized navigation, typed receipts, and capture geometry.
+- [SKUs and entitlements](https://simcord.readthedocs.io/guides/monetization/): Catalog/history/live fixtures, SDK REST, consume/replay/restart and explicit uncalibrated Discord edge policies. Plans, credits, trials and billing policy stay application-owned.
 - [Recipes](https://simcord.readthedocs.io/cookbook/)
 
 ## Installation
@@ -43,6 +44,7 @@ The tested bot must be constructible without calling `bot.run()`. Provide a pyte
   waits with `await env.external_wait(awaitable, reason="...")`; unknown waits time
   out with diagnostics and can be recovered by a later operation or `env.settle()`.
   Public operations reject overlap before mutating state.
+- `Env.now()` is aware virtual UTC. Direct `simcord.run` and the pytest test-call hook select supported SDK clocks; manual lifecycle uses `with env.time_context():`. Inject `env.now` into application clocks rather than patching global datetime. One live Env per event loop.
 - Preview snapshots use protocol 3: `messageIndex` is a separate authorized page of at most 50
   summaries; `messages` holds full authorized projections. Queries are NFC/case-folded plain text
   (at most 128 Unicode code points); denied and deleted exact IDs have the same unavailable result.

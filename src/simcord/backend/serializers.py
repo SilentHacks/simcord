@@ -15,9 +15,11 @@ from typing import TYPE_CHECKING, Any, cast
 from ..enums import VOICE_CHANNEL_TYPES, ChannelType
 from .cdn import sticker_url
 from .models import (
+    SKU,
     AuditLogEntry,
     AutoModRule,
     Channel,
+    Entitlement,
     Guild,
     GuildEmoji,
     Invite,
@@ -51,6 +53,7 @@ if TYPE_CHECKING:
     from discord.types import (
         role as role_types,
     )
+    from discord.types import sku as sku_types
     from discord.types import (
         threads as thread_types,
     )
@@ -59,6 +62,41 @@ if TYPE_CHECKING:
     )
 
     from .state import BackendBase
+
+
+def sku_payload(sku: SKU) -> sku_types.SKU:
+    return cast(
+        "sku_types.SKU",
+        {
+            "id": str(sku.id),
+            "application_id": str(sku.application_id),
+            "type": sku.type,
+            "name": sku.name,
+            "slug": sku.slug,
+            "flags": sku.flags,
+        },
+    )
+
+
+def entitlement_payload(entitlement: Entitlement, *, test_create: bool = False) -> sku_types.Entitlement:
+    payload: dict[str, Any] = {
+        "id": str(entitlement.id),
+        "application_id": str(entitlement.application_id),
+        "sku_id": str(entitlement.sku_id),
+        "type": entitlement.type,
+        "deleted": entitlement.deleted,
+        "consumed": entitlement.consumed,
+    }
+    if entitlement.user_id is not None:
+        payload["user_id"] = str(entitlement.user_id)
+    if entitlement.guild_id is not None:
+        payload["guild_id"] = str(entitlement.guild_id)
+    if not test_create and not entitlement.created_via_test_api:
+        payload["starts_at"] = (
+            entitlement.starts_at.isoformat() if entitlement.starts_at is not None else None
+        )
+        payload["ends_at"] = entitlement.ends_at.isoformat() if entitlement.ends_at is not None else None
+    return cast("sku_types.Entitlement", payload)
 
 
 def user_payload(user: User) -> user_types.User:
