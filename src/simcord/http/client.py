@@ -54,9 +54,12 @@ def _path_of(url: str) -> str:
 class FakeHTTPClient(HTTPClient):
     """Drop-in ``HTTPClient`` whose requests hit the virtual backend."""
 
-    def __init__(self, backend: Backend, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self, backend: Backend, loop: asyncio.AbstractEventLoop, *, message_content_access: bool = True
+    ) -> None:
         super().__init__(loop)
         self.backend = backend
+        self.message_content_access = message_content_access
         # Interaction.__init__ reads the (name-mangled) session attribute.
         self._HTTPClient__session = None  # type: ignore[assignment]
 
@@ -100,6 +103,7 @@ class FakeHTTPClient(HTTPClient):
                 params=kwargs.get("params"),
                 files=file_list,
                 reason=kwargs.get("reason"),
+                message_content_access=self.message_content_access,
             )
         except (router.RouteNotImplemented, router.UnsupportedField):
             # Surface parity gaps (unimplemented routes or fields) loudly: don't
@@ -119,8 +123,9 @@ class FakeWebhookAdapter:
     that real code running.
     """
 
-    def __init__(self, backend: Backend) -> None:
+    def __init__(self, backend: Backend, *, message_content_access: bool = True) -> None:
         self.backend = backend
+        self.message_content_access = message_content_access
 
     def __getattr__(self, name: str) -> Any:
         from discord.webhook.async_ import AsyncWebhookAdapter
@@ -154,6 +159,7 @@ class FakeWebhookAdapter:
                 params=params,
                 files=file_list,
                 reason=kwargs.get("reason"),
+                message_content_access=self.message_content_access,
             )
         except (router.RouteNotImplemented, router.UnsupportedField):
             raise

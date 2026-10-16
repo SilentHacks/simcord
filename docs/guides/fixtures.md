@@ -96,7 +96,7 @@ Both `simcord.run(bot, **options)` and the underlying `Env` accept these keyword
 | --- | --- | --- |
 | `strict_sync` | `True` | Unsynced app commands can't be invoked — invoking one fails the test, catching forgotten `tree.sync()` calls. Set `False` to auto-register unsynced commands for isolated unit tests. |
 | `check_errors` | `True` | At teardown, errors the bot raised but the test never inspected are re-raised as an `ExceptionGroup`, so bot bugs can't pass silently. Set `False` to opt out. |
-| `approved_intents` | all | Simulates developer-portal privileged-intent toggles. |
+| `approved_intents` | `None` (all approved) | Simulates developer-portal privileged-intent toggles and REST Message Content access, independently of the Gateway request bit. Explicit `Intents.none()` denies approval. |
 | `shard_count` | client setting | Supplies the Get Gateway Bot recommendation when an `AutoShardedClient` does not configure `shard_count` itself. |
 | `settle_timeout` | `5.0` seconds | Default maximum time for joining runnable bot work; a direct settle `timeout=` overrides it. |
 

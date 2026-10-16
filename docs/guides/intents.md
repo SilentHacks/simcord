@@ -69,11 +69,45 @@ interactions are not intent-gated on real Discord either.
 
 ## Message content censoring
 
-Without `message_content`, the `content`, `embeds`, `attachments`, `components`
-and `poll` fields of guild messages are blanked, with Discord's documented
-exemptions: messages **in DMs**, messages **authored by the bot**, and messages
-that **mention the bot** keep their content (the censoring also applies to
-`referenced_message`, recursively).
+Gateway delivery uses the client's requested `message_content` bit. Without it,
+`content` becomes `""`, `embeds`, `attachments` and `components` become empty lists,
+and `poll` is omitted. DMs, messages authored by this bot, direct app mentions
+(including Components V2 text), and ping-enabled replies to this bot's **regular**
+messages remain readable. A reply to an interaction response is not exempt merely
+because it pings its author; a quiet reply is not exempt either. Role-only and
+everyone mentions do not grant direct-app access.
+
+REST uses the application's **portal approval**, independently of the Gateway bit.
+This applies to fetches, every history window, pins and message-bearing mutation
+responses. Referenced messages are assessed independently, even below readable bot
+messages. Token-owned webhook responses retain their contextual root access only
+after ownership validation; their references do not inherit it.
+
+| Gateway requests content | Portal approves content | Gateway | REST |
+| --- | --- | --- | --- |
+| No | No | Redacted | Redacted |
+| No | Yes | Redacted | Readable |
+| Yes | Yes | Readable | Readable |
+| Yes | No | Startup rejects with `PrivilegedIntentsRequired` | No attached session |
+
+The table describes ordinary, non-exempt guild messages. To simulate the first row:
+
+```python
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+async with simcord.run(bot, approved_intents=discord.Intents.none()) as env:
+    ...
+```
+
+Message-command targets and component/modal source messages remain readable in
+their interaction context, but their references are assessed independently.
+Selecting a message never grants subsequent arbitrary REST access. Slash arguments
+and submitted modal values are not message-content fields.
+
+Backend, actor returns and fixture queries retain authoritative content; inspect
+the bot's event callbacks or SDK fetches to assert its restricted view. The transcript
+also retains authoritative event data and is **not** a privacy-redacted export.
+These contracts are covered offline; reply wire metadata and edit/deletion details
+have not been calibrated against a live Discord capture.
 
 ## Member chunking
 
@@ -101,7 +135,10 @@ like production. Fetch them over REST instead, or enable the intent.
 Real Discord refuses the connection (close code 4014 →
 `discord.PrivilegedIntentsRequired`) when the bot declares a privileged intent
 (`members`, `presences`, `message_content`) that is not enabled in the developer
-portal. By default SimCord behaves as if every toggle is enabled. To simulate an
+portal. The default `approved_intents=None` behaves as if every toggle is enabled,
+including unrestricted REST content, preserving existing fixtures. An explicit
+`Intents.none()` denies approval. Approval is resolved per bot attachment and refreshed
+on restart; changing it while attached is not a hot-reconfiguration API. To simulate an
 unapproved portal, pass `approved_intents`:
 
 ```python

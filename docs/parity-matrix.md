@@ -20,7 +20,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Area | Status | Notes |
 | --- | --- | --- |
 | Login / READY / setup_hook | ✅ | Real discord.py login flow, application info |
-| Gateway intents | ✅ | Server-side gating, `message_content` censoring, member chunking, 4014 — see the [Intents guide](guides/intents.md) |
+| Gateway intents | ✅ | Server-side gating, independent portal-authorized REST content projection, regular-reply exemptions, contextual interaction roots, member chunking, 4014 — see the [Intents guide](guides/intents.md) |
 | Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`); immutable edit flags are retained; `publish` (announcement crosspost) |
 | Bulk delete (`purge` / `delete_messages`) | ✅ | 2–100 messages, single `MESSAGE_DELETE_BULK`, audit-logged |
 | Embeds, attachments, replies, mentions | ✅ | In-memory CDN; slash `ATTACHMENT` options accept `(filename, bytes)` uploads; `attachment.read()` works |

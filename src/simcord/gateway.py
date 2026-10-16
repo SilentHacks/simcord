@@ -69,8 +69,27 @@ class FakeGateway:
         # shaping below must not leak back into the backend either.
         mutable: dict[str, Any] = copy.deepcopy(dict(payload))
         bot_id = self._backend.bot_user.id
-        if event in ("MESSAGE_CREATE", "MESSAGE_UPDATE") and not self.intents.message_content:
-            if _intents.censor_message(mutable, bot_id):
+        if not self.intents.message_content:
+            censored = False
+            if event in ("MESSAGE_CREATE", "MESSAGE_UPDATE"):
+                censored = _intents.censor_message(mutable, bot_id, backend=self._backend)
+            elif event == "INTERACTION_CREATE":
+                data = mutable.get("data") or {}
+                if mutable.get("type") in (3, 5) and isinstance(mutable.get("message"), dict):
+                    censored = _intents.censor_message(
+                        mutable["message"], bot_id, backend=self._backend, exempt_root=True
+                    )
+                messages = (data.get("resolved") or {}).get("messages") or {}
+                for message_id, message in messages.items():
+                    selected = (
+                        mutable.get("type") == 2
+                        and data.get("type") == 3
+                        and str(data.get("target_id")) == str(message_id)
+                    )
+                    censored |= _intents.censor_message(
+                        message, bot_id, backend=self._backend, exempt_root=selected
+                    )
+            if censored:
                 self._backend.transcript.append(
                     ("CENSORED", event, "content hidden: requires the message_content intent")
                 )

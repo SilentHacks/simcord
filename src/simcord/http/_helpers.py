@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import intents
 from ..backend import errors, serializers
 from ..backend.cdn import sticker_url
 from ..backend.models import (
@@ -401,8 +402,8 @@ def message_edit_changes(
         ignore=("tts",),
         body=ctx.body() if body is None else body,
     )
-    if "allowed_mentions" in fields:
-        fields["allowed_mentions"] = _allowed_mentions(fields["allowed_mentions"])
+    if "allowed_mentions" in fields or "content" in fields:
+        fields["allowed_mentions"] = _allowed_mentions(fields.get("allowed_mentions"))
     current_attachments = list(message.attachments) if message is not None else []
     preview_uploads = _preview_uploads(ctx)
     upload_indices: list[int] = []
@@ -486,5 +487,10 @@ def message_edit_changes(
     return fields
 
 
-def message_response(ctx: RequestContext, message: Message) -> dict[str, Any]:
-    return dict(serializers.message_payload(ctx.backend, message))
+def message_response(
+    ctx: RequestContext, message: Message, *, for_user: int | None = None, exempt_root: bool = False
+) -> dict[str, Any]:
+    payload = dict(serializers.message_payload(ctx.backend, message, for_user=for_user))
+    if not ctx.message_content_access:
+        intents.censor_message(payload, ctx.backend.bot_user.id, backend=ctx.backend, exempt_root=exempt_root)
+    return payload

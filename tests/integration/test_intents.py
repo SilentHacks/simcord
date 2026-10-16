@@ -80,6 +80,31 @@ async def test_censoring_exemptions_dm_and_mention():
         assert seen[-1].content == f"hey <@{env.bot.user.id}> look"
 
 
+async def test_callback_edit_preserves_regular_bot_source_reply_exemption(env, channel, alice):
+    from simcord import intents as intent_rules
+    from simcord.backend import serializers
+
+    class EditView(discord.ui.View):
+        @discord.ui.button(label="Edit", custom_id="edit-source")
+        async def edit_source(self, interaction, button):
+            await interaction.response.edit_message(content="edited regular source")
+
+    source = await env.bot.get_channel(channel.id).send("regular source", view=EditView())
+    await alice.click(source, custom_id="edit-source")
+    stored = env.backend.get_message(channel.id, source.id)
+    assert stored.content == "edited regular source"
+    assert stored.interaction_metadata is None
+    reply = env.backend.create_message(
+        channel.id,
+        alice.id,
+        "pinging reply",
+        reference={"channel_id": str(channel.id), "message_id": str(source.id)},
+    )
+    payload = dict(serializers.message_payload(env.backend, reply))
+    assert not intent_rules.censor_message(payload, env.bot.user.id, backend=env.backend)
+    assert payload["content"] == "pinging reply"
+
+
 # ------------------------------------------------------------ event gating
 
 

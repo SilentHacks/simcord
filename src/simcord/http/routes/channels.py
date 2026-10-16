@@ -7,7 +7,7 @@ from typing import Any
 from ...backend import errors, serializers
 from ...backend.models import Overwrite, Webhook
 from ...enums import AuditLogAction, ChannelType, OverwriteType
-from .._helpers import commit_bot_message, prepare_bot_message
+from .._helpers import commit_bot_message, message_response, prepare_bot_message
 from ..router import RequestContext, route
 
 
@@ -225,7 +225,7 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
     if prepared[0]["broadcast"]:
         backend.announce_message_create(message)
     payload = dict(serializers.thread_payload(backend, thread))
-    payload["message"] = serializers.message_payload(backend, message)
+    payload["message"] = message_response(ctx, message)
     return payload
 
 

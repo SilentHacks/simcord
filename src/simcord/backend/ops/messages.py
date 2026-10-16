@@ -119,9 +119,21 @@ class MessageMixin(BackendBase):
             raise _component_error(
                 exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
             ) from exc
+        reply_author_id = None
+        reply_author_interaction = False
+        if reference:
+            try:
+                target = self.get_message(
+                    int(reference.get("channel_id", channel.id)), int(reference["message_id"])
+                )
+            except (KeyError, TypeError, ValueError, errors.BackendError):
+                pass
+            else:
+                reply_author_id = target.author_id
+                reply_author_interaction = target.interaction_metadata is not None
         mention_content = f"{content_value}\n{component_mentions(normalized_components)}"
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
-            channel, author_id, mention_content, mention_policy, reference
+            channel, author_id, mention_content, mention_policy, reply_author_id
         )
         if system_metadata is None and self._auto_mod_blocks(channel, author_id, mention_content):
             return Message(
@@ -151,6 +163,8 @@ class MessageMixin(BackendBase):
             mention_role_ids=mention_roles,
             mention_everyone=mention_everyone,
             reference=reference,
+            reply_author_id=reply_author_id,
+            reply_author_interaction=reply_author_interaction,
             interaction_metadata=interaction_metadata,
             webhook_id=webhook_id,
             author_name=author_name,
@@ -172,7 +186,7 @@ class MessageMixin(BackendBase):
         author_id: int,
         content: str,
         policy: AllowedMentions,
-        reference: dict[str, Any] | None,
+        reply_author_id: int | None,
     ) -> tuple[list[int], list[int], list[int], list[int], bool]:
         users = [int(user_id) for user_id in _USER_MENTION.findall(content)]
         roles = [int(role_id) for role_id in _ROLE_MENTION.findall(content)]
@@ -198,15 +212,9 @@ class MessageMixin(BackendBase):
                 and (role.mentionable or can_mention_all)
             )
         )
-        if reference and policy.replied_user:
-            try:
-                reply_channel = int(reference.get("channel_id", channel.id))
-                reply_message = self.get_message(reply_channel, int(reference["message_id"]))
-            except (KeyError, TypeError, ValueError, errors.BackendError):
-                pass
-            else:
-                if reply_message.author_id not in ping_users:
-                    ping_users.append(reply_message.author_id)
+        if reply_author_id is not None and policy.replied_user:
+            if reply_author_id not in ping_users:
+                ping_users.append(reply_author_id)
         mention_everyone = (
             policy.everyone and can_mention_all and ("@everyone" in content or "@here" in content)
         )
@@ -309,7 +317,7 @@ class MessageMixin(BackendBase):
         content_value = content or ""
         mention_content = f"{content_value}\n{component_mentions(normalized_components)}"
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
-            channel, message.author_id, mention_content, policy, message.reference
+            channel, message.author_id, mention_content, policy, message.reply_author_id
         )
         message.content = content_value
         message.embeds = list(embeds or [])

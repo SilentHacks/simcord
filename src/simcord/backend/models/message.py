@@ -88,6 +88,9 @@ class Message:
     mention_role_ids: list[int] = field(default_factory=list)
     mention_everyone: bool = False
     reference: dict[str, Any] | None = None
+    #: Original reply target facts survive target deletion; eligibility does not.
+    reply_author_id: int | None = None
+    reply_author_interaction: bool = False
     interaction_metadata: dict[str, Any] | None = None
     webhook_id: int | None = None
     #: Incoming webhook per-message avatar URL override, when supplied.

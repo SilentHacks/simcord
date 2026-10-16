@@ -271,9 +271,14 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     time.monotonic = monotonic
     self._orig_view_time = _dpy_internals.view_time()
     _dpy_internals.swap_view_time(_VirtualTime(self, self._orig_view_time))
-    _dpy_internals.install_http(bot, FakeHTTPClient(self.backend, loop))
+    message_content_access = self.approved_intents is None or self.approved_intents.message_content
+    _dpy_internals.install_http(
+        bot, FakeHTTPClient(self.backend, loop, message_content_access=message_content_access)
+    )
     _dpy_internals.set_guild_ready_timeout(bot, 0.0)
-    self._adapter_token = _dpy_internals.set_webhook_adapter(FakeWebhookAdapter(self.backend))
+    self._adapter_token = _dpy_internals.set_webhook_adapter(
+        FakeWebhookAdapter(self.backend, message_content_access=message_content_access)
+    )
 
     state = _dpy_internals.get_state(bot)
     state.shard_count = self._shard_count

@@ -14,10 +14,16 @@ itself stays intent-agnostic, exactly like the real API.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, MutableMapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import discord
+
+from .components import component_mentions
+
+if TYPE_CHECKING:
+    from .backend.ops.base import BackendBase
 
 #: The intents that require approval in the Discord developer portal.
 PRIVILEGED_INTENTS = ("members", "presences", "message_content")
@@ -128,19 +134,24 @@ def missing_privileged_intents(declared: discord.Intents, approved: discord.Inte
     return [name for name in PRIVILEGED_INTENTS if getattr(declared, name) and not getattr(approved, name)]
 
 
-def censor_message(payload: MutableMapping[str, Any], bot_id: int) -> bool:
-    """Blank content fields the bot may not see without ``message_content``.
+def censor_message(
+    payload: MutableMapping[str, Any],
+    bot_id: int,
+    *,
+    backend: BackendBase | None = None,
+    exempt_root: bool = False,
+) -> bool:
+    """Project content access in place, independently assessing every reference.
 
-    Mirrors Discord's documented exemptions: DMs, messages the bot authored,
-    and messages that mention the bot keep their content. Applies recursively
-    to ``referenced_message``, as the real gateway does. Returns True if
-    anything was actually removed.
+    ``exempt_root`` grants contextual access to this message only. Backend
+    facts disambiguate reply mentions and omitted guild/partial-update fields.
+    Returns whether any content was removed; absent fields stay absent.
     """
     censored = False
     referenced = payload.get("referenced_message")
     if isinstance(referenced, MutableMapping):
-        censored = censor_message(referenced, bot_id)
-    if _content_exempt(payload, bot_id):
+        censored = censor_message(referenced, bot_id, backend=backend)
+    if exempt_root or _content_exempt(payload, bot_id, backend):
         return censored
     if payload.get("content"):
         payload["content"] = ""
@@ -154,16 +165,46 @@ def censor_message(payload: MutableMapping[str, Any], bot_id: int) -> bool:
     return censored
 
 
-def _content_exempt(payload: Mapping[str, Any], bot_id: int) -> bool:
-    if payload.get("guild_id") is None:  # DMs are always visible
+def _content_exempt(payload: Mapping[str, Any], bot_id: int, backend: BackendBase | None) -> bool:
+    channel = message = None
+    if backend is not None:
+        try:
+            channel_id = int(payload["channel_id"])
+            channel = backend.channels.get(channel_id)
+            message = backend.messages.get(channel_id, {}).get(int(payload.get("id", 0)))
+        except (KeyError, TypeError, ValueError):
+            pass
+    if channel is not None:
+        if channel.guild_id is None:
+            return True
+    elif "guild_id" in payload and payload["guild_id"] is None:
         return True
     bot_snowflake = str(bot_id)
     author = payload.get("author")
+    if message is not None and message.author_id == bot_id:
+        return True
     if isinstance(author, Mapping) and str(author.get("id")) == bot_snowflake:
         return True
-    return any(
-        isinstance(user, Mapping) and str(user.get("id")) == bot_snowflake
-        for user in payload.get("mentions") or ()
+    content = payload.get("content", message.content if message is not None else "") or ""
+    components = payload.get("components", message.components if message is not None else []) or []
+    text = f"{content}\n{component_mentions(components)}"
+    if any(match == bot_snowflake for match in re.findall(r"<@!?(\d+)>", text)):
+        return True
+    if message is not None:
+        return (
+            message.reply_author_id == bot_id
+            and not message.reply_author_interaction
+            and message.allowed_mentions.replied_user
+        )
+    reference = payload.get("referenced_message")
+    return (
+        isinstance(reference, Mapping)
+        and str((reference.get("author") or {}).get("id")) == bot_snowflake
+        and reference.get("interaction_metadata") is None
+        and any(
+            isinstance(user, Mapping) and str(user.get("id")) == bot_snowflake
+            for user in payload.get("mentions") or ()
+        )
     )
 
 

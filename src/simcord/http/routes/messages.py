@@ -32,7 +32,7 @@ def send_message(ctx: RequestContext) -> Any:
 def get_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     message = backend.get_message(ctx.int_arg("channel_id"), ctx.int_arg("message_id"))
-    return dict(serializers.message_payload(backend, message, for_user=backend.bot_user.id))
+    return message_response(ctx, message, for_user=backend.bot_user.id)
 
 
 @route("GET", "/channels/{channel_id}/messages")
@@ -52,13 +52,13 @@ def get_history(ctx: RequestContext) -> Any:
             return []
         half = limit // 2
         window = ascending[max(0, pivot - half) : pivot + half + 1]
-        return [dict(serializers.message_payload(backend, m)) for m in reversed(window[:limit])]
+        return [message_response(ctx, m) for m in reversed(window[:limit])]
     messages = sorted(visible, key=lambda m: m.id, reverse=True)
     if "before" in ctx.params:
         messages = [m for m in messages if m.id < int(ctx.params["before"])]
     if "after" in ctx.params:
         messages = [m for m in messages if m.id > int(ctx.params["after"])]
-    return [dict(serializers.message_payload(backend, m)) for m in messages[:limit]]
+    return [message_response(ctx, m) for m in messages[:limit]]
 
 
 @route("PATCH", "/channels/{channel_id}/messages/{message_id}")
@@ -141,7 +141,7 @@ def expire_poll(ctx: RequestContext) -> Any:
     if message.author_id != backend.bot_user.id:
         raise errors.cannot_edit_other_user()
     message = backend.expire_poll(channel_id, message.id)
-    return dict(serializers.message_payload(backend, message))
+    return message_response(ctx, message)
 
 
 @route("GET", "/channels/{channel_id}/polls/{message_id}/answers/{answer_id}")
@@ -161,7 +161,7 @@ def get_pins(ctx: RequestContext) -> Any:
     channel_id = ctx.int_arg("channel_id")
     backend.get_channel(channel_id)
     items = [
-        {"message": dict(serializers.message_payload(backend, m)), "pinned_at": backend.now_iso()}
+        {"message": message_response(ctx, m), "pinned_at": backend.now_iso()}
         for m in backend.messages[channel_id].values()
         if m.pinned and not m.is_ephemeral
     ]

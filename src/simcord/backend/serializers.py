@@ -286,6 +286,13 @@ def message_payload(
             if r.user_ids
         ],
     }
+    if (
+        message.reply_author_id is not None
+        and message.allowed_mentions.replied_user
+        and message.reply_author_id not in message.mention_user_ids
+        and message.reply_author_id in backend.users
+    ):
+        payload["mentions"].append(user_payload(backend.users[message.reply_author_id]))
     if channel.guild_id is not None:
         payload["guild_id"] = str(channel.guild_id)
     metadata = message.system_metadata
@@ -299,7 +306,9 @@ def message_payload(
         }
     if reference is not None:
         payload["message_reference"] = dict(reference)
-        referenced = backend.messages.get(int(reference["channel_id"]), {}).get(int(reference["message_id"]))
+        referenced = backend.messages.get(int(reference.get("channel_id", message.channel_id)), {}).get(
+            int(reference["message_id"])
+        )
         if referenced is not None:
             payload["referenced_message"] = message_payload(backend, referenced)
     if message.interaction_metadata is not None:

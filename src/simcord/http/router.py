@@ -83,6 +83,7 @@ class RequestContext:
     reason: str | None = None
     method: str = ""
     path: str = ""
+    message_content_access: bool = True
 
     def int_arg(self, name: str) -> int:
         return int(self.args[name])
@@ -192,6 +193,7 @@ def dispatch(
     params: dict[str, Any] | None = None,
     files: list[Any] | None = None,
     reason: str | None = None,
+    message_content_access: bool = True,
 ) -> Any:
     backend.http_requests.append(
         HttpLogEntry(method, path, copy.deepcopy(params or {}), copy.deepcopy(json), reason)
@@ -227,6 +229,7 @@ def dispatch(
         reason=reason,
         method=method,
         path=path,
+        message_content_access=message_content_access,
     )
     return best[2](ctx)
 

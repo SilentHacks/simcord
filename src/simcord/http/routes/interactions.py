@@ -78,7 +78,10 @@ def interaction_callback(ctx: RequestContext) -> Any:
         }
     }
     if message is not None:
-        response["resource"] = {"type": callback_type, "message": message_response(ctx, message)}
+        response["resource"] = {
+            "type": callback_type,
+            "message": message_response(ctx, message, exempt_root=True),
+        }
     return response
 
 
@@ -105,7 +108,7 @@ def execute_webhook(ctx: RequestContext) -> Any:
             raise errors.unknown_webhook()
         message = bot_message(ctx, record.channel_id, interaction=record, webhook_execute=True)
         record.followup_ids.append(message.id)
-        return message_response(ctx, message)
+        return message_response(ctx, message, exempt_root=True)
     webhook = _incoming_webhook(ctx)
     body, _ = _incoming_webhook_body(ctx)
     message = bot_message(
@@ -116,7 +119,7 @@ def execute_webhook(ctx: RequestContext) -> Any:
         body=body,
         webhook_execute=True,
     )
-    return message_response(ctx, message)
+    return message_response(ctx, message, exempt_root=True)
 
 
 def _record(ctx: RequestContext) -> Interaction:
@@ -156,7 +159,9 @@ def get_original_response(ctx: RequestContext) -> Any:
     record = _record(ctx)
     if record.message_id is None:
         raise errors.unknown_message()
-    return message_response(ctx, ctx.backend.get_message(record.channel_id, record.message_id))
+    return message_response(
+        ctx, ctx.backend.get_message(record.channel_id, record.message_id), exempt_root=True
+    )
 
 
 @route("PATCH", "/webhooks/{webhook_id}/{token}/messages/@original")
@@ -170,7 +175,7 @@ def edit_original_response(ctx: RequestContext) -> Any:
             body["flags"] = int(body.get("flags") or 0) | EPHEMERAL_FLAG
         message = bot_message(ctx, record.channel_id, interaction=record, body=body)
         record.materialise_deferred(message.id)
-        return message_response(ctx, message)
+        return message_response(ctx, message, exempt_root=True)
     if record.message_id is None:
         raise errors.unknown_message()
     message = backend.edit_message(
@@ -178,7 +183,7 @@ def edit_original_response(ctx: RequestContext) -> Any:
         record.message_id,
         message_edit_changes(ctx, backend.get_message(record.channel_id, record.message_id)),
     )
-    return message_response(ctx, message)
+    return message_response(ctx, message, exempt_root=True)
 
 
 @route("DELETE", "/webhooks/{webhook_id}/{token}/messages/@original")
@@ -192,8 +197,8 @@ def delete_original_response(ctx: RequestContext) -> Any:
 @route("GET", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
 def get_followup(ctx: RequestContext) -> Any:
     if ctx.args["token"] in ctx.backend.interaction_tokens:
-        return message_response(ctx, _interaction_message(ctx))
-    return message_response(ctx, _incoming_message(ctx))
+        return message_response(ctx, _interaction_message(ctx), exempt_root=True)
+    return message_response(ctx, _incoming_message(ctx), exempt_root=True)
 
 
 @route("PATCH", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
@@ -201,7 +206,7 @@ def edit_followup(ctx: RequestContext) -> Any:
     if ctx.args["token"] in ctx.backend.interaction_tokens:
         message = _interaction_message(ctx)
         message = ctx.backend.edit_message(message.channel_id, message.id, message_edit_changes(ctx, message))
-        return message_response(ctx, message)
+        return message_response(ctx, message, exempt_root=True)
     message = _incoming_message(ctx)
     body, with_components = _incoming_webhook_body(ctx)
     message = ctx.backend.edit_message(
@@ -209,7 +214,7 @@ def edit_followup(ctx: RequestContext) -> Any:
         message.id,
         message_edit_changes(ctx, message, body=body),
     )
-    response = message_response(ctx, message)
+    response = message_response(ctx, message, exempt_root=True)
     if not with_components:
         response.pop("components", None)
     return response
