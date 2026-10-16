@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import weakref
+from contextlib import asynccontextmanager
 from typing import Any
 
 import discord
@@ -1312,3 +1313,66 @@ async def test_external_wait_composed_survivor_runs_on_real_clock():
         assert set(outcome) == {"quick", "survivor"}
         assert channel.last_message is not None
         assert channel.last_message.content == "resumed"
+
+
+@pytest.mark.parametrize(
+    ("declare_lifecycle", "unrelated_wait", "settles"),
+    [(False, False, False), (True, False, True), (True, True, False)],
+    ids=["undeclared-lifecycle", "declared-lifecycle", "unrelated-deadlock"],
+)
+async def test_framework_lifecycle_waits_require_independent_declarations(
+    declare_lifecycle, unrelated_wait, settles
+):
+    """A parked model request does not prove unrelated framework waits are safe."""
+    bot = create_bot()
+    release = asyncio.Event()
+    unrelated_release = asyncio.Event()
+    finalized = []
+
+    @asynccontextmanager
+    async def run_lifecycle():
+        ready, done = asyncio.Event(), asyncio.Event()
+
+        async def wrapper():
+            ready.set()
+            if declare_lifecycle:
+                await env.external_wait(done.wait(), reason="framework run completion")
+            else:
+                await done.wait()
+            finalized.append("lifecycle")
+
+        task = asyncio.create_task(wrapper())
+        await ready.wait()
+        try:
+            yield
+        finally:
+            done.set()
+            await task
+
+    @bot.listen("on_message")
+    async def run(message):
+        if message.content != "start framework":
+            return
+        async with run_lifecycle():
+            sibling = asyncio.create_task(unrelated_release.wait()) if unrelated_wait else None
+            await env.external_wait(release.wait(), reason="provider backoff release")
+            if sibling is not None:
+                await sibling
+        await message.channel.send("framework completed")
+
+    async with simcord.run(bot, settle_timeout=0.2) as env:
+        guild = env.create_guild()
+        channel = guild.create_text_channel("framework")
+        alice = guild.add_member(env.create_user("alice"))
+        if settles:
+            await alice.send(channel, "start framework")
+        else:
+            with pytest.raises(TimeoutError):
+                await alice.send(channel, "start framework")
+        assert finalized == []
+        assert channel.last_message.content == "start framework"
+        release.set()
+        unrelated_release.set()
+        await env.settle()
+        assert finalized == ["lifecycle"]
+        assert channel.last_message.content == "framework completed"

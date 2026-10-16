@@ -1042,7 +1042,7 @@ function updateActionStatus() {
   });
   ui.backActivity.hidden = !state.activityBackStack.length || state.pinnedCapture;
   const output = (state.lastAction?.outcomes || []).find((outcome) =>
-    ["response", "followup", "message"].includes(outcome.kind) && outcome.messageId);
+    ["response", "followup", "message", "deferred"].includes(outcome.kind) && outcome.messageId);
   ui.viewActionOutput.hidden = !output || state.pinnedCapture || !state.authorized;
   ui.viewActionOutput.disabled = blocked;
   const pendingLabel = ({
@@ -1120,7 +1120,7 @@ function renderActivity() {
       const item = document.createElement("li");
       const kind = Object.hasOwn(outcomeLabels, outcome.kind) ? outcome.kind : "unavailable";
       item.append(document.createTextNode(outcomeLabels[kind]));
-      if (["response", "followup", "source_edit", "message"].includes(kind) && outcome.messageId) {
+      if (["response", "followup", "source_edit", "message", "deferred"].includes(kind) && outcome.messageId) {
         const view = document.createElement("button");
         view.type = "button";
         view.textContent = "View response";
@@ -2197,7 +2197,7 @@ ui.exactForm.addEventListener("submit", (event) => {
 ui.backActivity.addEventListener("click", backActivity);
 ui.viewActionOutput.addEventListener("click", () => {
   const output = (state.lastAction?.outcomes || []).find((outcome) =>
-    ["response", "followup", "message"].includes(outcome.kind) && outcome.messageId);
+    ["response", "followup", "message", "deferred"].includes(outcome.kind) && outcome.messageId);
   if (output) viewActivityMessage(String(output.messageId), state.lastAction.target);
 });
 async function copyText(value, recovery) {

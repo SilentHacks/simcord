@@ -24,6 +24,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Messages (send/edit/delete/fetch/history) | ✅ | Content & embed limits enforced (`50035`); immutable edit flags are retained; `publish` (announcement crosspost) |
 | Bulk delete (`purge` / `delete_messages`) | ✅ | 2–100 messages, single `MESSAGE_DELETE_BULK`, audit-logged |
 | Embeds, attachments, replies, mentions | ✅ | In-memory CDN; slash `ATTACHMENT` options accept `(filename, bytes)` uploads; `attachment.read()` works |
+| Message forwarding | ⚠️ | Native `actor.forward(message, channel)` and SDK `message.forward(channel)`; immutable rich snapshots, permissions, content-access projection and Preview. Already-forwarded sources fail explicitly rather than flattening unverified nested semantics. |
 | Pins | ✅ | Current paginated endpoints |
 | Typing | ✅ | Both directions |
 | Reactions | ✅ | Add/remove/list, clear-all & clear-emoji, gateway events |
@@ -36,7 +37,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | App command permissions | ✅ | `AppCommand.fetch_permissions`; seed via `guild.set_command_permissions` |
 | Context menus (user & message) | ✅ | |
 | Autocomplete | ✅ | Focused options must be declared and have autocomplete enabled |
-| Interaction lifecycle | ✅ | Defer, followups, `@original` ops, `40060` on double-ack |
+| Interaction lifecycle | ✅ | Three-second initial deadline (`10062`), fetchable thinking originals, stable-ID completion, first-followup visibility inheritance, distinct component-update defers, `@original` ops, `40060` double-ack, `10008` deleted messages and `10015` expired continuation tokens |
 | Ephemeral semantics | ✅ | Visibility-aware history and component access |
 | Buttons / selects / modals | ✅ | Real `View` dispatch; disabled/missing rejected |
 | User/role/channel/mentionable selects | ✅ | Pass the handles a user could pick; resolved data built |

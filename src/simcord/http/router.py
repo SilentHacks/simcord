@@ -83,6 +83,7 @@ class RequestContext:
     reason: str | None = None
     method: str = ""
     path: str = ""
+    #: Portal/API authorization, independent of the Gateway identify mask.
     message_content_access: bool = True
 
     def int_arg(self, name: str) -> int:

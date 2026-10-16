@@ -52,7 +52,13 @@ def can_access_channel(env: Env, channel_id: int, viewer: Any, *, history: bool 
     if history and not permissions & discord.Permissions.read_message_history.flag:
         return False
     if channel.type == ChannelType.PRIVATE_THREAD:
-        privileged = bool(permissions & discord.Permissions.administrator.flag) or viewer_id == guild.owner_id
+        privileged = (
+            bool(
+                permissions
+                & (discord.Permissions.administrator.flag | discord.Permissions.manage_threads.flag)
+            )
+            or viewer_id == guild.owner_id
+        )
         if viewer_id not in channel.thread_members and not privileged:
             return False
     return True

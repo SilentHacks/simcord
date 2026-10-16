@@ -180,3 +180,15 @@ class BackendBase:
             if parent_id != channel_id:
                 channel = self.get_channel(parent_id)
         return permissions.compute(guild, user_id, channel)
+
+    def require_permissions(
+        self, guild_id: int | None, user_id: int, channel_id: int | None, *names: str
+    ) -> None:
+        if guild_id is None:  # DMs: no guild permissions apply
+            return
+        perms = self.compute_permissions(guild_id, user_id, channel_id)
+        if channel_id is not None and not perms & permissions.flag("view_channel"):
+            raise errors.missing_access()
+        for name in names:
+            if not perms & permissions.flag(name):
+                raise errors.missing_permissions()

@@ -72,6 +72,8 @@ class Env:
         self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
         self._callbacks: list[_CallbackRecord] = []
         self._generation = 0
+        # Old SDK handles remain valid across bot restarts without retaining old caches.
+        self._message_states: weakref.WeakSet[Any] = weakref.WeakSet()
         self._external_waits: dict[asyncio.Task[Any], str] = {}
         self._operation_task: asyncio.Task[Any] | None = None
         self._operation_depth = 0
@@ -386,6 +388,10 @@ class Env:
 
     async def external_wait(self, awaitable: Any, *, reason: str) -> Any:
         """Await one explicitly declared external input without blocking settlement.
+
+        Declarations apply to the calling task, not its siblings or children.
+        Framework orchestration and lifecycle tasks must declare their own
+        intentional waits; unrelated unknown waits remain settlement errors.
 
         Wake-up timers scheduled by the declaring task while inside the wait
         are virtual: they resume only through :meth:`advance_time` or the

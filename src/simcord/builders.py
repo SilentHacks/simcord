@@ -465,16 +465,10 @@ class GuildHandle:
         referenced_channel_id = None
         referenced_message_id = None
         if referenced_message is not None:
+            from .actors import _channel_id_of
+
+            referenced_channel_id = _channel_id_of(referenced_message, self._env)
             referenced_message_id = referenced_message.id
-            if isinstance(referenced_message, ResponseMessage):
-                if referenced_message._env is not self._env:
-                    raise SetupError("referenced message must belong to this environment")
-                referenced_channel_id = referenced_message.channel_id
-            else:
-                message_channel = referenced_message.channel
-                referenced_channel_id = getattr(message_channel, "id", None)
-                if getattr(message_channel, "guild", None) is None:
-                    raise SetupError("referenced message must be in this guild")
         stored = self._env.backend.create_system_message(
             channel.id,
             message_type,

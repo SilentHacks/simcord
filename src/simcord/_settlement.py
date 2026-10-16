@@ -251,6 +251,11 @@ def _settle_timeout_message(
         "  use await env.external_wait(...) for intentional external input; "
         "use await env.advance_time(...) for virtual timers"
     )
+    if self._external_waits and stuck:
+        lines.append(
+            "  external_wait is task-scoped; declare framework orchestration/lifecycle waits "
+            "at their public hooks rather than assuming sibling waits are external"
+        )
     if len(all_pending) > len(stuck):
         lines.append(f"  {len(all_pending) - len(stuck)} recognized waits remain parked")
     return "\n".join(lines)

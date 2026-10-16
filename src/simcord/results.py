@@ -107,7 +107,12 @@ class InteractionResult:
         interaction = self._interaction
         if interaction.message_id is None:
             return None
-        message = self._env.backend.get_message(interaction.channel_id, interaction.message_id)
+        try:
+            message = self._env.backend.get_message(interaction.channel_id, interaction.message_id)
+        except BackendError as exc:
+            if exc.code != 10008:
+                raise
+            return None
         return ResponseMessage(self._env, message)
 
     @property
@@ -116,7 +121,9 @@ class InteractionResult:
         for message_id in self._interaction.followup_ids:
             try:
                 message = self._env.backend.get_message(self._interaction.channel_id, message_id)
-            except BackendError:
+            except BackendError as exc:
+                if exc.code != 10008:
+                    raise
                 continue  # deleted followup (Unknown Message)
             out.append(ResponseMessage(self._env, message))
         return out

@@ -7,6 +7,7 @@ import math
 import mimetypes
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import chain
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..backend.access import can_access_channel, can_access_message
@@ -16,12 +17,21 @@ from ..components import walk_components
 from ._media import MediaError, MediaWorker
 
 if TYPE_CHECKING:
+    from ..backend.models import Message
     from ..env import Env
     from ._pages import _Page
 
 
 def _content_type(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def _snapshot_has_sticker(message: Message, url: str) -> bool:
+    return any(
+        sticker_url(int(sticker["id"]), int(sticker["format_type"])) == url
+        for snapshot in message.snapshots
+        for sticker in snapshot["message"].get("sticker_items", [])
+    )
 
 
 @dataclass(slots=True)
@@ -186,10 +196,11 @@ class _AssetOps:
             raise SetupError("asset is unavailable") from exc
         if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
             raise SetupError("asset access denied")
-        item = next(
-            (item for item in message.attachments if str(item.get("id", "")) == attachment_id),
-            None,
+        attachments = chain(
+            message.attachments,
+            *(snapshot["message"].get("attachments", []) for snapshot in message.snapshots),
         )
+        item = next((item for item in attachments if str(item.get("id", "")) == attachment_id), None)
         if item is None:
             raise SetupError("asset is unavailable")
         if digest is None:
@@ -230,20 +241,34 @@ class _AssetOps:
                 if not separator or message_ref != f"{channel_id}:{message_id}":
                     raise SetupError("asset is unavailable")
                 url = url_key
-                referenced = any(
-                    isinstance(media, dict) and media.get("url") == url
-                    for embed in message.embeds
-                    if isinstance(embed, dict)
-                    for media in (embed.get("image"), embed.get("thumbnail"), embed.get("video"))
-                ) or any(
-                    isinstance(embed.get(field), dict)
-                    and (embed[field].get("icon_url") or embed[field].get("icon_proxy_url")) == url
-                    for embed in message.embeds
-                    if isinstance(embed, dict)
-                    for field in ("author", "footer")
+                referenced = (
+                    any(
+                        isinstance(media, dict) and media.get("url") == url
+                        for embed in chain(
+                            message.embeds,
+                            *(snapshot["message"].get("embeds", []) for snapshot in message.snapshots),
+                        )
+                        if isinstance(embed, dict)
+                        for media in (embed.get("image"), embed.get("thumbnail"), embed.get("video"))
+                    )
+                    or any(
+                        isinstance(embed.get(field), dict)
+                        and (embed[field].get("icon_url") or embed[field].get("icon_proxy_url")) == url
+                        for embed in chain(
+                            message.embeds,
+                            *(snapshot["message"].get("embeds", []) for snapshot in message.snapshots),
+                        )
+                        if isinstance(embed, dict)
+                        for field in ("author", "footer")
+                    )
+                    or _snapshot_has_sticker(message, url)
                 )
                 if not referenced:
-                    for component in walk_components(message.components):
+                    components = chain(
+                        message.components,
+                        *(snapshot["message"].get("components", []) for snapshot in message.snapshots),
+                    )
+                    for component in walk_components(components):
                         media = (component.get("media"), component.get("file"))
                         if any(isinstance(item, dict) and item.get("url") == url for item in media):
                             referenced = True

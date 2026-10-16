@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from . import interactions as _interactions
+from ._dpy_internals import message_belongs_to_states
 from .backend import serializers
 from .backend.access import can_access_message
 from .backend.command_access import command_access
@@ -79,7 +80,11 @@ class MemberActor:
         self._check(channel, perm)
         reference = None
         if reply_to is not None:
-            reference = {"channel_id": str(channel.id), "message_id": str(reply_to.id)}
+            reference = {
+                "channel_id": str(_channel_id_of(reply_to, self._env)),
+                "message_id": str(reply_to.id),
+            }
+            reference = backend.normalize_message_reference(channel.id, reference)
         attachment_payloads = backend.store_attachments(channel.id, attachments)
         message = backend.create_message(
             channel.id,
@@ -91,6 +96,24 @@ class MemberActor:
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.send")
         return to_discord_message(self._env, message)
+
+    async def forward(self, message: MessageLike, channel: ChannelHandle) -> discord.Message:
+        """Forward the authoritative source as an immutable native message snapshot."""
+        if channel._env is not self._env:
+            raise SetupError("forward destination must belong to this environment")
+        source_channel = _channel_id_of(message, self._env)
+        forwarded = self._env.backend.create_message(
+            channel.id,
+            self.id,
+            reference={
+                "type": 1,
+                "channel_id": str(source_channel),
+                "message_id": str(message.id),
+            },
+        )
+        self._env._mark_mutation()
+        await self._env._settle_internal(dispatch="MEMBER.forward")
+        return to_discord_message(self._env, forwarded)
 
     async def edit(self, message: MessageLike, content: str) -> None:
         stored = self._message(message)
@@ -202,7 +225,7 @@ class MemberActor:
             }
         else:
             command_type = AppCommandType.MESSAGE
-            stored = backend.get_message(_channel_id_of(target), target.id)
+            stored = backend.get_message(_channel_id_of(target, self._env), target.id)
             resolved = {"messages": {str(target.id): dict(serializers.message_payload(backend, stored))}}
         # Context-menu names contain spaces and never nest, so resolve the full
         # name directly rather than treating words as a subcommand path.
@@ -535,14 +558,21 @@ async def _autocomplete_result_resolved(
         actor._env._end_operation()
 
 
-def _channel_id_of(message: MessageLike, fallback: int | None = None) -> int:
+def _channel_id_of(message: MessageLike, env: Env, *, dm_user_id: int | None = None) -> int:
     if isinstance(message, ResponseMessage):
+        if message._env is not env:
+            raise SetupError("That message must belong to this environment")
         return message.channel_id
+    if not isinstance(message, discord.Message) or not message_belongs_to_states(
+        message, env._message_states
+    ):
+        raise SetupError("That message must belong to this environment")
     channel = message.channel
     if channel is None:
-        if fallback is None:
+        channel_id = env.backend.dm_channels.get(dm_user_id) if dm_user_id is not None else None
+        if channel_id is None:
             raise SetupError("That message is not bound to a channel")
-        return fallback
+        return channel_id
     return channel.id
 
 
@@ -564,8 +594,9 @@ def _check_user_dm_channel(actor: Any, channel_id: int) -> None:
 
 def _visible_message(actor: Any, message: MessageLike) -> Any:
     backend = actor._env.backend
-    fallback = actor.dm_channel.id if isinstance(actor, UserHandle) else None
-    channel_id = _channel_id_of(message, fallback)
+    channel_id = _channel_id_of(
+        message, actor._env, dm_user_id=actor.id if isinstance(actor, UserHandle) else None
+    )
     _check_user_dm_channel(actor, channel_id)
     stored = backend.get_message(channel_id, message.id)
     if not can_access_message(actor._env, channel_id, stored, actor):
@@ -731,6 +762,7 @@ async def _dispatch_actor_interaction(
 
 for _operation_name in (
     "send",
+    "forward",
     "edit",
     "delete",
     "typing",

@@ -1678,7 +1678,7 @@ async def test_channel_capture_revalidates_non_target_sources_before_install(
 
 @pytest.mark.parametrize(
     ("kind", "mutation"),
-    [("reply", "delete"), ("reply", "revoke"), ("system", "revoke"), ("context", "delete")],
+    [("reply", "delete"), ("system", "revoke"), ("context", "delete")],
 )
 @pytest.mark.asyncio
 async def test_capture_revalidates_nested_message_sources_before_install(

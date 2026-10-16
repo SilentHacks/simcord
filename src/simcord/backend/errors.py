@@ -73,6 +73,10 @@ def unknown_webhook() -> BackendError:
     return BackendError(404, 10015, "Unknown Webhook")
 
 
+def unknown_interaction() -> BackendError:
+    return BackendError(404, 10062, "Unknown Interaction")
+
+
 def unknown_ban() -> BackendError:
     return BackendError(404, 10026, "Unknown Ban")
 

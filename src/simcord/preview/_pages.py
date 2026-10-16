@@ -16,7 +16,7 @@ from ..backend.access import can_access_channel, can_access_message
 from ..backend.cdn import CDN_BASE
 from ..backend.errors import BackendError, SetupError
 from ..results import InteractionResult, ResponseMessage
-from ._assets import _Asset, _content_type
+from ._assets import _Asset, _content_type, _snapshot_has_sticker
 from ._diagnostics import make_diagnostic
 
 if TYPE_CHECKING:
@@ -165,6 +165,14 @@ class _Page:
                 "application_avatar",
             }:
                 blob = self.preview.env.backend.cdn.get(url)
+            elif owner == "message" and source is not None:
+                try:
+                    message = self.preview.env.backend.get_message(source[1], source[2])
+                except BackendError:
+                    pass
+                else:
+                    if _snapshot_has_sticker(message, url):
+                        blob = self.preview.env.backend.cdn.get(url)
             if (
                 blob is None
                 and (supplied := self.preview._explicit_assets.get(url)) is not None

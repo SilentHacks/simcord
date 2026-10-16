@@ -9,6 +9,7 @@ omits keys per context), hence the casts.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from ..enums import VOICE_CHANNEL_TYPES, ChannelType
@@ -305,12 +306,15 @@ def message_payload(
             "message_id": str(metadata.referenced_message_id),
         }
     if reference is not None:
+        if message.snapshots:
+            payload["message_snapshots"] = deepcopy(message.snapshots)
         payload["message_reference"] = dict(reference)
-        referenced = backend.messages.get(int(reference.get("channel_id", message.channel_id)), {}).get(
-            int(reference["message_id"])
-        )
-        if referenced is not None:
-            payload["referenced_message"] = message_payload(backend, referenced)
+        if reference.get("type", 0) == 0:
+            referenced = backend.messages.get(int(reference.get("channel_id", message.channel_id)), {}).get(
+                int(reference["message_id"])
+            )
+            if referenced is not None:
+                payload["referenced_message"] = message_payload(backend, referenced)
     if message.interaction_metadata is not None:
         payload["interaction_metadata"] = dict(message.interaction_metadata)
     if message.webhook_id is not None:
@@ -318,6 +322,34 @@ def message_payload(
     if message.poll is not None:
         payload["poll"] = poll_payload(message.poll, for_user=for_user)
     return cast("message_types.Message", payload)
+
+
+def message_snapshot_payload(backend: BackendBase, message: Message) -> dict[str, Any]:
+    """Capture only Discord's documented snapshot fields, without live references."""
+    return {
+        "message": deepcopy(
+            {
+                "type": message.type,
+                "content": message.content,
+                "embeds": message.embeds,
+                "attachments": message.attachments,
+                "timestamp": message.timestamp,
+                "edited_timestamp": message.edited_timestamp,
+                "flags": message.flags,
+                "mentions": [
+                    user_payload(backend.users[uid])
+                    for uid in message.mention_user_ids
+                    if uid in backend.users
+                ],
+                "mention_roles": [str(uid) for uid in message.mention_role_ids],
+                "sticker_items": [
+                    {"id": str(item.id), "name": item.name, "format_type": item.format_type}
+                    for item in message.stickers
+                ],
+                "components": message.components,
+            }
+        )
+    }
 
 
 def _poll_media(text: str | None, emoji: str | None) -> dict[str, Any]:

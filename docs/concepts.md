@@ -112,6 +112,22 @@ input:
 await env.external_wait(stop.wait(), reason="wait for the next message")
 ```
 
+Declarations are **task-scoped**, not inherited. A framework can have three distinct waits:
+graph-event delivery in its caller, a lifecycle wrapper waiting for that caller to finish,
+and a model/provider task waiting for external input. Declaring only the provider wait does
+not make the other two safe to ignore. Declare only verified external handoffs through
+the framework's public hooks; do not infer safety from coroutine names or suppress
+every sibling task.
+
+Do **not** wrap an entire `agent.run()` or lifecycle `wrap_run(handler)` in
+`external_wait`. Ordinary initialization and finalization also run there, and timers
+created by the declaring task become virtual. Even an ordinary initialization sleep
+can then stop progressing without `env.advance_time()`. No safe generic pydantic-ai
+framework adapter is established here: declaring a provider/backoff wait alone does
+not solve its orchestration waits. Keep undeclared workers visible as errors rather
+than weakening settlement to make the integration pass.
+
+
 Successful settlement means no runnable tracked bot work remains. Public operations reject
 overlap before mutating state, and teardown cancels only bot-owned work; caller tasks survive.
 
@@ -119,7 +135,7 @@ The actor verbs, by area:
 
 | Area | Verbs |
 | --- | --- |
-| Text | `send`, `edit`, `delete`, `typing`, `send_dm` |
+| Text | `send`, `forward`, `edit`, `delete`, `typing`, `send_dm` |
 | Reactions | `react`, `unreact` |
 | App commands | `slash`, `context_menu`, `autocomplete` |
 | Components | `click`, `select`, `submit_modal` |

@@ -283,11 +283,18 @@ async def test_poll_expiry_and_forum_starter_project_nested_sources():
         assert expired["poll"]["results"]["is_finalized"] is True
         _hidden(expired["referenced_message"])
         forum = env.guild.create_forum_channel("posts")
+        with pytest.raises(discord.HTTPException) as error:
+            await _request(
+                env,
+                "POST",
+                f"/channels/{forum.id}/threads",
+                json={"name": "Invalid", "message": {"content": "starter", "message_reference": reference}},
+            )
+        assert error.value.code == 50035
         post = await _request(
             env,
             "POST",
             f"/channels/{forum.id}/threads",
-            json={"name": "Post", "message": {"content": "starter", "message_reference": reference}},
+            json={"name": "Post", "message": {"content": "starter"}},
         )
         assert post["message"]["content"] == "starter"
-        _hidden(post["message"]["referenced_message"])

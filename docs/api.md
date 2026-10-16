@@ -24,7 +24,17 @@ top-level `simcord` package unless a module-qualified path is shown.
 `settle_timeout` is the default maximum time spent joining runnable bot work. A direct
 `await env.settle(timeout=...)` override is available; `idle=` is only the polling interval.
 Use `await env.external_wait(awaitable, reason="...")` for one explicitly scoped external
-input wait. Unknown waits remain active and produce a diagnostic timeout.
+input wait. It applies to the calling task only. Unknown waits remain active and produce
+a diagnostic timeout. Do not label whole framework runs as external waits; see the
+[framework integration limits](concepts.md#actors-act-as-a-real-user).
+
+### `Env(approved_intents=None)`
+
+`None` skips explicit privileged-intent approval checks and permits REST Message Content
+access, preserving the permissive fixture default. An explicit `discord.Intents.none()`
+denies that access. REST authorization follows this Portal/API setting independently of
+the bot's requested Gateway mask; normal exemptions and interaction-selected access remain.
+Bot-visible projections never redact authoritative actor/backend fixture state.
 
 
 ## Request observability

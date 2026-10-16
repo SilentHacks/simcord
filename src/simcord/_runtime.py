@@ -281,6 +281,7 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     )
 
     state = _dpy_internals.get_state(bot)
+    self._message_states.add(state)
     state.shard_count = self._shard_count
     state.shard_ids = list(self._shard_ids)
     router = ShardRouter(self.backend, state, bot.dispatch, self._shard_count, self._shard_ids)

@@ -192,7 +192,7 @@ def test_invalid_interaction_response_does_not_consume_ack(env, channel, alice, 
     assert backend.get_message(channel.id, record.message_id).content == "retry"
 
 
-def test_empty_interaction_deferral_does_not_create_message(env, channel, alice):
+def test_interaction_deferral_creates_pending_message(env, channel, alice):
     record = env.backend.new_interaction(2, channel.id, alice.id, env.guild.id)
     router.dispatch(
         env.backend,
@@ -201,8 +201,9 @@ def test_empty_interaction_deferral_does_not_create_message(env, channel, alice)
         json={"type": 5, "data": {}},
     )
     assert record.responded and record.loading
-    assert record.message_id is None
-    assert not env.backend.messages[channel.id]
+    message = env.backend.get_message(channel.id, record.message_id)
+    assert message.content == ""
+    assert message.flags == 1 << 7
 
 
 @pytest.mark.parametrize("interaction_type", [2, 5])
@@ -247,3 +248,135 @@ def test_source_update_validates_before_ack_and_accepts_nullable_edit(env, chann
     assert record.responded
     assert record.message_id == message.id
     assert message.content == "" and message.embeds == []
+
+
+@pytest.mark.parametrize("callback_type", [4, 5, 6])
+@pytest.mark.parametrize("elapsed", [0, 2.999, 3, 3.001])
+def test_initial_callback_deadline_and_unacknowledged_token(env, channel, alice, callback_type, elapsed):
+    backend = env.backend
+    source = backend.create_message(channel.id, backend.bot_user.id, "source")
+    record = backend.new_interaction(3, channel.id, alice.id, env.guild.id)
+    record.source_message_id = source.id
+    callback = f"/interactions/{record.id}/{record.token}/callback"
+    webhook = f"/webhooks/{backend.application_id}/{record.token}"
+    before_events = [item for item in backend.transcript if item[0] == "GATEWAY"]
+    backend.advance_clock(elapsed)
+    if elapsed < 3:
+        router.dispatch(
+            backend, "POST", callback, json={"type": callback_type, "data": {"content": "accepted"}}
+        )
+        assert record.responded
+        if callback_type == 6:
+            assert record.message_id == source.id
+            assert source.content == "source"
+        else:
+            assert record.message_id != source.id
+            assert record.loading is (callback_type == 5)
+        return
+
+    with pytest.raises(simcord.BackendError) as caught:
+        router.dispatch(backend, "POST", callback, json={"type": callback_type})
+    assert caught.value.status == 404 and caught.value.code == 10062
+    assert not record.responded and record.message_id is None
+    # Missing the initial deadline invalidates the webhook token too, before
+    # body validation or looking for either an original or a followup.
+    for method, path in (
+        ("POST", webhook),
+        ("GET", f"{webhook}/messages/@original"),
+        ("PATCH", f"{webhook}/messages/@original"),
+        ("DELETE", f"{webhook}/messages/@original"),
+        ("GET", f"{webhook}/messages/{source.id}"),
+        ("PATCH", f"{webhook}/messages/{source.id}"),
+        ("DELETE", f"{webhook}/messages/{source.id}"),
+    ):
+        with pytest.raises(simcord.BackendError) as caught:
+            router.dispatch(backend, method, path, json={"content": "x" * 2001})
+        assert caught.value.code == 10015
+    assert list(backend.messages[channel.id]) == [source.id]
+    assert [item for item in backend.transcript if item[0] == "GATEWAY"] == before_events
+
+
+@pytest.mark.parametrize("elapsed", [899.999, 900, 900.001])
+@pytest.mark.parametrize("callback_type", [4, 5, 6])
+@pytest.mark.parametrize("ephemeral", [False, True])
+def test_acknowledged_continuation_deadline_and_error_precedence(
+    env, channel, alice, elapsed, callback_type, ephemeral
+):
+    backend = env.backend
+    source = backend.create_message(channel.id, backend.bot_user.id, "source")
+    record = backend.new_interaction(3, channel.id, alice.id, env.guild.id)
+    record.source_message_id = source.id
+    callback = f"/interactions/{record.id}/{record.token}/callback"
+    webhook = f"/webhooks/{backend.application_id}/{record.token}"
+    backend.advance_clock(2.999)
+    router.dispatch(
+        backend,
+        "POST",
+        callback,
+        json={"type": callback_type, "data": {"content": "accepted", "flags": 64 if ephemeral else 0}},
+    )
+    original_id = record.message_id
+    # Even beyond three seconds, an acknowledged callback is a duplicate,
+    # not an unacknowledged timeout. Admission takes precedence over its body.
+    backend.advance_clock(1)
+    with pytest.raises(simcord.BackendError) as caught:
+        router.dispatch(backend, "POST", callback, json={"type": 99})
+    assert caught.value.code == 40060
+    deadline = datetime.datetime.fromisoformat(record.expires_at)
+    now = datetime.datetime.fromisoformat(backend.now_iso())
+    target = deadline + datetime.timedelta(seconds=elapsed - 900)
+    backend.advance_clock((target - now).total_seconds())
+    original = f"{webhook}/messages/@original"
+    by_id = f"{webhook}/messages/{original_id}"
+    if elapsed >= 900:
+        for method, path in (
+            ("GET", original),
+            ("PATCH", original),
+            ("DELETE", original),
+            ("POST", webhook),
+            ("GET", by_id),
+            ("PATCH", by_id),
+            ("DELETE", by_id),
+            ("GET", f"{webhook}/messages/{original_id + 1}"),
+        ):
+            with pytest.raises(simcord.BackendError) as caught:
+                router.dispatch(backend, method, path, json={"content": "x" * 2001})
+            assert caught.value.code == 10015
+        with pytest.raises(simcord.BackendError) as caught:
+            router.dispatch(backend, "POST", callback, json={"type": 99})
+        assert caught.value.code == 10062
+        assert record.message_id == original_id
+        return
+
+    fetched = router.dispatch(backend, "GET", original)
+    assert int(fetched["id"]) == original_id
+    completed = router.dispatch(backend, "PATCH", original, json={"content": "completed"})
+    assert int(completed["id"]) == original_id
+    assert completed["content"] == "completed"
+    assert not record.loading
+    assert bool(completed["flags"] & 64) is (ephemeral and callback_type != 6)
+    router.dispatch(backend, "DELETE", original)
+    for method in ("GET", "PATCH", "DELETE"):
+        with pytest.raises(simcord.BackendError) as caught:
+            router.dispatch(backend, method, original, json={"content": "must not recreate"})
+        assert caught.value.code == 10008
+    assert record.message_id == original_id
+    backend.advance_clock(0.001)
+    with pytest.raises(simcord.BackendError) as caught:
+        router.dispatch(backend, "GET", original)
+    assert caught.value.code == 10015
+
+
+def test_invalid_callback_does_not_extend_initial_deadline(env, channel, alice):
+    backend = env.backend
+    record = backend.new_interaction(2, channel.id, alice.id, env.guild.id)
+    callback = f"/interactions/{record.id}/{record.token}/callback"
+    backend.advance_clock(2.999)
+    with pytest.raises(simcord.BackendError) as caught:
+        router.dispatch(backend, "POST", callback, json={"type": 99})
+    assert caught.value.code == 50035
+    backend.advance_clock(0.001)
+    with pytest.raises(simcord.BackendError) as caught:
+        router.dispatch(backend, "POST", callback, json={"type": 99})
+    assert caught.value.code == 10062
+    assert not record.responded and record.message_id is None

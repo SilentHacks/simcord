@@ -12,7 +12,7 @@ from ...components import (
     merge_edit_flags,
     validate_message_state,
 )
-from ...enums import MessageType
+from ...enums import ChannelType, MessageType
 from .. import errors, permissions, serializers
 from ..models import (
     AllowedMentions,
@@ -99,6 +99,16 @@ class MessageMixin(BackendBase):
         broadcast: bool = True,
     ) -> Message:
         channel = self.get_channel(channel_id)
+        reference = self.normalize_message_reference(channel_id, reference)
+        snapshots: list[dict[str, Any]] = []
+        is_forward = reference is not None and reference["type"] == 1
+        if is_forward and reference is not None:
+            source = self._forward_source(channel_id, author_id, reference)
+            source_channel = self.get_channel(source.channel_id)
+            if source_channel.guild_id is not None:
+                reference["guild_id"] = str(source_channel.guild_id)
+            snapshots = [serializers.message_snapshot_payload(self, source)]
+            flags |= 1 << 14
         content_value = content or ""
         embed_value = [] if embeds is None else embeds
         component_value = [] if components is None else components
@@ -113,7 +123,7 @@ class MessageMixin(BackendBase):
                 poll=poll,
                 stickers=sticker_value,
                 attachments=attachments,
-                require_nonempty=True,
+                require_nonempty=not (is_forward or (flags & (1 << 7) and interaction_metadata is not None)),
             )
         except (ComponentValidationError, TypeError, ValueError) as exc:
             raise _component_error(
@@ -121,7 +131,7 @@ class MessageMixin(BackendBase):
             ) from exc
         reply_author_id = None
         reply_author_interaction = False
-        if reference:
+        if reference and not is_forward:
             try:
                 target = self.get_message(
                     int(reference.get("channel_id", channel.id)), int(reference["message_id"])
@@ -148,7 +158,7 @@ class MessageMixin(BackendBase):
             type=int(
                 message_type
                 if message_type is not None
-                else (MessageType.REPLY if reference else MessageType.DEFAULT)
+                else (MessageType.REPLY if reference and not is_forward else MessageType.DEFAULT)
             ),
             flags=int(flags),
             tts=tts,
@@ -163,6 +173,7 @@ class MessageMixin(BackendBase):
             mention_role_ids=mention_roles,
             mention_everyone=mention_everyone,
             reference=reference,
+            snapshots=snapshots,
             reply_author_id=reply_author_id,
             reply_author_interaction=reply_author_interaction,
             interaction_metadata=interaction_metadata,
@@ -179,6 +190,106 @@ class MessageMixin(BackendBase):
         if broadcast:
             self.announce_message_create(message)
         return message
+
+    def normalize_message_reference(
+        self, channel_id: int, reference: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if reference is None:
+            return None
+        if not isinstance(reference, dict) or reference.keys() - {
+            "type",
+            "channel_id",
+            "message_id",
+            "guild_id",
+            "fail_if_not_exists",
+        }:
+            raise errors.invalid_form_body("invalid message_reference fields")
+        kind = reference.get("type", 0)
+        if type(kind) is not int or kind not in (0, 1):
+            raise errors.invalid_form_body("message_reference.type must be 0 or 1")
+        if "message_id" not in reference or (kind == 1 and "channel_id" not in reference):
+            raise errors.invalid_form_body(
+                "message_reference requires message_id and forwards require channel_id"
+            )
+        normalized: dict[str, Any] = {"type": kind, "channel_id": str(channel_id)}
+        for key in ("channel_id", "message_id", "guild_id"):
+            if key not in reference:
+                continue
+            value = reference[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (str, int))
+                or not str(value).isascii()
+                or not str(value).isdecimal()
+            ):
+                raise errors.invalid_form_body(f"message_reference.{key} must be a snowflake")
+            number = int(value)
+            if not 0 < number < 1 << 64:
+                raise errors.invalid_form_body(f"message_reference.{key} must be a snowflake")
+            normalized[key] = str(number)
+        fail = reference.get("fail_if_not_exists", True)
+        if not isinstance(fail, bool):
+            raise errors.invalid_form_body("message_reference.fail_if_not_exists must be a boolean")
+        normalized["fail_if_not_exists"] = fail
+        if kind == 0 and int(normalized["channel_id"]) != channel_id:
+            raise errors.invalid_form_body("replies must reference a message in the same channel")
+        return normalized
+
+    def _forward_source(self, channel_id: int, author_id: int, reference: dict[str, Any]) -> Message:
+        source_channel = self.get_channel(int(reference["channel_id"]))
+        destination = self.get_channel(channel_id)
+        if (
+            destination.guild_id is None
+            and author_id != self.bot_user.id
+            and author_id not in destination.recipient_ids
+        ):
+            raise errors.missing_access()
+        if source_channel.guild_id is None:
+            if author_id != self.bot_user.id and author_id not in source_channel.recipient_ids:
+                raise errors.missing_access()
+            if author_id == self.bot_user.id and source_channel.id not in self.dm_channels.values():
+                raise errors.missing_access()
+        else:
+            self.require_permissions(
+                source_channel.guild_id, author_id, source_channel.id, "read_message_history"
+            )
+            if source_channel.type == ChannelType.PRIVATE_THREAD:
+                guild = self.get_guild(source_channel.guild_id)
+                perms = self.compute_permissions(guild.id, author_id, source_channel.id)
+                if author_id not in source_channel.thread_members and not perms & (
+                    permissions.flag("administrator") | permissions.flag("manage_threads")
+                ):
+                    raise errors.missing_access()
+        source = self.get_message(source_channel.id, int(reference["message_id"]))
+        if not source.visible_to(author_id):
+            raise errors.unknown_message()
+        if "guild_id" in reference and int(reference["guild_id"]) != source_channel.guild_id:
+            raise errors.invalid_form_body("message_reference.guild_id does not match the source channel")
+        if (
+            source.is_ephemeral
+            or source.flags & (1 << 7)
+            or source.type not in (0, 19, 20, 23)
+            or source.poll is not None
+        ):
+            raise errors.invalid_form_body("this message cannot be forwarded")
+        if source.snapshots:
+            raise NotImplementedError(
+                "SimCord does not model forwarding an already-forwarded message: "
+                "Discord's nested snapshot transformation is not yet supported."
+            )
+        send = "send_messages_in_threads" if destination.is_thread else "send_messages"
+        self.require_permissions(destination.guild_id, author_id, destination.id, send)
+        if destination.type == ChannelType.PRIVATE_THREAD:
+            assert destination.guild_id is not None
+            perms = self.compute_permissions(destination.guild_id, author_id, destination.id)
+            if author_id not in destination.thread_members and not perms & (
+                permissions.flag("administrator") | permissions.flag("manage_threads")
+            ):
+                raise errors.missing_access()
+        has_attachments = bool(source.attachments)
+        if has_attachments:
+            self.require_permissions(destination.guild_id, author_id, destination.id, "attach_files")
+        return source
 
     def _mention_state(
         self,
@@ -295,6 +406,7 @@ class MessageMixin(BackendBase):
         embeds = fields["embeds"] if "embeds" in fields else message.embeds
         components = fields["components"] if "components" in fields else message.components
         attachments = fields["attachments"] if "attachments" in fields else message.attachments
+        poll = fields.get("poll", message.poll)
         policy = fields.get("allowed_mentions", message.allowed_mentions)
         try:
             requested_flags = (
@@ -306,7 +418,7 @@ class MessageMixin(BackendBase):
                 flags=flags,
                 content=content,
                 embeds=[] if embeds is None else embeds,
-                poll=message.poll,
+                poll=poll,
                 stickers=message.stickers,
                 previous_flags=message.flags,
             )
@@ -319,10 +431,16 @@ class MessageMixin(BackendBase):
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
             channel, message.author_id, mention_content, policy, message.reply_author_id
         )
+        if message.flags & (1 << 7) and message.interaction_metadata is not None:
+            flags &= ~(1 << 7)
+            record = self.interactions.get(int(message.interaction_metadata["id"]))
+            if record is not None and record.message_id == message.id and record.loading:
+                record.complete_deferred()
         message.content = content_value
         message.embeds = list(embeds or [])
         message.components = normalized_components
         message.attachments = list(attachments or [])
+        message.poll = poll
         message.flags = flags
         message.allowed_mentions = policy
         message.ping_user_ids = ping_users
@@ -331,7 +449,8 @@ class MessageMixin(BackendBase):
         message.mention_role_ids = mention_roles
         message.mention_everyone = mention_everyone
         message.edited_timestamp = self.now_iso()
-        self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
+        if not message.is_ephemeral:
+            self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
 
     #: discord.MessageFlags.crossposted — set when an announcement is published.
@@ -348,13 +467,14 @@ class MessageMixin(BackendBase):
         return message
 
     def delete_message(self, channel_id: int, message_id: int) -> None:
-        self.get_message(channel_id, message_id)
+        message = self.get_message(channel_id, message_id)
         del self.messages[channel_id][message_id]
         channel = self.get_channel(channel_id)
         payload: dict[str, Any] = {"id": str(message_id), "channel_id": str(channel_id)}
         if channel.guild_id is not None:
             payload["guild_id"] = str(channel.guild_id)
-        self.emit("MESSAGE_DELETE", payload)
+        if not message.is_ephemeral:
+            self.emit("MESSAGE_DELETE", payload)
 
     def bulk_delete_messages(self, channel_id: int, message_ids: Iterable[int]) -> list[int]:
         """Delete several messages at once, announcing a single MESSAGE_DELETE_BULK.

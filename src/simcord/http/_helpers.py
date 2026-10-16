@@ -186,6 +186,7 @@ def bot_message(
     webhook_id: int | None = None,
     body: dict[str, Any] | None = None,
     webhook_execute: bool = False,
+    pending: bool = False,
 ) -> Message:
     """Prepare a complete message before storing uploads or publishing it."""
     ctx.backend.get_channel(channel_id)
@@ -197,6 +198,7 @@ def bot_message(
         webhook_id=webhook_id,
         body=body,
         webhook_execute=webhook_execute,
+        pending=pending,
     )
     return commit_bot_message(ctx, channel_id, prepared)
 
@@ -210,6 +212,7 @@ def prepare_bot_message(
     webhook_id: int | None = None,
     body: dict[str, Any] | None = None,
     webhook_execute: bool = False,
+    pending: bool = False,
 ) -> tuple[dict[str, Any], list[bytes]]:
     """Validate all fields and read all uploads without changing backend state."""
     backend = ctx.backend
@@ -264,16 +267,17 @@ def prepare_bot_message(
             message_type = MessageType.CHAT_INPUT_COMMAND
         elif interaction.command_type in {AppCommandType.USER, AppCommandType.MESSAGE}:
             message_type = MessageType.CONTEXT_MENU_COMMAND
-    reference = body.get("message_reference")
-    if reference is not None:
-        if not isinstance(reference, dict) or "message_id" not in reference:
-            raise errors.invalid_form_body("message_reference requires a message_id")
-        try:
-            reference = {
-                key: str(int(str(reference[key]))) for key in ("channel_id", "message_id") if key in reference
-            }
-        except (TypeError, ValueError) as exc:
-            raise errors.invalid_form_body("message_reference identifiers must be integers") from exc
+    reference = backend.normalize_message_reference(channel_id, body.get("message_reference"))
+    if reference is not None and reference["type"] == 1:
+        source = backend._forward_source(
+            channel_id, author_id if author_id is not None else backend.bot_user.id, reference
+        )
+        if not ctx.message_content_access and not intents._content_exempt(
+            serializers.message_payload(backend, source), backend.bot_user.id, backend
+        ):
+            raise errors.BackendError(
+                400, 160014, "You cannot forward a message whose content you cannot read."
+            )
     embeds = body.get("embeds") if "embeds" in body else ([body["embed"]] if body.get("embed") else [])
     if embeds is None:
         embeds = []
@@ -288,7 +292,7 @@ def prepare_bot_message(
             poll=poll,
             stickers=sticker_items,
             attachments=uploads,
-            require_nonempty=True,
+            require_nonempty=not pending and not (reference is not None and reference["type"] == 1),
         )
         resolve_attachment_references(components, uploads)
     except (ComponentValidationError, TypeError, ValueError) as exc:
@@ -379,7 +383,7 @@ def _validate_edit_state(
             embeds=fields.get("embeds", current_embeds)
             if fields.get("embeds", current_embeds) is not None
             else [],
-            poll=message.poll if message is not None else None,
+            poll=fields.get("poll", message.poll if message is not None else None),
             stickers=message.stickers if message is not None else None,
             previous_flags=message.flags if message is not None else 0,
         )
@@ -399,11 +403,21 @@ def message_edit_changes(
         "attachments",
         "flags",
         "allowed_mentions",
+        "poll",
         ignore=("tts",),
         body=ctx.body() if body is None else body,
     )
     if "allowed_mentions" in fields or "content" in fields:
         fields["allowed_mentions"] = _allowed_mentions(fields.get("allowed_mentions"))
+    if "poll" in fields:
+        if message is None or not message.flags & (1 << 7) or message.interaction_metadata is None:
+            raise errors.invalid_form_body("polls can only be added when completing a deferred response")
+        if not isinstance(fields["poll"], dict):
+            raise errors.invalid_form_body("poll must be an object")
+        try:
+            fields["poll"] = poll_from_wire(ctx.backend, fields["poll"])
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise errors.invalid_form_body("invalid poll") from exc
     current_attachments = list(message.attachments) if message is not None else []
     preview_uploads = _preview_uploads(ctx)
     upload_indices: list[int] = []

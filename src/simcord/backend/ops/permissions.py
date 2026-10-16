@@ -7,18 +7,6 @@ from .base import BackendBase
 
 
 class PermissionsMixin(BackendBase):
-    def require_permissions(
-        self, guild_id: int | None, user_id: int, channel_id: int | None, *names: str
-    ) -> None:
-        if guild_id is None:  # DMs: no guild permissions apply
-            return
-        perms = self.compute_permissions(guild_id, user_id, channel_id)
-        if channel_id is not None and not perms & permissions.flag("view_channel"):
-            raise errors.missing_access()
-        for name in names:
-            if not perms & permissions.flag(name):
-                raise errors.missing_permissions()
-
     def require_hierarchy(self, guild_id: int, actor_id: int, target_id: int) -> None:
         """Role hierarchy: you cannot moderate members at or above your top role."""
         guild = self.get_guild(guild_id)

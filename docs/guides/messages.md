@@ -47,6 +47,41 @@ Editing a message preserves immutable flags: ephemeral messages stay ephemeral, 
     on. If your test setup denies the action, you get a `SetupError` — see
     [Permissions](permissions.md).
 
+## Forwarding immutable message snapshots
+
+```python
+source = await alice.send(channel, "Evidence", attachments=[("proof.txt", b"original")])
+forwarded = await alice.forward(source, destination)
+assert forwarded.reference.type is discord.MessageReferenceType.forward
+assert forwarded.message_snapshots[0].content == "Evidence"
+assert await forwarded.message_snapshots[0].attachments[0].read() == b"original"
+```
+
+Bot code can use native `await message.forward(destination)` too. Both paths store a
+type-1 reference and a snapshot, rather than a reply's live `referenced_message`. Forwarding
+does not ping the original author. Source visibility/history and destination send/attachment
+permissions are enforced; SDK forwarding also requires application-level content access.
+Actor message handles must belong to the same environment; colliding deterministic
+IDs from another environment do not identify a local source. Cross-guild forwarding
+within one environment remains supported.
+
+Snapshot metadata is copied when the forward is created and detached on observation. Later
+source edits/deletion and mutations of returned objects do not alter it. Existing immutable
+CDN bytes are reused, not duplicated. Actors and fixture history see authoritative snapshots;
+bot Gateway/REST observations apply the normal Message Content policy.
+
+Preview renders the frozen text, embeds, attachments, stickers and components without
+inventing a source author or resolving a live reply. Historical interaction controls are
+disabled; safe link buttons remain links. Snapshot downloads are authorized against the
+forwarding message, not the source: readers of a deliberately shared forward need not have
+source-channel access, but deleting the forward revokes its retained downloads.
+
+**Explicit limit:** forwarding an already-forwarded message raises `NotImplementedError`.
+Discord documents a nesting cap but not the transformation of nested snapshots plus outer
+annotations; SimCord does not silently flatten/drop content or fabricate a Discord error.
+Ordinary forwards, including outer annotations sent through the native SDK, are supported.
+
+
 ## Converters and checks run for real
 
 Because the cache is populated through discord.py's actual parsers, converters resolve

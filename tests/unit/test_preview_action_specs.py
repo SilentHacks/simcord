@@ -2,7 +2,8 @@ import json
 import re
 from importlib import resources
 
-from simcord.preview._actions import ACTION_SPECS
+from simcord.backend.models import Interaction
+from simcord.preview._actions import ACTION_SPECS, _Action, _ActionOps
 
 
 def test_action_specs_match_protocol_schema_and_browser() -> None:
@@ -50,3 +51,23 @@ def test_action_specs_match_protocol_schema_and_browser() -> None:
     assert set(re.findall(r"[\"']([^\"']+)[\"']", page_action.group(1))) == {
         kind for kind, spec in ACTION_SPECS.items() if spec.page_intent
     }
+
+
+def test_thinking_original_receipt_tracks_completion_without_duplicate_followup() -> None:
+    record = Interaction(id=1, token="token", type=2, channel_id=2, guild_id=None, user_id=3)
+    action = _Action(sequence=1, request_id="request", fingerprint="fingerprint", kind="run_command")
+    record.defer(4, ephemeral=True)
+    assert _ActionOps._outcomes(action, record) == [{"kind": "deferred", "messageId": "4"}]
+    record.complete_deferred()
+    assert _ActionOps._outcomes(action, record) == [{"kind": "response", "messageId": "4"}]
+    record.followup_ids.append(5)
+    assert _ActionOps._outcomes(action, record) == [
+        {"kind": "response", "messageId": "4"},
+        {"kind": "followup", "messageId": "5"},
+    ]
+    record.source_message_id = 6
+    record.defer_update()
+    assert _ActionOps._outcomes(action, record) == [
+        {"kind": "deferred"},
+        {"kind": "followup", "messageId": "5"},
+    ]

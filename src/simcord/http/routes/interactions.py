@@ -19,17 +19,25 @@ from ..router import RequestContext, route
 @route("POST", "/interactions/{interaction_id}/{token}/callback")
 def interaction_callback(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    if ctx.int_arg("interaction_id") not in backend.interactions:
-        raise errors.unknown_webhook()
-    record = backend.interaction_by_token(ctx.args["token"])
-    if record.id != ctx.int_arg("interaction_id"):
-        raise errors.unknown_webhook()
+    record = backend.interactions.get(ctx.int_arg("interaction_id"))
+    if record is None or record.token != ctx.args["token"]:
+        raise errors.unknown_interaction()
+    now = backend.now_iso()
+    if (record.expires_at is not None and now >= record.expires_at) or (
+        not record.responded
+        and record.initial_response_deadline is not None
+        and now >= record.initial_response_deadline
+    ):
+        raise errors.unknown_interaction()
     if record.responded:
         raise errors.already_acknowledged()
     body = ctx.body()
     callback_type = body["type"]
     data = body.get("data") or {}
-    ephemeral = bool(int(data.get("flags") or 0) & EPHEMERAL_FLAG)
+    try:
+        ephemeral = bool(int(data.get("flags") or 0) & EPHEMERAL_FLAG)
+    except (TypeError, ValueError) as exc:
+        raise errors.invalid_form_body("flags must be an integer") from exc
     message = None
 
     # The marker methods set `responded`, so they must run only after the
@@ -40,7 +48,14 @@ def interaction_callback(ctx: RequestContext) -> Any:
         message = bot_message(ctx, record.channel_id, interaction=record, body=data)
         record.respond_with_message(message.id, ephemeral=ephemeral)
     elif callback_type == CallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE:
-        record.defer(ephemeral=ephemeral)
+        message = bot_message(
+            ctx,
+            record.channel_id,
+            interaction=record,
+            body={"flags": (EPHEMERAL_FLAG if ephemeral else 0) | (1 << 7)},
+            pending=True,
+        )
+        record.defer(message.id, ephemeral=ephemeral)
     elif callback_type == CallbackType.DEFERRED_UPDATE_MESSAGE:
         record.defer_update()
     elif callback_type == CallbackType.UPDATE_MESSAGE:
@@ -77,7 +92,10 @@ def interaction_callback(ctx: RequestContext) -> Any:
             "response_message_ephemeral": record.ephemeral,
         }
     }
-    if message is not None:
+    if message is not None and callback_type in (
+        CallbackType.CHANNEL_MESSAGE_WITH_SOURCE,
+        CallbackType.UPDATE_MESSAGE,
+    ):
         response["resource"] = {
             "type": callback_type,
             "message": message_response(ctx, message, exempt_root=True),
@@ -106,6 +124,19 @@ def execute_webhook(ctx: RequestContext) -> Any:
         record = backend.interaction_by_token(token)
         if ctx.int_arg("webhook_id") != backend.application_id:
             raise errors.unknown_webhook()
+        if record.loading:
+            # This endpoint is an edit until the thinking original is completed.
+            # The original's immutable ephemeral flag wins in either direction.
+            if record.message_id is None:
+                raise errors.unknown_message()
+            message = backend.get_message(record.channel_id, record.message_id)
+            body = dict(ctx.body())
+            body.pop("username", None)
+            body.pop("avatar_url", None)
+            message = backend.edit_message(
+                message.channel_id, message.id, message_edit_changes(ctx, message, body=body)
+            )
+            return message_response(ctx, message, exempt_root=True)
         message = bot_message(ctx, record.channel_id, interaction=record, webhook_execute=True)
         record.followup_ids.append(message.id)
         return message_response(ctx, message, exempt_root=True)
@@ -168,14 +199,7 @@ def get_original_response(ctx: RequestContext) -> Any:
 def edit_original_response(ctx: RequestContext) -> Any:
     record = _record(ctx)
     backend = ctx.backend
-    if record.message_id is None and record.loading:
-        # Editing a deferred response materialises the response message.
-        body = dict(ctx.body())
-        if record.ephemeral:
-            body["flags"] = int(body.get("flags") or 0) | EPHEMERAL_FLAG
-        message = bot_message(ctx, record.channel_id, interaction=record, body=body)
-        record.materialise_deferred(message.id)
-        return message_response(ctx, message, exempt_root=True)
+    # A deleted original retains its identity; it must never be recreated.
     if record.message_id is None:
         raise errors.unknown_message()
     message = backend.edit_message(
@@ -189,9 +213,9 @@ def edit_original_response(ctx: RequestContext) -> Any:
 @route("DELETE", "/webhooks/{webhook_id}/{token}/messages/@original")
 def delete_original_response(ctx: RequestContext) -> Any:
     record = _record(ctx)
-    if record.message_id is not None:
-        ctx.backend.delete_message(record.channel_id, record.message_id)
-        record.message_id = None
+    if record.message_id is None:
+        raise errors.unknown_message()
+    ctx.backend.delete_message(record.channel_id, record.message_id)
 
 
 @route("GET", "/webhooks/{webhook_id}/{token}/messages/{message_id}")
