@@ -133,8 +133,12 @@ def _track_callback(
                     return
                 # A future fallback can fire while another advance is settling.
                 # Re-arm it: that advance may stop before this timer's instant.
+                previous = self._real_advance_task
                 if self._advancing or (
-                    self._real_advance_task is not None and not self._real_advance_task.done()
+                    previous is not None
+                    and (
+                        not previous.done() or (not previous.cancelled() and previous.exception() is not None)
+                    )
                 ):
                     if when > self._virtual_time:
                         assert real_call_at is not None and real_monotonic is not None

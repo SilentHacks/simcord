@@ -48,7 +48,9 @@ def pytest_configure(config):
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_call(item):
     """Select clocks in the actual test context, never an async fixture task."""
-    envs = {value for value in getattr(item, "funcargs", {}).values() if isinstance(value, Env)}
+    envs = {
+        value for value in getattr(item, "funcargs", {}).values() if isinstance(value, Env) and value._started
+    }
     if len(envs) == 1:
         with next(iter(envs)).time_context():
             return (yield)

@@ -211,3 +211,41 @@ async def test_zero_delay_real_fallback_keeps_the_next_timer_live():
         channel = guild.create_text_channel("general")
         await actor.send(channel, "two callbacks")
         assert observed == ["first", "second"]
+
+
+async def test_real_fallback_timeout_survives_later_timer_until_settle_receives_it():
+    env = simcord.Env(discord.Client(intents=discord.Intents.none()), settle_timeout=0.01)
+    await env.start()
+    release = asyncio.Event()
+    started = asyncio.Event()
+    observed = []
+    work = []
+
+    async def blocked():
+        started.set()
+        await release.wait()
+
+    def first():
+        observed.append("first")
+        work.append(asyncio.create_task(blocked()))
+
+    try:
+        with env._bot_scope():
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.005, first)
+            loop.call_later(0.08, observed.append, "second")
+        await started.wait()
+        # Synchronize on failure without delivering it through a public operation.
+        assert env._real_advance_task is not None
+        with pytest.raises(TimeoutError, match="unknown wait"):
+            await asyncio.wait_for(asyncio.shield(env._real_advance_task), timeout=1)
+        release.set()
+        # A later successful coordinator must not erase the undelivered failure.
+        await asyncio.sleep(0.1)
+        with pytest.raises(TimeoutError, match="unknown wait"):
+            await env.settle()
+        await env.settle(timeout=1)
+        assert observed == ["first", "second"]
+    finally:
+        release.set()
+        await env.shutdown()

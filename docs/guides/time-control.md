@@ -99,6 +99,9 @@ other public operations and rejects invalid or negative durations.
 If an advance times out, earlier transitions remain committed. The exception notes
 report requested and reached UTC instants. Resolve the outstanding work and advance
 only the remaining duration; do not repeat the original duration or replay an action.
+An automatic real-timer coordinator's undelivered timeout is retained until a public
+settlement receives it; a later timer cannot silently replace the failure. After
+acknowledging it and resolving blocked work, settle again to continue.
 
 ## Next
 

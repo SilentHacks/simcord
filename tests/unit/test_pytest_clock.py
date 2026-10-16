@@ -3,6 +3,7 @@ def test_pytest_clock_selection_uses_execution_context_and_aliases(pytester):
         """
         import discord
         import pytest
+        import simcord
         from discord.ext import commands
 
         @pytest.fixture
@@ -12,6 +13,10 @@ def test_pytest_clock_selection_uses_execution_context_and_aliases(pytester):
         @pytest.fixture
         def world(simcord_env):
             return simcord_env
+
+        @pytest.fixture
+        def foreign():
+            return simcord.Env(commands.Bot(command_prefix='!', intents=discord.Intents.none()))
         """
     )
     pytester.makepyfile(
@@ -29,7 +34,15 @@ def test_pytest_clock_selection_uses_execution_context_and_aliases(pytester):
 
         async def test_next_fixture(world):
             assert discord.utils.utcnow() == world.now()
+
+        async def test_inactive_foreign_fixture_keeps_running_clock(world, foreign):
+            sku = world.create_sku('Premium')
+            grant = world.seed_entitlement(
+                sku, guild=123, ends_at=world.now() + datetime.timedelta(days=7)
+            )
+            assert not grant.snapshot().is_expired()
+            assert discord.utils.utcnow() == world.now()
         """
     )
     result = pytester.runpytest("-o", "asyncio_mode=auto", "-p", "no:cacheprovider")
-    result.assert_outcomes(passed=2)
+    result.assert_outcomes(passed=3)
