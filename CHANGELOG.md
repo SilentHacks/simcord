@@ -10,7 +10,7 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 - Honor explicit application Message Content approval on REST message responses independently of Gateway intents, including nested references. Restore ping-enabled replies to regular bot messages without exposing replies to interaction responses, preserve contextual interaction/token access, and keep backend fixtures complete. The default `approved_intents=None` retains unrestricted REST access; explicit absent approval is restricted.
 
-  Explicitly unapproved applications now receive redacted REST content, so tests that previously relied on unauthorized reads may fail and expose consumer bugs. Selecting a message in an interaction does not authorize later REST reads. Reply wire metadata and edit/deletion details remain offline-tested rather than live-Discord calibrated. ([#message-content-visibility](https://github.com/SilentHacks/simcord/issues/message-content-visibility))
+  Explicitly unapproved applications now receive redacted REST content, so tests that previously relied on unauthorized reads may fail and expose consumer bugs. Selecting a message in an interaction does not authorize later REST reads. Reply wire metadata and edit/deletion details remain offline-tested rather than live-Discord calibrated.
 
 
 ## 3.0.1 (2026-10-06)
