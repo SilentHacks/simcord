@@ -318,13 +318,10 @@ async def test_preview_capture_target_boundaries(tmp_path, env, channel, alice):
     message = await env.bot.get_channel(channel.id).send(content="capture target")
     panel = await alice.slash(channel, "panel")
     feedback = await alice.slash(channel, "feedback")
-    slow = await alice.slash(channel, "slow")
     bob = env.guild.add_member(env.create_user("bob"))
     ephemeral = await alice.context_menu(channel, "Report Member", bob)
 
     async with env.preview(channel, viewers=[alice, bob]) as preview:
-        with pytest.raises(simcord.SetupError, match="presentable response"):
-            await preview.screenshot(tmp_path / "slow.png", target=slow)
         with pytest.raises(simcord.SetupError, match="requested viewer"):
             await preview.screenshot(tmp_path / "modal-owner.png", viewer=bob, target=feedback)
         with pytest.raises(simcord.SetupError, match="not accessible"):
@@ -898,9 +895,6 @@ async def test_preview_lifecycle_and_show_boundaries(env, channel, alice):
         with pytest.raises(simcord.SetupError, match="unknown preview viewer"):
             preview._open_page(viewer_id="not-an-id")
 
-        slow = await alice.slash(channel, "slow")
-        with pytest.raises(simcord.SetupError, match="presentable response"):
-            await preview.show(slow)
         other_channel = env.guild.create_text_channel("other")
         other_message = await env.bot.get_channel(other_channel.id).send("other")
         with pytest.raises(simcord.SetupError, match="another channel"):

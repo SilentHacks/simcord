@@ -30,14 +30,16 @@ async def test_slash_command_permission_denied_branch(env, channel, alice):
 
 async def test_deferred_response_and_followup(env, channel, alice):
     result = await alice.slash(channel, "slow")
-    assert result.followups[0].content == "Done after a while"
+    assert result.response.content == "Done after a while"
+    assert result.followups == []
 
 
 async def test_settle_waits_through_async_sleep(env, channel, alice):
     # A handler that pauses (asyncio.sleep) before replying must still be fully
-    # settled: assertions should see the followup, not stale pre-sleep state.
+    # settled: assertions should see the completed original, not stale pre-sleep state.
     result = await alice.slash(channel, "paced")
-    assert result.followups[0].content == "paced reply"
+    assert result.response.content == "paced reply"
+    assert result.followups == []
 
 
 async def test_deferred_component_update_edits_in_place(env, channel, alice):
@@ -179,7 +181,7 @@ async def test_strict_sync_opt_out():
         assert result.response.content == "boo"
 
 
-async def test_editing_deferred_response_materialises_message(env, channel, alice):
+async def test_editing_deferred_response_completes_message(env, channel, alice):
     @env.bot.tree.command(description="defers then edits")
     async def patient(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)

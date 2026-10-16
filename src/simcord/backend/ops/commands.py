@@ -99,6 +99,8 @@ class CommandsMixin(BackendBase):
             channel_id=channel_id,
             guild_id=guild_id,
             user_id=user_id,
+            expires_at=self.iso_after(15 * 60),
+            initial_response_deadline=self.iso_after(3),
         )
         self.interactions[interaction_id] = record
         self.interaction_tokens[record.token] = interaction_id
@@ -108,4 +110,13 @@ class CommandsMixin(BackendBase):
         interaction_id = self.interaction_tokens.get(token)
         if interaction_id is None:
             raise errors.unknown_webhook()
-        return self.interactions[interaction_id]
+        record = self.interactions[interaction_id]
+        if record.expires_at is not None and self.now_iso() >= record.expires_at:
+            raise errors.unknown_webhook()
+        if (
+            not record.responded
+            and record.initial_response_deadline is not None
+            and self.now_iso() >= record.initial_response_deadline
+        ):
+            raise errors.unknown_webhook()
+        return record

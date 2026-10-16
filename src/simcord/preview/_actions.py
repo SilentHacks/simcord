@@ -727,7 +727,9 @@ class _ActionOps:
                 if interaction.message_id is not None
                 else [{"kind": "no_output"}]
             )
-        elif response_kind in {"deferred", "deferred_update"}:
+        elif response_kind == "deferred":
+            outcomes = [{"kind": "deferred", "messageId": str(interaction.message_id)}]
+        elif response_kind == "deferred_update":
             outcomes = [{"kind": "deferred"}]
         elif response_kind == "update":
             outcomes = (

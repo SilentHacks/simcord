@@ -30,6 +30,148 @@ def _walk_tokens(value):
 
 
 @pytest.mark.asyncio
+async def test_forwarded_snapshot_media_belongs_to_forward_not_live_source(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    private = env.guild.create_text_channel(
+        "source", overwrites={bob: discord.PermissionOverwrite(view_channel=False)}
+    )
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Historical control", custom_id="source-only"))
+    source = await env.bot.get_channel(private.id).send(
+        "Frozen forwarded content",
+        embed=discord.Embed(title="Frozen evidence"),
+        file=discord.File(io.BytesIO(png_bytes()), filename="evidence.png"),
+        view=view,
+    )
+    forwarded = await alice.forward(source, channel)
+    async with env.preview(channel, viewers=[bob]) as preview:
+        await preview.show(forwarded)
+        projected = target_message(await preview.snapshot())
+        snapshot = projected["snapshots"][0]
+        assert projected["reply"]["state"] == "unavailable"
+        assert "author" not in snapshot
+        assert snapshot["content"] == "Frozen forwarded content"
+        assert snapshot["embeds"][0]["title"] == "Frozen evidence"
+        assert snapshot["components"][0]["components"][0]["disabled"]
+        asset_id = snapshot["attachments"][0]["asset_id"]
+        await source.edit(content="Changed live source", view=None, embed=None)
+        await source.delete()
+        await preview.refresh()
+        assert target_message(await preview.snapshot())["snapshots"][0]["content"] == snapshot["content"]
+        async with ClientSession() as client:
+            url = preview._origin + f"/api/assets/{asset_id}?download=1"
+            headers = preview_headers(preview, preview._python.id)
+            response = await client.get(url, headers=headers)
+            assert response.status == 200
+            assert await response.read() == png_bytes()
+            await alice.delete(forwarded)
+            response = await client.get(url, headers=headers)
+            assert response.status == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind",
+    ["image", "thumbnail", "video", "author", "footer", "gallery", "accessory", "sticker"],
+)
+async def test_forwarded_snapshot_urls_reauthorize_against_forward(env, channel, alice, kind):
+    private = env.guild.create_text_channel("original-media")
+    native = env.bot.get_channel(private.id)
+    member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+    data = png_bytes()
+    url = f"https://media.example.test/{kind}.png"
+    if kind == "sticker":
+        sticker = env.guild.create_sticker("frozen")
+        url = env.backend.cdn.store_sticker(sticker.id, sticker.format_type, data)
+        native_sticker = await env.bot.get_guild(env.guild.id).fetch_sticker(sticker.id)
+        source = await native.send(stickers=[native_sticker])
+    elif kind in {"gallery", "accessory"}:
+        view = discord.ui.LayoutView()
+        if kind == "gallery":
+            view.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(url)))
+        else:
+            view.add_item(
+                discord.ui.Section(
+                    discord.ui.TextDisplay("Retained thumbnail"),
+                    accessory=discord.ui.Thumbnail(url),
+                )
+            )
+        source = await native.send(view=view)
+    else:
+        field = {"name": "Frozen", "icon_url": url} if kind in {"author", "footer"} else {"url": url}
+        if kind == "footer":
+            field = {"text": "Frozen", "icon_url": url}
+        source = await native.send(embed=discord.Embed.from_dict({kind: field}))
+    forwarded = await alice.forward(source, channel)
+    async with (
+        env.preview(channel, viewers=[alice], assets={url: (f"{kind}.png", data)}) as preview,
+        ClientSession() as client,
+    ):
+        await preview.show(forwarded)
+        snapshot = target_message(await preview.snapshot())["snapshots"][0]
+        if kind == "sticker":
+            asset = snapshot["stickers"][0]
+        elif kind == "gallery":
+            asset = snapshot["components"][0]["items"][0]["media"]
+        elif kind == "accessory":
+            asset = snapshot["components"][0]["accessory"]["media"]
+        else:
+            asset = snapshot["embeds"][0][kind]
+        prefix = "icon_" if kind in {"author", "footer"} else ""
+        assert asset[f"{prefix}available"] is True
+        asset_id = asset[f"{prefix}asset_id"]
+        asset_url = preview._origin + f"/api/assets/{asset_id}?download=1"
+        headers = preview_headers(preview, preview._python.id)
+        for state in ("original", "revoked", "deleted"):
+            if state == "revoked":
+                await native.set_permissions(member, view_channel=False)
+            elif state == "deleted":
+                await source.delete()
+                if kind == "sticker":
+                    await native_sticker.delete()
+            await preview.refresh()
+            response = await client.get(asset_url, headers=headers)
+            assert response.status == 200
+            assert await response.read() == data
+        destination = env.bot.get_channel(channel.id)
+        await destination.set_permissions(member, view_channel=False)
+        response = await client.get(asset_url, headers=headers)
+        assert response.status == 404
+        await destination.set_permissions(member, overwrite=None)
+        await alice.delete(forwarded)
+        response = await client.get(asset_url, headers=headers)
+        assert response.status == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("copied_kind", ["attachment", "sticker"])
+async def test_forwarded_copied_cdn_urls_do_not_transfer_media_ownership(env, channel, alice, copied_kind):
+    data = png_bytes()
+    if copied_kind == "sticker":
+        sticker = env.guild.create_sticker("unrelated")
+        url = env.backend.cdn.store_sticker(sticker.id, sticker.format_type, data)
+    else:
+        unrelated = await env.bot.get_channel(channel.id).send(
+            file=discord.File(io.BytesIO(data), filename="unrelated.png")
+        )
+        url = unrelated.attachments[0].url
+    source = await env.bot.get_channel(channel.id).send(embed=discord.Embed().set_image(url=url))
+    forwarded = await alice.forward(source, channel)
+    async with (
+        env.preview(channel, viewers=[alice], assets={url: ("copied.png", data)}) as preview,
+        ClientSession() as client,
+    ):
+        await preview.show(forwarded)
+        asset = target_message(await preview.snapshot())["snapshots"][0]["embeds"][0]["image"]
+        assert asset["available"] is False
+        response = await client.get(
+            preview._origin + f"/api/assets/{asset['asset_id']}?download=1",
+            headers=preview_headers(preview, preview._python.id),
+        )
+        assert response.status == 404
+
+
+@pytest.mark.asyncio
 async def test_preview_snapshot_filters_entities_references_links_and_assets(env, channel, alice):
     bob = env.guild.add_member(env.create_user("bob"))
     role = env.guild.create_role("Readers")

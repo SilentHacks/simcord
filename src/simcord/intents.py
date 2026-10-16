@@ -146,6 +146,8 @@ def censor_message(
     ``exempt_root`` grants contextual access to this message only. Backend
     facts disambiguate reply mentions and omitted guild/partial-update fields.
     Returns whether any content was removed; absent fields stay absent.
+    Snapshot content inherits its containing forward's access; structural
+    metadata is retained.
     """
     censored = False
     referenced = payload.get("referenced_message")
@@ -153,6 +155,16 @@ def censor_message(
         censored = censor_message(referenced, bot_id, backend=backend)
     if exempt_root or _content_exempt(payload, bot_id, backend):
         return censored
+    censored = _censor_content(payload) or censored
+    for snapshot in payload.get("message_snapshots") or ():
+        message = snapshot.get("message")
+        if isinstance(message, MutableMapping):
+            censored = _censor_content(message) or censored
+    return censored
+
+
+def _censor_content(payload: MutableMapping[str, Any]) -> bool:
+    censored = False
     if payload.get("content"):
         payload["content"] = ""
         censored = True

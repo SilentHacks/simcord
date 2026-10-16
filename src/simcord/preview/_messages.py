@@ -16,6 +16,7 @@ from ..components import COMPONENTS_V2_FLAG, walk_components
 from ..enums import AppCommandType, ComponentType, InteractionType, MessageType
 from ._component_projection import (
     _asset_available,
+    _asset_meta,
     _attachment,
     _decorate_components,
     _decorate_markdown_emoji,
@@ -269,7 +270,7 @@ def _system_projection(
 def _reply_projection(preview: Preview, page: _Page, message: Message) -> dict[str, Any] | None:
     env = preview.env
     reference = message.reference
-    if reference:
+    if reference and reference.get("type", 0) != 1:
         try:
             reference_message_id = reference.get("message_id")
             if reference_message_id is None:
@@ -317,9 +318,16 @@ def _reply_projection(preview: Preview, page: _Page, message: Message) -> dict[s
 
 
 def _message_texts(message: Message | None, content: str) -> list[str]:
-    texts = [message.content or ""] if message is not None else [content]
-    if message is not None:
-        for embed in message.embeds:
+    if message is None:
+        return [content]
+    bodies = [
+        {"content": message.content, "embeds": message.embeds, "components": message.components},
+        *(snapshot["message"] for snapshot in message.snapshots),
+    ]
+    texts = []
+    for body in bodies:
+        texts.append(body.get("content") or "")
+        for embed in body.get("embeds", []):
             for key in ("title", "description"):
                 if isinstance(embed.get(key), str):
                     texts.append(embed[key])
@@ -338,11 +346,47 @@ def _message_texts(message: Message | None, content: str) -> list[str]:
                         texts.append(field[key])
         texts.extend(
             component["content"]
-            for component in walk_components(message.components)
+            for component in walk_components(body.get("components", []))
             if int(component.get("type", -1)) == int(ComponentType.TEXT_DISPLAY)
             and isinstance(component.get("content"), str)
         )
     return texts
+
+
+def _snapshot_projection(
+    preview: Preview, page: _Page, message: Message, snapshot: Mapping[str, Any], context: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Present immutable content owned by the forward, without source attribution."""
+    content = snapshot.get("content") or ""
+    attachments = snapshot.get("attachments", [])
+    components = _decorate_components(
+        preview, page, message, snapshot.get("components", []), attachments, context
+    )
+    for component in walk_components(components):
+        if int(component["type"]) in {2, 3, 5, 6, 7, 8} and not (
+            int(component["type"]) == 2 and component.get("style") == 5
+        ):
+            component["disabled"] = True
+    stickers = []
+    for sticker in snapshot.get("sticker_items", []):
+        asset_id = _asset_meta(
+            page, sticker_url(int(sticker["id"]), int(sticker["format_type"])), message=message
+        )
+        stickers.append({**sticker, "asset_id": asset_id, "available": _asset_available(page, asset_id)})
+    return {
+        "content": content,
+        "content_tokens": _decorate_markdown_emoji(
+            markdown_tokens(content, "message", context=context), page
+        ),
+        "flags": int(snapshot.get("flags", 0)),
+        "components": components,
+        "embeds": [
+            _embed_projection(page, message, embed, attachments, context)
+            for embed in snapshot.get("embeds", [])
+        ],
+        "attachments": [_attachment(preview.env, message, item, page) for item in attachments],
+        "stickers": stickers,
+    }
 
 
 def _message_projection(
@@ -406,6 +450,10 @@ def _message_projection(
         "allowed_actions": _message_allowed_actions(preview, page, channel, message),
         "reply": {"state": "unavailable"},
         "interaction_header": None,
+        "snapshots": [
+            _snapshot_projection(preview, page, message, item["message"], context)
+            for item in message.snapshots
+        ],
     }
     data["mentions"]["users"] = list(data["mention_user_ids"])
     if type_info["kind"] == "system":

@@ -663,6 +663,11 @@ button.poll-answer:hover { background: #44454d; }
   width: calc(100% - 72px - 24px);
   margin-left: 72px;
 }
+.message-loading { margin: 2px 24px 2px 72px; color: var(--discord-muted); font-style: italic; }
+.message-forward { margin: 6px 24px 6px 72px; padding: 0 0 0 12px; border-left: 3px solid var(--discord-muted); }
+.message-forward-label { margin-bottom: 4px; color: var(--discord-muted); font-size: 12px; font-style: italic; }
+.message-forward > :is(.message-content, .message-components, .message-attachments, .message-stickers) { width: 100%; margin-left: 0; }
+.message-forward > .embed-card { width: min(432px, 100%); margin-left: 0; }
 .message-content, .embed-description, .embed-field-value, .text-display {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

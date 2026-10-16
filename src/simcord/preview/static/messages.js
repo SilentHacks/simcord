@@ -193,6 +193,64 @@ function appendFileAttachment(item, attachment, options) {
   }
 }
 
+function appendMessageBody(root, message, options, pendingMedia) {
+  const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
+  const suppressEmbeds = (Number(message.flags) & 4) !== 0;
+  appendMessageContent(root, message, options, v2);
+  appendStickers(root, message.stickers, options, pendingMedia);
+  if (!v2 && !suppressEmbeds) {
+    (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
+  }
+  if (message.components?.length) {
+    const components = node("div", v2 ? "message-components components-v2" : "message-components");
+    message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options)));
+    root.append(components);
+  }
+  const visibleEmbeds = v2 || suppressEmbeds ? [] : message.embeds || [];
+  const refs = referencedAssets(message.components, visibleEmbeds);
+  const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
+  if (attachments.length) {
+    const images = attachments.filter((attachment) => attachment.inline && attachment.asset_id);
+    const list = node("ul", "message-attachments");
+    list.dataset.imageCount = String(Math.min(10, images.length));
+    list.dataset.attachmentCount = String(Math.min(10, attachments.length));
+    const imageGroup = { items: [] };
+    attachments.forEach((attachment, index) => {
+      const inline = attachment.inline && attachment.asset_id;
+      const item = node("li", inline ? "attachment attachment-inline" : "attachment");
+      if (inline) {
+        const filename = attachment.filename || "Attachment";
+        const result = renderMedia(attachment, "attachment-image", options, filename, imageGroup);
+        const content = node("div", "attachment-media");
+        content.append(result.element);
+        const actions = node("div", "attachment-media-actions");
+        const download = downloadButton(attachment, options, filename);
+        download.classList.add("attachment-action");
+        actions.append(download);
+        content.append(actions);
+        if (attachment.spoiler) {
+          const rendered = renderSpoiler(
+            content,
+            attachment.spoiler,
+            options,
+            filename,
+            `attachment:${attachment.id || index}:${attachment.asset_id}`,
+          );
+          rendered.classList.add("spoiler-media");
+          item.append(rendered);
+        } else {
+          item.append(content);
+        }
+        pendingMedia.push(...result.pending);
+      } else {
+        appendFileAttachment(item, attachment, options);
+      }
+      list.append(item);
+    });
+    root.append(list);
+  }
+}
+
 function disposeUnusedPlayers(players) {
   players.forEach((player) => {
     if (!player.isConnected) player._previewMediaPlayer?.dispose?.();
@@ -218,6 +276,7 @@ export function renderMessage(root, message, options = {}) {
     reusePlayers.set(key, queue);
   });
   root.replaceChildren();
+  root.setAttribute("aria-busy", String(Boolean(Number(message?.flags) & 128)));
   if (!message) {
     delete root.dataset.mediaReuseScope;
     disposeUnusedPlayers(oldPlayers);
@@ -286,60 +345,18 @@ export function renderMessage(root, message, options = {}) {
   if (message.ephemeral) {
     root.append(node("div", "message-ephemeral-note", "Only you can see this"));
   }
-  const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
-  const suppressEmbeds = (Number(message.flags) & 4) !== 0;
-  appendMessageContent(root, message, options, v2);
-  appendStickers(root, message.stickers, options, pendingMedia);
-  if (!v2 && !suppressEmbeds) {
-    (message.embeds || []).forEach((embed, index) => root.append(renderEmbed(embed, index, options)));
+  if (Number(message.flags) & 128) {
+    const pending = node("div", "message-loading", "Thinking…");
+    pending.setAttribute("role", "status");
+    root.append(pending);
   }
-  if (message.components?.length) {
-    const components = node("div", v2 ? "message-components components-v2" : "message-components");
-    message.components.forEach((component, index) => components.append(renderNode(component, `message.${index}`, options)));
-    root.append(components);
-  }
-  const visibleEmbeds = v2 || suppressEmbeds ? [] : message.embeds || [];
-  const refs = referencedAssets(message.components, visibleEmbeds);
-  const attachments = (message.attachments || []).filter((attachment) => !v2 && !refs.has(attachment.asset_id));
-  if (attachments.length) {
-    const images = attachments.filter((attachment) => attachment.inline && attachment.asset_id);
-    const list = node("ul", "message-attachments");
-    list.dataset.imageCount = String(Math.min(10, images.length));
-    list.dataset.attachmentCount = String(Math.min(10, attachments.length));
-    const imageGroup = { items: [] };
-    attachments.forEach((attachment, index) => {
-      const inline = attachment.inline && attachment.asset_id;
-      const item = node("li", inline ? "attachment attachment-inline" : "attachment");
-      if (inline) {
-        const filename = attachment.filename || "Attachment";
-        const result = renderMedia(attachment, "attachment-image", options, filename, imageGroup);
-        const content = node("div", "attachment-media");
-        content.append(result.element);
-        const actions = node("div", "attachment-media-actions");
-        const download = downloadButton(attachment, options, filename);
-        download.classList.add("attachment-action");
-        actions.append(download);
-        content.append(actions);
-        if (attachment.spoiler) {
-          const rendered = renderSpoiler(
-            content,
-            attachment.spoiler,
-            options,
-            filename,
-            `attachment:${attachment.id || index}:${attachment.asset_id}`,
-          );
-          rendered.classList.add("spoiler-media");
-          item.append(rendered);
-        } else {
-          item.append(content);
-        }
-        pendingMedia.push(...result.pending);
-      } else {
-        appendFileAttachment(item, attachment, options);
-      }
-      list.append(item);
-    });
-    root.append(list);
+  appendMessageBody(root, message, options, pendingMedia);
+  for (const snapshot of message.snapshots || []) {
+    const forwarded = node("blockquote", "message-forward");
+    forwarded.setAttribute("aria-label", "Forwarded message");
+    forwarded.append(node("div", "message-forward-label", "Forwarded"));
+    appendMessageBody(forwarded, snapshot, options, pendingMedia);
+    root.append(forwarded);
   }
   appendThread(root, message.thread);
   const allowedActions = new Set(message.allowed_actions || []);

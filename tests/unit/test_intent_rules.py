@@ -90,6 +90,45 @@ def test_exempt_root_does_not_exempt_references_or_remove_metadata():
     assert nested["id"] == "10" and nested["channel_id"] == "20"
 
 
+def test_forward_snapshot_projection_keeps_structure_and_uses_outer_access():
+    snapshot = {
+        "type": 0,
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "flags": 0,
+        "content": "secret",
+        "embeds": [{"title": "secret"}],
+        "attachments": [{"id": "5"}],
+        "components": [],
+    }
+    payload = _message(message_snapshots=[{"message": snapshot}])
+    assert intents.censor_message(payload, bot_id=999)
+    assert snapshot["content"] == "" and snapshot["attachments"] == [] and snapshot["embeds"] == []
+    assert snapshot["timestamp"] == "2026-01-01T00:00:00+00:00"
+    assert snapshot["type"] == 0 and snapshot["flags"] == 0
+    assert payload["message_snapshots"] == [{"message": snapshot}]
+    # Snapshot objects omit guild/author data; that is not a DM exemption.
+    visible = _message(
+        author={"id": "999"},
+        message_snapshots=[{"message": {"content": "visible", "attachments": [{"id": "5"}]}}],
+    )
+    assert not intents.censor_message(visible, bot_id=999)
+    assert visible["message_snapshots"][0]["message"]["content"] == "visible"
+
+
+def test_context_exemption_does_not_grant_access_to_independent_references():
+    payload = _message(referenced_message=_message())
+    assert intents.censor_message(payload, bot_id=999, exempt_root=True)
+    assert payload["content"] == "secret"
+    assert payload["referenced_message"]["content"] == ""
+
+
+def test_missing_guild_is_not_a_dm_and_mentions_metadata_is_not_authority():
+    payload = _message(mentions=[{"id": "999"}])
+    payload.pop("guild_id")
+    assert intents.censor_message(payload, bot_id=999)
+    assert payload["content"] == ""
+
+
 def test_prune_guild_create_keeps_only_the_bot_member():
     payload = {
         "large": False,

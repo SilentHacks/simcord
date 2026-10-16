@@ -8,16 +8,17 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 import asyncio
 import asyncio.timeouts
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Any
 
 import discord
 from discord.ext import tasks as _ext_tasks
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
+from discord.interactions import _InteractionMessageState
 from discord.state import ChunkRequest, ConnectionState
 from discord.ui import view as _view
-from discord.webhook.async_ import async_context
+from discord.webhook.async_ import _WebhookState, async_context
 
 from .backend.errors import SetupError
 
@@ -391,6 +392,14 @@ def swap_view_time(value: Any) -> Any:
 def get_state(client: discord.Client) -> Any:
     """The client's ConnectionState (cache + gateway event parsers)."""
     return client._connection
+
+
+def message_belongs_to_states(message: discord.Message, states: Collection[Any]) -> bool:
+    """Check originating connections, including prior generations, without trusting IDs."""
+    state = message._state
+    if isinstance(state, (_InteractionMessageState, _WebhookState)):
+        state = state._parent
+    return state in states
 
 
 def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:

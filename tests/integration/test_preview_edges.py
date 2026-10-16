@@ -74,7 +74,6 @@ async def test_preview_edges_show_target_ownership_and_capture_target_errors(env
     other_channel = env.guild.create_text_channel("other")
     foreign = await env.bot.get_channel(other_channel.id).send("foreign")
     await alice.slash(channel, "panel")
-    slow = await alice.slash(channel, "slow")
     feedback = await alice.slash(channel, "feedback")
     async with simcord.run(__import__("fixtures.sample_bot", fromlist=["create_bot"]).create_bot()) as other:
         guild = other.create_guild()
@@ -85,11 +84,7 @@ async def test_preview_edges_show_target_ownership_and_capture_target_errors(env
                 await preview.show(result)
             with pytest.raises(simcord.SetupError, match="another channel"):
                 await preview.show(foreign)
-            with pytest.raises(simcord.SetupError, match="presentable response"):
-                await preview.show(slow)
             await preview.show(feedback)
-            with pytest.raises(simcord.SetupError, match="presentable response"):
-                await preview.screenshot(tmp_path / "slow.png", target=slow)
             with pytest.raises(simcord.SetupError, match="capture target"):
                 await preview.screenshot(tmp_path / "bad.png", target=object())
             with pytest.raises(simcord.SetupError, match="target is unavailable"):

@@ -43,13 +43,13 @@ everything the bot did in response:
 
 ```python
 result.acknowledged          # did the bot respond at all?
-result.deferred              # responded with "thinking…" (deferred)
+result.deferred              # an original is still loading, or a component update was deferred
 result.ephemeral             # the response is only visible to the invoker
 result.response              # the response message (ResponseMessage | None)
 result.response.content      # its text
 result.response.embeds       # list[discord.Embed]
 result.response.message      # the full discord.Message, when you need it
-result.followups             # messages sent via interaction.followup
+result.followups             # independent followup messages, excluding completion of a thinking original
 result.modal                 # the modal payload, if one was shown
 result.autocomplete_choices  # choices, for autocomplete interactions
 ```
@@ -83,22 +83,53 @@ matching error-acknowledgement transition.
 
 The full lifecycle behaves as on Discord:
 
-- **Deferring** — `await interaction.response.defer()` sets `result.deferred`; a later
-  `edit_original_response` / `followup.send` materialises the message.
+- **Initial deadline** — reply or defer before three seconds on the backend clock.
+  An unacknowledged callback at or after that deadline fails with `10062` (Unknown
+  Interaction), and its continuation token is invalid. Use `env.advance_time()` to
+  exercise this boundary without wall-clock sleeps.
+
+- **Thinking defers (type 5)** — `await interaction.response.defer(thinking=True)` immediately
+  creates a fetchable original with `flags.loading`, its chosen ephemeral flag, and a stable
+  message ID. Public originals appear in public history; private ones are visible only to
+  the invoker.
+- **Completing a thinking defer** — `edit_original_response()` is the preferred endpoint.
+  Discord's deprecated compatibility behavior also lets the first `followup.send()` complete
+  that same original. Both clear loading without changing its ID or visibility; a conflicting
+  `ephemeral=` flag cannot turn an existing public message private (or vice versa).
+- **Component update defers (type 6)** — `defer()` without `thinking=True` keeps the clicked
+  message as the original. A followup is independent and does not consume or replace it.
 - **Double-acknowledging** — responding twice raises the real Discord error `40060`. (A
   callback that *fails* — e.g. a 400 from an oversized embed — does **not** consume the
   interaction, so a retried response still gets through.)
-- **Followups** — messages sent via `interaction.followup` land in `result.followups`.
-- **`@original` operations** — editing, fetching and deleting the original response resolve
-  to the right message, including for deferred component interactions.
+- **Followups** — after the original is completed, `interaction.followup.send()` creates an
+  independent message with its requested visibility. Only these messages enter
+  `result.followups`; completion of a thinking original is available as `result.response`.
+- **`@original` operations** — fetching, editing and deleting resolve the same stored message.
+  Deletion returns `result.response` to `None`, and later original reads/edits fail with
+  `10008`; a deleted pending original cannot be resurrected by a followup. Deleting an
+  already-completed original does not prevent independent followups.
+- **Token expiry** — continuation webhooks expire after 15 minutes on the backend clock.
+  Expired tokens fail with `10015`, distinct from an absent/deleted message's `10008`.
 
 ```python
 async def test_defer_then_followup(simcord_env):
     ...
     result = await alice.slash(channel, "slow-task")
-    assert result.deferred
-    assert result.followups[0].content == "Done!"
+    assert not result.deferred
+    assert result.response.content == "Done!"
+    assert result.followups == []
 ```
+
+This corrects the former first-followup-as-new-message behavior: migrate assertions from
+`result.followups[0]` to `result.response` when the send completes a thinking original.
+Pending originals also consume a message ID immediately, rather than on completion.
+
+discord.py caches `interaction.original_response()` as a snapshot. To observe a later edit,
+fetch fresh state with `interaction.followup.fetch_message(original.id)`; SimCord does not
+patch the SDK cache. Choose private visibility at the initial defer when a response may
+contain sensitive data. If visibility must change, complete the original without sensitive
+content before sending a new, independently visible followup.
+
 
 ## Autocomplete
 

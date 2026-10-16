@@ -11,6 +11,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
+from itertools import chain
 from typing import TYPE_CHECKING, Any
 
 from ..backend.access import can_access_channel, can_access_message
@@ -188,12 +189,16 @@ def _message_summary_parts(preview: Preview, page: _Page, message: Message, chan
     )
     context = _markdown_context(preview, page, message, channel)
     type_info = _message_type_info(int(message.type))
-    excerpt = ""
-    if type_info["kind"] not in {"system", "unknown"} and message.content:
-        excerpt = markdown_summary(markdown_tokens(message.content, "message", context=context))
+    snapshots = [item["message"] for item in message.snapshots]
+    content = message.content or next((item["content"] for item in snapshots if item.get("content")), "")
+    attachments = list(chain(message.attachments, *(item.get("attachments", []) for item in snapshots)))
+    excerpt = "Thinking…" if message.flags & (1 << 7) else ""
+    if type_info["kind"] not in {"system", "unknown"} and content:
+        excerpt = markdown_summary(markdown_tokens(content, "message", context=context))
     component_summaries: list[dict[str, str]] = []
     text_display_tokens: list[dict[str, Any]] = []
-    for component in walk_components(message.components):
+    components = chain(message.components, *(item.get("components", []) for item in snapshots))
+    for component in walk_components(list(components)):
         try:
             component_type = int(component.get("type", -1))
             name = ComponentType(component_type).name.lower()
@@ -224,16 +229,18 @@ def _message_summary_parts(preview: Preview, page: _Page, message: Message, chan
         excerpt = markdown_summary(text_display_tokens)
 
     content_kinds: list[str] = []
-    if message.content and type_info["kind"] not in {"system", "unknown"}:
+    if content and type_info["kind"] not in {"system", "unknown"}:
         content_kinds.append("text")
-    if message.embeds:
+    if message.embeds or any(item.get("embeds") for item in snapshots):
         content_kinds.append("embeds")
-    if message.components:
+    if message.components or any(item.get("components") for item in snapshots):
         content_kinds.append("components")
-    if message.attachments:
+    if attachments:
         content_kinds.append("attachments")
-    if message.stickers:
+    if message.stickers or any(item.get("sticker_items") for item in snapshots):
         content_kinds.append("stickers")
+    if snapshots:
+        content_kinds.append("forward")
     if message.poll is not None:
         content_kinds.append("poll")
     thread = preview.env.backend.channels.get(message.id)
@@ -248,7 +255,7 @@ def _message_summary_parts(preview: Preview, page: _Page, message: Message, chan
         content_kinds.append("ephemeral")
 
     attachment_kinds = set()
-    for attachment in message.attachments:
+    for attachment in attachments:
         content_type = str(attachment.get("content_type") or "").lower()
         attachment_kinds.add(
             content_type.split("/", 1)[0]
@@ -260,7 +267,7 @@ def _message_summary_parts(preview: Preview, page: _Page, message: Message, chan
         "excerpt": excerpt,
         "contentKinds": content_kinds,
         "components": component_summaries,
-        "attachments": {"count": len(message.attachments), "kinds": sorted(attachment_kinds)},
+        "attachments": {"count": len(attachments), "kinds": sorted(attachment_kinds)},
         "createdAt": message.timestamp,
         "editedAt": message.edited_timestamp,
         "ephemeral": bool(message.flags & EPHEMERAL_FLAG),

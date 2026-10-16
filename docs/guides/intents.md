@@ -108,6 +108,8 @@ the bot's event callbacks or SDK fetches to assert its restricted view. The tran
 also retains authoritative event data and is **not** a privacy-redacted export.
 These contracts are covered offline; reply wire metadata and edit/deletion details
 have not been calibrated against a live Discord capture.
+Forward snapshots inherit their containing message's content access: redaction removes
+content-bearing fields while retaining snapshot metadata.
 
 ## Member chunking
 

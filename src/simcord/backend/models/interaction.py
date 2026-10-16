@@ -9,7 +9,7 @@ class ResponseKind(StrEnum):
     """How the bot answered an interaction (Discord callback semantics)."""
 
     MESSAGE = "message"  # type 4: channel message with source
-    DEFERRED = "deferred"  # type 5: deferred channel message (a later edit materialises it)
+    DEFERRED = "deferred"  # type 5: pending channel message with source
     DEFERRED_UPDATE = "deferred_update"  # type 6: deferred update of the component's message
     UPDATE = "update"  # type 7: update the component's message
     MODAL = "modal"  # type 9
@@ -21,10 +21,8 @@ class ResponseKind(StrEnum):
 class Interaction:
     """A single interaction and the evolving state of the bot's response to it.
 
-    The response lifecycle ("respond once", "a deferred response materialises on
-    edit") lives here as methods so the invariants are in one place rather than
-    re-derived in each route handler. ``responded`` is only set by the marker
-    methods, which route handlers call after the callback has been validated.
+    Response markers run only after validation succeeds. A type-5 defer owns a
+    real loading message from acknowledgement through completion or deletion.
     """
 
     id: int
@@ -33,6 +31,7 @@ class Interaction:
     channel_id: int
     guild_id: int | None
     user_id: int
+    expires_at: str | None = None
     responded: bool = False
     response_kind: ResponseKind | None = None
     message_id: int | None = None
@@ -47,6 +46,7 @@ class Interaction:
     target_id: int | None = None
     target_type: int | None = None
     target_channel_id: int | None = None
+    initial_response_deadline: str | None = None
 
     # ----------------------------------------------------- response lifecycle
 
@@ -56,8 +56,9 @@ class Interaction:
         self.ephemeral = ephemeral
         self.responded = True
 
-    def defer(self, *, ephemeral: bool) -> None:
+    def defer(self, message_id: int, *, ephemeral: bool) -> None:
         self.response_kind = ResponseKind.DEFERRED
+        self.message_id = message_id
         self.ephemeral = ephemeral
         self.responded = True
 
@@ -86,10 +87,9 @@ class Interaction:
         self.response_kind = ResponseKind.PONG
         self.responded = True
 
-    def materialise_deferred(self, message_id: int) -> None:
-        """Turn a deferred (type 5) response into its real message on first edit."""
+    def complete_deferred(self) -> None:
+        """Finish a pending type-5 original without changing its identity."""
         self.response_kind = ResponseKind.MESSAGE
-        self.message_id = message_id
 
     # ----------------------------------------------------------- derived view
 
