@@ -162,7 +162,7 @@ not calibrated. There is no `exclude_consumed` query. Unknown write fields raise
 `exclude_deleted=False`. Default iteration first requests a descending no-cursor page,
 then switches to its `after` strategy, so multi-page iteration can overlap and miss
 older rows. For complete nondeleted SDK enumeration, explicitly use
-`bot.entitlements(after=discord.Object(id=0))`. Its finite `before` paginator forwards
+`bot.entitlements(limit=None, after=discord.Object(id=0))`. Its finite `before` paginator forwards
 the deleted flag but advances from the newest rather than oldest row on descending
 pages, also overlapping pages and potentially missing history. SimCord honors received
 requests, not discarded intent.
