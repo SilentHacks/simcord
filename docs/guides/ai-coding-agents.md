@@ -25,6 +25,7 @@ Copy the following into your project's `AGENTS.md`, `CLAUDE.md`, or equivalent a
 - Exercise behavior through `simcord_env` builders and actors. Do not call a
   command callback directly when the contract depends on discord.py dispatch.
 - Slash, autocomplete, and context-menu actor calls enforce command visibility; inspect `available_commands()` or arrange permissions and contexts in the fixture, and use `UserHandle.slash()` / `.autocomplete()` for bot-DM commands.
+- For premium flows use `create_sku`, `seed_entitlement` for history and async `grant_entitlement` for live CREATE; exercise real SDK consume/reconcile paths. Read the monetization guide's open parity checks before assuming undocumented Discord edge behavior.
 - Keep tests offline. Never request, invent, log, or connect with a Discord token.
 - Assert observable results from SimCord handles or the bot's real discord.py cache.
 - Keep pure business logic in ordinary unit tests and mock only application-owned
@@ -91,6 +92,11 @@ The agent can now implement or repair the command against a stable contract.
 7. Report the exact behavior and commands verified.
 
 This loop works for prefix commands, slash commands, autocomplete, context menus, views, modals, permissions, events, cooldowns, and sharded bots.
+
+For premium access and fulfilment, use [SKUs & entitlements](monetization.md).
+SimCord owns Discord resource simulation, not the bot's plans, allowances, trials or ledger.
+Use `env.now` as an injected application clock and `env.time_context()` for manual-driver
+SDK UTC reads; never replace the application's global datetime module.
 
 ## Prompt for a coding agent
 

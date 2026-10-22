@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simcord"
-version = "3.1.0"
+version = "3.2.0"
 description = "Offline discord.py bot testing with pytest. No network, token, or test server."
 readme = "README.md"
 license = "MIT"
@@ -42,7 +42,7 @@ dev = [
     "towncrier>=24",
     "pre-commit>=3",
 ]
-docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.26"]
+docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.26", "certifi>=2026.10.19"]
 # Just the performance suite, for the dedicated CI benchmark job (no lint/type
 # tooling). pytest-asyncio is included so the shared `asyncio_mode` ini option is
 # recognised (it is unused by the sync benchmarks, but its absence would warn

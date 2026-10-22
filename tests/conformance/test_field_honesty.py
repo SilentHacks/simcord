@@ -248,7 +248,7 @@ async def test_category_clone_discards_sdk_default_field(env):
 @pytest.mark.parametrize("value", [True, 0, None])
 async def test_category_create_rejects_nondefault_field_atomically(env, value):
     channel_ids = set(env.backend.channels)
-    counter = env.backend._counter
+    reserved_ids = set(env.backend._reserved_ids)
     with pytest.raises(router.UnsupportedField) as exc:
         router.dispatch(
             env.backend,
@@ -259,7 +259,7 @@ async def test_category_create_rejects_nondefault_field_atomically(env, value):
 
     assert exc.value.fields == ["nsfw"]
     assert set(env.backend.channels) == channel_ids
-    assert env.backend._counter == counter
+    assert env.backend._reserved_ids == reserved_ids
 
 
 async def test_create_role_colour_applies(env):

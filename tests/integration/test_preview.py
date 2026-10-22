@@ -126,14 +126,14 @@ async def test_preview_eager_validation_and_dm_access(env, channel, alice):
 
 @pytest.mark.asyncio
 async def test_preview_rejects_cross_env_handles(env, channel, alice):
-    async with simcord.run(create_bot()) as other:
-        other_guild = other.create_guild()
-        other_channel = other_guild.create_text_channel("other")
-        other_alice = other_guild.add_member(other.create_user("other-alice"))
-        with pytest.raises(simcord.SetupError, match="channel must belong"):
-            env.preview(other_channel, viewers=[alice])
-        with pytest.raises(simcord.SetupError, match="same-Env"):
-            env.preview(channel, viewers=[other_alice])
+    other = simcord.Env(create_bot())
+    other_guild = other.create_guild()
+    other_channel = other_guild.create_text_channel("other")
+    other_alice = other_guild.add_member(other.create_user("other-alice"))
+    with pytest.raises(simcord.SetupError, match="channel must belong"):
+        env.preview(other_channel, viewers=[alice])
+    with pytest.raises(simcord.SetupError, match="same-Env"):
+        env.preview(channel, viewers=[other_alice])
 
 
 @pytest.mark.asyncio
@@ -698,21 +698,21 @@ async def test_preview_projects_system_references_and_unknown_message_types(env,
 
 @pytest.mark.asyncio
 async def test_service_references_reject_foreign_fixture_identities(env, channel, alice):
-    async with simcord.run(create_bot()) as foreign:
-        foreign_guild = foreign.create_guild("Private foreign guild")
-        foreign_channel = foreign_guild.create_text_channel("private")
-        foreign_author = foreign_guild.add_member(foreign.create_user("private author"))
-        before = tuple(env.backend.messages)
-        for overrides in (
-            {"channel": foreign_channel},
-            {"author": foreign_author},
-            {"recipient": foreign_author},
-            {"target_channel": foreign_channel},
-        ):
-            arguments = {"channel": channel, "author": alice, **overrides}
-            with pytest.raises(simcord.SetupError):
-                env.guild.create_system_message(message_type=MessageType.PINS_ADD, **arguments)
-        assert tuple(env.backend.messages) == before
+    foreign = simcord.Env(create_bot())
+    foreign_guild = foreign.create_guild("Private foreign guild")
+    foreign_channel = foreign_guild.create_text_channel("private")
+    foreign_author = foreign_guild.add_member(foreign.create_user("private author"))
+    before = tuple(env.backend.messages)
+    for overrides in (
+        {"channel": foreign_channel},
+        {"author": foreign_author},
+        {"recipient": foreign_author},
+        {"target_channel": foreign_channel},
+    ):
+        arguments = {"channel": channel, "author": alice, **overrides}
+        with pytest.raises(simcord.SetupError):
+            env.guild.create_system_message(message_type=MessageType.PINS_ADD, **arguments)
+    assert tuple(env.backend.messages) == before
     dm = await alice.send_dm("private DM reference")
     with pytest.raises(simcord.SetupError):
         env.guild.create_system_message(channel, MessageType.PINS_ADD, author=alice, referenced_message=dm)

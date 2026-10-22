@@ -102,6 +102,10 @@ async def test_timeout_via_slash(env, channel):
     with pytest.raises(simcord.BackendError) as exc_info:
         await target.send(channel, "I'm back!")
     assert exc_info.value.code == 50013
+    await env.advance_time(10 * 60)
+    assert not cached.is_timed_out()
+    await target.send(channel, "I'm back!")
+    assert channel.last_message.content == "I'm back!"
 
 
 async def test_role_management(env, channel, alice):

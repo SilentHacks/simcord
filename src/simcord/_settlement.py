@@ -56,6 +56,8 @@ def _callback_fire_time(self: Env, record: _CallbackRecord) -> float:
     """
     if record.when is None or record.when <= self._virtual_time:
         return -math.inf
+    if self._advancing:
+        return math.inf
     real = record.real_handle
     if real is None or real.cancelled():
         return math.inf

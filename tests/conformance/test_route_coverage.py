@@ -54,7 +54,6 @@ def test_unimplemented_methods_are_reported_as_gaps():
     gap_methods = {name for name, _, _ in parity.unimplemented_routes()}
     for method in (
         "create_soundboard_sound",
-        "get_entitlements",
         "create_integration",
         "get_guild_onboarding",
         "edit_widget",

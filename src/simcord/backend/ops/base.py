@@ -13,11 +13,14 @@ import datetime
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from ..._clock import Clock
 from ...types import HttpLogEntry
 from .. import errors, permissions
 from ..cdn import CdnStore
 from ..models import (
+    SKU,
     Channel,
+    Entitlement,
     Guild,
     GuildEmoji,
     Interaction,
@@ -29,17 +32,19 @@ from ..models import (
     Webhook,
 )
 
-# Fixed virtual clock epoch (2026-01-01 UTC): reproducible snowflakes/timestamps.
-_VIRTUAL_EPOCH_MS = 1767225600000
+# Snowflakes embed milliseconds since Discord's epoch; allocation never moves UTC.
 _DISCORD_EPOCH_MS = 1420070400000
 
 EventListener = Callable[[str, Mapping[str, Any]], None]
 
 
 class BackendBase:
-    def __init__(self) -> None:
-        self._counter = 0
-        self._clock_offset_ms = 0
+    def __init__(self, *, clock: Clock | None = None) -> None:
+        self.clock = clock if clock is not None else Clock()
+        self._reserved_ids: set[int] = set()
+        self._sequences: dict[int, int] = {}
+        self.skus: dict[int, SKU] = {}
+        self.entitlements: dict[int, Entitlement] = {}
         self.users: dict[int, User] = {}
         self.guilds: dict[int, Guild] = {}
         self.channels: dict[int, Channel] = {}
@@ -69,43 +74,45 @@ class BackendBase:
 
     # ------------------------------------------------------------------ core
 
+    def reserve_id(self, value: int) -> int:
+        """Reserve an explicit identifier before any fixture mutation."""
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 1 << 64:
+            raise errors.SetupError("id must be a positive 64-bit snowflake")
+        if value in self._reserved_ids:
+            raise errors.SetupError(f"id {value} is already reserved")
+        self._reserved_ids.add(value)
+        return value
+
+    def _allocate_at(self, milliseconds: int) -> int:
+        sequence = self._sequences.get(milliseconds, 0)
+        while sequence < 1 << 22:
+            value = (milliseconds << 22) | sequence
+            sequence += 1
+            if value not in self._reserved_ids:
+                self._sequences[milliseconds] = sequence
+                self._reserved_ids.add(value)
+                return value
+        raise errors.SetupError("snowflake sequence exhausted at the current millisecond")
+
     def snowflake(self) -> int:
-        """Deterministic, monotonic snowflakes with valid embedded timestamps."""
-        self._counter += 1
-        ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter
-        return (ms << 22) | (self._counter % 4096)
+        """Allocate at current UTC, using all 22 low bits without advancing time."""
+        milliseconds = int(self.clock.now().timestamp() * 1000) - _DISCORD_EPOCH_MS
+        return self._allocate_at(milliseconds)
 
     def snowflake_for_shard(self, shard_id: int, shard_count: int) -> int:
-        """Return the next snowflake owned by ``shard_id`` without trial allocation."""
-        next_ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter + 1
-        self._counter += 1 + (shard_id - next_ms % shard_count) % shard_count
-        ms = _VIRTUAL_EPOCH_MS - _DISCORD_EPOCH_MS + self._clock_offset_ms + self._counter
-        return (ms << 22) | (self._counter % 4096)
+        """Allocate at the latest historical millisecond belonging to this shard."""
+        milliseconds = int(self.clock.now().timestamp() * 1000) - _DISCORD_EPOCH_MS
+        milliseconds -= (milliseconds - shard_id) % shard_count
+        return self._allocate_at(milliseconds)
 
     def now_iso(self) -> str:
-        """The current virtual time as an ISO timestamp.
-
-        Driven by the same virtual clock as :meth:`snowflake` (epoch + counter
-        ms) rather than the wall clock, so a message's ``created_at`` (which
-        discord.py derives from its snowflake) and its serialized ``timestamp``
-        agree, and timestamps stay deterministic across runs.
-        """
-        ms = _VIRTUAL_EPOCH_MS + self._clock_offset_ms + self._counter
-        return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat()
+        return self.clock.now().isoformat()
 
     def iso_after(self, seconds: float) -> str:
-        """An ISO timestamp ``seconds`` into the virtual future (for expiries)."""
-        ms = _VIRTUAL_EPOCH_MS + self._clock_offset_ms + self._counter + int(seconds * 1000)
-        return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat()
+        return (self.clock.now() + datetime.timedelta(seconds=seconds)).isoformat()
 
     def advance_clock(self, seconds: float) -> None:
-        """Advance the virtual wall clock (snowflake timestamps, now_iso).
-
-        Cooldowns and other age math in discord.py are computed from message/
-        interaction timestamps, so fast-forwarding time must move this clock as
-        well as the event loop's (:meth:`Env.advance_time` does both).
-        """
-        self._clock_offset_ms += int(seconds * 1000)
+        self.clock.advance(seconds)
 
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
         self.transcript.append(("GATEWAY", event, payload))
@@ -179,7 +186,7 @@ class BackendBase:
             parent_id = channel.permission_channel_id()
             if parent_id != channel_id:
                 channel = self.get_channel(parent_id)
-        return permissions.compute(guild, user_id, channel)
+        return permissions.compute(guild, user_id, channel, now=self.clock.now())
 
     def require_permissions(
         self, guild_id: int | None, user_id: int, channel_id: int | None, *names: str

@@ -66,6 +66,7 @@ nav:
       - Intents: guides/intents.md
       - Threads, reactions & DMs: guides/threads-reactions-dms.md
       - Audit logs, polls, events & voice: guides/moderation-and-guild.md
+      - SKUs & entitlements: guides/monetization.md
       - Time control: guides/time-control.md
       - Fixtures & configuration: guides/fixtures.md
       - Errors & diagnostics: guides/diagnostics.md

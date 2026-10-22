@@ -7,8 +7,12 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 
 import asyncio
 import asyncio.timeouts
+import datetime as _datetime
 import sys
+import threading
+import time as _time
 from collections.abc import Callable, Collection
+from types import ModuleType
 from typing import Any
 
 import discord
@@ -377,16 +381,85 @@ def task_label(coro: Any) -> str:
     return wrapper
 
 
-def view_time() -> Any:
-    """Return discord.py's View clock."""
-    return _view.time  # type: ignore[reportPrivateUsage]
+_REAL_MONOTONIC = _time.monotonic
+_clock_owners: set[Any] = set()
+_clock_lock = threading.RLock()
+_clock_originals: tuple[Any, Any, Any] | None = None
 
 
-def swap_view_time(value: Any) -> Any:
-    """Replace discord.py's View clock and return the previous value."""
-    previous = _view.time  # type: ignore[reportPrivateUsage]
-    _view.time = value  # type: ignore[reportPrivateUsage]
-    return previous
+def real_monotonic() -> float:
+    return _REAL_MONOTONIC()
+
+
+class _DatetimeMeta(type):
+    def __instancecheck__(cls, instance: Any) -> bool:
+        return isinstance(instance, _datetime.datetime)
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> _datetime.datetime:
+        return _datetime.datetime(*args, **kwargs)
+
+    def __getattr__(cls, name: str) -> Any:
+        return getattr(_datetime.datetime, name)
+
+
+class _ClockDatetime(metaclass=_DatetimeMeta):
+    @classmethod
+    def now(cls, tz: Any = None) -> Any:
+        from ._runtime import _selected_env
+
+        env = _selected_env()
+        if env is None:
+            return _datetime.datetime.now(tz)
+        current = env.now()
+        return current.astimezone(tz) if tz is not None else current.astimezone().replace(tzinfo=None)
+
+    @classmethod
+    def utcnow(cls) -> Any:
+        from ._runtime import _selected_env
+
+        env = _selected_env()
+        return env.now().replace(tzinfo=None) if env is not None else _datetime.datetime.utcnow()
+
+
+class _DatetimeModule(ModuleType):
+    datetime = _ClockDatetime
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_datetime, name)
+
+
+def _clock_monotonic() -> float:
+    from ._runtime import _selected_env
+
+    env = _selected_env(driver=False)
+    return env._virtual_time if env is not None else _REAL_MONOTONIC()
+
+
+def acquire_clocks(env: Any) -> None:
+    """Install process dispatch once, retaining independent loop ownership."""
+    global _clock_originals
+    with _clock_lock:
+        if not _clock_owners:
+            utils: Any = discord.utils
+            tasks: Any = _ext_tasks
+            if utils.datetime is not _datetime or tasks.datetime is not _datetime:
+                raise SetupError("discord.py datetime module bindings changed")
+            _clock_originals = (_time.monotonic, utils.datetime, tasks.datetime)
+            _time.monotonic = _clock_monotonic
+            utils.datetime = _DatetimeModule("datetime")
+            tasks.datetime = _DatetimeModule("datetime")
+        _clock_owners.add(env)
+
+
+def release_clocks(env: Any) -> None:
+    global _clock_originals
+    with _clock_lock:
+        _clock_owners.discard(env)
+        if not _clock_owners and _clock_originals is not None:
+            utils: Any = discord.utils
+            tasks: Any = _ext_tasks
+            _time.monotonic, utils.datetime, tasks.datetime = _clock_originals
+            _clock_originals = None
 
 
 def get_state(client: discord.Client) -> Any:

@@ -63,6 +63,24 @@ class ScheduledEventMixin(BackendBase):
         del guild.scheduled_events[event_id]
         self.emit("GUILD_SCHEDULED_EVENT_DELETE", serializers.scheduled_event_payload(self, event))
 
+    def next_scheduled_event_deadline(self) -> datetime.datetime | None:
+        moments = []
+        for guild in self.guilds.values():
+            for event in guild.scheduled_events.values():
+                value = (
+                    event.scheduled_start_time
+                    if event.status == 1
+                    else event.scheduled_end_time
+                    if event.status == 2
+                    else None
+                )
+                if value is not None:
+                    moment = datetime.datetime.fromisoformat(value)
+                    moments.append(
+                        moment if moment.tzinfo is not None else moment.replace(tzinfo=datetime.UTC)
+                    )
+        return min(moments, default=None)
+
     def activate_due_scheduled_events(self) -> None:
         """Auto-transition scheduled events whose start/end times have passed.
 

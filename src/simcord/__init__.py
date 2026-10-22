@@ -46,6 +46,7 @@ from .builders import (  # noqa: E402
 )
 from .env import Env, run  # noqa: E402
 from .http import RouteNotImplemented, UnsupportedField  # noqa: E402
+from .monetization import EntitlementHandle, SKUHandle  # noqa: E402
 from .results import InteractionResult, ResponseMessage  # noqa: E402
 from .types import HttpLogEntry  # noqa: E402
 
@@ -72,6 +73,7 @@ except PackageNotFoundError:  # running from a source checkout without dist meta
 __all__ = (
     "BackendError",
     "ChannelHandle",
+    "EntitlementHandle",
     "Env",
     "GuildHandle",
     "HttpLogEntry",
@@ -83,6 +85,7 @@ __all__ = (
     "ResponseMessage",
     "RoleHandle",
     "RouteNotImplemented",
+    "SKUHandle",
     "SetupError",
     "UnsupportedField",
     "UserHandle",

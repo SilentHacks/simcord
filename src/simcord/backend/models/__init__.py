@@ -23,6 +23,7 @@ from .message import (
     Reaction,
     SystemMessageMetadata,
 )
+from .monetization import SKU, Entitlement
 from .role import Role
 from .scheduled_event import ScheduledEvent
 from .stage_instance import StageInstance
@@ -32,10 +33,12 @@ from .webhook import Webhook
 
 __all__ = (
     "EPHEMERAL_FLAG",
+    "SKU",
     "AllowedMentions",
     "AuditLogEntry",
     "AutoModRule",
     "Channel",
+    "Entitlement",
     "Guild",
     "GuildEmoji",
     "Interaction",

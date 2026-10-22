@@ -347,6 +347,10 @@ class ShardRouter:
             gateway.feed(event, payload)
 
     def _event_shard_id(self, event: str, payload: Mapping[str, Any]) -> int:
+        # Application monetization events belong to shard zero, even when the
+        # entitlement grants access to a guild owned by another shard.
+        if event.startswith("ENTITLEMENT_"):
+            return 0
         guild_id = payload.get("guild_id")
         if guild_id is None and event in {"GUILD_CREATE", "GUILD_UPDATE", "GUILD_DELETE"}:
             guild_id = payload.get("id")

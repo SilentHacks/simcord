@@ -93,6 +93,17 @@ class PollMixin(BackendBase):
             self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
 
+    def next_poll_deadline(self) -> datetime.datetime | None:
+        return min(
+            (
+                datetime.datetime.fromisoformat(message.poll.expiry)
+                for messages in self.messages.values()
+                for message in messages.values()
+                if message.poll is not None and not message.poll.finalized
+            ),
+            default=None,
+        )
+
     def expire_due_polls(self) -> None:
         """Finalize any polls whose expiry has passed (driven by the virtual clock)."""
         now = datetime.datetime.fromisoformat(self.now_iso())
