@@ -4,6 +4,47 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.2.0 (2026-10-22)
+
+### Features
+
+- Add offline SKU and entitlement simulation: catalog/history/live fixtures, six REST routes, interaction access, gateway lifecycle, consumable fulfilment, replay and restart reconciliation. Publish explicit uncalibrated Discord edge policies and the observations needed to reach parity. Unify virtual UTC with chronological resource/timer advancement and supported SDK clock helpers; allocating IDs no longer moves time. Enforce one live Env per loop and preserve application entitlements when the bot leaves a guild.
+
+  Retain undelivered automatic-clock settlement failures until a public operation receives them, and select pytest virtual UTC from the unique running environment even when fixtures also expose inactive foreign worlds.
+
+  Add an opt-in user-subscription reference recorder with hidden token entry, raw protocol evidence, authorized interaction checkpoints, session-owned test-grant cleanup and a local boundary self-check.
+
+  Correct reference-recorder subscription scope detection using named SDK flags; accept unpublished user SKUs and reject guild-only or ambiguous matches.
+
+  Fix stalled reference interaction checkpoints by decoding discord.py's supported raw Gateway receive event; exercise probe advancement through a local WebSocket and SDK dispatch in the self-check.
+
+  Preserve rejected different-SKU and post-deletion recreation probes as reference evidence without aborting the remaining subscription capture sequence.
+
+  Add a manual Application Test Mode purchase capture mode for consumable/repeated consumption and durable wrong-kind consumption. Require operator test-mode confirmation and new type-4 app/SKU/user-matched entitlements before consumption; retain purchase IDs and leave preexisting/live entitlements untouched.
+
+  Prepare remaining reference evidence with a paced rejection/duplicate/pagination runner, optional guild and legitimate lifecycle capture, durable ownership journals and safe recovery. Add a raw-evidence validator for new and existing bundles; report unavailable prerequisites without claiming full parity or repeating purchase flows.
+
+  Extend the follow-up recorder with unpublished same-app guild SKU selection, two-server/two-member projection checks, cross-scope grant ordering and owner validation. Add explicit fresh deleted-unconsumed purchase capture and optional zero-total team live-upgrade capture, with per-server command provenance, raw-evidence validation, resumable manual purchase IDs and persistent real-subscription cancellation obligations.
+
+  Fix checkout baselines stopping on 100 retained test grants by traversing complete history and validating both cursor branches. Resume blocked checkout stages without replaying completed guild/purchase sections, correlate interaction checkpoints to their accepted invocation, print blocker reasons and numbered checkout steps, and retain deleted-unconsumed evidence without a stale missing-fixture blocker.
+
+  Recognize observed PURCHASE-type live subscription entitlements alongside APPLICATION_SUBSCRIPTION for selection and cancellation recovery, retaining exact app/SKU/user and type-4 mutation boundaries. Preserve cancellation-only recovery after failed checkout identification and validate cleaned historical commands across recorder resumes.
+
+  Use complete subscription-list objects as authoritative cancellation proof instead of discarding them when a redundant detail lookup fails. Clear stale blocker reasons after positive verification and retain exact-reference, audited offline recovery without repeating Discord actions or altering raw protocol streams.
+
+  Add an expiry-only follow-up that derives and hashes an authenticated canceled-subscription source, reuses its before interaction, revalidates the real billing schedule, captures entitlement/subscription events and polls, and needs one post-end command. Automate a provenance-safe post-end sandbox grant probe/cleanup, preserve late-start and unavailable-reporting limits, and resume without repeating successful interactions or known grant outcomes.
+
+  Add an immediate upgrade/scheduled-downgrade follow-up linked to existing canceled-A evidence. Reuse, resume or freely restart A, capture A→B and cross-tier sandbox overlap, record pending B→A renewal, and verify cancellation for every managed real entitlement. Preserve missing-probe-only recovery, bounded read-only propagation settling and raw downgrade evidence links; reject manual/wrong-type/SKU/owner create receipts before cleanup ownership.
+
+  Calibrate monetization against bounded Discord reference captures without claiming full parity. Migrate catalog fixtures to explicit subscription groups and matching scope flags; interaction entitlements are stably guild-first, while REST pagination descends for default/before and ascends for after. API test grants retain null dates and guild bot purchasers, cross-tier scoped subscription conflicts, structured owner-validation errors and corrected Invalid SKU/Unknown SKU statuses. Consume/delete now reject repeats or deleted rows with calibrated errors; type-4 purchases permit DELETE without implying recorder cleanup ownership. Correct consumed-field presence and fulfillment/source metadata, preserving observed upgrade UPDATE snapshots separately from committed REST state. Document discord.py 2.7.1 raw-history traversal and distinguish fixture policy, unsupported billing/reporting and unverified lifecycle boundaries.
+
+  Harden recorder credential redaction and verify test-create receipts before granting cleanup ownership. Require explicit unconsumed state for consumables while preserving omitted consumed fields on durable purchases.
+
+### Miscellaneous
+
+- Require certifi>=2026.10.19 for documentation dependencies and update the lock, removing the affected eMudhra root certificate from its CA bundle. Existing environments require a separate dependency sync.
+
+
 ## 3.1.0 (2026-10-16)
 
 ### Features
