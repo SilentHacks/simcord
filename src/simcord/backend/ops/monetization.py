@@ -22,6 +22,25 @@ def _snowflake(value: int | None, name: str) -> None:
         raise errors.SetupError(f"{name} must be a positive 64-bit snowflake")
 
 
+def _owner_field(value: int | str, name: str) -> int:
+    try:
+        if isinstance(value, (bool, float)) or not isinstance(value, (int, str)):
+            raise ValueError
+        parsed = int(value)
+        if not (parsed in (1, 2) if name == "owner_type" else 0 < parsed < 1 << 64):
+            raise ValueError
+        return parsed
+    except (TypeError, ValueError):
+        code, description = (
+            ("ENUM_TYPE_COERCE", "a valid enum value")
+            if name == "owner_type"
+            else ("NUMBER_TYPE_COERCE", "snowflake")
+        )
+        raise errors.invalid_form_body(
+            errors={name: {"_errors": [{"code": code, "message": f'Value "{value}" is not {description}.'}]}}
+        ) from None
+
+
 def _time(value: datetime | None, name: str) -> datetime | None:
     if value is None:
         return None
@@ -40,8 +59,10 @@ class MonetizationMixin(BackendBase):
         id: int | None = None,
         slug: str | None = None,
     ) -> SKU:
-        if isinstance(type, bool) or not isinstance(type, int) or type not in (2, 3, 5):
-            raise errors.SetupError("SKU type must be durable (2), consumable (3), or subscription (5)")
+        if isinstance(type, bool) or not isinstance(type, int) or type not in (2, 3, 5, 6):
+            raise errors.SetupError(
+                "SKU type must be durable (2), consumable (3), subscription (5), or subscription group (6)"
+            )
         if not isinstance(name, str) or not name.strip():
             raise errors.SetupError("SKU name must be a nonempty string")
         if isinstance(flags, bool) or not isinstance(flags, int) or flags < 0:
@@ -52,11 +73,7 @@ class MonetizationMixin(BackendBase):
         slug = slug if slug is not None else re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "sku"
         sku_id = self.snowflake() if id is None else self.reserve_id(id)
         sku = SKU(sku_id, self.application_id, type, name, slug, flags)
-        # Allocate the entire pair before publishing either catalog row.
-        group = SKU(self.snowflake(), self.application_id, 6, name, slug, flags) if type == 5 else None
         self.skus[sku.id] = sku
-        if group is not None:
-            self.skus[group.id] = group
         return sku
 
     def get_sku(self, sku_id: int) -> SKU:
@@ -122,9 +139,12 @@ class MonetizationMixin(BackendBase):
             starts_at=starts_at,
             ends_at=ends_at,
             deleted=deleted,
-            consumed=consumed,
+            consumed=consumed if sku.type == 3 or created_via_test_api else None,
             created_via_test_api=created_via_test_api,
             scheduled_end_at=scheduled_end_at,
+            fulfilled_at=self.clock.now(),
+            fulfillment_status=6 if deleted or (ends_at is not None and ends_at <= self.clock.now()) else 3,
+            source_type=10 if type == 4 else 9 if type == 1 and sku.type == 5 else None,
         )
         self.entitlements[entitlement.id] = entitlement
         return entitlement
@@ -211,7 +231,7 @@ class MonetizationMixin(BackendBase):
                 entitlement.starts_at,
                 entitlement.ends_at,
                 entitlement.deleted,
-                entitlement.consumed,
+                bool(entitlement.consumed),
                 entitlement.created_via_test_api,
                 at,
             )
@@ -227,8 +247,12 @@ class MonetizationMixin(BackendBase):
         entitlement.scheduled_end_at = None
         if entitlement.ends_at is not None and entitlement.ends_at <= now:
             return
+        prior_status = entitlement.fulfillment_status
         entitlement.ends_at = now
-        self.emit("ENTITLEMENT_UPDATE", serializers.entitlement_payload(entitlement))
+        entitlement.fulfillment_status = 6
+        # The observed upgrade UPDATE is a snapshot, not the committed REST status.
+        payload = {**serializers.entitlement_payload(entitlement), "fulfillment_status": prior_status}
+        self.emit("ENTITLEMENT_UPDATE", payload)
 
     def revoke_entitlement(self, entitlement_id: int) -> None:
         entitlement = self.get_entitlement(entitlement_id)
@@ -236,6 +260,7 @@ class MonetizationMixin(BackendBase):
         if entitlement.deleted:
             return
         entitlement.deleted = True
+        entitlement.fulfillment_status = 6
         self.emit("ENTITLEMENT_DELETE", serializers.entitlement_payload(entitlement))
 
     def replay_entitlement_create(self, entitlement_id: int) -> None:
@@ -266,8 +291,8 @@ class MonetizationMixin(BackendBase):
         # define the owner selection but do not enumerate these temporal edges.
         now = self.clock.now()
         return [
-            serializers.entitlement_payload(e)
-            for e in self.entitlements.values()
+            serializers.entitlement_payload(e, interaction=True)
+            for e in sorted(self.entitlements.values(), key=lambda e: e.guild_id is None)
             if (e.guild_id == guild_id if e.guild_id is not None else e.user_id == user_id)
             and not e.deleted
             and not e.consumed
@@ -275,16 +300,19 @@ class MonetizationMixin(BackendBase):
             and (e.ends_at is None or e.ends_at > now)
         ]
 
-    def create_test_entitlement(self, sku_id: int, owner_id: int, owner_type: int) -> Entitlement:
-        sku = self.get_sku(sku_id)
-        if sku.type != 5:
-            raise errors.invalid_form_body("API test entitlements require a subscription SKU")
-        if owner_type not in (1, 2) or isinstance(owner_type, bool):
-            raise errors.invalid_form_body("owner_type must be 1 (guild) or 2 (user)")
-        if isinstance(owner_id, bool) or not isinstance(owner_id, int) or not 0 < owner_id < 1 << 64:
-            raise errors.invalid_form_body("owner_id must be a positive 64-bit snowflake")
+    def create_test_entitlement(self, sku_id: int, owner_id: int | str, owner_type: int | str) -> Entitlement:
+        # Preserve raw field values for Discord's structured coercion errors.
+        owner_type = _owner_field(owner_type, "owner_type")
+        owner_id = _owner_field(owner_id, "owner_id")
+        sku = self.skus.get(sku_id)
+        if sku is None:
+            raise errors.unknown_sku(status=400)
+        scope = sku.flags & (128 | 256)
+        if sku.type != 5 or scope != (128 if owner_type == 1 else 256):
+            # Zero/both scope bits are uncalibrated, fail-fast simulator policy.
+            raise errors.invalid_sku()
         if any(
-            e.sku_id == sku_id
+            self.get_sku(e.sku_id).type == 5
             and not e.deleted
             and (e.ends_at is None or e.ends_at > self.clock.now())
             and (e.guild_id == owner_id if owner_type == 1 else e.guild_id is None and e.user_id == owner_id)
@@ -294,7 +322,8 @@ class MonetizationMixin(BackendBase):
         entitlement = self._insert_entitlement(
             sku_id,
             guild_id=owner_id if owner_type == 1 else None,
-            user_id=owner_id if owner_type == 2 else None,
+            user_id=owner_id if owner_type == 2 else self.bot_user.id,
+            type=8,
             created_via_test_api=True,
         )
         self._emit_entitlement_create(entitlement)
@@ -302,14 +331,19 @@ class MonetizationMixin(BackendBase):
 
     def delete_test_entitlement(self, entitlement_id: int) -> None:
         entitlement = self.get_entitlement(entitlement_id)
-        if not entitlement.created_via_test_api:
+        if entitlement.deleted:
+            raise errors.unknown_entitlement()
+        if not entitlement.created_via_test_api and entitlement.type != 4:
             raise errors.not_sandbox_entitlement()
         self.revoke_entitlement(entitlement_id)
 
     def consume_entitlement(self, entitlement_id: int) -> None:
         entitlement = self.get_entitlement(entitlement_id)
+        if entitlement.deleted:
+            raise errors.unknown_entitlement()
         if self.get_sku(entitlement.sku_id).type != 3:
             raise errors.not_consumable()
-        if not entitlement.consumed:
-            entitlement.consumed = True
-            self.emit("ENTITLEMENT_UPDATE", serializers.entitlement_payload(entitlement))
+        if entitlement.consumed:
+            raise errors.entitlement_already_consumed()
+        entitlement.consumed = True
+        self.emit("ENTITLEMENT_UPDATE", serializers.entitlement_payload(entitlement))

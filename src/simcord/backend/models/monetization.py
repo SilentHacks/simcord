@@ -29,7 +29,10 @@ class Entitlement:
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     deleted: bool = False
-    consumed: bool = False
+    consumed: bool | None = None
     created_via_test_api: bool = field(default=False, repr=False)
     original_create_payload: EntitlementPayload | None = field(default=None, repr=False)
     scheduled_end_at: datetime | None = field(default=None, repr=False)
+    fulfilled_at: datetime | None = None
+    fulfillment_status: int = 3
+    source_type: int | None = None

@@ -62,10 +62,12 @@ methods. See [Core concepts → Builders](concepts.md#builders-arrange-the-world
 
 ### SKUs and entitlements
 
-`Env.create_sku()` arranges the catalog; `seed_entitlement()` arranges history without
-CREATE; `await grant_entitlement()` emits a live grant and settles. Recover a committed
-grant by ID with `get_entitlement()`. See [SKUs & entitlements](guides/monetization.md)
-for lifecycle, sandbox provenance and the explicit uncalibrated parity policies.
+`Env.create_sku()` arranges explicit catalog entries (including non-grantable groups);
+`seed_entitlement()` arranges history without CREATE; `await grant_entitlement()` emits
+a live grant and settles. Recover a committed grant by ID with `get_entitlement()`.
+See [SKUs & entitlements](guides/monetization.md) for calibrated REST fields/errors,
+cross-tier sandbox conflicts, guild-first access, raw history traversal and the separate
+fixture policies, unsupported subscription billing/reporting and unverified boundaries.
 
 ::: simcord.SKUHandle
 

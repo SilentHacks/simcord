@@ -78,24 +78,31 @@ def sku_payload(sku: SKU) -> sku_types.SKU:
     )
 
 
-def entitlement_payload(entitlement: Entitlement, *, test_create: bool = False) -> sku_types.Entitlement:
+def entitlement_payload(entitlement: Entitlement, *, interaction: bool = False) -> sku_types.Entitlement:
     payload: dict[str, Any] = {
         "id": str(entitlement.id),
         "application_id": str(entitlement.application_id),
         "sku_id": str(entitlement.sku_id),
         "type": entitlement.type,
         "deleted": entitlement.deleted,
-        "consumed": entitlement.consumed,
+        "starts_at": entitlement.starts_at.isoformat() if entitlement.starts_at is not None else None,
+        "ends_at": entitlement.ends_at.isoformat() if entitlement.ends_at is not None else None,
+        "gift_code_flags": 0,
+        "promotion_id": None,
     }
     if entitlement.user_id is not None:
         payload["user_id"] = str(entitlement.user_id)
     if entitlement.guild_id is not None:
         payload["guild_id"] = str(entitlement.guild_id)
-    if not test_create and not entitlement.created_via_test_api:
-        payload["starts_at"] = (
-            entitlement.starts_at.isoformat() if entitlement.starts_at is not None else None
+    if entitlement.consumed is not None:
+        payload["consumed"] = entitlement.consumed
+    if entitlement.source_type is not None:
+        payload["source_type"] = entitlement.source_type
+    if not interaction:
+        payload["fulfilled_at"] = (
+            entitlement.fulfilled_at.isoformat() if entitlement.fulfilled_at is not None else None
         )
-        payload["ends_at"] = entitlement.ends_at.isoformat() if entitlement.ends_at is not None else None
+        payload["fulfillment_status"] = entitlement.fulfillment_status
     return cast("sku_types.Entitlement", payload)
 
 

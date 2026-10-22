@@ -65,9 +65,8 @@ def list_entitlements(ctx: RequestContext) -> Any:
         and (not exclude_deleted or not entitlement.deleted)
         and (not exclude_ended or entitlement.ends_at is None or entitlement.ends_at > now)
     ]
-    rows.sort(key=lambda entitlement: entitlement.id)
-    # discord.py advances before from the first row and after from the last row.
-    rows = rows[-limit:] if "before" in ids else rows[:limit]
+    rows.sort(key=lambda entitlement: entitlement.id, reverse="after" not in ids)
+    rows = rows[:limit]
     return [serializers.entitlement_payload(entitlement) for entitlement in rows]
 
 
@@ -86,10 +85,10 @@ def create_test_entitlement(ctx: RequestContext) -> Any:
         raise errors.invalid_form_body(f"required fields: {', '.join(sorted(missing))}")
     entitlement = ctx.backend.create_test_entitlement(
         _integer(body["sku_id"], "sku_id"),
-        _integer(body["owner_id"], "owner_id"),
-        _integer(body["owner_type"], "owner_type"),
+        body["owner_id"],
+        body["owner_type"],
     )
-    return serializers.entitlement_payload(entitlement, test_create=True)
+    return serializers.entitlement_payload(entitlement)
 
 
 @route("DELETE", "/applications/{application_id}/entitlements/{entitlement_id}")

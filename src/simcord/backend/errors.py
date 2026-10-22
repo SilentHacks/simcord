@@ -11,14 +11,18 @@ from typing import Any
 
 
 class BackendError(Exception):
-    def __init__(self, status: int, code: int, message: str) -> None:
+    def __init__(self, status: int, code: int, message: str, *, errors: dict[str, Any] | None = None) -> None:
         super().__init__(f"{status} (error code: {code}): {message}")
         self.status = status
         self.code = code
         self.message = message
+        self.errors = errors
 
     def to_json(self) -> dict[str, Any]:
-        return {"code": self.code, "message": self.message}
+        payload: dict[str, Any] = {"code": self.code, "message": self.message}
+        if self.errors is not None:
+            payload["errors"] = self.errors
+        return payload
 
 
 class SetupError(Exception):
@@ -89,8 +93,9 @@ def cannot_edit_other_user() -> BackendError:
     return BackendError(403, 50005, "Cannot edit a message authored by another user")
 
 
-def invalid_form_body(detail: str) -> BackendError:
-    return BackendError(400, 50035, f"Invalid Form Body: {detail}")
+def invalid_form_body(detail: str | None = None, *, errors: dict[str, Any] | None = None) -> BackendError:
+    message = "Invalid Form Body" if detail is None else f"Invalid Form Body: {detail}"
+    return BackendError(400, 50035, message, errors=errors)
 
 
 def cannot_execute_on_channel_type() -> BackendError:
@@ -133,16 +138,14 @@ def unknown_command_permissions() -> BackendError:
     return BackendError(404, 10066, "Unknown application command permissions")
 
 
-def unknown_sku() -> BackendError:
-    return BackendError(404, 10027, "Unknown SKU")
+def unknown_sku(*, status: int = 404) -> BackendError:
+    return BackendError(status, 10027, "Unknown SKU")
 
 
 def unknown_entitlement() -> BackendError:
-    return BackendError(404, 10029, "Unknown entitlement")
+    return BackendError(404, 10029, "Unknown Entitlement")
 
 
-# These 400 statuses are explicit simulator policy; Discord's public catalog
-# documents the JSON codes but not the status pairing for these rejections.
 def not_consumable() -> BackendError:
     return BackendError(400, 40018, "Only consumable SKUs can be consumed")
 
@@ -153,3 +156,11 @@ def not_sandbox_entitlement() -> BackendError:
 
 def entitlement_already_granted() -> BackendError:
     return BackendError(400, 40074, "An entitlement has already been granted for this resource")
+
+
+def invalid_sku() -> BackendError:
+    return BackendError(400, 50057, "Invalid SKU")
+
+
+def entitlement_already_consumed() -> BackendError:
+    return BackendError(400, 40022, "Entitlement already consumed")

@@ -819,7 +819,7 @@ class Env:
         id: int | None = None,
         slug: str | None = None,
     ) -> SKUHandle:
-        """Arrange a catalog SKU; subscriptions also generate a visible group SKU."""
+        """Arrange an explicit catalog SKU, including non-grantable subscription groups."""
         if not isinstance(type, discord.SKUType):
             raise SetupError("type must be a discord.SKUType")
         if flags is not None and not isinstance(flags, discord.SKUFlags):
@@ -827,7 +827,7 @@ class Env:
         if flags is None:
             flags = (
                 discord.SKUFlags(guild_subscription=True)
-                if type == discord.SKUType.subscription
+                if type in (discord.SKUType.subscription, discord.SKUType.subscription_group)
                 else discord.SKUFlags(available=True)
             )
         sku = self.backend.create_sku(name, type=type.value, flags=flags.value, id=id, slug=slug)

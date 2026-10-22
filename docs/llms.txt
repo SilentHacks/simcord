@@ -19,7 +19,7 @@ Use SimCord when an AI coding agent creates or changes a discord.py bot. It give
 - [Test slash commands and interactions](https://simcord.readthedocs.io/guides/testing-slash-commands/): actors enforce command visibility; use `available_commands()` to inspect visible leaf invocations, and `UserHandle.slash()` / `.autocomplete()` for bot DMs.
 - [Choose simulation instead of mocks](https://simcord.readthedocs.io/guides/mocks-vs-simulation/)
 - [Component preview and screenshots](https://simcord.readthedocs.io/guides/preview/): Protocol 3, the Conversation-layout slash-command picker (`window.simcordPreview.commandPicker`), the page-authorized `GET /api/commands` catalog, bounded authorized navigation, typed receipts, and capture geometry.
-- [SKUs and entitlements](https://simcord.readthedocs.io/guides/monetization/): Catalog/history/live fixtures, SDK REST, consume/replay/restart and explicit uncalibrated Discord edge policies. Plans, credits, trials and billing policy stay application-owned.
+- [SKUs and entitlements](https://simcord.readthedocs.io/guides/monetization/): Explicit catalog/history/live fixtures, calibrated REST fields/errors, cross-tier sandbox conflicts, guild-first access, directional pagination and raw history traversal; consume/replay/restart. Observations, fixture policies and unverified boundaries are separate; billing and subscription reporting/events are unsupported.
 - [Recipes](https://simcord.readthedocs.io/cookbook/)
 
 ## Installation
