@@ -212,6 +212,15 @@ export function initComposer({
   }
 
   return {
+    clear: () => {
+      composing = false;
+      setValue("");
+      delete currentInput.dataset.controlKey;
+      if ("placeholder" in currentInput) currentInput.placeholder = "";
+      replyLabel.textContent = "";
+      replyContext.hidden = true;
+      resizeComposer();
+    },
     update,
     resize: resizeComposer,
     input: () => currentInput,

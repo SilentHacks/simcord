@@ -213,21 +213,21 @@ class _AssetOps:
         if current is not None and hashlib.sha256(current).hexdigest() != digest:
             raise SetupError("asset was replaced")
 
-    def _authorize_asset(self, page: _Page, asset_id: str) -> _Asset:
+    def _authorize_asset(self, page: _Page, asset_id: str, *, content: bool = True) -> _Asset:
         """Reauthorize one asset at serve time against live backend state."""
         record = page.assets.get(asset_id)
         if record is None:
             raise SetupError("asset is unavailable")
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("asset access denied")
-        if not record.available or record.digest is None:
+        if content and (not record.available or record.digest is None):
             raise SetupError("asset is unavailable")
         source = record.source
         if not isinstance(source, tuple) or not source:
             return record
         owner = source[0]
         if owner == "attachment":
-            self._authorize_attachment_source(page, source, record.digest)
+            self._authorize_attachment_source(page, source, record.digest if content else None)
         elif owner == "message":
             _, channel_id, message_id = source
             try:
@@ -303,9 +303,9 @@ class _AssetOps:
             if current is None:
                 supplied = self._explicit_assets.get(url)
                 current = supplied[1] if supplied is not None else None
-            if current is None:
+            if content and current is None:
                 raise SetupError("asset is unavailable")
-            if hashlib.sha256(current).hexdigest() != record.digest:
+            if content and current is not None and hashlib.sha256(current).hexdigest() != record.digest:
                 raise SetupError("asset was replaced")
         elif owner == "emoji":
             _, emoji_id = source
@@ -334,9 +334,9 @@ class _AssetOps:
             current = backend.cdn.get(url)
             if current is None and (supplied := self._explicit_assets.get(url)) is not None:
                 current = supplied[1]
-            if current is None:
+            if content and current is None:
                 raise SetupError("asset is unavailable")
-            if hashlib.sha256(current).hexdigest() != record.digest:
+            if content and current is not None and hashlib.sha256(current).hexdigest() != record.digest:
                 raise SetupError("asset was replaced")
         elif owner == "sticker":
             _, guild_id, sticker_id = source
@@ -346,7 +346,7 @@ class _AssetOps:
                 raise SetupError("asset is unavailable")
             url = sticker.url or sticker_url(sticker.id, sticker.format_type)
             current = self.env.backend.cdn.get(url)
-            if current is not None and hashlib.sha256(current).hexdigest() != record.digest:
+            if content and current is not None and hashlib.sha256(current).hexdigest() != record.digest:
                 raise SetupError("asset was replaced")
         elif owner in {"user_avatar", "default_avatar"}:
             _, user_id, avatar_key = source
@@ -364,7 +364,9 @@ class _AssetOps:
                 member_allowed = any(
                     item.author_id == user_id
                     and can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
-                    for item in self.env.backend.messages.get(page.channel_id, {}).values()
+                    for identity in page.snapshot.get("messages", {})
+                    if (item := self.env.backend.messages.get(page.channel_id, {}).get(int(identity)))
+                    is not None
                 )
             if not member_allowed:
                 raise SetupError("asset access denied")
@@ -388,7 +390,7 @@ class _AssetOps:
         elif owner == "explicit":
             _, url = source
             supplied = self._explicit_assets.get(url)
-            if supplied is None or hashlib.sha256(supplied[1]).hexdigest() != record.digest:
+            if supplied is None or (content and hashlib.sha256(supplied[1]).hexdigest() != record.digest):
                 raise SetupError("asset is unavailable")
         elif owner == "application_avatar":
             _, user_id, avatar_key = source

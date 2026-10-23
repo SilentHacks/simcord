@@ -358,42 +358,7 @@ class ManagedCapture:
                 await self._freeze(page)
                 await self._raf(page)
                 geometry = await page.evaluate(
-                    """({mode, modal, targetId}) => {
-                        const app = document.getElementById('preview-app');
-                        const channel = document.getElementById('channel-layout');
-                        const inChannel = channel && !channel.hidden;
-                        const target = modal ? document.querySelector('.modal-dialog')
-                          : inChannel
-                            ? [...channel.querySelectorAll('.channel-message[data-message-id]')]
-                                .find(element => element.dataset.messageId === targetId)
-                            : document.getElementById('focused-content');
-                        const owner = modal ? app : inChannel
-                          ? document.getElementById('channel-timeline')
-                          : document.getElementById('focused-content') || app;
-                        const scroll = modal ? document.querySelector('.modal-body') || target : owner;
-                        if (!app || !owner || (mode === 'surface' && !target)) return null;
-                        const rect = element => {
-                          const box = element.getBoundingClientRect();
-                          return {x:box.x,y:box.y,width:box.width,height:box.height,
-                            right:box.right,bottom:box.bottom};
-                        };
-                        const viewport = rect(app), bounds = rect(owner);
-                        const content = rect(target || app);
-                        const crop = mode === 'viewport' ? viewport : {
-                          x: Math.max(viewport.x, bounds.x, content.x, 0),
-                          y: Math.max(viewport.y, bounds.y, content.y, 0),
-                          right: Math.min(viewport.right, bounds.right, content.right, innerWidth),
-                          bottom: Math.min(viewport.bottom, bounds.bottom, content.bottom, innerHeight),
-                        };
-                        crop.width = crop.right - crop.x;
-                        crop.height = crop.bottom - crop.y;
-                        return {scope:'visible', logicalViewport:viewport, contentExtent:{
-                          width:Math.max(content.width, scroll?.scrollWidth || 0),
-                          height:Math.max(content.height, scroll?.scrollHeight || 0)},
-                          visibleCrop:crop, scrollOffset:{x:scroll?.scrollLeft || 0,y:scroll?.scrollTop || 0},
-                          overflow:{horizontal:(scroll?.scrollWidth || 0) > (scroll?.clientWidth || 0),
-                            vertical:(scroll?.scrollHeight || 0) > (scroll?.clientHeight || 0)}};
-                    }""",
+                    "args => import('/geometry.js').then(module => module.captureGeometry(args))",
                     {"mode": mode, "modal": pin.modal_id is not None, "targetId": pin.target_id},
                 )
                 if not isinstance(geometry, Mapping):
@@ -552,6 +517,9 @@ class _CaptureOps:
             capture_page.modal_handle = "m_" + secrets.token_urlsafe(12)
         capture_page.last_action = deepcopy(source.last_action)
         try:
+            from ._commands import build_catalog
+
+            capture_page.command_catalog = build_catalog(cast("Preview", self), capture_page)
             snapshot = build_snapshot(cast("Preview", self), capture_page)
             snapshot.setdefault("profile", {})["mediaTime"] = media_time
             if target_id is None and modal is None:

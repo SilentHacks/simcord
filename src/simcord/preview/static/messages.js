@@ -258,6 +258,10 @@ function disposeUnusedPlayers(players) {
 }
 
 export function renderMessage(root, message, options = {}) {
+  root._previewDispose?.();
+  let alive = true;
+  root._previewDispose = () => { alive = false; };
+  options = { ...options, isCurrent: () => alive };
   const pendingMedia = options.pendingMedia || [];
   options.pendingMedia = pendingMedia;
   const reuseScope = message

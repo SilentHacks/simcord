@@ -6,7 +6,12 @@ export function node(tag, className, text) {
 }
 
 export function current(options, element) {
-  return Boolean(element?.isConnected) || !options.isCurrent || options.isCurrent();
+  return options.isCurrent ? options.isCurrent() : Boolean(element?.isConnected);
+}
+
+export function disposeSurface(root) {
+  root?._previewDispose?.();
+  root?.querySelectorAll(".media-player").forEach((player) => player._previewMediaPlayer?.dispose?.());
 }
 
 const ICON_PATHS = {

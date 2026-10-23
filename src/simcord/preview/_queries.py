@@ -183,11 +183,14 @@ def _normal_text(value: Any) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", str(value)).casefold())
 
 
-def _message_summary_parts(preview: Preview, page: _Page, message: Message, channel: Any) -> dict[str, Any]:
+def _message_summary_parts(
+    preview: Preview, page: _Page, message: Message, channel: Any, *, context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     author_name = _identity_name(
         preview, page, message.author_id, message=message, override=message.author_name
     )
-    context = _markdown_context(preview, page, message, channel)
+    if context is None:
+        context = _markdown_context(preview, page, message, channel)
     type_info = _message_type_info(int(message.type))
     snapshots = [item["message"] for item in message.snapshots]
     content = message.content or next((item["content"] for item in snapshots if item.get("content")), "")
@@ -280,6 +283,16 @@ def _message_summary(
     message: Message,
     parts: Mapping[str, Any],
 ) -> dict[str, Any]:
+    channel = preview.env.backend.get_channel(page.channel_id)
+    context = _markdown_context(preview, page, message, channel)
+    dependencies = tuple(
+        (kind, identity)
+        for collection, kind in (("users", "user"), ("roles", "role"), ("channels", "channel"))
+        for identity in context[collection]
+    )
+    if "thread" in parts["contentKinds"]:
+        dependencies += (("history_channel", str(message.id)),)
+    page.summary_sources[str(message.id)] = (deepcopy(message), dependencies, context)
     return {
         "id": str(message.id),
         "author": _identity_wire(

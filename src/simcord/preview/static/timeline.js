@@ -1,4 +1,5 @@
 import { renderMessage } from "./messages.js";
+import { disposeSurface } from "./dom.js";
 
 export function initTimeline({ state, ui, candidateLoading, fingerprint, clearRenderDiagnostics, messageRenderOptions }) {
   function localMessageDay(message) {
@@ -33,7 +34,7 @@ export function initTimeline({ state, ui, candidateLoading, fingerprint, clearRe
     }
   }
 
-  function renderChannelTimeline(snapshot, generation, previousTargetId, force = false) {
+  function renderChannelTimeline(snapshot, previousTargetId, force = false) {
     const ids = (snapshot.timeline || []).map(String);
     const active = new Set(ids);
     const previousIds = [...state.messageNodes.keys()];
@@ -80,7 +81,7 @@ export function initTimeline({ state, ui, candidateLoading, fingerprint, clearRe
         renderMessage(
           record.element,
           message,
-          messageRenderOptions(snapshot, generation, record.pendingMedia, message, true),
+          messageRenderOptions(snapshot, record.pendingMedia, message, true),
         );
       }
       pendingMedia.push(...record.pendingMedia);
@@ -90,6 +91,7 @@ export function initTimeline({ state, ui, candidateLoading, fingerprint, clearRe
 
     for (const [id, record] of state.messageNodes) {
       if (!active.has(id)) {
+        disposeSurface(record.element);
         record.element.remove();
         clearRenderDiagnostics(`message:${id}`);
         state.messageNodes.delete(id);

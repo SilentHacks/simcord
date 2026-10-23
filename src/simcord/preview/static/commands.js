@@ -89,11 +89,13 @@ const entityMark = (type) => ({ user: "@", mentionable: "@", role: "@", channel:
 
 export function createCommandPicker({
   form, input, composer, dispatch, run, fetchCatalog, getSnapshot, getState, announce,
-  onCommandMode, assets = {}, loadAsset, onCatalogState,
+  onCommandMode, assets = {}, loadAsset, onCatalogState, onPendingMedia,
 }) {
   let catalog = null;
   let catalogState = "idle";
   let catalogFingerprint = null;
+  let desiredCatalog = null;
+  let inflightCatalog = null;
   let generation = 0;
   let draftSequence = 0;
   let contextGeneration = null;
@@ -260,17 +262,23 @@ export function createCommandPicker({
   function renderBrowse() {
     if (!popup) return;
     popup.replaceChildren();
+    const pending = [];
+    const owner = popup;
+    const avatarOptions = { assets, loadAsset, isCurrent: () => owner.isConnected && popup === owner };
     popup.classList.add("is-browsing");
     const rail = node("div", "command-app-rail");
     const heading = node("div", "command-popup-heading command-app-heading", catalog?.application?.name || "COMMANDS");
     const identity = catalog?.application ? { name: catalog.application.name, avatar: catalog.application.avatarAssetId, bot: true } : null;
     if (identity) {
-      const rendered = renderIdentityAvatar(identity, { assets, loadAsset }, "command-avatar");
+      const rendered = renderIdentityAvatar(identity, avatarOptions, "command-avatar");
+      pending.push(...rendered.pending);
       heading.prepend(rendered.element);
       const appButton = node("button", "command-app-button");
       appButton.type = "button";
       appButton.setAttribute("aria-label", `Show ${catalog.application.name} commands`);
-      appButton.append(renderIdentityAvatar(identity, { assets, loadAsset }, "command-avatar").element);
+      const appAvatar = renderIdentityAvatar(identity, avatarOptions, "command-avatar");
+      pending.push(...appAvatar.pending);
+      appButton.append(appAvatar.element);
       appButton.addEventListener("click", () => {
         list.scrollTop = 0;
         input.focus();
@@ -287,7 +295,8 @@ export function createCommandPicker({
       const item = node("div", "command-entry");
       item.dataset.entryKey = entry.key;
       item.tabIndex = -1;
-      const avatar = renderIdentityAvatar(identity || {}, { assets, loadAsset }, "command-avatar");
+      const avatar = renderIdentityAvatar(identity || {}, avatarOptions, "command-avatar");
+      pending.push(...avatar.pending);
       item.append(avatar.element);
       const text = node("span", "command-entry-text");
       const title = node("span", "command-entry-title");
@@ -308,6 +317,7 @@ export function createCommandPicker({
       truncated.setAttribute("aria-disabled", "true");
       list.append(truncated);
     }
+    onPendingMedia?.(pending);
     content.append(list);
     popup.append(rail, content);
     listbox = createListbox({
@@ -873,30 +883,37 @@ export function createCommandPicker({
       clearAutocompleteState();
       closeBrowse();
       generation += 1;
+      inflightCatalog = null;
+      desiredCatalog = null;
       catalog = null; catalogFingerprint = null; catalogState = "idle";
     }
     contextId = newContext; contextGeneration = newGeneration; viewerId = snapshot?.viewerId ?? null;
     if (!canOpen(snapshot)) {
+      generation += 1;
+      inflightCatalog = null;
+      desiredCatalog = null;
       if (!draft) closeBrowse();
       if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
       catalog = null; catalogFingerprint = null; catalogState = "idle";
       refreshStatus(); return;
     }
     const fingerprint = snapshot.commands?.fingerprint;
+    desiredCatalog = fingerprint;
     if (!fingerprint) {
       catalog = null; catalogFingerprint = null; catalogState = "idle";
       if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
       refreshStatus(); return;
     }
-    if (fingerprint === catalogFingerprint || catalogState === "loading") return;
-    catalogFingerprint = fingerprint;
+    if (fingerprint === catalogFingerprint || inflightCatalog !== null) return;
+    inflightCatalog = fingerprint;
     const requestGeneration = ++generation;
     const requestContext = contextId, requestRevisionFingerprint = fingerprint;
     catalogState = "loading";
     refreshStatus();
     try {
       const next = await fetchCatalog();
-      if (requestGeneration !== generation || contextId !== requestContext || catalogFingerprint !== requestRevisionFingerprint) return;
+      if (requestGeneration !== generation || contextId !== requestContext || desiredCatalog !== requestRevisionFingerprint) return;
+      catalogFingerprint = requestRevisionFingerprint;
       const previous = catalog;
       catalog = next;
       catalogState = next.state === "unavailable" ? "failed" : "ready";
@@ -928,6 +945,12 @@ export function createCommandPicker({
         if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
       }
     }
+    finally {
+      if (requestGeneration === generation) {
+        inflightCatalog = null;
+        if (desiredCatalog !== requestRevisionFingerprint && lastSnapshot) void update(lastSnapshot);
+      }
+    }
     refreshStatus();
   }
   function receiveSnapshot(snapshot) {
@@ -942,7 +965,7 @@ export function createCommandPicker({
     }
   }
   function receiveAction(kind, receipt, body, metadata = null) {
-    if (kind === "autocomplete_command" && metadata?.draftId === draft?.id
+    if (kind === "autocomplete_command" && draft && body && metadata?.draftId === draft.id
       && metadata?.draftVersion === draft?.version
       && body.command_id === draft?.commandId
       && body.path?.join("\u0000") === draft?.path.join("\u0000")
@@ -962,7 +985,7 @@ export function createCommandPicker({
       }
       renderPopup(input, `OPTIONS MATCHING ${input.value.toUpperCase()}`, autocompleteResults.get(key), (choice) => chooseValue(optionsFor().find((item) => item.name === body.focused), choice));
     }
-    const submittedDraftIsCurrent = metadata?.draftId === draft?.id;
+    const submittedDraftIsCurrent = Boolean(draft && metadata?.draftId === draft.id);
     if (kind === "run_command" && submittedDraftIsCurrent && receipt?.settlement === "settled" && !receipt.rejected) {
       draft = null; mode = "closed"; clearAutocompleteState(); clearPopup(); contextBar?.remove(); contextBar = null;
       composer.replaceInput(input);
@@ -984,6 +1007,9 @@ export function createCommandPicker({
     }
   }
   function clear() {
+    generation += 1;
+    desiredCatalog = null;
+    inflightCatalog = null;
     if (draft) exitCommand();
     closeBrowse();
     for (const timer of timers.values()) clearTimeout(timer);

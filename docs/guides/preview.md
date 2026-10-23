@@ -133,6 +133,9 @@ its original opener; the source-message linkage remains available to `interactio
   authorized independently. A denied target is not distinguished from a missing target.
 - Access is rechecked on every state, asset, and pinned-capture read. Revoked access or removed
   attachments invalidate cached content; already delivered pixels cannot be remotely recalled.
+  Security redaction can remove already-published references, summaries, identities, candidates,
+  command entries, and asset handles without advancing the revision. It never publishes unrelated
+  edits or newly granted content. A pinned capture fails closed if a published dependency loses access.
 
 The capability holder may switch between supplied viewers. It is not authentication for unrelated
 humans; use separate sessions for separate trust domains. Treat `preview.url`, terminal output,
@@ -141,9 +144,9 @@ logs, reports, bug issues, or screenshots.
 
 ## Refresh and staleness
 
-Preview uses HTTP commands and polling, not a websocket or always-running Python poller. Polling only
-reads the latest published revision. Python actor calls, `advance_time()`, background callbacks, and
-other scenario mutations become visible after an explicit refresh:
+Preview uses HTTP commands and polling, not a websocket or always-running Python poller. Polling
+reads the latest published projection, with current access filtering. Python actor calls,
+`advance_time()`, background callbacks, and other scenario mutations become visible after an explicit refresh:
 
 ```python
 await actor.click(message, custom_id="save")
@@ -160,6 +163,16 @@ separate `messageIndex` is a bounded navigation-summary page; `navigation` carri
 cursors. `targetId` identifies the focused projection; there is no `selected` alias. A failed or
 timed-out action may already have mutated the backend: its last settled projection is retained and
 marked stale, then a later successful refresh reconciles it without replaying the action.
+
+The browser coalesces state reads and rejects responses from obsolete request lifetimes or older
+context, bot, or publication checkpoints before changing the UI. A transient read failure retains
+the last authorized projection with a transport warning; HTTP 401/410 or incompatible protocol
+terminates the page and clears private surfaces. Back/forward-cache suspension pauses polling;
+restoration resumes one polling chain. Non-restorable page hides send a best-effort authenticated
+release; browser unload never deletes a restorable context. The existing lease covers undeliverable
+releases, and an expired page requires an explicit reload.
+Back/forward caching depends on browser policy: Preview keeps its `no-store` security headers.
+Navigation that reloads the document does not retain page-local drafts.
 
 ## Controls, keyboard, and accessibility
 
@@ -517,6 +530,10 @@ settled projection, DOM, fonts, authorized media, validated display dimensions (
 and two animation frames are ready, with no action or page intent still pending. In particular,
 resize/profile reconfiguration must finish before capture tooling treats the surface as ready.
 It does not mean the callback succeeded, the output is complete, or the capture is calibrated.
+A clean, acknowledged Close can be complete while not render-ready; terminal transport failures
+remain incomplete, and an unaccounted-for action remains uncertain.
+A matching late Close acknowledgement can confirm closure after a terminal read, without restoring
+the cleared private projection.
 `publishedRevision` is a settled publication;
 `contextGeneration` changes on viewer or focus changes;
 `botGeneration` changes on restart; render generations also cover local changes such
@@ -525,6 +542,9 @@ and premium-icon loads stay bound to retained DOM owners across redraws; replaci
 discards its continuation. A retained owner's late failure still makes the surface incomplete.
 Switching viewers or restarting the bot invalidates asset ownership and recreates media rather than
 carrying playback or pending loads across authorization boundaries.
+Picker-avatar decoding also participates in readiness. Evicting a rendered surface pauses and
+releases its media; retained surfaces keep their pending work. The reported active control follows
+actual browser focus, including individual descendants within a compound control.
 
 `projectedMessageIds` mirrors `snapshot["timeline"]`; `visibleMessageIds` lists only IDs currently
 visible in the simulated viewport, not every projected window item. `geometry` reports measured app,
@@ -545,9 +565,12 @@ correctly typed but stale context or generation values return `stale-context` or
 Kind, control resolution, and values are validated before the sequence is admitted. Admission is
 at-most-once: a duplicate latest request with the same payload returns its recorded outcome, a
 changed payload conflicts, old sequences expire, and gaps are rejected. Busy, stale, unauthorized,
-disabled, deleted, or invalid controls are rejected before admission and are never automatically
-retried. A disconnected client does not cancel an admitted callback; delivery failure is separate
-from callback settlement.
+disabled, deleted, or invalid callbacks are rejected before admission and are never automatically
+retried. Only the latest read-like query intent rejected definitively as busy is reconsidered,
+at most once per successful existing polling tick; this does not replay an admitted or uncertain
+callback. Page intents such as Close and viewer/focus changes queue behind the current action,
+not behind an unreachable publication revision. A disconnected client does not cancel an admitted
+callback; delivery failure is separate from callback settlement.
 
 Revision-bound actions (`click`, `select`, `modal_submit`, `autocomplete_command`, `run_command`,
 `history`, `send_message`, `edit_message`, `delete_message`, `set_reaction`, `set_poll_votes`,
@@ -641,8 +664,10 @@ The full catalog is a separate read, rather than repeated in every state snapsho
 `truncated`, `application` (`id`, `name`, `avatarAssetId`) and `entries`. Each entry describes a
 visible command leaf with its ID, invocation path, scope, schema fingerprint and typed options. The
 schema defines this wire shape at `$defs.commandCatalog`. The response is protected by the page
-capability and context. Catalogs are capped at 1,000 leaves and 2 MiB; an oversized catalog is marked
-`truncated`.
+capability and context, and current command access and schema are checked before cached entries
+are returned. Catalogs are capped at 1,000 leaves and 2 MiB; an oversized catalog is marked `truncated`.
+If the manifest changes while a catalog read is pending, the browser installs only the desired
+catalog and fetches its replacement rather than remaining stuck with a discarded response.
 
 The two additional revision-bound action kinds are `autocomplete_command` and `run_command`. Both
 carry `command_id`, `path` and `schema_fingerprint`; autocomplete also carries `focused`, `value` and
@@ -650,6 +675,15 @@ currently valid filled `options`, while run carries `options`. Command uploads t
 parts named `file:<optionName>` rather than JSON bytes. Every receipt has a nullable `command` field
 beside `target`: when present it is `{commandId, invocation}`. The diagnostic subject union adds
 `{commandOption}` beside the existing `{messageId, controlKey?}` form.
+
+`GET /api/action-result?request_id=<id>&sequence=<positive integer>` recovers the original
+autocomplete response after delivery loss without invoking the callback again. It uses the same
+capability/context headers and only the existing latest retained action result, not an action
+history. Recovery requires the original viewer, context and bot generation, command identity,
+schema, and current command/channel access. A matching settled result returns HTTP 200 with the
+existing action response; pending returns 409, unavailable/superseded/scope-changed returns 404,
+expired context returns 410, and missing authorization returns 401. An unavailable result leaves
+the draft intact and reports failure instead of silently resubmitting or loading indefinitely.
 
 Command diagnostics include `commands-unsynced` (call `await bot.tree.sync()`), `command-unavailable`,
 `command-changed`, `command-option-invalid` and `autocomplete-unanswered`. A

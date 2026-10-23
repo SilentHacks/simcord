@@ -5,6 +5,7 @@ let lightbox;
 
 
 function diagnostic(options, code, label, error) {
+  if (options.isCurrent && !options.isCurrent()) return;
   options.onDiagnostic?.({
     code,
     severity: "warning",
@@ -183,6 +184,7 @@ function getLightbox() {
   frame.addEventListener("pointercancel", () => { drag = null; });
   image.draggable = false;
   dialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.stopPropagation(); return; }
     const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
     if (!direction) return;
     if (zoomed && !event.altKey) {
@@ -216,8 +218,15 @@ function getLightbox() {
       window.addEventListener("resize", place);
       close.focus({ preventScroll: true });
     },
+    reconcile() {
+      if (dialog.open && items.some((item) => !item.image.isConnected || !current(item.options, item.image))) {
+        lightbox.close();
+      }
+    },
     close() {
+      drawGeneration += 1;
       if (dialog.open) dialog.close();
+      restore();
     },
   };
   return lightbox;
@@ -225,6 +234,10 @@ function getLightbox() {
 
 export function closeLightbox() {
   lightbox?.close();
+}
+
+export function reconcileLightbox() {
+  lightbox?.reconcile();
 }
 
 function mediaTimeLabel(value) {
@@ -336,11 +349,14 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   const player = {
     wrapper, element, waveform, controls, play, seek, time, mute, volume, status,
     options, label: playerLabel, className: playerClass, assetId, kind, mediaTime,
+    cancelWaiters: new Set(),
     active: true, pending: [],
   };
   wrapper._previewMediaPlayer = player;
   player.dispose = () => {
     player.active = false;
+    player.cancelWaiters.forEach((cancel) => cancel());
+    player.cancelWaiters.clear();
     element.pause();
     element.removeAttribute("src");
     element.removeAttribute("poster");
@@ -402,8 +418,16 @@ function renderPlayer(media, className, options, label, assetId, kind) {
     if (!playerCurrent(player)) return;
     if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("asset is not a local blob URL");
     const metadata = new Promise((resolve, reject) => {
-      element.addEventListener("loadedmetadata", resolve, { once: true });
-      element.addEventListener("error", () => reject(new Error("browser cannot decode this validated media")), { once: true });
+      const finish = () => { cleanup(); resolve(); };
+      const fail = () => { cleanup(); reject(new Error("browser cannot decode this validated media")); };
+      const cleanup = () => {
+        element.removeEventListener("loadedmetadata", finish);
+        element.removeEventListener("error", fail);
+        player.cancelWaiters.delete(finish);
+      };
+      player.cancelWaiters.add(finish);
+      element.addEventListener("loadedmetadata", finish, { once: true });
+      element.addEventListener("error", fail, { once: true });
     });
     element.src = url;
     element.load();
@@ -414,11 +438,20 @@ function renderPlayer(media, className, options, label, assetId, kind) {
       const selected = Math.min(Math.max(0, Number(player.mediaTime) || 0), duration);
       if (Math.abs(element.currentTime - selected) > 0.01) {
         const seeked = new Promise((resolve, reject) => {
-          element.addEventListener("seeked", resolve, { once: true });
-          element.addEventListener("error", () => reject(new Error("media seek failed")), { once: true });
+          const finish = () => { cleanup(); resolve(); };
+          const fail = () => { cleanup(); reject(new Error("media seek failed")); };
+          const cleanup = () => {
+            element.removeEventListener("seeked", finish);
+            element.removeEventListener("error", fail);
+            player.cancelWaiters.delete(finish);
+          };
+          player.cancelWaiters.add(finish);
+          element.addEventListener("seeked", finish, { once: true });
+          element.addEventListener("error", fail, { once: true });
         });
         element.currentTime = selected;
         await seeked;
+        if (!playerCurrent(player)) return;
       }
       element.pause();
       player.options.onMediaCaptureTime?.(assetId, Number(element.currentTime) || 0);

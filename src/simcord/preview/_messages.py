@@ -583,7 +583,7 @@ def _user_allowed(preview: Preview, page: _Page, user_id: int) -> bool:
     env = preview.env
     channel = env.backend.get_channel(page.channel_id)
     if channel.guild_id is None:
-        return user_id in channel.recipient_ids
+        return user_id == env.backend.bot_user.id or user_id in channel.recipient_ids
     guild = env.backend.guilds.get(channel.guild_id)
     return guild is not None and user_id in guild.members
 

@@ -82,15 +82,15 @@ export function initTransport({ state, ui, addDiagnostic, renderDiagnostics, upd
     return headers;
   }
 
-  async function request(path, method = "GET", body, context = state.contextId) {
+  async function request(path, method = "GET", body, context = state.contextId, signal) {
     const headers = { ...authHeaders(context) };
-    const init = { method, headers, cache: "no-store" };
+    const init = { method, headers, cache: "no-store", signal };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
     }
     const response = await fetch(path, init);
-    if (!response.ok) throw new Error("preview request failed");
+    if (!response.ok) throw Object.assign(new Error("preview request failed"), { status: response.status });
     return response.status === 204 ? null : response.json();
   }
 
@@ -103,7 +103,7 @@ export function initTransport({ state, ui, addDiagnostic, renderDiagnostics, upd
       form.append("payload", JSON.stringify(body));
       entries.forEach(([name, file]) => form.append(`file:${name}`, file, file.name));
       const response = await fetch("/api/action", { method: "POST", headers: authHeaders(), body: form, cache: "no-store" });
-      if (!response.ok) throw new Error("preview request failed");
+      if (!response.ok) throw Object.assign(new Error("preview request failed"), { status: response.status });
       return response.json();
     }
     const values = body.values;
@@ -119,7 +119,7 @@ export function initTransport({ state, ui, addDiagnostic, renderDiagnostics, upd
     form.append("payload", JSON.stringify(payload));
     uploads.forEach(([id, file]) => form.append(`file:${id}`, file, file.name));
     const response = await fetch("/api/action", { method: "POST", headers: authHeaders(), body: form, cache: "no-store" });
-    if (!response.ok) throw new Error("preview request failed");
+    if (!response.ok) throw Object.assign(new Error("preview request failed"), { status: response.status });
     return response.json();
   }
 
@@ -136,6 +136,19 @@ export function initTransport({ state, ui, addDiagnostic, renderDiagnostics, upd
       || (typeof receipt?.settlement === "string" && receipt.settlement !== "pending");
     if (receipt && terminal) {
       const action = state.uncertainAction;
+      if (action?.kind === "autocomplete_command" && action.queryBody && action.queryMetadata) {
+        const identity = { context: state.contextId, generation: snapshot.context?.generation };
+        request(`/api/action-result?request_id=${encodeURIComponent(action.requestId)}&sequence=${action.sequence}`)
+          .then((result) => {
+            if (state.authorized && state.contextId === identity.context && state.contextGeneration === identity.generation) {
+              commandPicker.receiveAction(action.kind, result, action.queryBody, action.queryMetadata);
+            }
+          }).catch(() => {
+            if (state.authorized && state.contextId === identity.context && state.contextGeneration === identity.generation) {
+              commandPicker.receiveAction(action.kind, { rejected: true }, action.queryBody, action.queryMetadata);
+            }
+          });
+      }
       state.lastAction = receipt;
       if (action?.kind === "run_command") {
         commandPicker.receiveAction("run_command", receipt, action.commandEnvelope, { draftId: action.commandDraftId });

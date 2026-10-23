@@ -50,6 +50,8 @@ class _Page:
     referenced_assets: set[str] = field(default_factory=set)
     referenced_messages: set[tuple[int, int]] = field(default_factory=set)
     snapshot: dict[str, Any] = field(default_factory=dict)
+    summary_sources: dict[str, Any] = field(default_factory=dict)
+    referenced_users: dict[str, tuple[int, int]] = field(default_factory=dict)
     command_catalog: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
@@ -237,6 +239,7 @@ class _PageOps:
     _publish: Callable[..., None]
     _clear_page_assets: Callable[[_Page], None]
     _assert_capture_live: Callable[[_Page], None]
+    _authorize_asset: Callable[..., _Asset]
 
     def _initial_target(self, viewer: Any, channel_id: int) -> int | None:
         if not can_access_channel(self.env, channel_id, viewer, history=True):
@@ -377,6 +380,202 @@ class _PageOps:
         payload["activity"] = []
         return payload
 
+    def _filter_dependencies(self, page: _Page, payload: dict[str, Any]) -> None:
+        """Sanitize only published dependencies; never discover new content."""
+        from ._commands import _authorized_catalog
+        from ._messages import _can_send_message, _message_allowed_actions, _role_allowed, _user_allowed
+        from ._queries import _message_summary_parts
+
+        preview = cast("Preview", self)
+        catalog = _authorized_catalog(preview, page)
+        allowed_cache: dict[tuple[str, str], bool] = {}
+
+        def entity_allowed(kind: str, identity: Any) -> bool:
+            if kind == "everyone":
+                return True
+            key = (kind, str(identity))
+            if key not in allowed_cache:
+                try:
+                    value = int(identity)
+                    allowed_cache[key] = (
+                        can_access_channel(self.env, value, page.viewer, history=kind == "history_channel")
+                        if kind in {"channel", "history_channel"}
+                        else _role_allowed(preview, page, value)
+                        if kind == "role"
+                        else _user_allowed(preview, page, value)
+                    )
+                except (BackendError, TypeError, ValueError):
+                    allowed_cache[key] = False
+            return allowed_cache[key]
+
+        def visible(channel_id: Any, message_id: Any) -> bool:
+            try:
+                channel_id = int(channel_id)
+                message = self.env.backend.get_message(channel_id, int(message_id))
+                return can_access_message(self.env, channel_id, message, page.viewer, history=True)
+            except (BackendError, TypeError, ValueError):
+                return False
+
+        def scrub(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    scrub(item)
+            elif isinstance(value, dict):
+                for key in ("asset_id", "icon_asset_id", "avatar"):
+                    asset_id = value.get(key)
+                    if isinstance(asset_id, str) and asset_id not in payload.get("assets", {}):
+                        value[key] = None
+                        if key == "avatar":
+                            value["avatar_available"] = False
+                        elif key == "icon_asset_id":
+                            value["icon_available"] = False
+                if value.get("type") == "mention" and not entity_allowed(
+                    value.get("kind", "user"), value.get("id")
+                ):
+                    value.clear()
+                    value.update(type="text", content="unavailable")
+                    return
+                for key, kind in (
+                    ("mention_channel_names", "channel"),
+                    ("mention_names", "user"),
+                    ("mention_entities", "user"),
+                ):
+                    if isinstance(value.get(key), dict):
+                        value[key] = {
+                            identity: item
+                            for identity, item in value[key].items()
+                            if entity_allowed(kind, identity)
+                        }
+                for key, kind in (
+                    ("mention_channel_ids", "channel"),
+                    ("mention_user_ids", "user"),
+                    ("mention_role_ids", "role"),
+                ):
+                    if isinstance(value.get(key), list):
+                        value[key] = [identity for identity in value[key] if entity_allowed(kind, identity)]
+                mentions = value.get("mentions")
+                if isinstance(mentions, dict):
+                    for collection, kind in (("users", "user"), ("roles", "role"), ("channels", "channel")):
+                        if isinstance(mentions.get(collection), list):
+                            mentions[collection] = [
+                                item
+                                for item in mentions[collection]
+                                if entity_allowed(kind, item.get("id") if isinstance(item, dict) else item)
+                            ]
+                for key in ("user", "target_user", "recipient"):
+                    item = value.get(key)
+                    if isinstance(item, dict) and not entity_allowed("user", item.get("id")):
+                        value.pop(key)
+                reply = value.get("reply")
+                if (
+                    isinstance(reply, dict)
+                    and reply.get("state") == "resolved"
+                    and not visible(reply.get("channel_id"), reply.get("message_id"))
+                ):
+                    value["reply"] = {"state": "unavailable"}
+                for key in ("channel", "thread"):
+                    item = value.get(key)
+                    if (
+                        isinstance(item, dict)
+                        and item.get("id")
+                        and not entity_allowed("history_channel", item["id"])
+                    ):
+                        value[key] = None
+                for key in ("reference", "target_message"):
+                    item = value.get(key)
+                    if isinstance(item, dict) and isinstance(item.get("url"), str):
+                        parts = item["url"].rstrip("/").split("/")
+                        if len(parts) >= 2 and not visible(parts[-2], parts[-1]):
+                            value.pop(key)
+                for item in list(value.values()):
+                    scrub(item)
+
+        messages = payload.get("messages", {})
+        payload["messages"] = {
+            identity: item for identity, item in messages.items() if visible(page.channel_id, identity)
+        }
+        payload["timeline"] = [
+            identity for identity in payload.get("timeline", []) if identity in payload["messages"]
+        ]
+        if payload.get("targetId") not in payload["messages"]:
+            payload["targetId"] = None
+        rows = []
+        channel = self.env.backend.get_channel(page.channel_id)
+        payload["channel"]["canSendMessages"] = _can_send_message(preview, page, channel)
+        for identity, projected in payload["messages"].items():
+            live = self.env.backend.get_message(page.channel_id, int(identity))
+            permitted = _message_allowed_actions(preview, page, channel, live)
+            projected["allowed_actions"] = [
+                action for action in projected["allowed_actions"] if action in permitted
+            ]
+        for row in payload.get("messageIndex", []):
+            if not visible(page.channel_id, row["id"]):
+                continue
+            source = page.summary_sources.get(row["id"])
+            if source is not None and any(not entity_allowed(kind, identity) for kind, identity in source[1]):
+                context = dict(source[2])
+                for collection, kind in (("users", "user"), ("roles", "role"), ("channels", "channel")):
+                    context[collection] = {
+                        identity: name
+                        for identity, name in context[collection].items()
+                        if entity_allowed(kind, identity)
+                    }
+                parts = _message_summary_parts(preview, page, source[0], channel, context=context)
+                row["excerpt"] = parts["excerpt"]
+                row["components"] = parts["components"]
+                if not entity_allowed("history_channel", row["id"]):
+                    row["contentKinds"] = [kind for kind in row["contentKinds"] if kind != "thread"]
+            rows.append(row)
+        payload["messageIndex"] = rows
+        for collection, kind in (
+            ("users", "user"),
+            ("members", "user"),
+            ("roles", "role"),
+            ("channels", "channel"),
+        ):
+            entities = payload.get("entities", {}).get(collection, {})
+            payload.get("entities", {})[collection] = {
+                identity: item
+                for identity, item in entities.items()
+                if entity_allowed(kind, identity)
+                and (
+                    identity not in page.referenced_users
+                    or visible(*page.referenced_users[identity])
+                    or any(
+                        message.get("author", {}).get("id") == identity
+                        for message in payload["messages"].values()
+                    )
+                )
+            }
+        for key, descriptor in list(payload.get("candidates", {}).items()):
+            if key.startswith("message:") and key.split(":", 2)[1] not in payload["messages"]:
+                payload["candidates"].pop(key)
+                continue
+            if key.startswith("command:"):
+                from ._queries import candidate_control
+
+                try:
+                    candidate_control(preview, page, key, None)
+                except SetupError:
+                    payload["candidates"].pop(key)
+                    continue
+            for field_name in ("entries", "selected"):
+                descriptor[field_name] = [
+                    item
+                    for item in descriptor.get(field_name, [])
+                    if entity_allowed(item.get("kind", "user"), item.get("id"))
+                ]
+            descriptor["state"] = "available" if descriptor.get("entries") else "empty"
+        payload["commands"] = {key: catalog[key] for key in ("state", "fingerprint")}
+        payload["commands"]["count"] = len(catalog["entries"])
+        payload["channel"]["canUseApplicationCommands"] = catalog["state"] != "unavailable"
+        for asset_id in list(payload.get("assets", {})):
+            try:
+                self._authorize_asset(page, asset_id, content=False)
+            except SetupError:
+                payload["assets"].pop(asset_id)
+        scrub(payload)
+
     def _page_payload(self, page: _Page) -> dict[str, Any]:
 
         if page.pinned_snapshot is not None:
@@ -406,6 +605,7 @@ class _PageOps:
                 item = record.to_wire()
                 item.pop("diagnostic", None)
                 payload["assets"][asset_id] = item
+            self._filter_dependencies(page, payload)
         else:
             self._denied_payload(payload)
         if allowed:

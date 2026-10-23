@@ -592,8 +592,26 @@ function modalControl(component, path, labelText, options) {
 }
 
 export function renderModal(root, modal, options = {}) {
+  root._previewDispose?.();
+  const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")];
+  const reuseScope = modal ? JSON.stringify([options.contextId, options.modalHandle]) : "";
+  const reusePlayers = new Map();
+  for (const element of oldPlayers) {
+    const player = element._previewMediaPlayer;
+    if (root.dataset.mediaReuseScope !== reuseScope || !player?.active) continue;
+    const key = element.dataset.mediaReuseKey;
+    if (!reusePlayers.has(key)) reusePlayers.set(key, []);
+    reusePlayers.get(key).push(element);
+  }
+  root.dataset.mediaReuseScope = reuseScope;
+  let alive = true;
+  root._previewDispose = () => { alive = false; };
+  options = { ...options, isCurrent: () => alive, mediaPlayerReuse: reusePlayers };
   root.replaceChildren();
-  if (!modal) return { controls: {}, focus: null };
+  if (!modal) {
+    oldPlayers.forEach((element) => element._previewMediaPlayer?.dispose?.());
+    return { controls: {}, focus: null };
+  }
   const backdrop = node("div", "modal-backdrop");
   const dialog = node("form", "modal-dialog");
   dialog.noValidate = true;
@@ -683,6 +701,7 @@ export function renderModal(root, modal, options = {}) {
   backdrop.append(dialog);
   root.append(backdrop);
   body.scrollTop = Number(options.scrollTop || 0);
+  oldPlayers.forEach((element) => { if (!element.isConnected) element._previewMediaPlayer?.dispose?.(); });
   const invalid = options.validationError
     ? Object.values(controls).find((control) => control.field.dataset.customId === options.validationError.controlId)
     : null;

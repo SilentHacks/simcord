@@ -164,6 +164,7 @@ def _entity_projection(
                 if referenced is not None and can_access_message(
                     env, reference_channel, referenced, page.viewer, history=True
                 ):
+                    page.referenced_users[str(referenced.author_id)] = (reference_channel, referenced.id)
                     entities["users"][str(referenced.author_id)] = _identity_wire(
                         resolve_identity(
                             preview,
@@ -222,6 +223,8 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         if application["avatarAssetId"] in page.assets:
             page.referenced_assets.add(application["avatarAssetId"])
     page.referenced_messages.clear()
+    page.summary_sources.clear()
+    page.referenced_users.clear()
     visible: list[Message] = []
     if channel is not None and allowed:
         # Rebuild fixture-sized history; an index would need its own

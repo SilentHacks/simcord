@@ -126,5 +126,11 @@ export function initWorkbench({ state, ui }) {
   });
   window.addEventListener("resize", () => updateWorkbenchIsolation());
   updateWorkbenchIsolation();
-  return { updateWorkbenchIsolation };
+  return { updateWorkbenchIsolation, resetWorkbench: () => {
+    closeMessagesDrawer(false);
+    closeInspector(false);
+    state.panelOpener = null;
+    state.drawerOpener = null;
+    updateWorkbenchIsolation(false);
+  } };
 }

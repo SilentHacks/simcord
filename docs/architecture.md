@@ -85,8 +85,16 @@ Base imports do not allocate any preview server, worker, or browser.
 
 Preview keeps session/page state in its existing owners. `_action_plans.py` prepares lazy
 actions; identity, component/message projection, and query modules feed `_snapshot.py`'s
-assembly. In the browser, `app.js` retains shared state and action sequencing, with focused
-workbench, select-draft, timeline, and transport modules handling presentation responsibilities.
+assembly. In the browser, `app.js` retains UI state and action sequencing; `session.js` owns
+coalesced state reads, checkpoint acceptance, cancellation, and the single polling lifetime.
+Existing workbench, select-draft, timeline, transport, and rendered-media records keep their
+focused responsibilities. `geometry.js` supplies both live status and managed-capture measurements.
+Python and browser diagnostics share the packaged `backend-diagnostics.json` vocabulary.
+These remain native ES modules: there is no bundler or client framework.
+
+Contributor checks use Node 24: run `npm ci --ignore-scripts` and `npm run check:preview` for
+strict, development-only JSDoc checking of the session and geometry boundaries. Python consumers
+and installed-wheel captures do not need Node.
 
 ## What it will never do
 
