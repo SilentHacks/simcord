@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -113,6 +114,10 @@ async def test_browser_revocation_tears_down_modal_without_new_revision(env, cha
             assert await page.evaluate("window.simcordPreview.publishedRevision") == revision
             assert await page.evaluate("window.simcordPreview.visibleMessageIds") == []
             assert not await page.locator("#channel-layout").evaluate("element => element.inert")
+            await page.evaluate(
+                "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+            )
+            assert not await page.evaluate("window.simcordPreview.ready")
 
 
 @pytest.mark.asyncio
@@ -295,6 +300,83 @@ async def test_browser_terminal_read_and_bfcache_lifetime(env, channel, alice, s
             assert await page.locator(".modal-dialog, .channel-message").count() == 0
             assert await page.evaluate("window.simcordPreview.commandPicker.draft") is None
             assert await page.evaluate("window.simcordPreview.renderState.modalHandle") is None
+            assert not await page.evaluate("window.simcordPreview.complete")
+            await page.locator("#inspector-toggle").click()
+            await page.locator("#diagnostics-tab").click()
+            for severity in ("error", "warning", "info", "all"):
+                await page.locator("#diagnostic-filter").select_option(severity)
+                assert not await page.evaluate("window.simcordPreview.complete")
+                assert not await page.evaluate("window.simcordPreview.ready")
+                assert await page.locator(".modal-dialog, .channel-message").count() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_browser_backend_diagnostic_navigates_to_affected_message(env, channel, alice, recovered):
+    affected = await alice.send(channel, "Affected diagnostic message")
+    initial = await alice.send(channel, "Initial diagnostic message")
+    diagnostic = make_diagnostic(
+        "message-type-unknown",
+        state="recovered" if recovered else "current",
+        subject={"messageId": str(affected.id), "controlKey": "private-diagnostic-control"},
+    )
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(initial)
+        async with _browser(preview) as page:
+
+            async def with_diagnostic(route):
+                response = await route.fetch()
+                payload = await response.json()
+                payload["diagnostics"].append(
+                    {
+                        **diagnostic,
+                        "message": "private-diagnostic-wording",
+                        "remediation": "private-diagnostic-remediation",
+                        "complete": True,
+                    }
+                )
+                await route.fulfill(response=response, json=payload)
+
+            await page.route("**/api/state", with_diagnostic)
+            await preview.refresh()
+            await page.wait_for_function(
+                "id => window.simcordPreview.diagnostics.some(item => item.id === id)", arg=diagnostic["id"]
+            )
+            rendered = await page.evaluate(
+                "id => window.simcordPreview.diagnostics.find(item => item.id === id)", diagnostic["id"]
+            )
+            assert rendered["complete"] is recovered
+            await page.locator("#inspector-toggle").click()
+            await page.locator("#diagnostics-tab").click()
+            visible_diagnostics = await page.locator("body").inner_text()
+            assert "private-diagnostic-wording" not in visible_diagnostics
+            assert "private-diagnostic-remediation" not in visible_diagnostics
+            await page.get_by_role("button", name="View affected message", exact=True).click(timeout=5000)
+            await page.wait_for_function(
+                "id => window.simcordPreview.targetId === id && window.simcordPreview.ready"
+                " && !window.simcordPreview.pendingAction",
+                arg=str(affected.id),
+            )
+            assert (
+                await page.get_by_label("Focused message")
+                .get_by_text("Affected diagnostic message", exact=True)
+                .is_visible()
+            )
+            await page.locator("#capture-tab").click()
+            async with page.expect_download() as download_info:
+                await page.get_by_role("button", name="Download safe support report").click()
+            download = await download_info.value
+            download_path = await download.path()
+            assert download_path is not None
+            report_text = await asyncio.to_thread(Path(download_path).read_text)
+            report = json.loads(report_text)
+            assert any(item["code"] == diagnostic["code"] for item in report["diagnostics"])
+            for private in (
+                *diagnostic["subject"].values(),
+                "private-diagnostic-wording",
+                "private-diagnostic-remediation",
+            ):
+                assert private not in report_text
 
 
 @pytest.mark.asyncio
@@ -456,6 +538,13 @@ async def test_browser_picker_avatar_decode_participates_in_readiness(env, chann
             await page.wait_for_function("() => window.pickerDecodes.length > 0")
             assert not await page.evaluate("window.simcordPreview.ready")
             assert await page.locator("#preview-app").get_attribute("aria-busy") == "true"
+            await page.locator("#channel-composer-input").fill("No command picker")
+            await page.wait_for_function("() => window.simcordPreview.ready")
+            assert await page.locator("#preview-app").get_attribute("aria-busy") == "false"
+            assert await page.locator(".command-popup").is_hidden()
+            await page.locator("#channel-composer-input").fill("/avatar-ready")
+            await page.wait_for_function("() => window.pickerDecodes.length > 1")
+            assert not await page.evaluate("window.simcordPreview.ready")
             await page.evaluate("() => window.pickerDecodes.splice(0).forEach(release => release())")
             await page.wait_for_function("() => window.simcordPreview.ready")
             assert await page.evaluate("window.simcordPreview.calibration.status") == "uncalibrated"
@@ -547,6 +636,14 @@ async def test_browser_close_acknowledgement_survives_expired_context_reads(env,
                 assert await page.evaluate("simcordPreview.complete")
                 assert await page.evaluate("simcordPreview.visibleMessageIds") == []
                 assert await page.evaluate("simcordPreview.transport.uncertainRequestId") is None
+                assert not await page.evaluate("simcordPreview.ready")
+                await page.locator("#inspector-toggle").click()
+                await page.locator("#diagnostics-tab").click()
+                for severity in ("warning", "all"):
+                    await page.locator("#diagnostic-filter").select_option(severity)
+                    assert await page.evaluate("simcordPreview.complete")
+                    assert not await page.evaluate("simcordPreview.ready")
+                    assert await page.evaluate("simcordPreview.visibleMessageIds") == []
             finally:
                 release.set()
                 await page.unroute_all(behavior="wait")

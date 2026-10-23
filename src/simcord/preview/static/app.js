@@ -149,6 +149,7 @@ const state = {
   lastMessageFingerprint: "",
   pendingMedia: [],
   modalPendingMedia: [],
+  pickerPendingMedia: [],
   renderPendingMedia: [],
   targetId: null,
   objectUrls: new Map(),
@@ -226,11 +227,11 @@ const commandPicker = createCommandPicker({
   assets: state.snapshot?.assets || {},
   loadAsset,
   onPendingMedia: (pending) => {
-    if (!pending.length || state.closed) return;
+    if (state.closed) return;
     state.pickerPendingMedia = pending;
     if (state.rendering) return;
     const generation = beginRender();
-    void waitReady(generation, [...state.renderPendingMedia, ...pending]);
+    void waitReady(generation, state.renderPendingMedia);
   },
 });
 
@@ -431,13 +432,24 @@ function setModalIsolation(open) {
 function backendDiagnostic(item) {
   const code = typeof item.code === "string" ? item.code : "internal-error";
   const approved = Object.hasOwn(backendDiagnostics, code) ? backendDiagnostics[code] : null;
+  const recovered = item.state === "recovered";
+  const { messageId, controlKey, commandOption } = item.subject || {};
+  let subject;
+  if (typeof messageId === "string" && messageId.length >= 1 && messageId.length <= 20
+    && !/[^0-9]/.test(messageId)) {
+    subject = { messageId };
+    if (typeof controlKey === "string" && [...controlKey].length <= 160) subject.controlKey = controlKey;
+  } else if (typeof commandOption === "string" && /^[\p{L}\p{N}\p{M}_'-]{1,32}$/u.exec(commandOption)?.[0] === commandOption) {
+    subject = { commandOption };
+  }
   return {
     id: typeof item.id === "string" ? item.id : `backend:${code}`, code,
     category: approved?.[0] || "rendering",
     severity: approved?.[1] || (["error", "warning", "info"].includes(item.severity) ? item.severity : "warning"),
-    complete: approved?.[2] ?? false, message: approved?.[3] || "Preview diagnostics are unavailable.",
+    complete: recovered || (approved?.[2] ?? false), message: approved?.[3] || "Preview diagnostics are unavailable.",
     remediation: approved?.[4] || "Reload the active Preview URL.",
-    state: item.state === "recovered" ? "recovered" : "current",
+    state: recovered ? "recovered" : "current",
+    ...(subject ? { subject } : {}),
     ...(item.correlation ? { correlation: item.correlation } : {}),
   };
 }
@@ -469,7 +481,7 @@ function renderDiagnostics() {
     state.lastAnnouncement = null;
     announceStatus(error.message || "Preview error.", true);
   }
-  state.complete = !state.diagnostics.some((item) => item.state !== "recovered" && item.complete === false);
+  if (!state.closed) state.complete = !state.diagnostics.some((item) => item.state !== "recovered" && item.complete === false);
   ui.diagnostics.replaceChildren();
   const visible = state.diagnostics.filter((item) =>
     state.diagnosticFilter === "all" || item.severity === state.diagnosticFilter);
@@ -789,7 +801,7 @@ async function loadRequiredFonts() {
 async function waitReady(generation, pendingMedia) {
   let fontError = null;
   try {
-    await Promise.all(pendingMedia || []);
+    await Promise.all([...(pendingMedia || []), ...state.pickerPendingMedia]);
     await loadRequiredFonts();
     await nextFrames();
   } catch (error) {
@@ -1377,7 +1389,6 @@ function renderSnapshot(snapshot, generation, force = false) {
   updatePickers(snapshot);
   const openKey = state.dropdown?.key;
   const pendingMedia = [];
-  pendingMedia.push(...(state.pickerPendingMedia || []));
   if (snapshot.layout === "channel") {
     disposeSurface(ui.surface);
     pendingMedia.push(...renderChannelTimeline(snapshot, previousTargetId, force));
@@ -1847,10 +1858,6 @@ function redactPrivateView() {
   state.pendingMedia = [];
   state.modalPendingMedia = [];
   state.renderPendingMedia = [];
-  if (state.uncertainAction) {
-    const { kind, requestId, sequence, contextId } = state.uncertainAction;
-    state.uncertainAction = { kind, requestId, sequence, contextId };
-  }
   state.snapshot = null;
   state.lastAction = null;
   state.viewerId = null;

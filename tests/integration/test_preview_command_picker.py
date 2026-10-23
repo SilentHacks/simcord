@@ -1024,3 +1024,217 @@ async def test_browser_command_only_channel_keyboard_boolean_and_failed_run_reco
                 assert await send.is_disabled()
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["cached-reversion", "cached-failure", "clear", "context"])
+async def test_browser_picker_cached_catalog_reversion_and_private_teardown(env, channel, alice, boundary):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                await page.evaluate(
+                    """async boundary => {
+                  const {createCommandPicker} = await import('/commands.js');
+                  const form = document.createElement('form');
+                  const row = document.createElement('div');
+                  const input = document.createElement('textarea');
+                  input.id = 'isolated-command-input';
+                  row.append(input); form.append(row); document.body.append(form);
+                  const entry = {key: 'private-entry', commandId: '123', path: ['private-command'],
+                    invocation: 'private-command', description: 'Private catalog description',
+                    schemaFingerprint: 'schema-a', options: [{name: 'private-option',
+                      type: 'string', required: true, choices: [{name: 'Private choice', value: 'secret'}]}]};
+                  const catalog = {state: 'available', application: {name: 'Private application'}, entries: [entry]};
+                  const snapshot = {layout: 'channel', viewerId: '1', context: {id: 'a', generation: 1},
+                    channel: {canUseApplicationCommands: true}, commands: {state: 'available', fingerprint: 'A'}};
+                  let interceptor;
+                  let calls = 0;
+                  let catalogOffline = boundary === 'cached-failure';
+                  const picker = createCommandPicker({form, input,
+                    composer: {inputContainer: row, replaceInput: element => row.replaceChildren(element),
+                      setKeyInterceptor: callback => { interceptor = callback; }},
+                    getState: () => ({authorized: true}), getSnapshot: () => snapshot,
+                    dispatch: () => {}, run: () => {},
+                    fetchCatalog: () => {
+                      calls++;
+                      if (boundary.startsWith('cached-') && calls === 2) return new Promise((resolve, reject) =>
+                        window.releaseCatalogB = () => boundary === 'cached-failure'
+                          ? reject(new Error('Obsolete catalog unavailable'))
+                          : resolve({...catalog, entries: [{...entry, invocation: 'obsolete-command'}]}));
+                      if (catalogOffline && calls > 2) return Promise.reject(new Error('Catalog offline'));
+                      return Promise.resolve(catalog);
+                    }});
+                  form.addEventListener('keydown', event => {
+                    if (interceptor(event)) event.preventDefault();
+                  });
+                  window.pickerProbe = {picker, snapshot, form, input, calls: () => calls,
+                    reconnect: () => { catalogOffline = false; }};
+                  await picker.update(snapshot);
+                  if (boundary.startsWith('cached-')) {
+                    window.catalogBUpdate = picker.update({...snapshot, commands: {state: 'available', fingerprint: 'B'}});
+                    await picker.update(snapshot);
+                  }
+                }""",
+                    boundary,
+                )
+                composer = page.locator("#isolated-command-input")
+                await composer.fill("/private")
+                if boundary.startswith("cached-"):
+                    await page.evaluate("() => window.releaseCatalogB()")
+                    await page.evaluate("() => window.catalogBUpdate")
+                await page.wait_for_function(
+                    "() => window.pickerProbe.picker.status().catalog.state === 'ready'"
+                )
+                assert await page.locator(".command-entry-title", has_text="/private-command").count() == 1
+                assert await page.get_by_text("obsolete-command", exact=True).count() == 0
+                assert await page.evaluate("() => window.pickerProbe.calls()") == (
+                    2 if boundary.startswith("cached-") else 1
+                )
+                await page.evaluate("() => window.pickerProbe.reconnect()")
+                await composer.press("Escape")
+                await composer.click()
+                await page.locator(".command-entry-title", has_text="/private-command").wait_for()
+                await composer.press("Enter")
+                await page.get_by_text("Private choice", exact=True).wait_for()
+                old_owner = await page.evaluate_handle(
+                    "() => document.querySelector('.command-option-input')"
+                )
+                if boundary == "context":
+                    await page.evaluate("""async () => {
+                      const probe = window.pickerProbe;
+                      await probe.picker.update({...probe.snapshot, context: {id: 'boundary', generation: 2}});
+                    }""")
+                else:
+                    await page.evaluate("() => window.pickerProbe.picker.clear()")
+                assert await page.locator(".command-popup").count() == 0
+                assert await page.locator(".command-context, .command-row").count() == 0
+                assert await old_owner.evaluate(
+                    "owner => !owner.isConnected && !owner.hasAttribute('aria-controls') "
+                    "&& !owner.hasAttribute('aria-activedescendant')"
+                )
+                await page.evaluate("""async () => {
+                  const probe = window.pickerProbe;
+                  await probe.picker.update({...probe.snapshot, context: {id: 'b', generation: 2}});
+                }""")
+                await composer.fill("/private")
+                await composer.press("Enter")
+                await page.get_by_text("Private choice", exact=True).wait_for()
+                await page.evaluate("""async () => {
+                  const probe = window.pickerProbe;
+                  await probe.picker.update({...probe.snapshot, context: {id: 'c', generation: 3}});
+                }""")
+                assert await page.locator(".command-popup, .command-context, .command-row").count() == 0
+                await composer.fill("/private")
+                await composer.press("Enter")
+                await page.get_by_text("Private choice", exact=True).wait_for()
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_picker_compose_and_entity_media_release_obsolete_owners(env, channel, alice):
+    from preview_helpers import png_bytes
+
+    message = await alice.send(channel, "Picker media", attachments=[("picker-avatar.png", png_bytes())])
+
+    @app_commands.command(name="picker-media-user")
+    async def media_user(interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.send_message(member.display_name)
+
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        await preview.show(message)
+        async with _start_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.goto(preview.url)
+                await page.wait_for_function("() => window.simcordPreview?.ready === true")
+                context_id = await page.evaluate("window.simcordPreview.contextId")
+                asset_id = next(
+                    key
+                    for key, asset in preview._page_payload(preview._pages[context_id])["assets"].items()
+                    if asset["filename"] == "picker-avatar.png" and asset["available"]
+                )
+
+                async def avatar_catalog(route):
+                    response = await route.fetch()
+                    catalog = await response.json()
+                    catalog["application"]["avatarAssetId"] = asset_id
+                    await route.fulfill(response=response, json=catalog)
+
+                async def avatar_candidates(route):
+                    response = await route.fetch()
+                    snapshot = await response.json()
+                    for descriptor in snapshot.get("candidates", {}).values():
+                        if descriptor.get("type") == "users":
+                            for entry in descriptor.get("entries", []):
+                                entry["avatar"] = asset_id
+                                entry["avatar_available"] = True
+                    await route.fulfill(response=response, json=snapshot)
+
+                await page.route("**/api/commands", avatar_catalog)
+                await page.route("**/api/state", avatar_candidates)
+                await page.evaluate("""() => {
+                  const decode = HTMLImageElement.prototype.decode;
+                  window.commandDecodes = [];
+                  HTMLImageElement.prototype.decode = function() {
+                    if (this.closest('.command-popup, .command-row')) {
+                      const group = this.closest('.command-entity-avatar') ? 'entity'
+                        : this.closest('.command-row') ? 'compose' : 'browse';
+                      return new Promise((resolve, reject) => window.commandDecodes.push({
+                        group, image: this, release: () => decode.call(this).then(resolve, reject),
+                      }));
+                    }
+                    return decode.call(this);
+                  };
+                }""")
+                env.bot.tree.add_command(media_user)
+                await env.bot.tree.sync()
+                revision = await page.evaluate("window.simcordPreview.publishedRevision")
+                await preview.refresh()
+                await page.wait_for_function(
+                    "revision => window.simcordPreview.publishedRevision > revision "
+                    "&& window.simcordPreview.commandPicker.catalog.state === 'ready'",
+                    arg=revision,
+                )
+                composer = page.locator("#channel-composer-input")
+                await composer.fill("/picker-media-user")
+                await page.wait_for_function(
+                    "() => window.commandDecodes.some(item => item.group === 'browse')"
+                )
+                await composer.press("Enter")
+                await page.wait_for_function(
+                    "() => window.commandDecodes.some(item => item.group === 'compose') "
+                    "&& window.commandDecodes.some(item => item.group === 'entity')"
+                )
+                assert not await page.evaluate("window.simcordPreview.ready")
+                assert await page.locator("#preview-app").get_attribute("aria-busy") == "true"
+                # Hiding entity suggestions must not release the visible compose avatar.
+                member = page.locator('.command-option-input[data-option="member"]')
+                await member.press("Escape")
+                assert not await page.evaluate("window.simcordPreview.ready")
+                await page.evaluate("""() => window.commandDecodes
+                  .filter(item => item.group === 'compose').forEach(item => item.release())""")
+                await page.wait_for_function("() => window.simcordPreview.ready")
+                assert await page.evaluate("""() => window.commandDecodes
+                  .filter(item => item.group !== 'compose').every(item => !item.image.isConnected)""")
+                # A fresh popup owner now gates readiness without obsolete browse/entity work.
+                await member.blur()
+                await member.focus()
+                await page.wait_for_function("""() => window.commandDecodes.some(
+                  item => item.group === 'entity' && item.image.isConnected)""")
+                assert not await page.evaluate("window.simcordPreview.ready")
+                await member.press("Escape")
+                await page.wait_for_function("() => window.simcordPreview.ready")
+                await page.evaluate("""() => Promise.all(window.commandDecodes
+                  .filter(item => item.group !== 'compose').map(item => item.release()))""")
+                assert await page.locator(".command-popup .entity-avatar-img").count() == 0
+                assert await page.locator(".command-leading-avatar img").evaluate(
+                    "image => image.complete && image.naturalWidth > 0"
+                )
+            finally:
+                await browser.close()

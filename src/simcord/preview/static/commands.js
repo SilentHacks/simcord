@@ -119,6 +119,11 @@ export function createCommandPicker({
   let detachedReply = null;
   let lastSnapshot = null;
   let currentPopupOwner = null;
+  let popupPending = [];
+  let composePending = [];
+  function reportPendingMedia() {
+    onPendingMedia?.([...popupPending, ...composePending]);
+  }
   const row = composer.inputContainer;
 
   function canOpen(snapshot = lastSnapshot) {
@@ -261,13 +266,12 @@ export function createCommandPicker({
 
   function renderBrowse() {
     if (!popup) return;
-    popup.replaceChildren();
+    clearPopup();
     const pending = [];
-    const owner = popup;
-    const avatarOptions = { assets, loadAsset, isCurrent: () => owner.isConnected && popup === owner };
+    const heading = node("div", "command-popup-heading command-app-heading", catalog?.application?.name || "COMMANDS");
+    const avatarOptions = { assets, loadAsset, isCurrent: () => heading.isConnected && popup?.contains(heading) && !popup.hidden };
     popup.classList.add("is-browsing");
     const rail = node("div", "command-app-rail");
-    const heading = node("div", "command-popup-heading command-app-heading", catalog?.application?.name || "COMMANDS");
     const identity = catalog?.application ? { name: catalog.application.name, avatar: catalog.application.avatarAssetId, bot: true } : null;
     if (identity) {
       const rendered = renderIdentityAvatar(identity, avatarOptions, "command-avatar");
@@ -317,7 +321,6 @@ export function createCommandPicker({
       truncated.setAttribute("aria-disabled", "true");
       list.append(truncated);
     }
-    onPendingMedia?.(pending);
     content.append(list);
     popup.append(rail, content);
     listbox = createListbox({
@@ -338,6 +341,8 @@ export function createCommandPicker({
     if (selectedIndex >= 0) listbox.setActive(selectedIndex, { scroll: false });
     listbox.setExpanded(true);
     popup.hidden = false;
+    popupPending = pending;
+    reportPendingMedia();
     positionPopup();
   }
   function ensurePopup() {
@@ -366,7 +371,7 @@ export function createCommandPicker({
     input.removeAttribute("aria-autocomplete");
     input.removeAttribute("aria-controls");
     input.removeAttribute("aria-activedescendant");
-    if (popup) popup.hidden = true;
+    clearPopup();
     matches = [];
     activeKey = null;
     refreshStatus();
@@ -427,9 +432,12 @@ export function createCommandPicker({
     clearAutocompleteState();
     draft = null;
     mode = "closed";
-    if (popup) popup.hidden = true;
+    clearPopup();
     contextBar?.remove(); contextBar = null;
     composer.replaceInput(input);
+    commandRow = null;
+    composePending = [];
+    reportPendingMedia();
     input.value = invocation;
     input.dispatchEvent(new Event("input", { bubbles: true }));
     onCommandMode?.(false, detachedReply);
@@ -465,8 +473,12 @@ export function createCommandPicker({
   }
   function renderPopup(owner, heading, items, onChoose, { entityType = null, optional = false } = {}) {
     ensurePopup();
+    clearPopup();
     popup.classList.remove("is-browsing");
-    popup.replaceChildren(node("div", "command-popup-heading", heading));
+    const title = node("div", "command-popup-heading", heading);
+    popup.append(title);
+    const pending = [];
+    const avatarOptions = { assets, loadAsset, isCurrent: () => title.isConnected && popup?.contains(title) && !popup.hidden && owner.isConnected };
     const list = node("div", "command-popup-list");
     list.setAttribute("role", "listbox");
     list.id = "command-suggestion-listbox";
@@ -476,7 +488,8 @@ export function createCommandPicker({
       item.dataset.value = String(value.value ?? value.id ?? value.name ?? "");
       if (value.kind === "user") {
         const avatar = node("span", "command-entity-avatar");
-        const rendered = renderIdentityAvatar(value, { assets, loadAsset }, "command-avatar");
+        const rendered = renderIdentityAvatar(value, avatarOptions, "command-avatar");
+        pending.push(...rendered.pending);
         avatar.append(rendered.element);
         const presence = presenceDot(value);
         if (presence) avatar.append(presence);
@@ -507,15 +520,24 @@ export function createCommandPicker({
     owner.setAttribute("aria-controls", list.id);
     owner.setAttribute("aria-expanded", "true");
     popup.hidden = false;
+    popupPending = pending;
+    reportPendingMedia();
     positionPopup();
   }
   function clearPopup() {
-    if (popup) popup.hidden = true;
+    if (popup) {
+      popup.hidden = true;
+      popup.replaceChildren();
+    }
+    listbox?.setExpanded(false);
+    listbox = null;
+    popupPending = [];
     currentPopupOwner?.setAttribute("aria-expanded", "false");
     currentPopupOwner?.removeAttribute("aria-controls");
     currentPopupOwner?.removeAttribute("aria-activedescendant");
     currentPopupOwner = null;
     suggestionListbox = null;
+    reportPendingMedia();
   }
   function chooseValue(option, value) {
     const raw = value.value;
@@ -598,9 +620,19 @@ export function createCommandPicker({
     const restore = active?.dataset.option
       ? { option: active.dataset.option, start: active.selectionStart, end: active.selectionEnd }
       : null;
+    clearPopup();
     commandRow.replaceChildren();
     const app = catalog?.application;
-    if (app) commandRow.append(renderIdentityAvatar({ name: app.name, avatar: app.avatarAssetId, bot: true }, { assets, loadAsset }, "command-avatar command-leading-avatar").element);
+    const pending = [];
+    if (app) {
+      const rendered = renderIdentityAvatar({ name: app.name, avatar: app.avatarAssetId, bot: true }, {
+        assets, loadAsset, isCurrent: () => rendered.element.isConnected && commandRow?.contains(rendered.element),
+      }, "command-avatar command-leading-avatar");
+      pending.push(...rendered.pending);
+      commandRow.append(rendered.element);
+    }
+    composePending = pending;
+    reportPendingMedia();
     const chip = node("button", "command-chip", `/${draft.invocation}`);
     chip.type = "button";
     chip.dataset.commandChip = "true";
@@ -879,13 +911,9 @@ export function createCommandPicker({
     const newContext = snapshot?.context?.id || null;
     const newGeneration = snapshot?.context?.generation ?? null;
     if (reset || (contextId !== null && (contextId !== newContext || contextGeneration !== newGeneration || viewerId !== snapshot.viewerId))) {
-      if (draft) exitCommand();
-      clearAutocompleteState();
-      closeBrowse();
-      generation += 1;
-      inflightCatalog = null;
-      desiredCatalog = null;
-      catalog = null; catalogFingerprint = null; catalogState = "idle";
+      clear();
+      lastSnapshot = snapshot;
+      assets = snapshot?.assets || {};
     }
     contextId = newContext; contextGeneration = newGeneration; viewerId = snapshot?.viewerId ?? null;
     if (!canOpen(snapshot)) {
@@ -904,7 +932,13 @@ export function createCommandPicker({
       if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
       refreshStatus(); return;
     }
-    if (fingerprint === catalogFingerprint || inflightCatalog !== null) return;
+    if (fingerprint === catalogFingerprint) {
+      catalogState = catalog?.state === "unavailable" ? "failed" : "ready";
+      if (mode === "browsing") updateBrowse();
+      refreshStatus();
+      return;
+    }
+    if (inflightCatalog !== null) return;
     inflightCatalog = fingerprint;
     const requestGeneration = ++generation;
     const requestContext = contextId, requestRevisionFingerprint = fingerprint;
@@ -940,7 +974,7 @@ export function createCommandPicker({
       }
       if (mode === "browsing") updateBrowse();
     } catch (_) {
-      if (requestGeneration === generation) {
+      if (requestGeneration === generation && contextId === requestContext && desiredCatalog === requestRevisionFingerprint) {
         catalog = null; catalogFingerprint = null; catalogState = "failed";
         if (draft && draft.available !== false) { draft.available = false; renderCompose(); }
       }
@@ -989,6 +1023,9 @@ export function createCommandPicker({
     if (kind === "run_command" && submittedDraftIsCurrent && receipt?.settlement === "settled" && !receipt.rejected) {
       draft = null; mode = "closed"; clearAutocompleteState(); clearPopup(); contextBar?.remove(); contextBar = null;
       composer.replaceInput(input);
+      commandRow = null;
+      composePending = [];
+      reportPendingMedia();
       input.value = "";
       input.dispatchEvent(new Event("input", { bubbles: true }));
       onCommandMode?.(false, detachedReply); detachedReply = null;
@@ -1015,6 +1052,26 @@ export function createCommandPicker({
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
     clearAutocompleteState();
+    clearPopup();
+    popup?.remove();
+    popup = null;
+    commandRow?.remove();
+    commandRow = null;
+    contextBar?.remove();
+    contextBar = null;
+    composePending = [];
+    reportPendingMedia();
+    candidateQueries.clear();
+    query = null;
+    matches = [];
+    activeKey = null;
+    liveNote = "";
+    detachedReply = null;
+    lastSnapshot = null;
+    assets = {};
+    contextId = null;
+    contextGeneration = null;
+    viewerId = null;
     catalog = null; catalogState = "idle"; catalogFingerprint = null;
   }
   function isCatalogLoadingOpen() { return mode === "browsing" && catalogState === "loading"; }

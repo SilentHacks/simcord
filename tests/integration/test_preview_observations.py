@@ -9,7 +9,7 @@ import discord
 import pytest
 from aiohttp import ClientSession
 from discord import app_commands
-from preview_helpers import action_body, preview_headers
+from preview_helpers import action_body, control_key, preview_headers
 
 from simcord.backend.errors import SetupError
 
@@ -257,3 +257,27 @@ async def test_retained_result_scope_is_submission_owned(env, channel, alice, ch
             headers=preview_headers(preview, page.id),
         )
         assert result.status == 404
+
+
+@pytest.mark.asyncio
+async def test_candidate_replay_omits_result_after_source_deletion(env, channel, alice):
+    from jsonschema import Draft202012Validator
+
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.UserSelect(custom_id="retained-users"))
+    message = await env.bot.get_channel(channel.id).send("Published candidate source", view=view)
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        page = preview._python
+        key = control_key(page.snapshot, "retained-users")
+        body = action_body(page, "browse_candidates", 1, control_key=key, query="")
+        original = await preview._action(page.id, body)
+        assert original["result"]["candidate"]["type"] == "users"
+        await message.delete()
+        replay = await preview._action(page.id, body)
+        schema = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
+        Draft202012Validator({"$ref": "#/$defs/actionResponse", "$defs": schema["$defs"]}).validate(replay)
+        assert "result" not in replay
+        assert replay["requestId"] == original["requestId"]
+        assert replay["settlement"] == "settled"
+        assert replay["rejected"] is False

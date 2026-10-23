@@ -287,10 +287,11 @@ class _ActionOps:
             if action.kind == "browse_messages":
                 response["result"] = {**result, "messageIndex": published["messageIndex"]}
             else:
-                response["result"] = {
-                    "control_key": result["control_key"],
-                    "candidate": published["candidates"].get(result["control_key"]),
-                }
+                candidate = published["candidates"].get(result["control_key"])
+                if candidate is None:
+                    response.pop("result", None)
+                else:
+                    response["result"] = {"control_key": result["control_key"], "candidate": candidate}
         return response
 
     async def _action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:

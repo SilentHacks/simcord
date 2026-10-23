@@ -531,7 +531,8 @@ and two animation frames are ready, with no action or page intent still pending.
 resize/profile reconfiguration must finish before capture tooling treats the surface as ready.
 It does not mean the callback succeeded, the output is complete, or the capture is calibrated.
 A clean, acknowledged Close can be complete while not render-ready; terminal transport failures
-remain incomplete, and an unaccounted-for action remains uncertain.
+remain incomplete, and an unaccounted-for action remains uncertain. Inspector filters do not change
+these lifecycle outcomes.
 A matching late Close acknowledgement can confirm closure after a terminal read, without restoring
 the cleared private projection.
 `publishedRevision` is a settled publication;
@@ -542,9 +543,10 @@ and premium-icon loads stay bound to retained DOM owners across redraws; replaci
 discards its continuation. A retained owner's late failure still makes the surface incomplete.
 Switching viewers or restarting the bot invalidates asset ownership and recreates media rather than
 carrying playback or pending loads across authorization boundaries.
-Picker-avatar decoding also participates in readiness. Evicting a rendered surface pauses and
-releases its media; retained surfaces keep their pending work. The reported active control follows
-actual browser focus, including individual descendants within a compound control.
+Command browsing, composed-command, and entity-suggestion avatars all participate in readiness.
+Replacing or closing a picker releases only its obsolete pending work. Evicting a rendered surface
+pauses and releases its media; retained surfaces keep their pending work. The reported active control
+follows actual browser focus, including individual descendants within a compound control.
 
 `projectedMessageIds` mirrors `snapshot["timeline"]`; `visibleMessageIds` lists only IDs currently
 visible in the simulated viewport, not every projected window item. `geometry` reports measured app,
@@ -588,8 +590,10 @@ focuses an authorized outcome, and Back returns to the prior target and invoking
 exists. Receipts never auto-focus a page. A pre-admission rejection does not consume the sequence;
 the activity ledger holds at most 20 receipts and no message bodies, and references are reauthorized
 on every read. Diagnostics use catalog-owned codes and remediation, never raw request or exception
-text. Inspect the receipt and refresh after failures; never retry a consumed sequence to make a
-screenshot look successful.
+text. Validated diagnostic subjects retain affected-message navigation in the private UI, but are
+excluded from safe support reports. Inspect the receipt and refresh after failures; never retry a
+consumed sequence to make a screenshot look successful. Replayed query results that are no longer
+available are omitted; candidate descriptors never become an undocumented null variant.
 Actor dispatch is recorded at the successful backend mutation, before settlement. A later timeout
 or cancellation reports a dispatched, uncertain operation; refreshing and replaying its receipt
 must not repeat the mutation. Denied reads clear channel topics, history boundaries and send capability,
@@ -668,6 +672,8 @@ capability and context, and current command access and schema are checked before
 are returned. Catalogs are capped at 1,000 leaves and 2 MiB; an oversized catalog is marked `truncated`.
 If the manifest changes while a catalog read is pending, the browser installs only the desired
 catalog and fetches its replacement rather than remaining stuck with a discarded response.
+Returning to an already installed catalog restores it without another fetch; obsolete responses
+and failures cannot displace it.
 
 The two additional revision-bound action kinds are `autocomplete_command` and `run_command`. Both
 carry `command_id`, `path` and `schema_fingerprint`; autocomplete also carries `focused`, `value` and
