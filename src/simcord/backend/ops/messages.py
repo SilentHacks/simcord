@@ -98,6 +98,51 @@ class MessageMixin(BackendBase):
         system_metadata: SystemMessageMetadata | None = None,
         broadcast: bool = True,
     ) -> Message:
+        message = self.prepare_message(
+            channel_id,
+            author_id,
+            content,
+            embeds=embeds,
+            components=components,
+            attachments=attachments,
+            stickers=stickers,
+            flags=flags,
+            tts=tts,
+            allowed_mentions=allowed_mentions,
+            reference=reference,
+            interaction_metadata=interaction_metadata,
+            webhook_id=webhook_id,
+            author_name=author_name,
+            author_avatar=author_avatar,
+            poll=poll,
+            message_type=message_type,
+            system_metadata=system_metadata,
+        )
+        return self.commit_message(message, broadcast=broadcast)
+
+    def prepare_message(
+        self,
+        channel_id: int,
+        author_id: int,
+        content: str | None = "",
+        *,
+        embeds: list[dict[str, Any]] | None = None,
+        components: list[dict[str, Any]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        stickers: list[MessageSticker] | None = None,
+        flags: int = 0,
+        tts: bool = False,
+        allowed_mentions: AllowedMentions | None = None,
+        reference: dict[str, Any] | None = None,
+        interaction_metadata: dict[str, Any] | None = None,
+        webhook_id: int | None = None,
+        author_name: str | None = None,
+        author_avatar: str | None = None,
+        poll: Poll | None = None,
+        message_type: MessageType | None = None,
+        system_metadata: SystemMessageMetadata | None = None,
+    ) -> Message:
+        """Validate and derive a detached message without writes or events."""
         channel = self.get_channel(channel_id)
         reference = self.normalize_message_reference(channel_id, reference)
         snapshots: list[dict[str, Any]] = []
@@ -145,11 +190,7 @@ class MessageMixin(BackendBase):
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
             channel, author_id, mention_content, mention_policy, reply_author_id
         )
-        if system_metadata is None and self._auto_mod_blocks(channel, author_id, mention_content):
-            return Message(
-                id=self.snowflake(), channel_id=channel_id, author_id=author_id, content=content_value
-            )
-        message = Message(
+        return Message(
             id=self.snowflake(),
             channel_id=channel_id,
             author_id=author_id,
@@ -183,7 +224,21 @@ class MessageMixin(BackendBase):
             poll=poll,
             system_metadata=system_metadata,
         )
-        self.messages[channel_id][message.id] = message
+
+    def commit_message(self, message: Message, *, broadcast: bool = True) -> Message:
+        """Apply auto-mod, then install a prepared message and publish it."""
+        channel = self.get_channel(message.channel_id)
+        mention_content = f"{message.content}\n{component_mentions(message.components)}"
+        if message.system_metadata is None and self._auto_mod_blocks(
+            channel, message.author_id, mention_content
+        ):
+            return Message(
+                id=message.id,
+                channel_id=message.channel_id,
+                author_id=message.author_id,
+                content=message.content,
+            )
+        self.messages[channel.id][message.id] = message
         channel.last_message_id = message.id
         if channel.is_thread:
             channel.message_count += 1

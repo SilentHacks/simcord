@@ -6,9 +6,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import fields as dataclass_fields
 from typing import TYPE_CHECKING, Any, cast
 
+from ...components import ComponentValidationError, resolve_attachment_references
 from ...enums import ChannelType, MessageType
 from .. import errors, serializers
-from ..models import Channel, Overwrite, StageInstance, ThreadMetadata
+from ..models import Channel, Message, Overwrite, StageInstance, ThreadMetadata
 from .base import BackendBase
 
 if TYPE_CHECKING:
@@ -246,6 +247,74 @@ class ChannelMixin(BackendBase):
                 referenced_message_id=message_id,
             )
         return thread
+
+    def create_forum_post(
+        self,
+        forum_id: int,
+        name: str,
+        starter: Message,
+        *,
+        uploads: Iterable[tuple[str, bytes, str | None]] = (),
+        auto_archive_duration: int = 1440,
+        applied_tags: Iterable[int] = (),
+        broadcast: bool = True,
+    ) -> tuple[Channel, Message]:
+        """Prepare the mandatory starter and all forum state before publishing."""
+        backend = cast("Backend", self)
+        forum = self.get_channel(forum_id)
+        if forum.type != ChannelType.FORUM or forum.guild_id is None:
+            raise errors.cannot_execute_on_channel_type()
+        self.get_guild(forum.guild_id)
+        if not isinstance(name, str) or not 1 <= len(name) <= 100:
+            raise errors.invalid_form_body("name must be between 1 and 100 characters")
+        if auto_archive_duration not in (60, 1440, 4320, 10080):
+            raise errors.invalid_form_body("Invalid auto_archive_duration")
+        tags = list(applied_tags)
+        available = {int(tag["id"]) for tag in forum.available_tags if tag.get("id") is not None}
+        if len(tags) > 5 or any(tag not in available for tag in tags):
+            raise errors.invalid_form_body("applied_tags: Unknown or excessive tags")
+        if starter.channel_id != forum_id or starter.author_id != self.bot_user.id:
+            raise errors.invalid_form_body("Invalid forum starter")
+        # A reply to a message in the parent forum cannot become a reply in a
+        # newly created thread. Forward references retain their source channel.
+        if starter.reference is not None and starter.reference["type"] == 0:
+            raise errors.invalid_form_body("Forum starters cannot be replies")
+        if starter.reference is not None and starter.reference["type"] == 1:
+            self.require_permissions(forum.guild_id, starter.author_id, forum.id, "send_messages_in_threads")
+        upload_list = list(uploads)
+        if len(upload_list) != len(starter.attachments) or any(
+            not isinstance(filename, str)
+            or not isinstance(data, bytes)
+            or (description is not None and not isinstance(description, str))
+            for filename, data, description in upload_list
+        ):
+            raise errors.invalid_form_body("Invalid forum uploads")
+        try:
+            resolve_attachment_references(starter.components, starter.attachments)
+        except (ComponentValidationError, TypeError, ValueError) as exc:
+            raise errors.invalid_form_body(str(exc)) from exc
+
+        thread = self.create_thread(
+            forum_id,
+            name,
+            starter.author_id,
+            auto_archive_duration=auto_archive_duration,
+            applied_tags=tags,
+            broadcast=False,
+        )
+        attachments = [
+            self.cdn.store_attachment(self.snowflake(), thread.id, filename, data, description)
+            for filename, data, description in upload_list
+        ]
+        starter.channel_id = thread.id
+        starter.attachments = attachments
+        starter.components = resolve_attachment_references(starter.components, attachments)
+        backend.commit_message(starter, broadcast=False)
+        forum.last_message_id = thread.id
+        self.announce_thread_create(thread)
+        if broadcast:
+            backend.announce_message_create(starter)
+        return thread, starter
 
     def announce_thread_create(self, thread: Channel) -> None:
         payload = cast("dict[str, Any]", serializers.channel_payload(self, thread))

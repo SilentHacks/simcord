@@ -8,6 +8,21 @@ from .base import BackendBase
 
 
 class InviteMixin(BackendBase):
+    def set_vanity_url(self, guild_id: int, code: str) -> None:
+        """Install a fixture-owned vanity invite without an API invite event."""
+        guild = self.get_guild(guild_id)
+        if not guild.channel_ids:
+            raise errors.SetupError("set_vanity_url needs a channel; create one first")
+        invite = Invite(
+            code=code,
+            guild_id=guild_id,
+            channel_id=guild.channel_ids[0],
+            inviter_id=self.bot_user.id,
+            created_at=self.now_iso(),
+        )
+        guild.vanity_url_code = code
+        self.invites[code] = invite
+
     def create_invite(
         self,
         channel_id: int,

@@ -15,9 +15,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..backend import Backend
+from ..backend import Backend, errors
 from ..backend.errors import BackendError
-from ..backend.models import Channel
+from ..backend.models import Channel, Message
 from ..types import HttpLogEntry
 
 
@@ -157,6 +157,16 @@ class RequestContext:
     def require_guild_permissions(self, guild_id: int, *names: str) -> None:
         """Check the bot has guild-level ``names`` (no channel context)."""
         self.backend.require_permissions(guild_id, self.backend.bot_user.id, None, *names)
+
+    def require_message(self, channel_id: int, message_id: int, *names: str) -> Message:
+        """Authorize a bot-authenticated channel message before exposing or mutating it."""
+        self.require_channel_permissions(channel_id, *names)
+        message = self.backend.get_message(channel_id, message_id)
+        # Ephemeral messages are available only through their interaction token,
+        # never the bot-authenticated channel message API.
+        if message.is_ephemeral:
+            raise errors.unknown_message()
+        return message
 
     def body(self) -> dict[str, Any]:
         return self.json if isinstance(self.json, dict) else {}

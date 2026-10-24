@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from ._dpy_internals import resource_belongs_to_states
 from .backend.errors import SetupError
 from .backend.models import (
     AuditLogEntry,
@@ -326,7 +327,10 @@ class GuildHandle:
         category: ChannelHandle | None = None,
     ) -> ChannelHandle:
         model_overwrites = []
+        if category is not None:
+            _require_handle(self._env, category, guild_id=self.id)
         for target, overwrite in (overwrites or {}).items():
+            _require_handle(self._env, target, guild_id=self.id)
             allow, deny = overwrite.pair()
             model_overwrites.append(
                 Overwrite(
@@ -353,6 +357,8 @@ class GuildHandle:
         user_limit: int = 0,
         bitrate: int = 64000,
     ) -> ChannelHandle:
+        if category is not None:
+            _require_handle(self._env, category, guild_id=self.id)
         channel = self._env.backend.create_channel(
             self.id,
             name,
@@ -364,12 +370,16 @@ class GuildHandle:
         return ChannelHandle(self._env, self, channel)
 
     def create_stage_channel(self, name: str, *, category: ChannelHandle | None = None) -> ChannelHandle:
+        if category is not None:
+            _require_handle(self._env, category, guild_id=self.id)
         channel = self._env.backend.create_channel(
             self.id, name, type=ChannelType.STAGE_VOICE, parent_id=category.id if category else None
         )
         return ChannelHandle(self._env, self, channel)
 
     def create_news_channel(self, name: str, *, category: ChannelHandle | None = None) -> ChannelHandle:
+        if category is not None:
+            _require_handle(self._env, category, guild_id=self.id)
         channel = self._env.backend.create_channel(
             self.id, name, type=ChannelType.NEWS, parent_id=category.id if category else None
         )
@@ -395,6 +405,8 @@ class GuildHandle:
         location: str | None = None,
     ) -> ScheduledEvent:
         """Create a scheduled event directly (omnipotent setup)."""
+        if channel is not None:
+            _require_handle(self._env, channel, guild_id=self.id)
         return self._env.backend.create_scheduled_event(
             self.id,
             name=name,
@@ -416,6 +428,7 @@ class GuildHandle:
         under test. This is the test-driven counterpart to the bot creating and
         executing a webhook itself over the API.
         """
+        _require_handle(self._env, channel, guild_id=self.id)
         webhook = self._env.backend.create_webhook(channel.id, name, self._env.backend.bot_user.id)
         return WebhookHandle(self._env, webhook)
 
@@ -452,10 +465,9 @@ class GuildHandle:
         """Seed a typed service message with real identities, not arbitrary content."""
         if channel._env is not self._env or channel.guild is None or channel.guild.id != self.id:
             raise SetupError("system message channel must belong to this guild and environment")
-        if getattr(author, "_env", None) is not self._env:
-            raise SetupError("system message author must belong to this environment")
-        if recipient is not None and getattr(recipient, "_env", None) is not self._env:
-            raise SetupError("system message recipient must belong to this environment")
+        _require_handle(self._env, author, guild_id=self.id)
+        if recipient is not None:
+            _require_handle(self._env, recipient, guild_id=self.id)
         if target_channel is not None and (
             target_channel._env is not self._env
             or target_channel.guild is None
@@ -490,6 +502,13 @@ class GuildHandle:
         channel handles to allow (``True``) / deny (``False``). The bot then
         reads these back via ``AppCommand.fetch_permissions``.
         """
+        if isinstance(command, discord.app_commands.AppCommand):
+            if not resource_belongs_to_states(command, self._env._message_states):
+                raise SetupError("That command must belong to this environment")
+            if command.guild_id is not None and command.guild_id != self.id:
+                raise SetupError("That command must belong to this guild")
+        for target in permissions:
+            _require_handle(self._env, target, guild_id=self.id)
         command_id = command if isinstance(command, int) else command.id
         entries = [
             {
@@ -523,17 +542,7 @@ class GuildHandle:
         ``code`` pointing at the guild's first channel — the populated path is
         genuine modelled state a test can read back, not a constant fake.
         """
-        if not self._guild.channel_ids:
-            raise SetupError("set_vanity_url needs a channel; create one first")
-        backend = self._env.backend
-        self._guild.vanity_url_code = code
-        backend.invites[code] = Invite(
-            code=code,
-            guild_id=self.id,
-            channel_id=self._guild.channel_ids[0],
-            inviter_id=backend.bot_user.id,
-            created_at=backend.now_iso(),
-        )
+        self._env.backend.set_vanity_url(self.id, code)
 
     def create_role(
         self, name: str, *, permissions: discord.Permissions | None = None, **fields: Any
@@ -553,6 +562,10 @@ class GuildHandle:
     ) -> MemberActor:
         from .actors import MemberActor
 
+        _require_handle(self._env, user)
+        for role in roles:
+            _require_handle(self._env, role, guild_id=self.id)
+
         self._env.backend.add_member(
             self.id,
             user.id,
@@ -565,9 +578,11 @@ class GuildHandle:
 
     def remove_member(self, member: MemberActor | UserHandle) -> None:
         """The member leaves the guild (dispatches the leave event)."""
+        _require_handle(self._env, member, guild_id=self.id)
         self._env.backend.remove_member(self.id, member.id)
 
     def get_ban(self, user: UserHandle | MemberActor) -> dict[str, Any] | None:
+        _require_handle(self._env, user, guild_id=self.id)
         if user.id not in self._guild.bans:
             return None
         return {"user": user, "reason": self._guild.bans[user.id]}
@@ -616,6 +631,12 @@ class ChannelHandle:
         With ``viewer=``, ephemeral messages not addressed to that user are
         hidden — exactly what that user would see in their client.
         """
+        if viewer is not None:
+            from .backend.access import can_access_channel
+
+            _require_handle(self._env, viewer, guild_id=self.guild.id if self.guild else None)
+            if not can_access_channel(self._env, self.id, viewer, history=True):
+                raise SetupError("That viewer cannot read this channel's history")
         out = []
         viewer_id = viewer.id if viewer is not None else None
         for message in sorted(self._env.backend.messages.get(self.id, {}).values(), key=lambda m: m.id):
@@ -634,6 +655,16 @@ class ChannelHandle:
 
     def __repr__(self) -> str:
         return f"<ChannelHandle id={self.id} name={self.name!r}>"
+
+
+def _require_handle(env: Env, handle: Any, *, guild_id: int | None = None) -> None:
+    """Validate a public handle before using its identity in this world."""
+    if getattr(handle, "_env", None) is not env:
+        raise SetupError("That handle must belong to this environment")
+    if guild_id is not None and not isinstance(handle, UserHandle):
+        guild = getattr(handle, "guild", None)
+        if guild is None or guild.id != guild_id or guild._env is not env:
+            raise SetupError("That handle must belong to this guild")
 
 
 def _guard_builder_operation(method: Any) -> Any:

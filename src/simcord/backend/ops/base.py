@@ -15,7 +15,8 @@ from typing import Any
 
 from ..._clock import Clock
 from ...types import HttpLogEntry
-from .. import errors, permissions
+from .. import errors, permissions, serializers
+from ..access import channel_accessible
 from ..cdn import CdnStore
 from ..models import (
     SKU,
@@ -129,6 +130,12 @@ class BackendBase:
         self.users[user.id] = user
         return user
 
+    def edit_bot_profile(self, username: str) -> User:
+        """Update the bot account and publish its new identity."""
+        self.bot_user.name = username
+        self.emit("USER_UPDATE", dict(serializers.user_payload(self.bot_user)))
+        return self.bot_user
+
     def store_attachments(
         self, channel_id: int, attachments: Sequence[tuple[str, bytes]]
     ) -> list[dict[str, Any]]:
@@ -182,6 +189,8 @@ class BackendBase:
         channel = None
         if channel_id is not None:
             channel = self.get_channel(channel_id)
+            if channel.guild_id != guild_id:
+                raise errors.missing_access()
             # Threads inherit their parent channel's overwrites; resolve to it.
             parent_id = channel.permission_channel_id()
             if parent_id != channel_id:
@@ -191,11 +200,16 @@ class BackendBase:
     def require_permissions(
         self, guild_id: int | None, user_id: int, channel_id: int | None, *names: str
     ) -> None:
+        if channel_id is not None:
+            channel = self.get_channel(channel_id)
+            if channel.guild_id != guild_id or not channel_accessible(self, channel_id, user_id):
+                raise errors.missing_access()
         if guild_id is None:  # DMs: no guild permissions apply
             return
-        perms = self.compute_permissions(guild_id, user_id, channel_id)
-        if channel_id is not None and not perms & permissions.flag("view_channel"):
+        guild = self.get_guild(guild_id)
+        if user_id not in guild.members:
             raise errors.missing_access()
+        perms = self.compute_permissions(guild_id, user_id, channel_id)
         for name in names:
             if not perms & permissions.flag(name):
                 raise errors.missing_permissions()

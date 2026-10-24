@@ -22,7 +22,7 @@ from discord.http import HTTPClient
 from discord.interactions import _InteractionMessageState
 from discord.state import ChunkRequest, ConnectionState
 from discord.ui import view as _view
-from discord.webhook.async_ import _WebhookState, async_context
+from discord.webhook.async_ import AsyncWebhookAdapter, _WebhookState, async_context
 
 from .backend.errors import SetupError
 
@@ -87,12 +87,33 @@ def verify() -> None:
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
+    for name in (
+        "create_interaction_response",
+        "get_original_interaction_response",
+        "edit_original_interaction_response",
+        "delete_original_interaction_response",
+        "execute_webhook",
+        "get_webhook_message",
+        "edit_webhook_message",
+        "delete_webhook_message",
+        "fetch_webhook",
+        "fetch_webhook_with_token",
+        "edit_webhook",
+        "edit_webhook_with_token",
+        "delete_webhook",
+        "delete_webhook_with_token",
+    ):
+        helper = getattr(AsyncWebhookAdapter, name, None)
+        if not callable(helper) or not callable(getattr(helper, "__get__", None)):
+            problems.append(f"AsyncWebhookAdapter.{name}")
     run_event_code = getattr(discord.Client._run_event, "__code__", None)
     if run_event_code is None or "coro" not in run_event_code.co_varnames:  # pragma: no cover
         problems.append("discord.Client._run_event no longer exposes its handler coroutine")
     client_probe = discord.Client(intents=discord.Intents.none())
     if not hasattr(client_probe, "_listeners"):  # pragma: no cover
         problems.append("discord.Client no longer exposes _listeners")
+    if not hasattr(client_probe.http, "_HTTPClient__session"):
+        problems.append("HTTPClient.__session")
     store_probe = _view.ViewStore(client_probe._connection)
     for attr in ("_views", "_modals"):
         if not hasattr(store_probe, attr):  # pragma: no cover
@@ -475,6 +496,13 @@ def message_belongs_to_states(message: discord.Message, states: Collection[Any])
     return state in states
 
 
+def resource_belongs_to_states(
+    resource: discord.app_commands.AppCommand | discord.ScheduledEvent, states: Collection[Any]
+) -> bool:
+    """Check SDK command/event provenance before their IDs enter builder or actor operations."""
+    return resource._state in states
+
+
 def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:
     """Wake a member-chunk request whose guild vanished before it was answered.
 
@@ -494,6 +522,17 @@ def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:
     if request is not None and (nonce is None or request.nonce == nonce):
         request.done()
         requests.pop(guild_id, None)
+
+
+def initialize_http_session(http: HTTPClient) -> None:
+    """Provide the session captured by SDK interactions and state-backed webhooks."""
+    http._HTTPClient__session = None  # type: ignore[assignment]
+
+
+def bind_webhook_helper(adapter: Any, name: str) -> Any:
+    """Run the real SDK helper against the fake adapter's request implementation."""
+    helper = getattr(AsyncWebhookAdapter, name)
+    return helper.__get__(adapter, type(adapter))
 
 
 def install_http(client: discord.Client, http: HTTPClient) -> None:
