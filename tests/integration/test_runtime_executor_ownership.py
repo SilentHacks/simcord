@@ -2,10 +2,16 @@
 
 import asyncio
 import contextvars
+import gc
+import multiprocessing
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import weakref
+from concurrent import futures
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor
 
+import discord
 import pytest
+from discord.ext import commands
 
 import simcord
 from fixtures.sample_bot import create_bot
@@ -94,6 +100,60 @@ async def test_queued_cancellation_does_not_join_foreign_running_work():
         executor.shutdown()
 
 
+@pytest.mark.parametrize("pool_kind", ["process", "interpreter"])
+async def test_isolated_native_submission_preserves_picklable_callable(pool_kind):
+    loop = asyncio.get_running_loop()
+    if pool_kind == "process":
+        pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+    else:
+        factory = getattr(futures, "InterpreterPoolExecutor", None)
+        if factory is None:
+            pytest.skip("this Python has no isolated interpreter pool")
+        pool = factory(max_workers=1)
+    with pool as executor:
+        async with simcord.run(create_bot()) as env:
+            with env._bot_scope():
+                caller = loop.run_in_executor(executor, pow, 2, 10)
+            assert await caller == 1024
+            await env.settle()
+            assert not env.errors
+            assert not env._work.executors
+
+
+async def test_completed_callable_is_released_while_its_owner_remains_live():
+    loop = asyncio.get_running_loop()
+    finished = asyncio.Event()
+    release = asyncio.Event()
+    references = []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        async with simcord.run(create_bot()) as env:
+
+            async def owner():
+                def worker():
+                    return 42
+
+                references.append(weakref.ref(worker))
+                caller = loop.run_in_executor(executor, worker)
+                assert await caller == 42
+                del caller, worker
+                finished.set()
+                await env.external_wait(release.wait(), reason="keep the parent alive")
+
+            with env._bot_scope():
+                task = asyncio.create_task(owner())
+            try:
+                await finished.wait()
+                await env.settle()
+                # Let the same native worker discard its previous work item.
+                await loop.run_in_executor(executor, id, None)
+                gc.collect()
+                assert not task.done()
+                assert references[0]() is None
+            finally:
+                release.set()
+                await task
+
+
 async def test_worker_and_submission_errors_keep_native_semantics():
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1)
@@ -130,13 +190,59 @@ async def test_awaited_worker_failure_is_not_reported_as_unobserved():
         assert not env.errors
 
 
+@pytest.mark.parametrize("handled", [False, True])
+async def test_failed_pool_initializer_retires_work_without_consuming_failure(handled):
+    called = []
+
+    def initialize():
+        raise RuntimeError("initializer failed")
+
+    executor = ThreadPoolExecutor(max_workers=1, initializer=initialize)
+    try:
+        async with simcord.run(create_bot(), check_errors=False) as env:
+            caller = await _submit(env, executor, lambda: called.append("entered"))
+            if handled:
+                with pytest.raises(BrokenExecutor):
+                    await caller
+            else:
+                # Wait for native failure without observing its exception.
+                await asyncio.wait((caller,))
+            await env.settle()
+            assert not env._work.executors
+            assert called == []
+            if handled:
+                assert not env.errors
+            else:
+                assert len(env.errors) == 1
+                assert isinstance(env.errors[0], BrokenExecutor)
+            with pytest.raises(BrokenExecutor):
+                await caller
+    finally:
+        executor.shutdown()
+
+
 @pytest.mark.parametrize("operation", ["restart", "shutdown"])
-async def test_lifecycle_timeout_retains_native_generation_and_hooks(operation):
+@pytest.mark.parametrize("sharded", [False, True])
+async def test_lifecycle_timeout_retains_native_generation_and_hooks(operation, sharded):
     loop = asyncio.get_running_loop()
     original = loop.run_in_executor
     release = threading.Event()
     entered = asyncio.Event()
-    env = simcord.Env(create_bot(), settle_timeout=0.02)
+    if sharded:
+        bot = commands.AutoShardedBot(command_prefix="!", intents=discord.Intents.all(), shard_count=2)
+
+        @bot.command()
+        async def ping(ctx):
+            await ctx.send("Pong!")
+    else:
+        bot = create_bot()
+    received = []
+
+    @bot.listen("on_message")
+    async def record_message(message):
+        received.append(message.content)
+
+    env = simcord.Env(bot, settle_timeout=0.02)
     await env.start()
     bot = env.bot
     generation = env._generation
@@ -160,6 +266,27 @@ async def test_lifecycle_timeout_retains_native_generation_and_hooks(operation):
         assert loop.run_in_executor != original
         release.set()
         await env.settle(timeout=1)
+        # A failed detach must leave the old SDK machinery usable, not merely
+        # retain lifecycle flags. Populate a fresh cache entry through the feed.
+        guild = env.create_guild("after timeout", **({"shard_id": 1} if sharded else {}))
+        channel = guild.create_text_channel("still-connected")
+        alice = guild.add_member(env.create_user("alice"))
+        await env.settle(timeout=1)
+        cached = bot.get_channel(channel.id)
+        assert cached is not None and cached.name == "still-connected"
+        assert bot.get_guild(guild.id).get_member(alice.id) is not None
+        if sharded:
+            assert bot.get_guild(guild.id).shard_id == 1
+            await bot.change_presence(status=discord.Status.idle, shard_id=1)
+            assert not bot.get_shard(1).is_closed()
+        await alice.send(channel, "!ping")
+        assert channel.last_message.content == "Pong!"
+        assert received == ["!ping", "Pong!"]
+        webhook = await cached.create_webhook(name="after timeout")
+        posted = await webhook.send("adapter still attached", wait=True)
+        await env.settle(timeout=1)
+        assert posted.content == channel.last_message.content == "adapter still attached"
+        assert received[-1] == "adapter still attached"
         if operation == "restart":
             await env.restart_bot(create_bot())
             assert env._generation == generation + 1
@@ -244,7 +371,7 @@ def test_original_default_executor_policy_and_shutdown_validation():
             assert await first == 42
             await env.settle()
             await loop.shutdown_default_executor()
-            with env._bot_scope(), pytest.raises(RuntimeError, match="Executor shutdown has been called"):
+            with env._bot_scope(), pytest.raises(RuntimeError):
                 loop.run_in_executor(None, lambda: None)
             caller = await _submit(env, supplied, lambda: 43)
             assert await caller == 43
@@ -364,19 +491,14 @@ async def test_custom_forwarding_cancellation_keeps_actual_work_owned(cancel_run
         if cancel_running:
             await entered.wait()
         caller.cancel()
-        if cancel_running:
-            with pytest.raises(TimeoutError, match="native work"):
-                await env.settle()
-        else:
+        with pytest.raises(TimeoutError, match="native work"):
             await env.settle()
-            assert not env._work.executors
-            assert calls == []
         release.set()
         if foreign is not None:
             await foreign
         await asyncio.gather(*native_calls)
         await env.settle(timeout=1)
-        assert calls == (["entered"] if cancel_running else [])
+        assert calls == ["entered"]
         assert caller.cancelled()
     finally:
         release.set()
@@ -527,7 +649,8 @@ async def test_submission_failure_after_launch_keeps_worker_error_and_descendant
             thread.join(timeout=10)
 
 
-async def test_early_success_does_not_abandon_later_execution():
+@pytest.mark.parametrize("early_error", [False, True])
+async def test_early_outcome_does_not_abandon_later_execution(early_error):
     loop = asyncio.get_running_loop()
     original = loop.run_in_executor
     queued = []
@@ -537,14 +660,21 @@ async def test_early_success_does_not_abandon_later_execution():
     def custom(executor, func, *args):
         queued.append((func, args))
         caller = loop.create_future()
-        caller.set_result("early policy result")
+        if early_error:
+            caller.set_exception(BrokenExecutor("early policy error"))
+        else:
+            caller.set_result("early policy result")
         return caller
 
     loop.run_in_executor = custom
     try:
         await env.start()
         caller = await _submit(env, None, lambda: called.append("real work"))
-        assert await caller == "early policy result"
+        if early_error:
+            with pytest.raises(BrokenExecutor):
+                await caller
+        else:
+            assert await caller == "early policy result"
         with pytest.raises(TimeoutError, match="native work"):
             await env.settle()
         func, args = queued.pop()

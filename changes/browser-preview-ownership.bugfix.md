@@ -5,3 +5,7 @@ Give browser actions, assets, catalog observations, File-bearing drafts and rend
 Preserve supported native SDK overwrite targets while rejecting foreign state and cross-guild roles/members; apply existing-emoji reaction permissions consistently in actors, REST and preview controls. Keep newer Reply intents when older sends settle, reconcile refreshed entity selections, and restore Escape after applying modal choices. Verify captured animation content and timing without depending on unrelated avatar antialiasing.
 
 Move selection-state reporting into its owner, leaving the bootstrap to assemble read-only status.
+
+Observe native executor submission and completion independently of failed or cancelled caller facades, including initializer rejection and picklable process-pool calls. Preserve live gateway, shard and webhook machinery after a native-work shutdown timeout. Keep deleted session-owned grants out of later baselines without weakening receipt checks. Preserve earlier bot avatars when a human DM message is focused or captured, while retaining live revocation checks; construct uncached SDK messages with native partial channels.
+
+Release successful executor callables without retaining them until long-lived parent tasks finish; preserve unobserved-error handling.

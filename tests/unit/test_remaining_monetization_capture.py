@@ -501,6 +501,117 @@ async def test_authenticated_application_mismatch_stops_before_mutation(context)
     assert ctx.app == {"id": "100"}
 
 
+async def test_repeated_resume_keeps_deleted_owned_grants_out_of_preexisting_baseline(context):
+    module, ctx = context
+    parser = module.build_parser()
+    original = parser.parse_args(["--guild", "300", "--user", "200"])
+    ctx.state["config"] = {
+        key: value for key, value in vars(original).items() if key not in {"resume", "output", "cleanup_only"}
+    }
+    ctx.state["manual_live_entitlement_ids"] = ["700"]
+    ctx.state["manual_test_purchase_ids"] = ["701"]
+    rows = [{"id": eid, "deleted": True} for eid in ("600", "700", "701")]
+    operations = []
+
+    async def endpoint(request):
+        operations.append((request.method, request.path))
+        if request.path.endswith("/skus"):
+            return web.json_response(
+                [
+                    {"id": "400", "name": "Parity Subscription A", "type": 5, "flags": 256},
+                    {"id": "401", "name": "Parity Subscription B", "type": 5, "flags": 256},
+                ]
+            )
+        if request.method == "POST":
+            row = {"id": "500", "sku_id": "400", "application_id": "100", "user_id": "200", "type": 8}
+            rows.append(row)
+            return web.json_response(row)
+        if request.method == "DELETE":
+            assert request.path == ctx.base + "/500"
+            rows[-1] = {**rows[-1], "deleted": True}
+            return web.Response(status=204)
+        assert request.method == "GET" and request.path == ctx.base
+        if request.query.get("exclude_deleted") == "false":
+            assert request.query["exclude_ended"] == "false"
+            return web.json_response(rows)
+        return web.json_response([])
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        assert await module.prepare_capture(ctx)
+        await ctx.create("fixture.resume.create", {"id": "400"})
+        original_owned = dict(ctx.state["owned_entitlements"]["500"])
+        for _ in range(2):
+            args = parser.parse_args(["--resume", str(ctx.evidence.directory)])
+            ctx.state, _, _, config = module.prepare_local(parser, args, {"--resume"})
+            assert config.resume and not config.cleanup_only
+            await ctx.cleanup()
+            assert await module.prepare_capture(ctx)
+            assert ctx.state["baseline_ids"] == ["600", "700", "701"]
+            assert ctx.state["owned_entitlements"]["500"] == {**original_owned, "deleted": True}
+            module.require_entitlement_ownership(ctx.evidence.directory, ctx.state, "100", "500")
+
+        args = parser.parse_args(["--resume", str(ctx.evidence.directory), "--cleanup-only"])
+        ctx.state, _, _, config = module.prepare_local(parser, args, {"--resume", "--cleanup-only"})
+        assert isinstance(config, module.CleanupConfig)
+        await ctx.cleanup()
+        assert ctx.state["manual_live_entitlement_ids"] == ["700"]
+        assert ctx.state["manual_test_purchase_ids"] == ["701"]
+        assert ctx.state["owned_entitlements"]["500"] == {**original_owned, "deleted": True}
+        for eid in ("600", "700", "701"):
+            with pytest.raises(RuntimeError, match="positive create receipt"):
+                await ctx.remove("cleanup.unowned", eid)
+        assert [method for method, _ in operations if method != "GET"] == ["POST", "DELETE"]
+
+
+@pytest.mark.parametrize(
+    "conflict", ["missing", "bad_ref", "wrong_owner", "baseline", "manual_live", "manual_test"]
+)
+async def test_deleted_owned_history_with_invalid_proof_still_blocks_recovery(context, conflict):
+    module, ctx = context
+    parser = module.build_parser()
+    original = parser.parse_args(["--guild", "300", "--user", "200"])
+    ctx.state["config"] = {
+        key: value for key, value in vars(original).items() if key not in {"resume", "output", "cleanup_only"}
+    }
+    operations = []
+
+    async def endpoint(request):
+        operations.append(request.method)
+        if request.method == "POST":
+            return web.json_response(
+                {"id": "500", "sku_id": "400", "application_id": "100", "user_id": "200", "type": 8}
+            )
+        return web.Response(status=204)
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        await ctx.create("fixture.proof.create", {"id": "400"})
+        await ctx.remove("fixture.proof.delete", "500")
+        owned = ctx.state["owned_entitlements"]["500"]
+        if conflict == "missing":
+            del owned["create_ref"]
+        elif conflict == "bad_ref":
+            owned["create_ref"] = "rest.jsonl:2"  # A delete receipt is not creation proof.
+        elif conflict == "wrong_owner":
+            owned["owner_id"] = "201"
+        else:
+            key = {
+                "baseline": "baseline_ids",
+                "manual_live": "manual_live_entitlement_ids",
+                "manual_test": "manual_test_purchase_ids",
+            }[conflict]
+            ctx.state[key] = ["500"]
+        ctx.save()
+        saved = (ctx.evidence.directory / "manifest.json").read_bytes()
+        for flags in ([], ["--cleanup-only"]):
+            args = parser.parse_args(["--resume", str(ctx.evidence.directory), *flags])
+            with pytest.raises(SystemExit):
+                module.prepare_local(parser, args, {"--resume", *flags})
+            assert (ctx.evidence.directory / "manifest.json").read_bytes() == saved
+        assert operations == ["POST", "DELETE"]
+
+
 async def test_cleanup_configuration_ignores_fresh_source_and_checkout_prerequisites(context):
     module, ctx = context
     parser = module.build_parser()

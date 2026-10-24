@@ -372,7 +372,7 @@ class _AssetOps:
             except BackendError as exc:
                 raise SetupError("asset is unavailable") from exc
             if channel.guild_id is None:
-                member_allowed = user_id in channel.recipient_ids
+                member_allowed = user_id == self.env.backend.bot_user.id or user_id in channel.recipient_ids
             else:
                 guild = self.env.backend.guilds.get(channel.guild_id)
                 member_allowed = guild is not None and user_id in guild.members

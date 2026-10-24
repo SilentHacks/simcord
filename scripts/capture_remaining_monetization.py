@@ -937,7 +937,13 @@ async def prepare_capture(ctx):
     baseline = await ctx.walk("setup.baseline", {"exclude_deleted": "false", "exclude_ended": "false"})
     if baseline is None:
         raise RuntimeError("Cannot establish preexisting IDs safely; no mutation attempted.")
-    state["baseline_ids"] = sorted(set(state.get("baseline_ids", [])) | {row["id"] for row in baseline})
+    owned_ids = state["owned_entitlements"]
+    for eid in owned_ids:
+        require_entitlement_ownership(ctx.evidence.directory, state, app["id"], eid)
+    # Deleted session grants remain owned history, not preexisting resources on resume.
+    state["baseline_ids"] = sorted(
+        set(state.get("baseline_ids", [])) | {row["id"] for row in baseline if row["id"] not in owned_ids}
+    )
     ctx.save()
     for owner in (
         ()

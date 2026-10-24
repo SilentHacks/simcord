@@ -263,3 +263,33 @@ async def test_latest_result_retains_its_asset_sources_until_supersession(env, c
         assert (await preview._prepare_asset(page.id, asset_id, download=True))[1] == png_bytes()
         await preview._action(page.id, action_body(page, "refresh", 2))
         assert asset_id not in page.assets
+
+
+@pytest.mark.asyncio
+async def test_dm_bot_navigation_avatar_survives_human_focus_and_capture(env, alice, tmp_path):
+    user = alice.user
+    await user.send_dm("Open the DM")
+    channel = user.dm_channel
+    native_channel = await env.bot.fetch_channel(channel.id)
+    bot_message = await native_channel.send("Earlier bot message")
+    human = await user.send_dm("Focused human message")
+    async with env.preview(channel, viewers=[user]) as preview:
+        await preview.show(human)
+        page = preview._python
+        frozen = deepcopy(page.snapshot)
+        assert str(bot_message.id) not in frozen["messages"]
+        row = next(item for item in frozen["messageIndex"] if item["id"] == str(bot_message.id))
+        avatar_id = row["author"]["avatar"]
+        observed = preview._page_payload(page)
+        observed_row = next(item for item in observed["messageIndex"] if item["id"] == str(bot_message.id))
+        assert observed_row["author"]["avatar"] == avatar_id
+        assert page.snapshot == frozen
+        capture = await preview.screenshot(tmp_path / "dm.png", target=human)
+        assert capture.complete and capture.target_id == str(human.id)
+        env.backend.delete_channel(channel.id)
+        with pytest.raises(SetupError):
+            preview._authorize_asset(page, avatar_id, content=False)
+        revoked = tmp_path / "revoked.png"
+        with pytest.raises(SetupError):
+            await preview.screenshot(revoked, target=human.id, allow_incomplete=True)
+        assert not revoked.exists()

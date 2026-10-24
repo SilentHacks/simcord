@@ -411,18 +411,6 @@ class Env:
 
     async def _detach_bot(self) -> None:
         """Detach bot machinery and cancel bot-owned work only."""
-        if self._gateway_feed is not None:
-            try:
-                self.backend.subscribers.remove(self._gateway_feed)
-            except ValueError:
-                pass
-            self._gateway_feed = None
-        if isinstance(self.bot, discord.AutoShardedClient):
-            _dpy_internals.clear_shards(self.bot)
-        if self._adapter_token is not None:
-            _dpy_internals.reset_webhook_adapter(self._adapter_token)
-            self._adapter_token = None
-        self._webhook_adapter = None
         current = _current_task()
         assert self._loop is not None or not self._work.executors
         deadline = self._loop.time() + self.settle_timeout if self._loop is not None else 0.0
@@ -461,6 +449,18 @@ class Env:
                     self._record_error(error)
             await asyncio.sleep(0)
 
+        if self._gateway_feed is not None:
+            try:
+                self.backend.subscribers.remove(self._gateway_feed)
+            except ValueError:
+                pass
+            self._gateway_feed = None
+        if isinstance(self.bot, discord.AutoShardedClient):
+            _dpy_internals.clear_shards(self.bot)
+        if self._adapter_token is not None:
+            _dpy_internals.reset_webhook_adapter(self._adapter_token)
+            self._adapter_token = None
+        self._webhook_adapter = None
         for task, record in list(self._work.tasks.items()):
             if task.done():
                 assert self._loop is not None

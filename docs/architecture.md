@@ -66,7 +66,9 @@ test ──► builders/actors ──► virtual backend (single source of truth
 `Env` remains the lifecycle and world owner. `_runtime.py` pairs hook installation
 with restoration and owns task, callback, executor and external-wait records.
 `_settlement.py` classifies those records through a narrow settlement view.
-Executor completion is separate from cancellation of the caller's Future.
+Executor completion is separate from cancellation of the caller's Future;
+paired hooks observe actual owned standard-library pool submissions and are
+restored after the last Env detaches.
 `_modal.py` handles modal validation and serialization through the existing actor
 permission checks and interaction dispatch. Backend/ID access facts are shared
 below Env-bound viewer adapters; bot, human, fixture and token authority remain

@@ -8,8 +8,11 @@ import inspect
 import weakref
 from _thread import LockType
 from collections.abc import Callable
+from concurrent import futures
+from concurrent.futures import Future as NativeFuture
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from functools import partial
+from functools import partial, wraps
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -31,6 +34,13 @@ _BOT_SCOPE: contextvars.ContextVar[tuple[Any, int] | None] = contextvars.Context
 )
 _CLOCK_SCOPE: contextvars.ContextVar[Any] = contextvars.ContextVar("simcord_clock_scope", default=None)
 _LIVE_LOOPS: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
+_EXECUTOR_HOOK_LOCK = Lock()
+_EXECUTOR_OWNERS: weakref.WeakSet[Env] = weakref.WeakSet()
+_EXECUTOR_SUBMITS: dict[type, tuple[Any, Any]] = {}
+_ISOLATED_POOL_TYPES: tuple[type, ...] = (ProcessPoolExecutor,)
+_INTERPRETER_POOL = getattr(futures, "InterpreterPoolExecutor", None)
+if _INTERPRETER_POOL is not None:
+    _ISOLATED_POOL_TYPES += (_INTERPRETER_POOL,)
 
 
 def _selected_env(*, driver: bool = True) -> Any:
@@ -60,17 +70,119 @@ class _CallbackRecord:
     real_handle: asyncio.TimerHandle | None = None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class _ExecutorRecord:
     completed: asyncio.Future[None]
     generation: int
     label: str
     owner: asyncio.Task[Any] | None
+    env: Env
+    func: Callable[..., Any]
     caller: asyncio.Future[Any] | None = None
     state: Literal["pending", "running", "completed", "abandoned"] = "pending"
     lock: LockType = field(default_factory=Lock)
     error: BaseException | None = None
     submission_failed: bool = False
+    native_pending: set[NativeFuture[Any]] = field(default_factory=set)
+    native_rejected: bool = False
+
+    def finish(self, _caller: asyncio.Future[Any] | None = None) -> None:
+        if self.completed.done():
+            return
+        with self.lock:
+            terminal = not self.native_pending and (
+                self.state == "abandoned"
+                or (
+                    self.state == "completed"
+                    and (self.submission_failed or (self.caller is not None and self.caller.done()))
+                )
+            )
+        if terminal:
+            self.env._work.executors.pop(self.completed, None)
+            self.completed.set_result(None)
+            self.completed.get_loop().call_soon(
+                _inspect_executor, self.env._record_error, self, context=contextvars.Context()
+            )
+
+    def notify(self) -> None:
+        self.completed.get_loop().call_soon_threadsafe(self.finish, context=contextvars.Context())
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        with self.lock:
+            if self.state == "abandoned":
+                return None
+            self.state = "running"
+        token = _BOT_SCOPE.set((self.env, self.generation))
+        try:
+            return self.func(*args, **kwargs)
+        except BaseException as error:
+            self.error = error
+            raise
+        finally:
+            _BOT_SCOPE.reset(token)
+            with self.lock:
+                self.state = "completed"
+            self.notify()
+
+    def submitted(self, future: NativeFuture[Any]) -> None:
+        with self.lock:
+            self.native_rejected = False
+            self.native_pending.add(future)
+        reference = weakref.ref(self)
+
+        def done(native: NativeFuture[Any]) -> None:
+            record = reference()
+            if record is None:
+                return
+            with record.lock:
+                record.native_pending.discard(native)
+                if not native.cancelled() and record.error is None:
+                    record.error = native.exception()
+                if record.state == "pending" and not record.native_pending:
+                    record.state = "abandoned" if native.cancelled() else "completed"
+            record.notify()
+
+        future.add_done_callback(done)
+
+
+def _observed_executor_submit(original: Any) -> Any:
+    @wraps(original)
+    def submit(executor: Any, func: Any, *args: Any, **kwargs: Any) -> Any:
+        if not isinstance(func, _ExecutorRecord):
+            return original(executor, func, *args, **kwargs)
+        # Isolated workers receive only the user's picklable callable, never an Env.
+        native_func = func.func if isinstance(executor, _ISOLATED_POOL_TYPES) else func
+        try:
+            future = original(executor, native_func, *args, **kwargs)
+        except BaseException:
+            with func.lock:
+                func.native_rejected = True
+            raise
+        func.submitted(future)
+        return future
+
+    return submit
+
+
+def _acquire_executor_hooks(env: Env) -> None:
+    with _EXECUTOR_HOOK_LOCK:
+        if not _EXECUTOR_SUBMITS:
+            for executor_type in (ThreadPoolExecutor, ProcessPoolExecutor):
+                original = executor_type.submit
+                observed = _observed_executor_submit(original)
+                _EXECUTOR_SUBMITS[executor_type] = (original, observed)
+                executor_type.submit = observed
+        _EXECUTOR_OWNERS.add(env)
+
+
+def _release_executor_hooks(env: Env) -> None:
+    with _EXECUTOR_HOOK_LOCK:
+        _EXECUTOR_OWNERS.discard(env)
+        if not _EXECUTOR_OWNERS:
+            for executor_type, (original, observed) in _EXECUTOR_SUBMITS.items():
+                if executor_type.submit is observed:
+                    executor_type.submit = original
+            _EXECUTOR_SUBMITS.clear()
 
 
 @dataclass(slots=True)
@@ -152,6 +264,7 @@ def _restore_loop(self: Env) -> None:
     self._loop.call_at = runtime.call_at  # type: ignore[method-assign]
     self._loop.call_soon_threadsafe = runtime.call_soon_threadsafe  # type: ignore[method-assign]
     self._loop.run_in_executor = runtime.run_in_executor  # type: ignore[method-assign]
+    _release_executor_hooks(self)
     self._runtime = None
 
 
@@ -165,14 +278,15 @@ def _inspect_executor(record_error: Callable[[BaseException], None], record: _Ex
         if record.error is not None:
             record_error(record.error)
         return
+    if caller is None or not getattr(caller, "_log_traceback", False):
+        return
     if owner is not None and not owner.done():
         record.owner = None
         owner.add_done_callback(lambda _: _inspect_executor(record_error, record))
         return
-    if caller is not None and getattr(caller, "_log_traceback", False):
-        error = caller.exception()
-        if error is not None:
-            record_error(error)
+    error = caller.exception()
+    if error is not None:
+        record_error(error)
 
 
 def _current_task() -> asyncio.Task[Any] | None:
@@ -278,6 +392,9 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     orig_call_at = runtime.call_at
     orig_call_soon_threadsafe = runtime.call_soon_threadsafe
     orig_run_in_executor = runtime.run_in_executor
+    native_executor_hook = (
+        getattr(orig_run_in_executor, "__func__", None) is asyncio.BaseEventLoop.run_in_executor
+    )
     track_callback = partial(
         _track_callback,
         self._work,
@@ -361,62 +478,31 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
                 raise TypeError(f"a callable object was expected by run_in_executor(), got {func!r}")
         completed = loop.create_future()
         record = _ExecutorRecord(
-            completed, scope[1], getattr(func, "__qualname__", type(func).__name__), _current_task()
+            completed,
+            scope[1],
+            getattr(func, "__qualname__", type(func).__name__),
+            _current_task(),
+            self,
+            func,
         )
         self._work.executors[completed] = record
-
-        def finish() -> None:
-            if completed.done():
-                return
-            with record.lock:
-                terminal = record.state == "abandoned" or (
-                    record.state == "completed"
-                    and (record.submission_failed or (record.caller is not None and record.caller.done()))
-                )
-            if terminal:
-                self._work.executors.pop(completed, None)
-                completed.set_result(None)
-                # Caller policy and the awaiting owner get first refusal.
-                orig_call_soon(_inspect_executor, self._record_error, record, context=contextvars.Context())
-
-        def caller_done(caller: asyncio.Future[Any]) -> None:
-            with record.lock:
-                if caller.cancelled() and record.state == "pending":
-                    record.state = "abandoned"
-            finish()
-
-        def owned_call(*call_args: Any) -> Any:
-            with record.lock:
-                if record.state == "abandoned":
-                    return None
-                if record.caller is not None and record.caller.cancelled():
-                    record.state = "abandoned"
-                    orig_call_soon_threadsafe(finish, context=contextvars.Context())
-                    return None
-                record.state = "running"
-            token = _BOT_SCOPE.set(scope)
-            try:
-                return func(*call_args)
-            except BaseException as error:
-                record.error = error
-                raise
-            finally:
-                _BOT_SCOPE.reset(token)
-                with record.lock:
-                    record.state = "completed"
-                orig_call_soon_threadsafe(finish, context=contextvars.Context())
-
         try:
-            caller = orig_run_in_executor(executor, owned_call, *args)
+            caller = orig_run_in_executor(executor, record, *args)
         except BaseException:
             with record.lock:
                 record.submission_failed = True
-                if record.state == "pending":
+                if (
+                    record.state == "pending"
+                    and not record.native_pending
+                    and (record.native_rejected or native_executor_hook)
+                ):
                     record.state = "abandoned"
-            finish()
+            record.finish()
             raise
         record.caller = caller
-        caller.add_done_callback(caller_done, context=contextvars.Context())
+        # ponytail: opaque custom adapters can hide pre-entry cancellation;
+        # require observable native submission, never infer completion from a facade.
+        caller.add_done_callback(record.finish, context=contextvars.Context())
         return caller
 
     loop.create_task = tracking_create_task  # type: ignore[method-assign]
@@ -425,6 +511,7 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     loop.call_at = call_at  # type: ignore[method-assign]
     loop.call_soon_threadsafe = call_soon_threadsafe  # type: ignore[method-assign]
     loop.run_in_executor = run_in_executor  # type: ignore[method-assign]
+    _acquire_executor_hooks(self)
     _dpy_internals.acquire_clocks(self)
 
     message_content_access = self.approved_intents is None or self.approved_intents.message_content

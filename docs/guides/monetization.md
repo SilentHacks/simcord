@@ -453,6 +453,13 @@ it does not require a new capture's checkout configuration or source fixtures.
 Recovery preserves schema-1 ordered correlation and schema-2 request IDs. A
 success-looking manifest flag or an earlier retry response cannot establish ownership.
 
+Deleted sandbox grants remain session-owned history, backed by their original
+positive receipts. Later baseline scans do not adopt those IDs as pre-existing
+resources, so repeated resume and cleanup-only remain safe. A journal that
+already lists the same ID as both baseline and owned is still rejected; resolve
+that conflict by auditing its evidence, not by discarding history or weakening
+the ownership check.
+
 Recovery cannot change the original app/server/owner identities. A second owner
 may be added to a run that previously lacked one; the relevant comparison
 sections are reopened, not the purchase batches. Connection gaps and interrupted
