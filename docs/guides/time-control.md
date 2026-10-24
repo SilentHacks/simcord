@@ -73,6 +73,15 @@ latest-Env fallback, global datetime patch, or general application-time virtuali
 Inject `env.now` into your application's own clock seam. Only one live Env per event
 loop is supported; a second start rejects before altering hooks.
 
+Executor ownership follows the callable's actual execution, even if its returned
+Future is cancelled. Cancellation before the callable starts prevents execution;
+cancelling a running callable does not claim that its thread stopped. Work it
+enqueues before completion retains bot ownership. SimCord preserves the original
+executor hook and caller Future: a custom hook can hide later asynchronous
+post-processing behind an already-cancelled facade, so settlement cannot join that
+invisible work. The hook must expose or await its own completion. Captured callback
+context is preserved when that later work is scheduled.
+
 !!! tip "Stepwise vs. one jump"
     `advance_time` consumes timers in order, settling between each, so intermediate effects
     actually happen. If a handler sleeps 30s, posts, then sleeps another 30s and posts

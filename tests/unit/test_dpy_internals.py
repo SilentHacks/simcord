@@ -1,4 +1,4 @@
-"""Direct coverage for the wait-recognition internals settlement relies on."""
+"""Behavioral coverage for the SDK compatibility boundary and settlement internals."""
 
 from __future__ import annotations
 
@@ -15,6 +15,25 @@ from discord.ext import tasks as ext_tasks
 
 import simcord
 from simcord import _dpy_internals, _runtime, _settlement
+
+
+@pytest.mark.parametrize("name", ["execute_webhook", "create_interaction_response"])
+def test_verify_rejects_missing_webhook_helpers(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setattr(_dpy_internals.AsyncWebhookAdapter, name, None)
+    with pytest.raises(ImportError, match=rf"AsyncWebhookAdapter\.{name}"):
+        _dpy_internals.verify()
+
+
+def test_verify_rejects_missing_http_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = _dpy_internals.HTTPClient.__init__
+
+    def without_session(self: Any, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+        del self._HTTPClient__session
+
+    monkeypatch.setattr(_dpy_internals.HTTPClient, "__init__", without_session)
+    with pytest.raises(ImportError, match=r"HTTPClient\.__session"):
+        _dpy_internals.verify()
 
 
 def _fake_task(waiter: Any = None) -> Mock:
@@ -293,7 +312,7 @@ def _record(env: simcord.Env, callback: Any, args: tuple[Any, ...], when: float)
     loop = asyncio.new_event_loop()
     handle = asyncio.TimerHandle(when, callback, args, loop)
     record = _runtime._CallbackRecord(handle, when, "probe")
-    env._callbacks.append(record)
+    env._work.callbacks.append(record)
     return record
 
 
@@ -307,7 +326,7 @@ async def test_timer_records_waking_filters_non_matching(env: Any) -> None:
     waiter: asyncio.Future[Any] = asyncio.Future()
     task = _fake_task(waiter)
 
-    assert _settlement._timer_records_waking(env, task, waiter) == []
+    assert _settlement._timer_records_waking(env._settlement_state(), task, waiter) == []
 
     matching = _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
     unrelated = _record(env, _set_result_unless_cancelled, (asyncio.Future(),), 10.0)
@@ -315,7 +334,7 @@ async def test_timer_records_waking_filters_non_matching(env: Any) -> None:
     cancelled = _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
     cancelled.handle.cancel()
 
-    found = _settlement._timer_records_waking(env, task, waiter)
+    found = _settlement._timer_records_waking(env._settlement_state(), task, waiter)
     assert matching in found
     assert unrelated not in found
     assert due not in found
@@ -324,30 +343,30 @@ async def test_timer_records_waking_filters_non_matching(env: Any) -> None:
 
 async def test_wakes_recognized_wait_requires_live_handle(env: Any) -> None:
     record = _record(env, _plain_callback, (), 10.0)
-    assert not _settlement._wakes_recognized_wait(env, record)
+    assert not _settlement._wakes_recognized_wait(env._settlement_state(), record)
     record.handle.cancel()
-    assert not _settlement._wakes_recognized_wait(env, record)
+    assert not _settlement._wakes_recognized_wait(env._settlement_state(), record)
     record.handle = None
-    assert not _settlement._wakes_recognized_wait(env, record)
+    assert not _settlement._wakes_recognized_wait(env._settlement_state(), record)
 
 
 async def test_wakes_recognized_wait_matches_declared_task(env: Any) -> None:
     waiter: asyncio.Future[Any] = asyncio.Future()
     task = _fake_task(waiter)
-    env._external_waits[task] = "declared"  # type: ignore[index]
-    env._task_records[task] = SimpleNamespace()  # type: ignore[index]
+    env._work.external_waits[task] = "declared"  # type: ignore[index]
+    env._work.tasks[task] = SimpleNamespace()  # type: ignore[index]
 
     record = _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
-    assert _settlement._wakes_recognized_wait(env, record)
+    assert _settlement._wakes_recognized_wait(env._settlement_state(), record)
 
 
 async def test_wakes_recognized_wait_rejects_unrecognized_task(env: Any) -> None:
     waiter: asyncio.Future[Any] = asyncio.Future()
     task = _fake_task(waiter)
-    env._task_records[task] = SimpleNamespace()  # type: ignore[index]
+    env._work.tasks[task] = SimpleNamespace()  # type: ignore[index]
 
     record = _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
-    assert not _settlement._wakes_recognized_wait(env, record)
+    assert not _settlement._wakes_recognized_wait(env._settlement_state(), record)
 
 
 def _parked_task(waiter: Any) -> Any:
@@ -426,68 +445,71 @@ async def test_external_wait_rejects_nested_declaration(env: Any) -> None:
 
     task = asyncio.current_task()
     assert task is not None
-    env._task_records[task] = SimpleNamespace()  # type: ignore[index]
-    env._external_waits[task] = "outer"  # type: ignore[index]
+    env._work.tasks[task] = SimpleNamespace()  # type: ignore[index]
+    env._work.external_waits[task] = "outer"  # type: ignore[index]
     try:
         with pytest.raises(simcord.SetupError, match="cannot be nested"):
             await env.external_wait(waitable(), reason="inner")
     finally:
-        env._external_waits.pop(task, None)  # type: ignore[arg-type]
+        env._work.external_waits.pop(task, None)  # type: ignore[arg-type]
 
 
 async def test_callback_fire_time_reports_real_and_virtual_states(env: Any) -> None:
     due = _record(env, _plain_callback, (), -1.0)
-    assert _settlement._callback_fire_time(env, due) == -math.inf
+    assert _settlement._callback_fire_time(env._settlement_state(), due) == -math.inf
 
     virtual = _record(env, _plain_callback, (), 10.0)
-    assert _settlement._callback_fire_time(env, virtual) == math.inf
+    assert _settlement._callback_fire_time(env._settlement_state(), virtual) == math.inf
 
     live = _record(env, _plain_callback, (), 10.0)
     live.real_handle = live.handle
-    assert _settlement._callback_fire_time(env, live) == live.handle.when()
+    assert _settlement._callback_fire_time(env._settlement_state(), live) == live.handle.when()
 
     cancelled = _record(env, _plain_callback, (), 10.0)
     cancelled.real_handle = cancelled.handle
     cancelled.real_handle.cancel()
-    assert _settlement._callback_fire_time(env, cancelled) == math.inf
+    assert _settlement._callback_fire_time(env._settlement_state(), cancelled) == math.inf
 
 
 async def test_is_virtual_sleep_waiter_filters_records(env: Any) -> None:
     waiter: asyncio.Future[Any] = asyncio.Future()
-    assert not _settlement._is_virtual_sleep_waiter(env, None, 5.0)
+    assert not _settlement._is_virtual_sleep_waiter(env._settlement_state(), None, 5.0)
     done: asyncio.Future[Any] = asyncio.Future()
     done.set_result(None)
-    assert not _settlement._is_virtual_sleep_waiter(env, done, 5.0)
+    assert not _settlement._is_virtual_sleep_waiter(env._settlement_state(), done, 5.0)
 
     _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
-    assert _settlement._is_virtual_sleep_waiter(env, waiter, 5.0)
+    assert _settlement._is_virtual_sleep_waiter(env._settlement_state(), waiter, 5.0)
 
     in_deadline = _record(env, _set_result_unless_cancelled, (asyncio.Future(),), 1.0)
     in_deadline.real_handle = in_deadline.handle
-    assert not _settlement._is_virtual_sleep_waiter(env, asyncio.Future(), 5.0)
+    assert not _settlement._is_virtual_sleep_waiter(env._settlement_state(), asyncio.Future(), 5.0)
 
 
 async def test_park_reason_names_recognized_waits(env: Any) -> None:
     task = _parked_task(asyncio.Future())
-    assert _settlement._park_reason(env, task, 5.0) is None
+    assert _settlement._park_reason(env._settlement_state(), task, 5.0) is None
 
     done_task = _parked_task(None)
     done_task.done.return_value = True
-    assert _settlement._park_reason(env, done_task, 5.0) == "completed"
+    assert _settlement._park_reason(env._settlement_state(), done_task, 5.0) == "completed"
 
     seen: set[int] = set()
     running = _parked_task(asyncio.Future())
     seen.add(id(running))
-    assert _settlement._park_reason(env, running, 5.0, seen) is None
+    assert _settlement._park_reason(env._settlement_state(), running, 5.0, seen) is None
 
     declared = _parked_task(asyncio.Future())
-    env._external_waits[declared] = "model reply"  # type: ignore[index]
-    assert _settlement._park_reason(env, declared, 5.0) == "model reply"
+    env._work.external_waits[declared] = "model reply"  # type: ignore[index]
+    assert _settlement._park_reason(env._settlement_state(), declared, 5.0) == "model reply"
 
     listener: asyncio.Future[Any] = asyncio.Future()
     env.bot._listeners.setdefault("on_message", []).append((listener, None))
     listening = _parked_task(listener)
-    assert _settlement._park_reason(env, listening, 5.0) == "discord Client.wait_for listener"
+    assert (
+        _settlement._park_reason(env._settlement_state(), listening, 5.0)
+        == "discord Client.wait_for listener"
+    )
 
 
 async def test_park_reason_names_view_expiry_and_loop_interval(env: Any) -> None:
@@ -496,7 +518,7 @@ async def test_park_reason_names_view_expiry_and_loop_interval(env: Any) -> None
     vars(view)["_BaseView__timeout_task"] = task
     _register_view(env, view)
     _record(env, _set_result_unless_cancelled, (task._fut_waiter,), 10.0)
-    assert _settlement._park_reason(env, task, 5.0) == "discord View/Modal expiry timer"
+    assert _settlement._park_reason(env._settlement_state(), task, 5.0) == "discord View/Modal expiry timer"
 
     @ext_tasks.loop(seconds=1)
     async def probe() -> None:
@@ -509,7 +531,9 @@ async def test_park_reason_names_view_expiry_and_loop_interval(env: Any) -> None
         cr_frame=SimpleNamespace(f_locals={"self": probe}, f_code=None)
     )
     _record(env, _wrapped_set_result, (waiter,), 10.0)
-    assert _settlement._park_reason(env, loop_task, 5.0) == "discord.ext.tasks loop interval"
+    assert (
+        _settlement._park_reason(env._settlement_state(), loop_task, 5.0) == "discord.ext.tasks loop interval"
+    )
 
 
 async def test_park_reason_names_unregistered_view_expiry(env: Any) -> None:
@@ -520,7 +544,9 @@ async def test_park_reason_names_unregistered_view_expiry(env: Any) -> None:
     task, coro = _impl_coro_task(view, waiter)
     try:
         _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
-        assert _settlement._park_reason(env, task, 5.0) == "discord View/Modal expiry timer"
+        assert (
+            _settlement._park_reason(env._settlement_state(), task, 5.0) == "discord View/Modal expiry timer"
+        )
     finally:
         coro.close()
 
@@ -530,12 +556,15 @@ async def test_park_reason_composed_and_sleep_waits(env: Any) -> None:
     env.bot._listeners.setdefault("on_message", []).append((listener, None))
     waiter = asyncio.gather(listener)
     task = _parked_task(waiter)
-    assert _settlement._park_reason(env, task, 5.0) == "composed external wait"
+    assert _settlement._park_reason(env._settlement_state(), task, 5.0) == "composed external wait"
 
     sleeper: asyncio.Future[Any] = asyncio.Future()
     sleeping = _parked_task(sleeper)
     _record(env, _set_result_unless_cancelled, (sleeper,), 10.0)
-    assert _settlement._park_reason(env, sleeping, 5.0) == "sleep timer beyond settlement deadline"
+    assert (
+        _settlement._park_reason(env._settlement_state(), sleeping, 5.0)
+        == "sleep timer beyond settlement deadline"
+    )
 
 
 async def test_composed_tasks_unwraps_gather_children() -> None:
@@ -551,32 +580,32 @@ async def test_settle_timeout_message_classifies_pending_work(env: Any) -> None:
     env._last_dispatch = "actor.send"
 
     declared = _parked_task(asyncio.Future())
-    env._task_records[declared] = SimpleNamespace(label="declared", generation=0)
-    env._external_waits[declared] = "model reply"  # type: ignore[index]
+    env._work.tasks[declared] = SimpleNamespace(label="declared", generation=0)
+    env._work.external_waits[declared] = "model reply"  # type: ignore[index]
 
     listener: asyncio.Future[Any] = asyncio.Future()
     env.bot._listeners.setdefault("on_message", []).append((listener, None))
     listening = _parked_task(listener)
-    env._task_records[listening] = SimpleNamespace(label="listening", generation=0)
+    env._work.tasks[listening] = SimpleNamespace(label="listening", generation=0)
 
     view = discord.ui.View(timeout=60)
     waiting: asyncio.Future[Any] = asyncio.Future()
     vars(view)["_View__stopped"] = waiting
     _register_view(env, view)
     view_wait = _parked_task(waiting)
-    env._task_records[view_wait] = SimpleNamespace(label="view", generation=0)
+    env._work.tasks[view_wait] = SimpleNamespace(label="view", generation=0)
 
     runnable = _parked_task(None)
-    env._task_records[runnable] = SimpleNamespace(label="runnable", generation=0)
+    env._work.tasks[runnable] = SimpleNamespace(label="runnable", generation=0)
 
     unknown = _parked_task(asyncio.Future())
-    env._task_records[unknown] = SimpleNamespace(label="unknown", generation=0)
+    env._work.tasks[unknown] = SimpleNamespace(label="unknown", generation=0)
 
     unrecorded = _parked_task(asyncio.Future())
 
     pending = _record(env, _plain_callback, (), 10.0)
     message = _settlement._settle_timeout_message(
-        env,
+        env._settlement_state(),
         [declared, listening, view_wait, runnable, unknown, unrecorded],
         [],
         1.0,

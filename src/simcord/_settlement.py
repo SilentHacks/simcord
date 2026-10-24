@@ -4,31 +4,44 @@ from __future__ import annotations
 
 import asyncio
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+import discord
 
 from . import _dpy_internals
 
 if TYPE_CHECKING:
-    from ._runtime import _CallbackRecord
-    from .env import Env
+    from ._runtime import _CallbackRecord, _WorkState
 
 # Cap on virtual callbacks drained per settle turn so self-rescheduling
 # zero-delay chains cannot starve the settlement deadline check.
 _DUE_CALLBACK_BATCH = 64
 
 
-def _run_due_virtual_callbacks(self: Env, deadline: float) -> None:
+@dataclass(frozen=True, slots=True)
+class _SettlementState:
+    work: _WorkState
+    bot: discord.Client
+    loop: asyncio.AbstractEventLoop | None
+    virtual_time: float
+    advancing: bool
+    generation: int
+    last_dispatch: str | None
+
+
+def _run_due_virtual_callbacks(self: _SettlementState, deadline: float) -> None:
     # Bounded per settle turn: a callback rescheduling itself with
     # call_later(0) must yield to the loop and the settlement deadline.
-    assert self._loop is not None
+    assert self.loop is not None
     ran = 0
     while True:
         due = next(
             (
                 record
-                for record in self._callbacks
+                for record in self.work.callbacks
                 if record.when is not None
-                and record.when <= self._virtual_time
+                and record.when <= self.virtual_time
                 and record.handle is not None
                 and not record.handle.cancelled()
             ),
@@ -44,19 +57,19 @@ def _run_due_virtual_callbacks(self: Env, deadline: float) -> None:
             # handler; advancing virtual timers must keep that behavior.
             pass
         ran += 1
-        if ran >= _DUE_CALLBACK_BATCH or self._loop.time() >= deadline:
+        if ran >= _DUE_CALLBACK_BATCH or self.loop.time() >= deadline:
             return
 
 
-def _callback_fire_time(self: Env, record: _CallbackRecord) -> float:
+def _callback_fire_time(self: _SettlementState, record: _CallbackRecord) -> float:
     """Real-clock time at which the callback fires without advance_time().
 
     ``-inf`` for already-due/immediate callbacks, ``+inf`` when only
     ``advance_time()`` can still reach it (no live real fallback left).
     """
-    if record.when is None or record.when <= self._virtual_time:
+    if record.when is None or record.when <= self.virtual_time:
         return -math.inf
-    if self._advancing:
+    if self.advancing:
         return math.inf
     real = record.real_handle
     if real is None or real.cancelled():
@@ -64,10 +77,10 @@ def _callback_fire_time(self: Env, record: _CallbackRecord) -> float:
     return real.when()
 
 
-def _is_virtual_sleep_waiter(self: Env, waiter: Any, deadline: float) -> bool:
+def _is_virtual_sleep_waiter(self: _SettlementState, waiter: Any, deadline: float) -> bool:
     if waiter is None or waiter.done():
         return False
-    for record in self._callbacks:
+    for record in self.work.callbacks:
         handle = record.handle
         if record.when is None or handle is None or handle.cancelled():
             continue
@@ -81,14 +94,16 @@ def _is_virtual_sleep_waiter(self: Env, waiter: Any, deadline: float) -> bool:
     return False
 
 
-def _timer_records_waking(self: Env, task: asyncio.Task[Any], waiter: Any) -> list[_CallbackRecord]:
+def _timer_records_waking(
+    self: _SettlementState, task: asyncio.Task[Any], waiter: Any
+) -> list[_CallbackRecord]:
     """Tracked timers whose only effect is resuming this task's current wait."""
     found: list[_CallbackRecord] = []
-    for record in self._callbacks:
+    for record in self.work.callbacks:
         handle = record.handle
         if record.when is None or handle is None or handle.cancelled():
             continue
-        if record.when <= self._virtual_time:
+        if record.when <= self.virtual_time:
             continue  # already due — the due-callback pass fires it this turn
         callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
         if _dpy_internals.is_wakeup_callback(callback, getattr(handle, "_args", ()), waiter, task):
@@ -96,9 +111,9 @@ def _timer_records_waking(self: Env, task: asyncio.Task[Any], waiter: Any) -> li
     return found
 
 
-def _recognized_wait(self: Env, task: asyncio.Task[Any], waiter: Any) -> bool:
+def _recognized_wait(self: _SettlementState, task: asyncio.Task[Any], waiter: Any) -> bool:
     return (
-        task in self._external_waits
+        task in self.work.external_waits
         or _dpy_internals.is_listener_future(self.bot, waiter)
         or _dpy_internals.is_wait_for_listener(self.bot, task)
         or _dpy_internals.is_view_wait_future(self.bot, waiter)
@@ -107,7 +122,7 @@ def _recognized_wait(self: Env, task: asyncio.Task[Any], waiter: Any) -> bool:
     )
 
 
-def _wakes_recognized_wait(self: Env, record: _CallbackRecord) -> bool:
+def _wakes_recognized_wait(self: _SettlementState, record: _CallbackRecord) -> bool:
     """True when a timer about to fire only resumes a currently recognized wait."""
     handle = record.handle
     if handle is None or handle.cancelled():
@@ -125,7 +140,7 @@ def _wakes_recognized_wait(self: Env, record: _CallbackRecord) -> bool:
     return False
 
 
-def _virtualize_recognized_waits(self: Env, pending: list[asyncio.Task[Any]]) -> None:
+def _virtualize_recognized_waits(self: _SettlementState, pending: list[asyncio.Task[Any]]) -> None:
     """Strip the real fallback from timers that only resume a recognized wait.
 
     A wait parked on purpose must fire exclusively through advance_time(): a
@@ -142,28 +157,30 @@ def _virtualize_recognized_waits(self: Env, pending: list[asyncio.Task[Any]]) ->
                 real.cancel()
 
 
-def _owned_tasks(self: Env) -> list[asyncio.Task[Any]]:
-    return [task for task in self._task_records if not task.done()]
+def _owned_tasks(self: _SettlementState) -> list[asyncio.Task[Any]]:
+    return [task for task in self.work.tasks if not task.done()]
 
 
-def _active_callbacks(self: Env) -> list[_CallbackRecord]:
+def _active_callbacks(self: _SettlementState) -> list[_CallbackRecord]:
     live = [
-        record for record in self._callbacks if record.handle is not None and not record.handle.cancelled()
+        record
+        for record in self.work.callbacks
+        if record.handle is not None and not record.handle.cancelled()
     ]
-    self._callbacks = live
+    self.work.callbacks = live
     return live
 
 
-def _callback_is_parked(self: Env, record: _CallbackRecord, deadline: float) -> bool:
+def _callback_is_parked(self: _SettlementState, record: _CallbackRecord, deadline: float) -> bool:
     return record.when is not None and _callback_fire_time(self, record) > deadline
 
 
-def _is_parked(self: Env, task: asyncio.Task[Any], deadline: float) -> bool:
+def _is_parked(self: _SettlementState, task: asyncio.Task[Any], deadline: float) -> bool:
     return _park_reason(self, task, deadline) is not None
 
 
 def _park_reason(
-    self: Env, task: asyncio.Task[Any], deadline: float, seen: set[int] | None = None
+    self: _SettlementState, task: asyncio.Task[Any], deadline: float, seen: set[int] | None = None
 ) -> str | None:
     if task.done():
         return "completed"
@@ -174,7 +191,7 @@ def _park_reason(
     waiter = getattr(task, "_fut_waiter", None)
     if waiter is None or waiter.done():
         return None
-    reason = self._external_waits.get(task)
+    reason = self.work.external_waits.get(task)
     if reason:
         return reason
     if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
@@ -193,7 +210,7 @@ def _park_reason(
         reasons: list[str] = []
         for dependency in unresolved:
             if isinstance(dependency, asyncio.Task):
-                if dependency not in self._task_records:
+                if dependency not in self.work.tasks:
                     break
                 reason = _park_reason(self, dependency, deadline, seen)
             elif _dpy_internals.is_listener_future(self.bot, dependency):
@@ -209,29 +226,29 @@ def _park_reason(
             if reasons and all(reason is not None for reason in reasons):
                 return "composed external wait"
     if _is_virtual_sleep_waiter(self, waiter, deadline) or _dpy_internals.is_sleep_waiter(
-        waiter, self._loop, deadline
+        waiter, self.loop, deadline
     ):
         return "sleep timer beyond settlement deadline"
 
 
 def _settle_timeout_message(
-    self: Env,
+    self: _SettlementState,
     stuck: list[asyncio.Task[Any]],
     all_pending: list[asyncio.Task[Any]],
     effective: float,
     callbacks: list[_CallbackRecord],
 ) -> str:
     lines = ["bot did not settle"]
-    if self._last_dispatch:
-        lines[0] += f" after {self._last_dispatch}"
+    if self.last_dispatch:
+        lines[0] += f" after {self.last_dispatch}"
     lines[0] += (
         f" (timeout={effective:g}s); state may already have changed and outstanding work remains tracked"
     )
     for task in stuck:
-        record = self._task_records.get(task)
+        record = self.work.tasks.get(task)
         label = record.label if record is not None else _dpy_internals.task_label(task.get_coro())
         waiter = getattr(task, "_fut_waiter", None)
-        reason = self._external_waits.get(task)
+        reason = self.work.external_waits.get(task)
         if reason is None:
             if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
                 self.bot, task
@@ -243,8 +260,14 @@ def _settle_timeout_message(
                 reason = "runnable continuation"
             else:
                 reason = f"unknown wait ({type(waiter).__name__})"
-        generation = record.generation if record is not None else self._generation
+        generation = record.generation if record is not None else self.generation
         lines.append(f"  bot-owned generation {generation} {label}: {reason}")
+    for executor_record in self.work.executors.values():
+        state = executor_record.state
+        lines.append(
+            f"  bot-owned generation {executor_record.generation} executor "
+            f"{executor_record.label}: {state} native work"
+        )
     if callbacks:
         lines.append("  bot-owned callbacks pending:")
         for record in callbacks:
@@ -253,7 +276,7 @@ def _settle_timeout_message(
         "  use await env.external_wait(...) for intentional external input; "
         "use await env.advance_time(...) for virtual timers"
     )
-    if self._external_waits and stuck:
+    if self.work.external_waits and stuck:
         lines.append(
             "  external_wait is task-scoped; declare framework orchestration/lifecycle waits "
             "at their public hooks rather than assuming sibling waits are external"
@@ -263,10 +286,10 @@ def _settle_timeout_message(
     return "\n".join(lines)
 
 
-def _next_virtual_timer(self: Env) -> float | None:
+def _next_virtual_timer(self: _SettlementState) -> float | None:
     times = [
         record.when
-        for record in self._callbacks
+        for record in self.work.callbacks
         if record.when is not None and record.handle is not None and not record.handle.cancelled()
     ]
     return min(times) if times else None
