@@ -647,3 +647,162 @@ async def test_browser_close_acknowledgement_survives_expired_context_reads(env,
             finally:
                 release.set()
                 await page.unroute_all(behavior="wait")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("obsolete_failure", [False, True])
+async def test_browser_catalog_owner_rejects_obsolete_aba_completion(env, channel, alice, obsolete_failure):
+    async with env.preview(channel, viewers=[alice]) as preview:
+        async with _browser(preview) as page:
+            result = await page.evaluate(
+                """async fail => {
+                  const {createCommandCatalog} = await import('/command-catalog.js');
+                  const requests = [], reports = [];
+                  const owner = createCommandCatalog({
+                    fetchCatalog: () => new Promise((resolve, reject) => requests.push({resolve, reject})),
+                    changed: value => reports.push(value),
+                  });
+                  owner.observe('viewer:one', 'A');
+                  requests[0].resolve({state: 'available', entries: [{key: 'current'}]});
+                  await Promise.resolve(); await Promise.resolve();
+                  owner.observe('viewer:one', 'B');
+                  owner.observe('viewer:one', 'A');
+                  if (fail) requests[1].reject(new Error('obsolete'));
+                  else requests[1].resolve({state: 'available', entries: [{key: 'obsolete'}]});
+                  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+                  const last = reports.at(-1);
+                  owner.reset();
+                  return {calls: requests.length, fingerprint: last.fingerprint, state: last.state,
+                    keys: last.catalog.entries.map(entry => entry.key)};
+                }""",
+                obsolete_failure,
+            )
+            assert result == {"calls": 2, "fingerprint": "A", "state": "ready", "keys": ["current"]}
+
+
+@pytest.mark.asyncio
+async def test_browser_command_draft_versions_keep_native_files_and_detach_reports(env, channel, alice):
+    async with env.preview(channel, viewers=[alice]) as preview:
+        async with _browser(preview) as page:
+            result = await page.evaluate("""async () => {
+              const {createCommandDrafts} = await import('/command-drafts.js');
+              let draft;
+              const owner = createCommandDrafts(value => { draft = value; });
+              const entry = {commandId: '1', path: ['upload'], invocation: 'upload',
+                schemaFingerprint: 'one', options: [{name: 'file', type: 'attachment', required: true}]};
+              owner.create(entry);
+              const file = new File(['original bytes'], 'original.txt');
+              owner.value('file', {file, raw: file.name});
+              const admitted = draft, admittedFile = draft.values.file.file;
+              owner.value('file', {file: new File(['later'], 'later.txt'), raw: 'later.txt'});
+              const newerVersion = draft.version > admitted.version;
+              owner.reconcile({...entry, schemaFingerprint: 'two'}, entry);
+              const keptFile = draft.values.file.file;
+              const detached = admitted.values.file.file === file && admittedFile === file;
+              const immutable = Object.isFrozen(draft) && Object.isFrozen(draft.values)
+                && Object.isFrozen(draft.values.file) && Object.isFrozen(draft.added);
+              owner.clear(); owner.create(entry);
+              return {detached, newerVersion, immutable, keptNativeFile: keptFile instanceof File,
+                newerDraft: draft.id !== admitted.id, empty: Object.keys(draft.values).length === 0};
+            }""")
+            assert all(result.values())
+
+
+@pytest.mark.asyncio
+async def test_browser_asset_owner_keeps_manifests_immutable_and_revokes_late_loads(env, channel, alice):
+    async with env.preview(channel, viewers=[alice]) as preview:
+        async with _browser(preview) as page:
+            result = await page.evaluate("""async () => {
+              const {createAssets} = await import('/assets.js');
+              const original = window.fetch, revoked = [], originalRevoke = URL.revokeObjectURL;
+              let release, calls = 0;
+              window.fetch = () => { calls++; return new Promise(resolve => { release = resolve; }); };
+              URL.revokeObjectURL = url => { revoked.push(url); originalRevoke(url); };
+              try {
+                const manifest = Object.freeze({available: true, mediaKind: 'image'});
+                const owner = createAssets({headers: () => ({})});
+                owner.update(Object.freeze({image: manifest}));
+                const first = owner.load('image'), duplicate = owner.load('image');
+                release(new Response(new Blob(['image']), {headers: {
+                  'X-Simcord-Media-Metadata': JSON.stringify({duration: 2}),
+                  'X-Display-Width': '64', 'X-Display-Height': '32',
+                }}));
+                await first;
+                const derived = owner.manifest('image');
+                const immutable = manifest.duration === undefined && manifest.displayWidth === undefined;
+                owner.reset();
+                owner.update(Object.freeze({image: manifest}));
+                const stale = owner.load('image').then(() => false, () => true);
+                owner.reset();
+                release(new Response(new Blob(['obsolete'])));
+                const rejected = await stale;
+                return {dedup: first === duplicate, calls, immutable,
+                  width: derived.displayWidth, duration: derived.duration, rejected, revoked: revoked.length};
+              } finally { window.fetch = original; URL.revokeObjectURL = originalRevoke; }
+            }""")
+            assert result == {
+                "dedup": True,
+                "calls": 2,
+                "immutable": True,
+                "width": 64,
+                "duration": 2,
+                "rejected": True,
+                "revoked": 2,
+            }
+
+
+@pytest.mark.asyncio
+async def test_browser_action_owner_sequences_latest_page_and_control_intent(env, channel, alice):
+    async with env.preview(channel, viewers=[alice]) as preview:
+        async with _browser(preview) as page:
+            result = await page.evaluate("""async () => {
+              const {createActions} = await import('/actions.js');
+              const sent = [], delivered = [];
+              const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+              let report;
+              const owner = createActions({
+                session: {beginAction() {}, endAction() {}, readState: async () => true},
+                send: (body, files) => new Promise(resolve => sent.push({body, files, resolve})),
+                readResult: async () => ({}), changed: value => { report = value; },
+                render() {}, healthy() {}, failure() {}, diagnostic() {}, completeDraft() {}, idle() {},
+                rememberReceipt() {}, terminate() {}, acceptedClose() {}, beforePage() {}, recovered() {},
+                outcome: action => delivered.push(action.kind),
+              });
+              owner.setContext({contextId:'one', contextGeneration:1, botGeneration:1,
+                publishedRevision:1, observedRevision:1, viewerId:'viewer', targetId:'1',
+                closed:false, authorized:true, protocolCompatible:true, pinnedCapture:false});
+              owner.dispatch('click', {control_key:'message:1:component:0'});
+              owner.dispatch('click', {control_key:'message:1:component:0'});
+              owner.dispatch('configure_presentation', {width:400});
+              owner.dispatch('configure_presentation', {width:500});
+              const body = {command_id:'1', path:['tag'], focused:'name', value:'older'};
+              owner.dispatch('autocomplete_command', body);
+              owner.dispatch('autocomplete_command', {...body, value:'latest'});
+              const receipt = (index, busy = false) => ({
+                requestId:sent[index].body.request_id, sequence:sent[index].body.sequence,
+                expectedSequence: sent[index].body.sequence - (busy ? 1 : 0), revision:1,
+                rejected:busy, settlement: busy ? 'rejected' : 'settled',
+                diagnostics: busy ? [{code:'busy'}] : [],
+              });
+              sent[0].resolve(receipt(0)); await flush();
+              const pageFirst = sent[1].body.kind === 'configure_presentation' && sent[1].body.width === 500;
+              sent[1].resolve(receipt(1)); await flush();
+              const latest = sent[2].body.kind === 'autocomplete_command' && sent[2].body.value === 'latest';
+              sent[2].resolve(receipt(2, true)); await flush();
+              const deferred = sent.length === 3;
+              owner.tick(); await flush();
+              const sameSequence = sent[3].body.sequence === sent[2].body.sequence;
+              sent[3].resolve(receipt(3)); await flush();
+              return {pageFirst, latest, deferred, sameSequence, sent:sent.length,
+                delivered, pending:report.pendingAction, frozen:Object.isFrozen(report.queuedPageIntents)};
+            }""")
+            assert result == {
+                "pageFirst": True,
+                "latest": True,
+                "deferred": True,
+                "sameSequence": True,
+                "sent": 4,
+                "delivered": ["click", "configure_presentation", "autocomplete_command"],
+                "pending": None,
+                "frozen": True,
+            }

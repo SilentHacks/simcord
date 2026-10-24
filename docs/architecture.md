@@ -63,10 +63,15 @@ test ──► builders/actors ──► virtual backend (single source of truth
   discord.py's master branch to catch drift early.
 - **Deterministic snowflakes** with valid embedded timestamps, from a fixed virtual epoch.
 
-`Env` remains the lifecycle and state owner. Private runtime hooks live in `_runtime.py`;
-`_settlement.py` classifies tracked work and manages virtual timer bookkeeping against that
-same state. `_modal.py` handles modal validation and serialization through the existing actor
-permission checks and interaction dispatch.
+`Env` remains the lifecycle and world owner. `_runtime.py` pairs hook installation
+with restoration and owns task, callback, executor and external-wait records.
+`_settlement.py` classifies those records through a narrow settlement view.
+Executor completion is separate from cancellation of the caller's Future.
+`_modal.py` handles modal validation and serialization through the existing actor
+permission checks and interaction dispatch. Backend/ID access facts are shared
+below Env-bound viewer adapters; bot, human, fixture and token authority remain
+distinct. Compound Backend mutations validate all inputs before committing model
+state and gateway events; HTTP routes retain caller, reason and audit context.
 
 ## Optional browser presentation
 
@@ -83,18 +88,31 @@ Optional Pillow media work is bounded and outside Env's loop. Optional Playwrigh
 settled projection and reports geometry, readiness, completeness, calibration, and diagnostics.
 Base imports do not allocate any preview server, worker, or browser.
 
-Preview keeps session/page state in its existing owners. `_action_plans.py` prepares lazy
-actions; identity, component/message projection, and query modules feed `_snapshot.py`'s
-assembly. In the browser, `app.js` retains UI state and action sequencing; `session.js` owns
-coalesced state reads, checkpoint acceptance, cancellation, and the single polling lifetime.
-Existing workbench, select-draft, timeline, transport, and rendered-media records keep their
-focused responsibilities. `geometry.js` supplies both live status and managed-capture measurements.
-Python and browser diagnostics share the packaged `backend-diagnostics.json` vocabulary.
-These remain native ES modules: there is no bundler or client framework.
+Preview keeps session/page state in its existing owners. `_action_plans.py` prepares
+lazy actions; identity, component/message projection and query modules feed
+`_snapshot.py`'s assembly. Publications and the latest retained result each keep
+their own frozen dependencies. Request-local authorization removes lost dependencies
+without publishing unrelated edits. Capture pins check actual dependency loss before
+and after PNG creation, not arbitrary differences between serialized snapshots.
 
-Contributor checks use Node 24: run `npm ci --ignore-scripts` and `npm run check:preview` for
-strict, development-only JSDoc checking of the session and geometry boundaries. Python consumers
-and installed-wheel captures do not need Node.
+In the browser, `app.js` composes owners and wires events. `actions.js` sequences
+admitted POSTs, including browse/autocomplete; `session.js` owns validated state reads,
+checkpoints, cancellation and polling. Catalog observations and versioned File-bearing
+drafts have separate owners from the native command-picker view. `assets.js` owns
+shared URLs and derived metadata without mutating published manifests; rendered
+surfaces own DOM/player disposal. Composer, select, modal, timeline, diagnostics,
+presentation and workbench records retain their focused responsibilities. Status is
+assembled from read-only owner reports, with protocol 3 and schema 1 unchanged.
+
+`geometry.js` supplies live status and capture measurements. Managed captures round
+inside their visible intersection; complete control/menu captures round outward and
+reject off-host bounds. These intentionally different policies share measurement
+primitives, not forced identical crops. Python and browser diagnostics share the
+packaged vocabulary. These remain native ES modules, without a bundler or framework.
+
+Contributor checks use Node 24: `npm ci --ignore-scripts` and `npm run check:preview`
+strictly check every first-party JavaScript module and its composing callers.
+Python consumers and installed-wheel captures do not need Node.
 
 ## What it will never do
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -16,6 +16,7 @@ from ._markdown import markdown_tokens
 if TYPE_CHECKING:
     from ..env import Env
     from . import Preview
+    from ._dependencies import _DependencyRead
     from ._pages import _Page
 
 
@@ -50,13 +51,21 @@ def _asset_available(page: _Page, asset_id: str | None) -> bool:
     return bool(asset_id and (record := page.assets.get(asset_id)) is not None and record.available)
 
 
+def _attachment_source(message: Message, attachment: dict[str, Any]) -> tuple[Any, ...]:
+    source = ("attachment", message.channel_id, message.id, str(attachment.get("id", "")))
+    for index, snapshot in enumerate(message.snapshots):
+        if any(item is attachment for item in snapshot["message"].get("attachments", [])):
+            return (*source, index)
+    return source
+
+
 def _attachment(env: Env, message: Message, attachment: dict[str, Any], page: _Page) -> dict[str, Any]:
     attachment_id = str(attachment.get("id", ""))
     url = attachment.get("url")
     content_type = str(attachment.get("content_type") or "application/octet-stream")
     filename = str(attachment.get("filename", "attachment"))
-    key = f"attachment:{message.channel_id}:{message.id}:{attachment_id}"
-    source = ("attachment", message.channel_id, message.id, attachment_id)
+    source = _attachment_source(message, attachment)
+    key = ":".join(map(str, source))
     asset_id = page.asset_id(key, attachment, source=source)
     preview = None
     if content_type.startswith("text/") and isinstance(url, str):
@@ -96,8 +105,8 @@ def _asset_meta(
     metadata.setdefault("url", url)
     source = None
     if fallback is not None and message is not None:
-        key = f"attachment:{message.channel_id}:{message.id}:{fallback.get('id', '')}"
-        source = ("attachment", message.channel_id, message.id, str(fallback.get("id", "")))
+        source = _attachment_source(message, fallback)
+        key = ":".join(map(str, source))
     elif message is not None:
         # A copied CDN URL is only usable when the owning message remains
         # authorized; bytes with the same URL never transfer ownership.
@@ -379,3 +388,108 @@ def _embed_projection(
             if isinstance(field.get("value"), str):
                 target["value_tokens"] = markdown_tokens(field["value"], "embed_field_value", context=context)
     return _clean(_decorate_emoji(value, page))
+
+
+def _filter_identity(value: dict[str, Any], read: _DependencyRead) -> None:
+    avatar = value.get("avatar")
+    if avatar is not None and not read.asset(avatar):
+        value["avatar"] = None
+        value["avatar_available"] = False
+
+
+def _filter_media(value: dict[str, Any], read: _DependencyRead, *, icon: bool = False) -> None:
+    field = "icon_asset_id" if icon else "asset_id"
+    if value.get(field) is not None and not read.asset(value[field]):
+        if not icon:
+            value.clear()
+        value[field] = None
+        value["icon_available" if icon else "available"] = False
+
+
+def _filter_emoji(value: Any, read: _DependencyRead) -> None:
+    if not isinstance(value, dict):
+        return
+    if value.get("id") and not read.entity("emoji", value["id"]):
+        value.clear()
+        value.update(custom=True, available=False, asset_id=None)
+    else:
+        _filter_media(value, read)
+
+
+def _filter_tokens(tokens: list[dict[str, Any]], read: _DependencyRead) -> None:
+    """Markdown has its own token tree, not arbitrary dictionaries."""
+    for token in tokens:
+        kind = token.get("type")
+        if kind == "mention":
+            if not read.entity(token.get("kind", "user"), token.get("id")):
+                token.clear()
+                token.update(type="text", content="unavailable")
+        elif kind == "command":
+            if not read.entity("command", token.get("id")):
+                token.clear()
+                token.update(type="text", content="unavailable")
+        elif kind == "emoji":
+            _filter_emoji(token.get("emoji"), read)
+        if isinstance(token.get("children"), list):
+            _filter_tokens(token["children"], read)
+
+
+def _filter_components(components: list[dict[str, Any]], read: _DependencyRead) -> None:
+    for node in walk_components(components):
+        typ = int(node["type"])
+        _filter_emoji(node.get("emoji"), read)
+        if typ == int(ComponentType.TEXT_DISPLAY):
+            _filter_tokens(node.get("markdown_tokens", []), read)
+        elif typ == int(ComponentType.THUMBNAIL):
+            _filter_media(node["media"], read)
+        elif typ == int(ComponentType.FILE):
+            _filter_media(node["file"], read)
+        elif typ == int(ComponentType.MEDIA_GALLERY):
+            for item in node["items"]:
+                _filter_media(item["media"], read)
+        for option in node.get("options", []):
+            _filter_emoji(option.get("emoji"), read)
+        presentation = node.get("sku_presentation")
+        if isinstance(presentation, dict):
+            _filter_media(presentation, read, icon=True)
+
+
+def _filter_embed(value: dict[str, Any], read: _DependencyRead) -> None:
+    for field in ("title_tokens", "description_tokens", "footer_tokens"):
+        _filter_tokens(value.get(field, []), read)
+    for field in value.get("fields", []):
+        _filter_tokens(field.get("name_tokens", []), read)
+        _filter_tokens(field.get("value_tokens", []), read)
+    for field in ("image", "thumbnail", "video"):
+        if isinstance(value.get(field), dict):
+            _filter_media(value[field], read)
+    for field in ("author", "footer"):
+        if isinstance(value.get(field), dict):
+            _filter_media(value[field], read, icon=True)
+
+
+def _filter_body(value: dict[str, Any], read: _DependencyRead) -> None:
+    _filter_tokens(value.get("content_tokens", []), read)
+    _filter_components(value.get("components", []), read)
+    for embed in value.get("embeds", []):
+        _filter_embed(embed, read)
+    # Attachment labels and inline text have the same source as the file,
+    # even when the byte budget or decoder never retained that file.
+    value["attachments"] = [
+        attachment for attachment in value.get("attachments", []) if read.asset(attachment.get("asset_id"))
+    ]
+    for sticker in value.get("stickers", []):
+        _filter_media(sticker, read)
+
+
+def _token_dependencies(tokens: list[dict[str, Any]]) -> Iterator[tuple[str, str]]:
+    for token in tokens:
+        kind = token.get("type")
+        if kind == "mention":
+            yield token["kind"], str(token["id"])
+        elif kind == "command":
+            yield "command", str(token["id"])
+        elif kind == "emoji" and isinstance(token.get("emoji"), dict) and token["emoji"].get("id"):
+            yield "emoji", str(token["emoji"]["id"])
+        if isinstance(token.get("children"), list):
+            yield from _token_dependencies(token["children"])

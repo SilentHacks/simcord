@@ -1,9 +1,17 @@
 import { current, icon, iconButton, node, renderIdentityAvatar } from "./dom.js";
 
+/** @typedef {import('./preview-types').RenderOptions} RenderOptions */
+/** @typedef {RenderOptions & {loadAsset: NonNullable<RenderOptions['loadAsset']>}} LoadedRenderOptions */
+/** @typedef {import('./preview-types').Media} Media */
+/** @typedef {import('./preview-types').MediaPlayer} MediaPlayer */
+/** @typedef {import('./preview-types').LightboxGroup} LightboxGroup */
+/** @typedef {import('./preview-types').LightboxEntry} LightboxEntry */
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+/** @type {{open(group: LightboxGroup, selected: LightboxEntry, trigger: HTMLElement): void; reconcile(): void; close(): void} | undefined} */
 let lightbox;
 
 
+/** @param {RenderOptions} options @param {string} code @param {string | undefined} label @param {unknown} [error] */
 function diagnostic(options, code, label, error) {
   if (options.isCurrent && !options.isCurrent()) return;
   options.onDiagnostic?.({
@@ -14,8 +22,9 @@ function diagnostic(options, code, label, error) {
     complete: false,
   });
 }
+/** @param {RenderOptions} options @param {string} assetId */
 function diagnoseMemoryLimit(options, assetId) {
-  if (options.assets?.[assetId]?.workerMemoryLimited !== false) return;
+  if ((options.assetMetadata?.(assetId) || options.assets?.[assetId])?.workerMemoryLimited !== false) return;
   options.onDiagnostic?.({
     code: "media-process-memory-limit-unavailable",
     severity: "warning",
@@ -51,11 +60,15 @@ function getLightbox() {
   dialog.append(heading, frame, previous, next, position);
   document.body.append(dialog);
 
+  /** @type {LightboxEntry[]} */
   let items = [];
   let index = 0;
+  /** @type {HTMLElement | null} */
   let opener = null;
   let zoomed = false;
+  /** @type {ResizeObserver | null} */
   let observer = null;
+  /** @type {Element | null} */
   let stage = null;
   let drawGeneration = 0;
   const sizeImage = () => {
@@ -78,6 +91,7 @@ function getLightbox() {
     const app = opener?.closest(".preview-app");
     if (!app?.isConnected) { dialog.close(); return; }
     const rect = app.getBoundingClientRect();
+    if (!stage) return;
     const host = stage.getBoundingClientRect();
     const left = Math.max(0, rect.left, host.left);
     const top = Math.max(0, rect.top, host.top);
@@ -118,7 +132,7 @@ function getLightbox() {
     original.rel = "noopener noreferrer";
     original.append(icon("external"));
     // Only validated raster media enters this viewer; never open arbitrary file previews.
-    Promise.resolve(item.options.loadAsset(item.media.asset_id, { download: true })).then((url) => {
+    Promise.resolve(item.options.loadAsset?.(item.media.asset_id, { download: true })).then((url) => {
       if (isCurrent() && typeof url === "string" && url.startsWith("blob:")) {
         original.href = url;
         actions.append(original);
@@ -134,6 +148,7 @@ function getLightbox() {
     sizeImage();
     frame.scrollTo(0, 0);
   };
+  /** @param {number} step */
   const move = (step) => {
     if (items.length < 2) return;
     index = (index + step + items.length) % items.length;
@@ -170,6 +185,7 @@ function getLightbox() {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog || (!zoomed && (event.target === frame || event.target === canvas))) dialog.close();
   });
+  /** @type {{x: number; y: number; left: number; top: number} | null} */
   let drag = null;
   frame.addEventListener("pointerdown", (event) => {
     if (!zoomed || event.button !== 0) return;
@@ -185,7 +201,8 @@ function getLightbox() {
   image.draggable = false;
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.stopPropagation(); return; }
-    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+    const directions = /** @type {Record<string, [number, number]>} */ ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] });
+    const direction = directions[event.key];
     if (!direction) return;
     if (zoomed && !event.altKey) {
       event.preventDefault();
@@ -212,7 +229,8 @@ function getLightbox() {
       if (!dialog.open) return;
       draw();
       observer = new ResizeObserver(place);
-      observer.observe(trigger.closest(".preview-app"));
+      const app = trigger.closest(".preview-app");
+      if (app) observer.observe(app);
       observer.observe(stage);
       stage.addEventListener("scroll", place, { passive: true });
       window.addEventListener("resize", place);
@@ -220,7 +238,7 @@ function getLightbox() {
     },
     reconcile() {
       if (dialog.open && items.some((item) => !item.image.isConnected || !current(item.options, item.image))) {
-        lightbox.close();
+        lightbox?.close();
       }
     },
     close() {
@@ -240,11 +258,13 @@ export function reconcileLightbox() {
   lightbox?.reconcile();
 }
 
+/** @param {unknown} value */
 function mediaTimeLabel(value) {
   const seconds = Math.max(0, Math.floor(Number(value) || 0));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+/** @param {HTMLElement} host @param {number[] | undefined} values */
 function renderWaveform(host, values) {
   const samples = Array.isArray(values) ? values : [];
   host.replaceChildren();
@@ -264,10 +284,12 @@ function renderWaveform(host, values) {
   });
 }
 
+/** @param {MediaPlayer} player */
 function playerCurrent(player) {
   return player.active && player.wrapper.isConnected;
 }
 
+/** @param {MediaPlayer} player */
 function updatePlayer(player) {
   const { wrapper, element, play, seek, mute, volume, options, kind } = player;
   const label = player.label;
@@ -281,11 +303,12 @@ function updatePlayer(player) {
   mute.setAttribute("aria-label", `${element.muted ? "Unmute" : "Mute"} ${label}`);
   volume.setAttribute("aria-label", `Volume ${label}`);
   volume.value = String(element.volume);
-  if (kind === "video") element.playsInline = true;
-  else renderWaveform(player.waveform, options.assets?.[player.assetId]?.waveform);
+  if (element instanceof HTMLVideoElement) element.playsInline = true;
+  else renderWaveform(player.waveform, (options.assetMetadata?.(player.assetId) || options.assets?.[player.assetId])?.waveform);
   player.updateTime();
 }
 
+/** @param {Media} media @param {string} className @param {LoadedRenderOptions} options @param {string | undefined} label @param {string} assetId @param {'audio'|'video'} kind */
 function renderPlayer(media, className, options, label, assetId, kind) {
   const playerLabel = label || kind;
   const playerClass = className || "";
@@ -309,7 +332,7 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   const element = node(kind, "media-player-native");
   element.preload = "metadata";
   element.controls = false;
-  if (kind === "video") {
+  if (element instanceof HTMLVideoElement) {
     element.playsInline = true;
   }
   element.setAttribute("aria-label", playerLabel);
@@ -346,31 +369,31 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   if (kind === "audio") wrapper.append(waveform);
   wrapper.append(controls, status);
 
+  /** @type {MediaPlayer} */
   const player = {
     wrapper, element, waveform, controls, play, seek, time, mute, volume, status,
     options, label: playerLabel, className: playerClass, assetId, kind, mediaTime,
     cancelWaiters: new Set(),
     active: true, pending: [],
+    dispose() {
+      player.active = false;
+      player.cancelWaiters.forEach((cancel) => cancel());
+      player.cancelWaiters.clear();
+      element.pause();
+      element.removeAttribute("src");
+      element.removeAttribute("poster");
+      element.load();
+    },
+    updateTime() {
+      const duration = Number.isFinite(element.duration) ? element.duration : 0;
+      const position = Number.isFinite(element.currentTime) ? element.currentTime : 0;
+      seek.max = String(duration);
+      seek.value = String(Math.min(position, duration));
+      time.textContent = `${mediaTimeLabel(position)} / ${mediaTimeLabel(duration)}`;
+      wrapper.style.setProperty("--media-progress", duration ? `${position / duration * 100}%` : "0%");
+    },
   };
   wrapper._previewMediaPlayer = player;
-  player.dispose = () => {
-    player.active = false;
-    player.cancelWaiters.forEach((cancel) => cancel());
-    player.cancelWaiters.clear();
-    element.pause();
-    element.removeAttribute("src");
-    element.removeAttribute("poster");
-    element.load();
-  };
-
-  player.updateTime = () => {
-    const duration = Number.isFinite(element.duration) ? element.duration : 0;
-    const position = Number.isFinite(element.currentTime) ? element.currentTime : 0;
-    seek.max = String(duration);
-    seek.value = String(Math.min(position, duration));
-    time.textContent = `${mediaTimeLabel(position)} / ${mediaTimeLabel(duration)}`;
-    wrapper.style.setProperty("--media-progress", duration ? `${position / duration * 100}%` : "0%");
-  };
   const updatePlay = () => {
     if (!playerCurrent(player)) return;
     play.textContent = element.ended ? "Replay" : !element.paused ? "Pause" : "Play";
@@ -417,6 +440,7 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   player.pending.push(Promise.resolve(options.loadAsset(assetId)).then(async (url) => {
     if (!playerCurrent(player)) return;
     if (typeof url !== "string" || !url.startsWith("blob:")) throw new Error("asset is not a local blob URL");
+    /** @type {Promise<void>} */
     const metadata = new Promise((resolve, reject) => {
       const finish = () => { cleanup(); resolve(); };
       const fail = () => { cleanup(); reject(new Error("browser cannot decode this validated media")); };
@@ -437,6 +461,7 @@ function renderPlayer(media, className, options, label, assetId, kind) {
       const duration = Number.isFinite(element.duration) ? element.duration : 0;
       const selected = Math.min(Math.max(0, Number(player.mediaTime) || 0), duration);
       if (Math.abs(element.currentTime - selected) > 0.01) {
+        /** @type {Promise<void>} */
         const seeked = new Promise((resolve, reject) => {
           const finish = () => { cleanup(); resolve(); };
           const fail = () => { cleanup(); reject(new Error("media seek failed")); };
@@ -457,7 +482,7 @@ function renderPlayer(media, className, options, label, assetId, kind) {
       player.options.onMediaCaptureTime?.(assetId, Number(element.currentTime) || 0);
     }
     const currentOptions = player.options;
-    const manifest = currentOptions.assets?.[assetId];
+    const manifest = currentOptions.assetMetadata?.(assetId) || currentOptions.assets?.[assetId];
     diagnoseMemoryLimit(currentOptions, assetId);
     if (kind === "audio") renderWaveform(waveform, manifest?.waveform);
     status.textContent = "";
@@ -472,18 +497,20 @@ function renderPlayer(media, className, options, label, assetId, kind) {
   if (kind === "video") {
     player.pending.push(
       Promise.resolve(options.loadAsset(assetId, { poster: true })).then((url) => {
-        if (playerCurrent(player) && typeof url === "string" && url.startsWith("blob:")) element.poster = url;
+        if (playerCurrent(player) && element instanceof HTMLVideoElement && typeof url === "string" && url.startsWith("blob:")) element.poster = url;
       }).catch(() => {}),
     );
   }
   return { element: wrapper, pending: player.pending };
 }
 
+/** @type {Promise<void> | undefined} */
 let lottieRuntime;
 
 function ensureLottieRuntime() {
   if (window.bodymovin?.loadAnimation) return Promise.resolve();
   if (!lottieRuntime) {
+    /** @type {Promise<void>} */
     lottieRuntime = new Promise((resolve, reject) => {
       const script = document.createElement("script");
       script.src = "/vendor/lottie/5.12.2/lottie_light_canvas.min.js";
@@ -497,13 +524,16 @@ function ensureLottieRuntime() {
   return lottieRuntime;
 }
 
+/** @param {Media} media @param {LoadedRenderOptions} options @param {string | undefined} label @param {string} assetId */
 function renderLottie(media, options, label, assetId) {
   const stage = node("div", "media-lottie");
   stage.setAttribute("role", "img");
   stage.setAttribute("aria-label", label || "Animated sticker");
   const canvasHost = node("div", "media-lottie-canvas");
   stage.append(canvasHost);
+  /** @type {import('./preview-types').LottieAnimation | null} */
   let animation = null;
+  /** @type {MutationObserver | null} */
   let observer = null;
   const dispose = () => {
     observer?.disconnect();
@@ -516,33 +546,39 @@ function renderLottie(media, options, label, assetId) {
     await ensureLottieRuntime();
     const response = await fetch(url);
     if (!response.ok) throw new Error("validated Lottie data is unavailable");
+    /** @type {unknown} */
     const data = await response.json();
-    animation = window.bodymovin.loadAnimation({
+    if (!data || typeof data !== "object") throw new Error("validated Lottie composition is not an object");
+    if (!window.bodymovin) throw new Error("bundled Lottie runtime is unavailable");
+    const loadedAnimation = window.bodymovin.loadAnimation({
       container: canvasHost,
       renderer: "canvas",
       loop: !options.reducedMotion,
       autoplay: false,
       animationData: data,
     });
-    animation.setSubframe(false);
-    await new Promise((resolve, reject) => {
+    animation = loadedAnimation;
+    loadedAnimation.setSubframe(false);
+    /** @type {Promise<void>} */
+    const ready = new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => reject(new Error("Lottie canvas render timed out")), 10_000);
-      animation.addEventListener("DOMLoaded", () => {
+      loadedAnimation.addEventListener("DOMLoaded", () => {
         window.clearTimeout(timeout);
         resolve();
       });
-      animation.addEventListener("data_failed", () => {
+      loadedAnimation.addEventListener("data_failed", () => {
         window.clearTimeout(timeout);
         reject(new Error("Lottie canvas could not render this composition"));
       });
     });
+    await ready;
     if (!current(options, stage)) {
       dispose();
       return;
     }
-    const fps = Number(data.fr) || 1;
-    const first = Number(data.ip) || 0;
-    const end = Number(data.op) || first + 1;
+    const fps = Number("fr" in data ? data.fr : undefined) || 1;
+    const first = Number("ip" in data ? data.ip : undefined) || 0;
+    const end = Number("op" in data ? data.op : undefined) || first + 1;
     const duration = Math.max(0, (end - first) / fps);
     const capturing = Number.isFinite(options.mediaTime);
     const requested = capturing ? Math.max(0, Number(options.mediaTime) || 0) : 0;
@@ -565,6 +601,7 @@ function renderLottie(media, options, label, assetId) {
 }
 
 
+/** @param {Media} media @param {string} className @param {RenderOptions} options @param {string | undefined} label @param {LightboxGroup} [group] @returns {{element: HTMLElement, pending: Promise<unknown>[]}} */
 export function renderMedia(media, className, options, label, group = options.lightboxGroup) {
   const assetId = typeof media?.asset_id === "string" ? media.asset_id : null;
   const manifest = assetId ? options.assets?.[assetId] : null;
@@ -580,10 +617,10 @@ export function renderMedia(media, className, options, label, group = options.li
     return { element: node("div", "media-unavailable", `${label || "Media"} unavailable`), pending: [] };
   }
   if (mediaType.startsWith("audio/") || mediaType.startsWith("video/")) {
-    return renderPlayer(media, className, options, label, assetId, mediaType.startsWith("audio/") ? "audio" : "video");
+    return renderPlayer(media, className, { ...options, loadAsset: options.loadAsset }, label, assetId, mediaType.startsWith("audio/") ? "audio" : "video");
   }
   if (mediaType === "application/json" || manifest?.mediaKind === "lottie") {
-    return renderLottie(media, options, label, assetId);
+    return renderLottie(media, { ...options, loadAsset: options.loadAsset }, label, assetId);
   }
   if (mediaType && !IMAGE_TYPES.has(mediaType)) {
     options.onDiagnostic?.({
@@ -639,12 +676,7 @@ export function renderMedia(media, className, options, label, group = options.li
       throw new Error("validated display dimensions do not match the decoded image");
     }
     image.width = displayWidth;
-    if (manifest) {
-      manifest.displayReady = true;
-      manifest.displayWidth = displayWidth;
-      manifest.displayHeight = displayHeight;
-      diagnoseMemoryLimit(options, assetId);
-    }
+    diagnoseMemoryLimit(options, assetId);
     image.height = displayHeight;
     trigger.disabled = false;
   }).catch((error) => {
@@ -658,16 +690,17 @@ export function renderMedia(media, className, options, label, group = options.li
   return { element: trigger, pending };
 }
 
+/** @param {Media} media @param {RenderOptions} options @param {string} label @param {string | undefined} stateKey */
 function spoilerKey(media, options, label, stateKey) {
   return [options.contextId || "", options.messageId || options.scope || "", stateKey || label, media.asset_id || ""].join(":");
 }
 
+/** @param {HTMLElement} element @param {boolean | undefined} spoiler @param {RenderOptions} options @param {string} label @param {string} key */
 function reveal(element, spoiler, options, label, key) {
   if (!spoiler) return element;
   const wrapper = node("div", "spoiler-content");
   wrapper.append(element);
-  const state = options.spoilerState;
-  const revealed = Boolean(state?.has(key));
+  const revealed = Boolean(options.isSpoilerRevealed?.(key));
   if (!revealed) {
     element.inert = true;
     element.setAttribute("aria-hidden", "true");
@@ -675,9 +708,9 @@ function reveal(element, spoiler, options, label, key) {
     cover.type = "button";
     cover.setAttribute("aria-label", `Reveal ${label} spoiler`);
     cover.addEventListener("click", () => {
-      state?.add(key);
+      options.onRevealSpoiler?.(key);
       const content = wrapper.firstElementChild;
-      if (content) {
+      if (content instanceof HTMLElement) {
         content.inert = false;
         content.removeAttribute("aria-hidden");
       }
@@ -691,10 +724,12 @@ function reveal(element, spoiler, options, label, key) {
   return wrapper;
 }
 
+/** @param {HTMLElement} element @param {boolean | undefined} spoiler @param {RenderOptions} options @param {string} label @param {string} [key] */
 export function renderSpoiler(element, spoiler, options, label, key) {
   return reveal(element, spoiler, options, label, [options.contextId || "", options.messageId || options.scope || "", key || label].join(":"));
 }
 
+/** @param {Media} media @param {string} className @param {RenderOptions} options @param {string} label @param {string} stateKey @param {LightboxGroup} [group] */
 export function renderSpoilerMedia(media, className, options, label, stateKey, group = options.lightboxGroup) {
   const result = renderMedia(media, className, options, label, group);
   const key = spoilerKey(media, options, label, stateKey);
@@ -706,6 +741,7 @@ export function renderSpoilerMedia(media, className, options, label, stateKey, g
   return result;
 }
 
+/** @param {unknown} value */
 export function formatFileSize(value) {
   if (value === null || value === undefined) return "";
   const size = Number(value);
@@ -714,6 +750,7 @@ export function formatFileSize(value) {
   return `${Math.max(1, Math.ceil(size / 1024))} KB`;
 }
 
+/** @param {Media | undefined} file */
 export function fileTypeLabel(file) {
   const extension = String(file?.filename || "").split(".").at(-1);
   if (extension && extension !== file?.filename) return extension.slice(0, 5).toUpperCase();
@@ -721,6 +758,7 @@ export function fileTypeLabel(file) {
   return type ? type.slice(0, 5).toUpperCase() : "FILE";
 }
 
+/** @param {Media} file @param {RenderOptions} options @param {string} [label] */
 export function downloadButton(file, options, label = file?.filename || "attachment") {
   const button = iconButton("download", `Download ${label}`, "file-download");
   const assetId = typeof file?.asset_id === "string" ? file.asset_id : null;
@@ -731,7 +769,7 @@ export function downloadButton(file, options, label = file?.filename || "attachm
   }
   button.addEventListener("click", async () => {
     try {
-      const url = await options.loadAsset(assetId, { download: true });
+      const url = await options.loadAsset?.(assetId, { download: true });
       if (!url || !current(options, button)) return;
       const link = node("a");
       link.href = url;

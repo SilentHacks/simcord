@@ -363,19 +363,17 @@ class ManagedCapture:
                 )
                 if not isinstance(geometry, Mapping):
                     raise SetupError("managed capture surface is unavailable")
-                crop = geometry["visibleCrop"]
-                clip = {
-                    "x": math.ceil(float(crop["x"])),
-                    "y": math.ceil(float(crop["y"])),
-                    "width": math.floor(float(crop["right"])) - math.ceil(float(crop["x"])),
-                    "height": math.floor(float(crop["bottom"])) - math.ceil(float(crop["y"])),
-                }
+                clip = await page.evaluate(
+                    "crop => import('/geometry.js').then(module => module.rasterCrop(crop))",
+                    geometry["visibleCrop"],
+                )
                 output_width, output_height = self._validate_dimensions(clip["width"], clip["height"])
                 if mode == "viewport" and (output_width, output_height) != (width, height):
                     raise SetupError("managed capture logical viewport differs from its exact profile")
 
                 temporary_name = f".{destination.name}.simcord-{os.getpid()}-{id(pin):x}.tmp"
                 temporary = parent / temporary_name
+                self.preview._assert_capture_live(pin.page)
                 await page.screenshot(path=str(temporary), type="png", clip=clip)
                 self.preview._assert_capture_live(pin.page)
                 os.replace(temporary, destination)

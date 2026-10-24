@@ -176,10 +176,23 @@ class _AssetOps:
             self._release_blob(record.digest, normalized=record.normalizedRetained)
 
     def _reconcile_assets(self, page: _Page) -> None:
-        """Drop records the latest projection no longer references."""
-        for asset_id in [asset for asset in page.assets if asset not in page.referenced_assets]:
+        """Retain only current-publication and latest-result asset sources."""
+        retained = page.latest_action.result_assets if page.latest_action is not None else set()
+        for asset_id in [
+            asset for asset in page.assets if asset not in page.referenced_assets and asset not in retained
+        ]:
             self._release_asset_record(page.assets.pop(asset_id))
         page.referenced_assets.clear()
+
+    def _release_result_assets(self, page: _Page) -> None:
+        action = page.latest_action
+        if action is None:
+            return
+        published = page.snapshot.get("assets", {})
+        for asset_id in action.result_assets:
+            if asset_id not in published and (record := page.assets.pop(asset_id, None)) is not None:
+                self._release_asset_record(record)
+        action.result_assets.clear()
 
     def _clear_page_assets(self, page: _Page) -> None:
         for record in page.assets.values():
@@ -189,17 +202,20 @@ class _AssetOps:
 
     def _authorize_attachment_source(self, page: _Page, source: tuple[Any, ...], digest: str | None) -> None:
         """Authorize attachment membership independently of retained bytes."""
-        _, channel_id, message_id, attachment_id = source
+        _, channel_id, message_id, attachment_id, *snapshot_index = source
         try:
             message = self.env.backend.get_message(channel_id, message_id)
         except BackendError as exc:
             raise SetupError("asset is unavailable") from exc
         if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
             raise SetupError("asset access denied")
-        attachments = chain(
-            message.attachments,
-            *(snapshot["message"].get("attachments", []) for snapshot in message.snapshots),
-        )
+        if snapshot_index:
+            index = snapshot_index[0]
+            if not isinstance(index, int) or not 0 <= index < len(message.snapshots):
+                raise SetupError("asset is unavailable")
+            attachments = message.snapshots[index]["message"].get("attachments", [])
+        else:
+            attachments = message.attachments
         item = next((item for item in attachments if str(item.get("id", "")) == attachment_id), None)
         if item is None:
             raise SetupError("asset is unavailable")

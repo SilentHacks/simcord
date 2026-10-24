@@ -11,6 +11,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from itertools import chain
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,7 @@ from ._messages import _identity_name, _markdown_context, _message_type_info, _u
 
 if TYPE_CHECKING:
     from . import Preview
+    from ._dependencies import _DependencyRead
     from ._pages import _Page
 
 
@@ -37,6 +39,13 @@ _ENTITY_TYPES = {
     int(ComponentType.CHANNEL_SELECT): "channels",
     int(ComponentType.MENTIONABLE_SELECT): "mentionables",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _SummarySource:
+    excerpt_tokens: list[dict[str, Any]]
+    component_tokens: list[list[dict[str, Any]]]
+    dependencies: tuple[tuple[str, str], ...]
 
 
 class _QueryError(SetupError):
@@ -196,10 +205,13 @@ def _message_summary_parts(
     content = message.content or next((item["content"] for item in snapshots if item.get("content")), "")
     attachments = list(chain(message.attachments, *(item.get("attachments", []) for item in snapshots)))
     excerpt = "Thinking…" if message.flags & (1 << 7) else ""
+    excerpt_tokens: list[dict[str, Any]] = []
     if type_info["kind"] not in {"system", "unknown"} and content:
-        excerpt = markdown_summary(markdown_tokens(content, "message", context=context))
+        excerpt_tokens = markdown_tokens(content, "message", context=context)
+        excerpt = markdown_summary(excerpt_tokens)
     component_summaries: list[dict[str, str]] = []
     text_display_tokens: list[dict[str, Any]] = []
+    summary_component_tokens: list[list[dict[str, Any]]] = []
     components = chain(message.components, *(item.get("components", []) for item in snapshots))
     for component in walk_components(list(components)):
         try:
@@ -217,19 +229,16 @@ def _message_summary_parts(
                 if text_display_tokens:
                     text_display_tokens.append({"type": "break"})
                 text_display_tokens.extend(component_tokens)
-        label = (
-            markdown_summary(
-                component_tokens if component_tokens is not None else markdown_tokens(raw_label, "label"),
-                80,
-            )
-            if isinstance(raw_label, str)
-            else ""
-        )
+        if component_tokens is None:
+            component_tokens = markdown_tokens(raw_label, "label") if isinstance(raw_label, str) else []
+        summary_component_tokens.append(component_tokens)
+        label = markdown_summary(component_tokens, 80)
         component_summaries.append({"kind": name, "label": label})
         if len(component_summaries) >= 50:
             break
     if not excerpt and text_display_tokens:
         excerpt = markdown_summary(text_display_tokens)
+        excerpt_tokens = text_display_tokens
 
     content_kinds: list[str] = []
     if content and type_info["kind"] not in {"system", "unknown"}:
@@ -268,6 +277,8 @@ def _message_summary_parts(
     return {
         "author_name": author_name,
         "excerpt": excerpt,
+        "_excerpt_tokens": excerpt_tokens,
+        "_component_tokens": summary_component_tokens,
         "contentKinds": content_kinds,
         "components": component_summaries,
         "attachments": {"count": len(attachments), "kinds": sorted(attachment_kinds)},
@@ -283,16 +294,20 @@ def _message_summary(
     message: Message,
     parts: Mapping[str, Any],
 ) -> dict[str, Any]:
-    channel = preview.env.backend.get_channel(page.channel_id)
-    context = _markdown_context(preview, page, message, channel)
+    from ._component_projection import _token_dependencies
+
+    excerpt_tokens = parts["_excerpt_tokens"]
+    component_tokens = parts["_component_tokens"]
     dependencies = tuple(
-        (kind, identity)
-        for collection, kind in (("users", "user"), ("roles", "role"), ("channels", "channel"))
-        for identity in context[collection]
+        dict.fromkeys(
+            dependency
+            for tokens in (excerpt_tokens, *component_tokens)
+            for dependency in _token_dependencies(tokens)
+        )
     )
     if "thread" in parts["contentKinds"]:
         dependencies += (("history_channel", str(message.id)),)
-    page.summary_sources[str(message.id)] = (deepcopy(message), dependencies, context)
+    page.summary_sources[str(message.id)] = _SummarySource(excerpt_tokens, component_tokens, dependencies)
     return {
         "id": str(message.id),
         "author": _identity_wire(
@@ -683,6 +698,10 @@ def _candidates(
             if page.modal_handle is not None and control_key.startswith(f"modal:{page.modal_handle}:")
             else None
         )
+        if modal_handle is None and page.modal is not None:
+            continue
+        if component.get("disabled"):
+            page.disabled_candidates.add(control_key)
         try:
             result[control_key] = _candidate_descriptor(
                 preview, page, component, control_key, modal_handle=modal_handle
@@ -727,7 +746,12 @@ def _candidates(
 
 
 def candidate_control(
-    preview: Preview, page: _Page, control_key: str, modal_handle: str | None
+    preview: Preview,
+    page: _Page,
+    control_key: str,
+    modal_handle: str | None,
+    *,
+    allow_disabled: bool = False,
 ) -> tuple[dict[str, Any], str | None]:
     if not can_access_channel(preview.env, page.channel_id, page.viewer, history=True):
         raise _QueryError("control-unavailable")
@@ -812,6 +836,74 @@ def candidate_control(
                 valid = int(component.get("type", -1)) in _ENTITY_TYPES
             except (TypeError, ValueError):
                 valid = False
-            if valid and not component.get("disabled"):
+            if valid and (allow_disabled or not component.get("disabled")):
                 return component, modal_handle if scope == "modal" else None
     raise _QueryError("control-unavailable")
+
+
+def _filter_summaries(
+    preview: Preview,
+    page: _Page,
+    rows: list[dict[str, Any]],
+    sources: Mapping[str, _SummarySource],
+    read: _DependencyRead,
+) -> list[dict[str, Any]]:
+    """Re-render only a frozen summary's lost references, never live content."""
+    from ._component_projection import _filter_identity, _filter_tokens
+
+    kept = []
+    for row in rows:
+        if not read.message(page.channel_id, row["id"]):
+            continue
+        _filter_identity(row["author"], read)
+        source = sources.get(row["id"])
+        if source is not None:
+            revoked = [
+                (kind, identity) for kind, identity in source.dependencies if not read.entity(kind, identity)
+            ]
+            if revoked:
+                if source.excerpt_tokens:
+                    tokens = deepcopy(source.excerpt_tokens)
+                    _filter_tokens(tokens, read)
+                    row["excerpt"] = markdown_summary(tokens)
+                for component, original in zip(row["components"], source.component_tokens, strict=True):
+                    tokens = deepcopy(original)
+                    _filter_tokens(tokens, read)
+                    component["label"] = markdown_summary(tokens, 80)
+                if ("history_channel", row["id"]) in revoked:
+                    row["contentKinds"] = [kind for kind in row["contentKinds"] if kind != "thread"]
+        kept.append(row)
+    return kept
+
+
+def _filter_candidates(
+    preview: Preview,
+    page: _Page,
+    key: str,
+    descriptor: dict[str, Any],
+    handle: str | None,
+    read: _DependencyRead,
+    *,
+    allow_disabled: bool = False,
+) -> bool:
+    from ._component_projection import _filter_identity
+
+    try:
+        component, _ = candidate_control(preview, page, key, handle, allow_disabled=allow_disabled)
+    except SetupError:
+        return read.retain(False)
+    if (
+        _ENTITY_TYPES.get(int(component["type"])) != descriptor["type"]
+        or _candidate_filter(component) != descriptor["filter"]
+    ):
+        return read.retain(False)
+    for field in ("entries", "selected"):
+        descriptor[field] = [
+            item
+            for item in descriptor.get(field, [])
+            if read.entity(item.get("kind", "user"), item.get("id"))
+        ]
+        for item in descriptor[field]:
+            _filter_identity(item, read)
+    descriptor["state"] = "available" if descriptor.get("entries") else "empty"
+    return True

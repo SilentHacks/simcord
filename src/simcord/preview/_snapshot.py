@@ -150,7 +150,7 @@ def _entity_projection(
             for uid in target.mention_user_ids:
                 if _user_allowed(preview, page, uid):
                     entities["users"][str(uid)] = _identity_wire(resolve_identity(preview, page, uid))
-            if target.reference:
+            if target.reference and target.reference.get("type", 0) != 1:
                 reference_id = target.reference.get("message_id")
                 reference_channel_id = target.reference.get("channel_id", target.channel_id)
                 reference_channel = target.channel_id
@@ -225,6 +225,8 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     page.referenced_messages.clear()
     page.summary_sources.clear()
     page.referenced_users.clear()
+    page.message_references.clear()
+    page.disabled_candidates.clear()
     visible: list[Message] = []
     if channel is not None and allowed:
         # Rebuild fixture-sized history; an index would need its own
@@ -358,12 +360,14 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         ),
         "activity": page.activity,
     }
-    preview._reconcile_assets(page)
     snapshot["assets"] = {}
     for asset_id, record in page.assets.items():
+        if asset_id not in page.referenced_assets:
+            continue
         item = record.to_wire()
         item.pop("diagnostic", None)
         snapshot["assets"][asset_id] = item
+    preview._reconcile_assets(page)
     if not allowed:
         from ._pages import _PageOps
 

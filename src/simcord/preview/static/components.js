@@ -9,23 +9,30 @@ import {
   renderSpoiler,
   renderSpoilerMedia,
 } from "./media.js";
+/** @typedef {import('./preview-types').RenderOptions} RenderOptions */
+/** @typedef {import('./preview-types').Component} Component */
+/** @typedef {import('./preview-types').DraftValue} DraftValue */
 const TYPE = Object.freeze({
   ROW: 1, BUTTON: 2, STRING_SELECT: 3, TEXT_INPUT: 4, USER_SELECT: 5, ROLE_SELECT: 6,
   MENTIONABLE_SELECT: 7, CHANNEL_SELECT: 8, SECTION: 9, TEXT_DISPLAY: 10, THUMBNAIL: 11,
   MEDIA_GALLERY: 12, FILE: 13, SEPARATOR: 14, CONTAINER: 17, LABEL: 18, FILE_UPLOAD: 19,
   RADIO_GROUP: 21, CHECKBOX_GROUP: 22, CHECKBOX: 23,
 });
+/** @type {ReadonlySet<number>} */
 const MODAL_CONTROL_TYPES = new Set([TYPE.TEXT_INPUT, ...SELECT_TYPES, TYPE.RADIO_GROUP, TYPE.CHECKBOX_GROUP, TYPE.CHECKBOX, TYPE.FILE_UPLOAD]);
 const FILE_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 40" aria-hidden="true"><path fill="#d3d6fd" d="M3 0h17l10 10v27a3 3 0 0 1-3 3H3a3 3 0 0 1-3-3V3a3 3 0 0 1 3-3z"/><path fill="#939bf9" d="M20 0l10 10h-7a3 3 0 0 1-3-3V0z"/><path fill="#5865f2" d="M7 17h5v2H7zm2 2h2v4H9zm8-2h5v2h-5zm0 5h5v2h-5zM7 27h15v2H7zm0 5h15v2H7z"/></svg>';
 
+/** @param {Component} component @param {string} path @param {string} [scope] */
 function keyFor(component, path, scope = "message") {
   if (typeof component.control_key === "string") return component.control_key;
   if (typeof component.id === "number" && component.id > 0) return `${scope}:component:${component.id}`;
   return `${scope}:component:${path}`;
 }
+/** @param {string} path */
 function safeId(path) {
   return encodeURIComponent(path);
 }
+/** @param {unknown} value */
 function safeLink(value) {
   if (typeof value !== "string") return null;
   try {
@@ -33,6 +40,7 @@ function safeLink(value) {
     return ["http:", "https:", "mailto:"].includes(url.protocol) ? url.href : null;
   } catch (_) { return null; }
 }
+/** @param {HTMLElement} parent @param {string} text @param {boolean} [required] */
 function appendLabel(parent, text, required = false) {
   const label = node("span", "control-label", text || "");
   if (required) label.append(node("span", "required-marker", " *"));
@@ -42,6 +50,7 @@ function appendLabel(parent, text, required = false) {
 
 
 
+/** @param {HTMLElement} button @param {import('./preview-types').PremiumPresentation} presentation @param {RenderOptions} options */
 function appendPremiumIcon(button, presentation, options) {
   const assetId = presentation.icon_asset_id;
   if (!assetId || presentation.icon_available !== true || !options.loadAsset) {
@@ -74,6 +83,7 @@ function appendPremiumIcon(button, presentation, options) {
   options.pendingMedia?.push(pending);
 }
 
+/** @param {Component} component @param {string} path @param {RenderOptions} options */
 function renderButton(component, path, options) {
   const style = Number(component.style || 1);
   const button = node("button", `component-button button-style-${style}`);
@@ -134,6 +144,7 @@ function renderButton(component, path, options) {
   }
   return button;
 }
+/** @param {Component} component @param {string} path @param {RenderOptions} options @returns {HTMLElement} */
 function renderNode(component, path, options) {
   const type = Number(component?.type);
   if (type === TYPE.ROW) { const row = node("div", "component-row"); (component.components || []).forEach((child, index) => row.append(renderNode(child, `${path}.components.${index}`, options))); return row; }
@@ -204,6 +215,7 @@ function renderNode(component, path, options) {
   }
   options.onDiagnostic?.({ code: "unsupported-component", severity: "warning", message: `Unsupported component type ${type} at ${path}`, complete: false }); return node("div", "component-unavailable", `Component type ${type} unavailable`);
 }
+/** @param {import('./preview-types').Embed} embed @param {number} index @param {RenderOptions} options */
 function renderEmbed(embed, index, options) {
   const card = node("article", "embed-card");
   card.dataset.embedType = typeof embed.type === "string" ? embed.type : "rich";
@@ -221,7 +233,7 @@ function renderEmbed(embed, index, options) {
       "embed-provider",
       typeof embed.provider?.name === "string" ? embed.provider.name : "Open provider",
     );
-    if (providerLink) {
+    if (provider instanceof HTMLAnchorElement && providerLink) {
       provider.href = providerLink;
       provider.target = "_blank";
       provider.rel = "noopener noreferrer";
@@ -242,7 +254,7 @@ function renderEmbed(embed, index, options) {
     }
     const authorLink = safeLink(embed.author.url);
     const name = authorLink ? node("a", "embed-author-link", embed.author.name) : node("span", "", embed.author.name);
-    if (authorLink) {
+    if (name instanceof HTMLAnchorElement && authorLink) {
       name.href = authorLink;
       name.target = "_blank";
       name.rel = "noopener noreferrer";
@@ -253,7 +265,7 @@ function renderEmbed(embed, index, options) {
   if (embed.title) {
     const href = safeLink(embed.url);
     const title = href ? node("a", "embed-title") : node("div", "embed-title");
-    if (href) {
+    if (title instanceof HTMLAnchorElement && href) {
       title.href = href;
       title.target = "_blank";
       title.rel = "noopener noreferrer";
@@ -285,7 +297,9 @@ function renderEmbed(embed, index, options) {
 
   if (Array.isArray(embed.fields) && embed.fields.length) {
     const fields = node("div", "embed-fields");
+    /** @type {import('./preview-types').EmbedField[]} */
     let inlineRun = [];
+    /** @param {import('./preview-types').EmbedField} field */
     const appendField = (field) => {
       const item = node("div", "embed-field");
       const name = node("strong", "embed-field-name");
@@ -316,7 +330,8 @@ function renderEmbed(embed, index, options) {
     text.append(fields);
   }
 
-  for (const [kind, media] of [["image", embed.image], ["video", embed.video]]) {
+  const mediaEntries = /** @type {[string, import('./preview-types').Media | undefined][]} */ ([["image", embed.image], ["video", embed.video]]);
+  for (const [kind, media] of mediaEntries) {
     if (!media) continue;
     const label = `Embed ${index + 1} ${kind}`;
     const result = renderSpoilerMedia(
@@ -371,6 +386,7 @@ function renderEmbed(embed, index, options) {
   return card;
 }
 
+/** @param {HTMLElement | null | undefined} control @param {string} id */
 function addDescribedBy(control, id) {
   if (!control) return;
   const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
@@ -378,6 +394,7 @@ function addDescribedBy(control, id) {
   control.setAttribute("aria-describedby", [...ids].join(" "));
 }
 
+/** @param {HTMLElement} field @param {HTMLElement | null | undefined} control @param {{message: string; controlId: string} | null | undefined} error */
 function attachModalError(field, control, error) {
   if (!error) return;
   const message = node("span", "field-error", error.message);
@@ -385,32 +402,40 @@ function attachModalError(field, control, error) {
   message.setAttribute("role", "alert");
   message.setAttribute("aria-live", "assertive");
   field.append(message);
-  [control, control?.querySelector?.("input")].filter(Boolean).forEach((target) => {
+  [control, control?.querySelector("input")].forEach((target) => {
+    if (!target) return;
     target.setAttribute("aria-invalid", "true");
     addDescribedBy(target, message.id);
   });
 }
 
+/** @param {HTMLElement} field @param {HTMLElement | null | undefined} control @param {string} text @param {string} path */
 function addModalDescription(field, control, text, path) {
   const description = node("small", "field-description", text);
   description.id = `modal-description-${safeId(path)}`;
   field.insertBefore(description, field.children[1] || null);
-  [control, control?.querySelector?.("input")].filter(Boolean).forEach((target) => addDescribedBy(target, description.id));
+  [control, control?.querySelector("input")].forEach((target) => addDescribedBy(target, description.id));
 }
 
+/** @param {RenderOptions} options @param {string} customId */
 function modalError(options, customId) {
   return options.validationError?.controlId === customId ? options.validationError : null;
 }
 
+/** @param {Component} component @param {import('./preview-types').Identity[]} entries @returns {DraftValue} */
 function modalDefault(component, entries) {
   const type = Number(component.type);
   if (type === TYPE.TEXT_INPUT) return String(component.value ?? component.default ?? "");
   if (SELECT_TYPES.has(type)) return optionDefaults(entries);
-  if (type === TYPE.RADIO_GROUP) return (component.options || []).find((item) => item.default)?.value ?? null;
+  if (type === TYPE.RADIO_GROUP) {
+    const value = (component.options || []).find((item) => item.default)?.value;
+    return value == null ? null : String(value);
+  }
   if (type === TYPE.CHECKBOX_GROUP) return optionDefaults(component.options || []);
   if (type === TYPE.CHECKBOX) return component.default === true;
   return [];
 }
+/** @param {boolean} isCheckbox */
 function checkboxGlyph(isCheckbox) {
   if (!isCheckbox) return null;
   const glyph = node("span", "modal-choice-glyph");
@@ -418,7 +443,11 @@ function checkboxGlyph(isCheckbox) {
   return glyph;
 }
 
+/** @param {Component} component @param {string} path @param {string} labelText @param {RenderOptions} options @returns {import('./preview-types').ModalControl} */
 function modalControl(component, path, labelText, options) {
+  const draftValue = options.draftValue ?? (() => undefined);
+  /** @type {NonNullable<RenderOptions['initDraft']>} */
+  const initDraft = options.initDraft ?? ((_key, value) => value);
   const customId = String(component.custom_id || path);
   const key = typeof component.control_key === "string"
     ? component.control_key
@@ -429,6 +458,7 @@ function modalControl(component, path, labelText, options) {
   const type = Number(component.type);
   const required = component.required === true
     || (component.required === undefined && (type === TYPE.TEXT_INPUT || SELECT_TYPES.has(type)));
+  /** @param {boolean} hasDefault */
   const include = (hasDefault) => () => required || options.isTouched?.(key) === true || hasDefault;
   let labelId;
   if (labelText && type !== TYPE.CHECKBOX) {
@@ -436,6 +466,7 @@ function modalControl(component, path, labelText, options) {
     label.id = `control-label-${safeId(key)}`;
     labelId = label.id;
   }
+  /** @param {HTMLElement | null} control @param {HTMLElement | null} focus @param {() => DraftValue} get @param {boolean} [hasDefault] */
   const finish = (control, focus, get, hasDefault = false) => {
     const error = modalError(options, customId);
     attachModalError(field, control, error);
@@ -450,19 +481,17 @@ function modalControl(component, path, labelText, options) {
     input.placeholder = String(component.placeholder || "");
     input.required = required;
     if (component.max_length !== undefined) input.maxLength = Number(component.max_length) * 2;
-    if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, []));
-    input.value = String(options.drafts.get(key) ?? "");
+    input.value = String(initDraft(key, modalDefault(component, [])) ?? "");
     input.addEventListener("input", () => options.onDraft?.(key, input.value));
     field.append(input);
     const hasDefault = component.value != null || component.default != null;
-    return finish(input, input, () => String(options.drafts.get(key) ?? ""), hasDefault);
+    return finish(input, input, () => String(draftValue(key) ?? ""), hasDefault);
   }
   if (SELECT_TYPES.has(type)) {
     const descriptor = options.candidates?.[component.control_key || key];
     const entries = optionEntries(component, descriptor);
     const defaults = Array.isArray(descriptor?.selected) ? selectedIds(descriptor) : modalDefault(component, entries);
-    if (!options.drafts.has(key)) options.drafts.set(key, defaults);
-    options.onInit?.(key, options.drafts.get(key));
+    options.onInit?.(key, initDraft(key, defaults));
     const select = renderSelect(component, path, {
       ...options,
       labelledBy: labelId,
@@ -474,16 +503,16 @@ function modalControl(component, path, labelText, options) {
     });
     field.append(select.element);
     return finish(
-      select.element.querySelector(".select-trigger"),
-      select.element.querySelector(".select-trigger"),
+      select.element.querySelector("button"),
+      select.element.querySelector("button"),
       select.value,
-      defaults.length > 0,
+      Array.isArray(defaults) && defaults.length > 0,
     );
   }
   if (type === TYPE.RADIO_GROUP || type === TYPE.CHECKBOX_GROUP) {
     const entries = component.options || [];
     const defaults = modalDefault(component, entries);
-    if (!options.drafts.has(key)) options.drafts.set(key, defaults);
+    initDraft(key, defaults);
     const group = node("div", "modal-choice-group");
     group.setAttribute("role", type === TYPE.RADIO_GROUP ? "radiogroup" : "group");
     if (labelId) group.setAttribute("aria-labelledby", labelId);
@@ -495,54 +524,65 @@ function modalControl(component, path, labelText, options) {
       input.type = type === TYPE.RADIO_GROUP ? "radio" : "checkbox";
       input.name = customId;
       input.value = value;
-      const current = options.drafts.get(key);
+      const current = draftValue(key);
       input.checked = type === TYPE.RADIO_GROUP
         ? current === value
         : Array.isArray(current) && current.includes(value);
       input.addEventListener("change", () => {
         if (type === TYPE.RADIO_GROUP) options.onDraft?.(key, value);
         else {
-          const next = new Set(Array.isArray(options.drafts.get(key)) ? options.drafts.get(key) : []);
+          const current = draftValue(key);
+          const next = new Set(Array.isArray(current) ? current.filter((item) => typeof item === "string") : []);
           input.checked ? next.add(value) : next.delete(value);
           options.onDraft?.(key, [...next]);
         }
       });
-      choice.append(...[input, checkboxGlyph(type === TYPE.CHECKBOX_GROUP), node("span", "choice-label", entry.label || value)].filter(Boolean));
+      choice.append(input);
+      const glyph = checkboxGlyph(type === TYPE.CHECKBOX_GROUP);
+      if (glyph) choice.append(glyph);
+      choice.append(node("span", "choice-label", entry.label || value));
       if (entry.description) choice.append(node("small", "choice-description", entry.description));
       group.append(choice);
     });
     field.append(group);
-    const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : defaults.length > 0;
-    return finish(group, group.querySelector("input"), () => options.drafts.get(key), hasDefault);
+    const hasDefault = type === TYPE.RADIO_GROUP ? defaults != null : Array.isArray(defaults) && defaults.length > 0;
+    return finish(group, group.querySelector("input"), () => draftValue(key) ?? null, hasDefault);
   }
   if (type === TYPE.CHECKBOX) {
-    if (!options.drafts.has(key)) options.drafts.set(key, modalDefault(component, []));
+    initDraft(key, modalDefault(component, []));
     const choice = node("label", "modal-choice");
     const input = node("input");
     input.type = "checkbox";
     input.name = customId;
-    input.checked = options.drafts.get(key) === true;
+    input.checked = draftValue(key) === true;
     input.addEventListener("change", () => options.onDraft?.(key, input.checked));
-    choice.append(input, checkboxGlyph(true), node("span", "choice-label", labelText || customId));
+    choice.append(input);
+    const glyph = checkboxGlyph(true);
+    if (glyph) choice.append(glyph);
+    choice.append(node("span", "choice-label", labelText || customId));
     field.append(choice);
     return finish(
       input,
       input,
-      () => options.drafts.get(key) === true,
+      () => draftValue(key) === true,
       typeof component.default === "boolean",
     );
   }
   if (type === TYPE.FILE_UPLOAD) {
-    if (!options.drafts.has(key)) options.drafts.set(key, []);
+    initDraft(key, []);
     const input = node("input", "upload-input");
     input.type = "file";
     input.multiple = Number(component.max_values ?? 1) > 1;
     input.required = required;
     input.setAttribute("aria-label", labelText || customId);
     const list = node("ul", "upload-list");
+    const filesDraft = () => {
+      const value = draftValue(key);
+      return Array.isArray(value) ? value.filter((item) => item instanceof File) : [];
+    };
     const redraw = () => {
       list.replaceChildren();
-      (options.drafts.get(key) || []).forEach((file, index) => {
+      filesDraft().forEach((file, index) => {
         const row = node("li", "upload-item");
         const icon = node("span", "upload-file-icon");
         icon.innerHTML = FILE_ICON_SVG;
@@ -551,7 +591,7 @@ function modalControl(component, path, labelText, options) {
         remove.type = "button";
         remove.setAttribute("aria-label", `Remove ${file.name}`);
         remove.addEventListener("click", () => {
-          const next = [...(options.drafts.get(key) || [])];
+          const next = [...filesDraft()];
           next.splice(index, 1);
           options.onFiles?.(key, next);
         });
@@ -559,8 +599,9 @@ function modalControl(component, path, labelText, options) {
         list.append(row);
       });
     };
+    /** @param {File[]} files */
     const addFiles = (files) => {
-      if (files.length) options.onFiles?.(key, [...(options.drafts.get(key) || []), ...files]);
+      if (files.length) options.onFiles?.(key, [...filesDraft(), ...files]);
     };
     const dropzone = node("label", "upload-dropzone");
     const prompt = node("span", "upload-prompt", "Drop files here or ");
@@ -585,23 +626,26 @@ function modalControl(component, path, labelText, options) {
     });
     field.append(dropzone, list);
     redraw();
-    return finish(input, input, () => options.drafts.get(key) || []);
+    return finish(input, input, filesDraft);
   }
   options.onDiagnostic?.({ code: "unsupported-modal-component", severity: "warning", message: `Unsupported modal component ${type}`, complete: false });
   return { field: node("div", "component-unavailable", `Component type ${type} unavailable`), get: () => "", include: include(false) };
 }
 
+/** @param {HTMLElement} root @param {Component | null | undefined} modal @param {RenderOptions} [options] @returns {{controls: Record<string, import('./preview-types').ModalControl>, focus: HTMLElement | null, errorTarget?: HTMLElement | null}} */
 export function renderModal(root, modal, options = {}) {
   root._previewDispose?.();
-  const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")];
+  const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")].filter((element) => element instanceof HTMLElement);
   const reuseScope = modal ? JSON.stringify([options.contextId, options.modalHandle]) : "";
+  /** @type {Map<string | undefined, HTMLElement[]>} */
   const reusePlayers = new Map();
   for (const element of oldPlayers) {
     const player = element._previewMediaPlayer;
     if (root.dataset.mediaReuseScope !== reuseScope || !player?.active) continue;
     const key = element.dataset.mediaReuseKey;
-    if (!reusePlayers.has(key)) reusePlayers.set(key, []);
-    reusePlayers.get(key).push(element);
+    const queue = reusePlayers.get(key) ?? [];
+    queue.push(element);
+    reusePlayers.set(key, queue);
   }
   root.dataset.mediaReuseScope = reuseScope;
   let alive = true;
@@ -643,7 +687,10 @@ export function renderModal(root, modal, options = {}) {
     '<path fill="#48423c" d="M9.1 6.6h1.8v4.4H9.1zM9.1 12.6h1.8v1.8H9.1z"/>';
   disclaimer.prepend(warnIcon);
   body.append(disclaimer);
-  const fields = node("div", "modal-fields"), controls = {};
+  const fields = node("div", "modal-fields");
+  /** @type {Record<string, import('./preview-types').ModalControl>} */
+  const controls = {};
+  /** @param {Component} component @param {string} path @param {string} [labelText] @returns {void} */
   const render = (component, path, labelText = "") => {
     const type = Number(component?.type);
     if (type === TYPE.TEXT_DISPLAY) {
@@ -653,6 +700,7 @@ export function renderModal(root, modal, options = {}) {
       return;
     }
     if (type === TYPE.LABEL) {
+      if (!component.component) return;
       const rendered = modalControl(component.component, `${path}.component`, component.label || "", options);
       if (component.description) {
         addModalDescription(rendered.field, rendered.control, component.description, path);
@@ -691,6 +739,7 @@ export function renderModal(root, modal, options = {}) {
   dialog.append(actions);
   dialog.addEventListener("submit", (event) => {
     event.preventDefault();
+    /** @type {Record<string, DraftValue>} */
     const values = {};
     Object.entries(controls).forEach(([id, control]) => {
       if (control.include && !control.include()) return;
@@ -703,11 +752,12 @@ export function renderModal(root, modal, options = {}) {
   body.scrollTop = Number(options.scrollTop || 0);
   oldPlayers.forEach((element) => { if (!element.isConnected) element._previewMediaPlayer?.dispose?.(); });
   const invalid = options.validationError
-    ? Object.values(controls).find((control) => control.field.dataset.customId === options.validationError.controlId)
+    ? Object.values(controls).find((control) => control.field.dataset.customId === options.validationError?.controlId)
     : null;
+  const focus = dialog.querySelector("input, textarea, button");
   return {
     controls,
-    focus: dialog.querySelector("input, textarea, button") || dialog,
+    focus: focus instanceof HTMLElement ? focus : dialog,
     errorTarget: invalid?.focus || null,
   };
 }

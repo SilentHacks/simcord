@@ -1,17 +1,40 @@
-import { renderModal } from "./components.js";
-import { renderMessage } from "./messages.js";
+import { createModal } from "./modal.js";
+import { createSurfaces } from "./surfaces.js";
 import { closeLightbox, reconcileLightbox } from "./media.js";
 import { initComposer } from "./composer.js";
 import { createCommandPicker } from "./commands.js";
-import { icon, disposeSurface } from "./dom.js";
+import { icon } from "./dom.js";
 import { initWorkbench } from "./workbench.js";
 import { initSelectDrafts } from "./select-drafts.js";
 import { initTimeline } from "./timeline.js";
-import { initTransport } from "./transport.js";
+import { createTransport } from "./transport.js";
+import { initConnection } from "./connection.js";
 import { createSession } from "./session.js";
 import { ownerGeometry as measureOwner } from "./geometry.js";
+import { createAssets } from "./assets.js";
+import { createActions } from "./actions.js";
+import { createDiagnostics } from "./diagnostics.js";
+import { createFocus } from "./focus.js";
+import { createPresentation } from "./presentation.js";
 
-const $ = (id) => document.getElementById(id);
+/** @import {Snapshot, ActionContext, ActionBody, ActionMetadata, ActionReport, AdmittedAction, Receipt, Diagnostic, Profile, Dimensions, Dropdown, FontStatus, TransportReport, AssetOptions} from "./preview-types" */
+/** @typedef {Record<"app" | "shell" | "workspace" | "stage" | "toolbar" | "sidebar" | "drawerScrim" | "inspectorCount" | "inspectorTabCount" | "channelContextName" | "channelContextHash" | "channelHash" | "layoutLabel" | "surface" | "modal" | "diagnostics" | "diagnosticsPanel" | "panel" | "capturePanel" | "captureStatus" | "activity" | "liveStatus" | "transportStatus" | "empty" | "pickerEmpty" | "channel" | "channelName" | "channelTopic" | "timeline" | "messageList" | "channelEmpty" | "replyContext" | "replyLabel" | "message" | "pageStatus" | "viewportReadout" | "action", HTMLElement>
+ * & Record<"messagesToggle" | "inspectorToggle" | "inspectorClose" | "captureOpen" | "copyRecipe" | "copyReport" | "downloadReport" | "send" | "replyCancel" | "historyOlder" | "historyNewer" | "newMessages" | "previous" | "next" | "useAvailable" | "resetProfile" | "captureCurrent" | "refresh" | "close" | "backActivity" | "viewActionOutput", HTMLButtonElement>
+ * & Record<"composerForm" | "searchForm" | "exactForm", HTMLFormElement>
+ * & Record<"composer" | "captureRecipe", HTMLTextAreaElement>
+ * & Record<"search" | "exactId" | "width" | "height", HTMLInputElement>
+ * & Record<"viewer" | "display" | "layout" | "preset" | "diagnosticFilter", HTMLSelectElement>} PreviewUI */
+/** @typedef {ActionContext & ActionReport & {capability: string, snapshot: Snapshot | null,
+ * renderGeneration: number, rendering: boolean, ready: boolean, complete: boolean,
+ * diagnostics: readonly Diagnostic[], lastAction: Receipt | null, lastActionKind: string | null, externalNotice: string | null,
+ * profile: Readonly<Profile>, host: Readonly<Dimensions>, calibration: {status: string, reason: string},
+ * modalHandle: string | null, dropdown: Readonly<Dropdown> | null, pickerPendingMedia: Promise<unknown>[],
+ * renderPendingMedia: Promise<unknown>[], statusFingerprint: string, fontStatus: FontStatus,
+ * transport: Readonly<TransportReport>, lastAnnouncement: string | null}} PageState */
+
+/** @template {HTMLElement} T @param {string} id @returns {T} */
+const $ = (id) => /** @type {T} */ (document.getElementById(id));
+/** @type {PreviewUI} */
 const ui = {
   app: $("preview-app"),
   shell: $("preview-shell"),
@@ -27,8 +50,8 @@ const ui = {
   inspectorTabCount: $("inspector-tab-count"),
   captureOpen: $("capture-open"),
   channelContextName: $("channel-context-name"),
-  channelContextHash: document.querySelector(".channel-context-hash"),
-  channelHash: document.querySelector(".channel-hash"),
+  channelContextHash: /** @type {HTMLElement} */ (document.querySelector(".channel-context-hash")),
+  channelHash: /** @type {HTMLElement} */ (document.querySelector(".channel-hash")),
   layoutLabel: $("layout-label"),
   surface: $("focused-content"),
   modal: $("modal-root"),
@@ -87,12 +110,14 @@ const ui = {
   action: $("action-status"),
 };
 
-for (const [id, name] of [["messages-toggle", "messages"], ["refresh", "refresh"], ["capture-open", "capture"], ["inspector-toggle", "inspector"]]) {
+const toolbarIcons = /** @type {[string, Parameters<typeof icon>[0]][]} */ ([["messages-toggle", "messages"], ["refresh", "refresh"], ["capture-open", "capture"], ["inspector-toggle", "inspector"]]);
+for (const [id, name] of toolbarIcons) {
   $(id).prepend(icon(name));
 }
 
 const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
 window.addEventListener("hashchange", () => window.location.reload());
+/** @type {PageState} */
 const state = {
   capability: hash,
   snapshot: null,
@@ -102,10 +127,11 @@ const state = {
   botGeneration: 0,
   publishedRevision: 0,
   renderGeneration: 0,
+  rendering: false,
+  viewerId: null,
   ready: false,
   complete: true,
   diagnostics: [],
-  localDiagnostics: [],
   lastAction: null,
   lastActionKind: null,
   externalNotice: null,
@@ -113,82 +139,33 @@ const state = {
   uncertainAction: null,
   pendingQuery: null,
   queuedQuery: null,
-  queuedQueries: new Map(),
+  queuedQueryCount: 0,
   queuedPageIntents: {},
-  commandUploads: {},
-  busyQueryDeferred: false,
-  queryIntent: 0,
-  queryIntents: new Map(),
   observedRevision: 0,
-  selectQueryTimers: new Map(),
-  sequence: 0,
   profile: { theme: "dark", width: 960, height: 720, locale: "en-US", timezone: "UTC", deviceScale: 1, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches, mediaTime: null },
   calibration: { status: "uncalibrated", reason: "No legitimate Discord reference fixture is bundled for this slice" },
-  initialPresentation: null,
   host: { width: 0, height: 0 },
   awaitingRevision: null,
   queryResultRevision: null,
-  drafts: new Map(),
-  draftVersions: new Map(),
-  selectDrafts: new Map(),
-  selectStatuses: new Map(),
-  candidateIdentities: new Map(),
-  candidateQueries: new Map(),
-  selectValidationRevisions: new Map(),
-  pendingSelectValidations: new Map(),
-  selectVerifiedValues: new Map(),
-  modalDrafts: new Map(),
-  modalTouched: new Set(),
   modalHandle: null,
-  dismissedModal: null,
-  modalError: null,
-  modalErrorHandle: null,
   dropdown: null,
-  candidateFingerprints: new Map(),
-  lastMessageKey: null,
-  lastMessageFingerprint: "",
-  pendingMedia: [],
-  modalPendingMedia: [],
   pickerPendingMedia: [],
   renderPendingMedia: [],
   targetId: null,
-  objectUrls: new Map(),
-  assetLoads: new Map(),
-  assetEpoch: 0,
-  spoilerState: new Set(),
-  spoilerContext: null,
-  messageNodes: new Map(),
-  dayNodes: new Map(),
-  replyToId: null,
-  editTargetId: null,
-  pollDrafts: new Map(),
-  pollResults: new Set(),
   closed: false,
   authorized: false,
   pinnedCapture: false,
-  modalOpenerFocusKey: null,
-  panelOpener: null,
-  drawerOpener: null,
-  focusKey: null,
-  focusSelection: null,
-  focusInModal: false,
   statusFingerprint: "",
   fontStatus: { loaded: [], missing: [], faces: [] },
-  mediaCaptureTimes: {},
-  mediaMetadata: {},
-  transport: { state: "idle", failures: 0, recoveries: 0, uncertainRequestId: null, uncertainSequence: null, uncertainCloseAttemptFor: null, history: [] },
-  activityBackStack: [],
-  activityReturnKey: null,
-  diagnosticFilter: "all",
+  transport: { state: "idle", failures: 0, recoveries: 0, uncertainRequestId: null, uncertainSequence: null, history: [] },
 
-  captureViewport: null,
-  resizeObserver: null,
-  scrollIntent: null,
-  scrollObserver: null,
-  scrollCorrection: null,
   lastAnnouncement: "",
 };
 
+const focus = createFocus();
+const transport = createTransport(hash);
+const { authHeaders, request, requestAction } = transport;
+const assets = createAssets({ headers: () => authHeaders() });
 const composer = initComposer({
   form: ui.composerForm,
   input: ui.composer,
@@ -197,13 +174,12 @@ const composer = initComposer({
   replyContext: ui.replyContext,
   replyLabel: ui.replyLabel,
   replyCancel: ui.replyCancel,
-  state,
   channelLabel,
   onDispatch: (kind, extra) => dispatch(kind, extra),
-  onModeChange: () => updatePickers(state.snapshot),
+  onModeChange: () => { if (state.snapshot) updatePickers(state.snapshot); },
   onBeforeEdit: () => commandPicker.exit(),
   rememberFocus,
-  setFocusKey: (key) => { state.focusKey = key; },
+  setFocusKey: focus.setKey,
 });
 const commandPicker = createCommandPicker({
   form: ui.composerForm,
@@ -211,20 +187,16 @@ const commandPicker = createCommandPicker({
   composer,
   dispatch: (kind, extra, metadata) => dispatch(kind, extra, metadata),
   run: (body, files, metadata) => {
-    state.commandUploads = files;
-    dispatch("run_command", body, { commandDraftId: metadata?.draftId ?? null });
+    dispatch("run_command", body, { commandDraftId: metadata?.draftId ?? null,
+      commandDraftVersion: metadata?.draftVersion ?? null, uploads: files });
   },
   fetchCatalog: () => request("/api/commands"),
-  getSnapshot: () => state.snapshot,
-  getState: () => state,
   announce: (message) => announceStatus(message),
   onCommandMode: (enabled, replyToId) => {
-    if (enabled) state.replyToId = null;
-    else if (replyToId) state.replyToId = replyToId;
+    composer.commandMode(enabled, replyToId);
     if (state.snapshot) composer.update(state.snapshot);
     updateActionStatus();
   },
-  assets: state.snapshot?.assets || {},
   loadAsset,
   onPendingMedia: (pending) => {
     if (state.closed) return;
@@ -235,15 +207,18 @@ const commandPicker = createCommandPicker({
   },
 });
 
+/** @template T @param {T} value @returns {T} */
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
+/** @template T @param {T} value @returns {Readonly<T>} */
 function freeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   Object.values(value).forEach(freeze);
   return Object.freeze(value);
 }
 
+/** @param {Element | null} element */
 function ownerGeometry(element) {
   return measureOwner(element, ui.app, ui.stage);
 }
@@ -253,22 +228,18 @@ function visibleMessageIds() {
   if (state.snapshot?.layout !== "channel") {
     return state.targetId && ui.surface.checkVisibility() ? [String(state.targetId)] : [];
   }
-  const crop = ownerGeometry(ui.timeline).visibleCrop;
-  if (!crop.width || !crop.height) return [];
-  return [...state.messageNodes].filter(([, record]) => {
-    const rect = record.element.getBoundingClientRect();
-    return rect.bottom > crop.y && rect.top < crop.y + crop.height
-      && rect.right > crop.x && rect.left < crop.x + crop.width;
-  }).map(([id]) => id);
+  const crop = ownerGeometry(ui.timeline)?.visibleCrop;
+  if (!crop || !crop.width || !crop.height) return [];
+  return timeline.visibleIds(crop);
 }
 
 function selectStates() {
-  return Object.fromEntries([...document.querySelectorAll(".preview-select")].map((element) => {
-    const key = element.dataset.controlKey;
-    const values = state.pendingSelectValidations.has(key) ? [] : [...(state.selectDrafts.get(key) || [])];
+  return Object.fromEntries([...document.querySelectorAll(".preview-select")].filter((element) => element instanceof HTMLElement).map((element) => {
+    const key = element.dataset.controlKey || "";
+    const values = selections.isPending(key) ? [] : selections.values(key);
     const minimum = Number(element.dataset.minimum), maximum = Number(element.dataset.maximum);
     const optional = element.dataset.optional === "true";
-    const touched = state.modalTouched.has(key);
+    const touched = selections.isTouched(key);
     const receipt = [...(state.snapshot?.activity || [])].reverse().find((item) =>
       item.target?.controlKey === key && item.acknowledgement !== "not_applicable");
     return [key, {
@@ -285,12 +256,12 @@ function selectStates() {
 }
 
 function statusObject() {
+  const activeControl = document.activeElement?.closest("[data-control-key]");
   const renderState = {
     openPopupKey: state.dropdown?.key || null,
     modalHandle: state.modalHandle,
-    validationPaths: state.modalError ? [state.modalError.controlId] : [],
-    mediaCaptureTimes: { ...state.mediaCaptureTimes },
-    mediaMetadata: { ...state.mediaMetadata },
+    validationPaths: modal.report().validationPaths,
+    ...assets.report(),
   };
   const value = {
     schemaVersion: 1,
@@ -300,7 +271,7 @@ function statusObject() {
     botGeneration: state.botGeneration,
     viewerId: state.viewerId || null,
     targetId: state.targetId,
-    activeControlKey: state.authorized ? document.activeElement?.closest?.("[data-control-key]")?.dataset.controlKey || null : null,
+    activeControlKey: state.authorized && activeControl instanceof HTMLElement ? activeControl.dataset.controlKey || null : null,
     visibleMessageIds: visibleMessageIds(),
     projectedMessageIds: [...(state.snapshot?.timeline || [])],
     publishedRevision: state.publishedRevision,
@@ -309,9 +280,7 @@ function statusObject() {
     presentation: clone(state.snapshot?.presentation || null),
     renderGeneration: state.renderGeneration,
     renderState,
-    selectDrafts: Object.fromEntries([...state.selectDrafts].map(([key, values]) => [
-      key, state.pendingSelectValidations.has(key) ? [] : [...values],
-    ])),
+    selectDrafts: selections.report(),
     selectStates: selectStates(),
     commandPicker: commandPicker.status(),
     lastAction: state.authorized ? clone(state.lastAction) : null,
@@ -358,70 +327,11 @@ function statusObject() {
 }
 Object.defineProperty(window, "simcordPreview", { configurable: false, enumerable: true, get: statusObject });
 
-function rememberFocus() {
-  const active = document.activeElement;
-  const owner = active instanceof HTMLElement ? active.closest("[data-control-key]") : null;
-  state.focusElement = active instanceof HTMLElement ? active : null;
-  state.focusDescendant = owner && active instanceof HTMLElement
-    ? [...owner.querySelectorAll("a[href], button, input, textarea, select, [tabindex]")].indexOf(active) : -1;
-  state.focusIdentity = active instanceof HTMLElement
-    ? [active.tagName, active.id, active.getAttribute("name"), active.getAttribute("type"),
-      active.getAttribute("value"), active.getAttribute("aria-label"), active instanceof HTMLButtonElement ? active.textContent : null].join("\u0000")
-    : null;
-  state.focusKey = owner?.dataset.controlKey || (active instanceof HTMLElement ? active.dataset.controlKey || null : null);
-  state.focusInModal = Boolean(active instanceof HTMLElement && active.closest(".modal-dialog"));
-  state.focusVisible = active instanceof HTMLElement
-    && (active.matches(":focus-visible") || active.classList.contains("focus-visible"));
-  state.focusSelection = active && typeof active.selectionStart === "number"
-    ? { start: active.selectionStart, end: active.selectionEnd }
-    : null;
-}
+function rememberFocus() { focus.remember(); }
+/** @param {string | null} [key] */
+function restoreFocus(key) { return focus.restore(key); }
 
-function focusTarget(key) {
-  if (!key) return null;
-  const owner = [...document.querySelectorAll("[data-control-key]")].find(
-    (item) => item.dataset.controlKey === key && item.tabIndex >= 0,
-  ) || [...document.querySelectorAll("[data-control-key]")].find(
-    (item) => item.dataset.controlKey === key,
-  );
-  if (!(owner instanceof HTMLElement)) return null;
-  return owner.matches("input, textarea, select, button, [role=listbox]")
-    ? owner
-    : owner.querySelector("input, textarea, select, button, [role=listbox]") || owner;
-}
-
-function canFocus(element) {
-  return element instanceof HTMLElement && !element.closest("[inert]")
-    && !element.matches(":disabled") && element.checkVisibility();
-}
-
-function restoreFocus(key = state.focusKey) {
-  let target = focusTarget(key);
-  if (key === state.focusKey && state.focusElement?.isConnected) target = state.focusElement;
-  else if (key === state.focusKey && state.focusDescendant >= 0) {
-    const owner = [...document.querySelectorAll("[data-control-key]")].find((item) => item.dataset.controlKey === key);
-    const descendants = [...(owner?.querySelectorAll("a[href], button, input, textarea, select, [tabindex]") || [])];
-    target = descendants.find((item) => [item.tagName, item.id, item.getAttribute("name"), item.getAttribute("type"),
-      item.getAttribute("value"), item.getAttribute("aria-label"), item instanceof HTMLButtonElement ? item.textContent : null].join("\u0000") === state.focusIdentity)
-      || descendants[state.focusDescendant] || target;
-  }
-  if (target?.getAttribute("role") === "listbox") {
-    target = target.querySelector(".select-option.is-highlighted")
-      || target.closest(".preview-select")?.querySelector(".select-trigger");
-  }
-  if (!canFocus(target)) target = focusTarget(key);
-  if (!canFocus(target)) return false;
-  target.focus({ preventScroll: true });
-  if (state.focusSelection && typeof target.setSelectionRange === "function") {
-    try { target.setSelectionRange(state.focusSelection.start, state.focusSelection.end); } catch (_) {}
-  }
-  if (state.focusVisible && !target.matches(":focus-visible")) {
-    target.classList.add("focus-visible");
-    target.addEventListener("blur", () => target.classList.remove("focus-visible"), { once: true });
-  }
-  return true;
-}
-
+/** @param {boolean} open */
 function setModalIsolation(open) {
   [ui.channel, ui.empty, ui.surface].forEach((element) => {
     if (element) element.inert = open;
@@ -429,249 +339,30 @@ function setModalIsolation(open) {
   updateWorkbenchIsolation(open);
   ui.modal.setAttribute("aria-hidden", String(!open));
 }
-function backendDiagnostic(item) {
-  const code = typeof item.code === "string" ? item.code : "internal-error";
-  const approved = Object.hasOwn(backendDiagnostics, code) ? backendDiagnostics[code] : null;
-  const recovered = item.state === "recovered";
-  const { messageId, controlKey, commandOption } = item.subject || {};
-  let subject;
-  if (typeof messageId === "string" && messageId.length >= 1 && messageId.length <= 20
-    && !/[^0-9]/.test(messageId)) {
-    subject = { messageId };
-    if (typeof controlKey === "string" && [...controlKey].length <= 160) subject.controlKey = controlKey;
-  } else if (typeof commandOption === "string" && /^[\p{L}\p{N}\p{M}_'-]{1,32}$/u.exec(commandOption)?.[0] === commandOption) {
-    subject = { commandOption };
-  }
-  return {
-    id: typeof item.id === "string" ? item.id : `backend:${code}`, code,
-    category: approved?.[0] || "rendering",
-    severity: approved?.[1] || (["error", "warning", "info"].includes(item.severity) ? item.severity : "warning"),
-    complete: recovered || (approved?.[2] ?? false), message: approved?.[3] || "Preview diagnostics are unavailable.",
-    remediation: approved?.[4] || "Reload the active Preview URL.",
-    state: recovered ? "recovered" : "current",
-    ...(subject ? { subject } : {}),
-    ...(item.correlation ? { correlation: item.correlation } : {}),
-  };
-}
-function renderDiagnostics() {
-  const previous = state.diagnostics;
-  const diagnostics = [...(state.snapshot?.diagnostics || []),
-    ...(state.snapshot?.activity || []).flatMap((receipt) => receipt.diagnostics || [])]
-    .map(backendDiagnostic).concat(state.localDiagnostics);
-  const seen = new Set();
-  state.diagnostics = diagnostics.filter((item) => {
-    const key = item.id || JSON.stringify(item);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const count = state.diagnostics.filter((item) =>
-    ["error", "warning"].includes(item.severity) && item.state !== "recovered").length;
-  for (const badge of [ui.inspectorCount, ui.inspectorTabCount]) {
-    badge.hidden = count === 0;
-    badge.textContent = count ? String(count) : "";
-  }
-  ui.inspectorToggle.setAttribute("aria-label", count
-    ? `Inspector, ${count} active warning${count === 1 ? "" : "s"} or error${count === 1 ? "" : "s"}`
-    : "Inspector");
-  const error = state.diagnostics.find((item) => item.severity === "error" && item.state !== "recovered"
-    && item.code !== "modal-validation"
-    && !previous.some((old) => old.id === item.id && old.state !== "recovered"));
-  if (error) {
-    state.lastAnnouncement = null;
-    announceStatus(error.message || "Preview error.", true);
-  }
-  if (!state.closed) state.complete = !state.diagnostics.some((item) => item.state !== "recovered" && item.complete === false);
-  ui.diagnostics.replaceChildren();
-  const visible = state.diagnostics.filter((item) =>
-    state.diagnosticFilter === "all" || item.severity === state.diagnosticFilter);
-  if (!visible.length) {
-    ui.diagnostics.append(Object.assign(document.createElement("p"), {
-      textContent: state.diagnostics.length ? "No diagnostics match this filter." : "No warnings or errors.",
-    }));
-    return;
-  }
-  const list = document.createElement("ul");
-  visible.forEach((item) => {
-    const row = document.createElement("li");
-    row.className = `diagnostic-${item.severity || "warning"}`;
-    row.append(Object.assign(document.createElement("p"), {
-      className: "diagnostic-message",
-      textContent: item.message || "Preview diagnostic.",
-    }));
-    if (item.remediation) {
-      row.append(Object.assign(document.createElement("p"), {
-        className: "diagnostic-remediation",
-        textContent: item.remediation,
-      }));
-    }
-    if (item.subject?.messageId) {
-      const view = Object.assign(document.createElement("button"), { type: "button", textContent: "View affected message" });
-      view.addEventListener("click", () => viewActivityMessage(String(item.subject.messageId)));
-      row.append(view);
-    }
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = "Technical details";
-    details.append(summary, Object.assign(document.createElement("p"), {
-      textContent: `${item.code} · ${item.category} · ${item.severity} · ${item.state} · revision ${state.publishedRevision}`,
-    }));
-    row.append(details);
-    list.append(row);
-  });
-  ui.diagnostics.append(list);
-}
-function messageTime(createdAt) {
-  if (!createdAt) return "Time unavailable";
-  const date = new Date(createdAt);
-  if (!Number.isFinite(date.getTime())) return "Time unavailable";
-  try {
-    return new Intl.DateTimeFormat(state.profile.locale, {
-      hour: "numeric", minute: "2-digit", timeZone: state.profile.timezone,
-    }).format(date);
-  } catch (_) {
-    return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  }
-}
-
-function channelLabel(snapshot) {
-  if (!state.authorized) return { name: "Unavailable channel", glyph: "#" };
-  const recipient = snapshot.channel?.recipient;
-  if (recipient) return { name: recipient.name || "Unavailable channel", glyph: "@" };
-  return { name: snapshot.channel?.name || "Unavailable channel", glyph: "#" };
-}
-
+/** @param {Snapshot} snapshot */
+function channelLabel(snapshot) { return workbench.channelLabel(snapshot); }
+/** @param {Snapshot} snapshot */
 function updatePickers(snapshot) {
-  ui.viewer.replaceChildren();
-  const viewers = Array.isArray(snapshot.viewers) && snapshot.viewers.length ? snapshot.viewers : [{ id: snapshot.viewerId }];
-  viewers.forEach((viewer) => {
-    const id = typeof viewer === "object" ? viewer.id : viewer;
-    const option = document.createElement("option");
-    option.value = String(id || "");
-    option.textContent = typeof viewer === "object" && viewer.name ? String(viewer.name) : `Viewer ${id || "unavailable"}`;
-    ui.viewer.append(option);
-  });
-  ui.viewer.value = snapshot.viewerId || "";
-  const messageRows = state.authorized ? [...(snapshot.messageIndex || [])] : [];
-  const targetId = String(snapshot.targetId || "");
-  ui.message.replaceChildren();
-  messageRows.forEach((message) => {
-    const id = String(message.id);
-    const item = document.createElement("li");
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "message-row";
-    row.dataset.messageId = id;
-    row.dataset.controlKey = `message:${id}`;
-    row.setAttribute("aria-disabled", String(!state.authorized || state.pinnedCapture));
-    if (id === targetId) row.setAttribute("aria-current", "page");
-
-    const heading = document.createElement("span");
-    heading.className = "message-row-heading";
-    heading.append(
-      Object.assign(document.createElement("strong"), {
-        className: "message-row-author",
-        textContent: message.author?.name || "Unknown author",
-      }),
-      Object.assign(document.createElement("time"), {
-        className: "message-row-time",
-        dateTime: message.createdAt || "",
-        textContent: messageTime(message.createdAt),
-      }),
-    );
-    row.append(heading, Object.assign(document.createElement("span"), {
-      className: "message-row-excerpt",
-      textContent: String(message.excerpt || "") || (message.contentKinds || []).join(", ") || "(No text preview)",
-    }));
-    const indicators = document.createElement("span");
-    indicators.className = "message-row-indicators";
-    if (message.attachments?.count) {
-      const count = Number(message.attachments.count);
-      indicators.append(Object.assign(document.createElement("span"), {
-        className: "message-indicator",
-        textContent: `${count} attachment${count === 1 ? "" : "s"}`,
-      }));
-    }
-    if (message.components?.length) {
-      const count = message.components.length;
-      indicators.append(Object.assign(document.createElement("span"), {
-        className: "message-indicator",
-        textContent: `${count} component${count === 1 ? "" : "s"}`,
-      }));
-    }
-    if (message.ephemeral) indicators.append(Object.assign(document.createElement("span"), {
-      className: "message-indicator",
-      textContent: "Ephemeral",
-    }));
-    indicators.append(Object.assign(document.createElement("span"), {
-      className: "message-indicator",
-      textContent: `ID ${id}`,
-    }));
-    const metadata = [...indicators.children].map((element) => element.textContent).join(" · ");
-    row.setAttribute("aria-label", [[...heading.children].map((element) => element.textContent).join(" "), row.querySelector(".message-row-excerpt").textContent, metadata].join(" · "));
-    row.title = metadata;
-    if (indicators.childElementCount) row.append(indicators);
-    row.addEventListener("click", () => {
-      if (row.getAttribute("aria-disabled") !== "true") dispatch("focus", { target_id: id });
-    });
-    item.append(row);
-    ui.message.append(item);
-  });
-  const navigation = snapshot.navigation || {};
-  if (document.activeElement !== ui.search && !state.queuedQuery) ui.search.value = navigation.query || "";
-  ui.previous.disabled = !navigation.hasPrevious || Boolean(state.pendingAction);
-  ui.next.disabled = !navigation.hasNext || Boolean(state.pendingAction);
-  ui.pageStatus.textContent = [
-    navigation.hasPrevious ? "Earlier results available" : "",
-    navigation.hasNext ? "More results available" : "",
-    navigation.filter ? `Filter: ${navigation.filter}` : "",
-  ].filter(Boolean).join(" · ") || "Current authorized page";
-  const channelLayout = snapshot.layout === "channel";
-  const target = targetId ? snapshot.messages?.[targetId] : null;
-  const channel = channelLabel(snapshot);
-  ui.channelContextHash.textContent = channel.glyph;
-  ui.channelHash.textContent = channel.glyph;
-  ui.channelContextName.textContent = channel.name;
-  ui.layoutLabel.textContent = channelLayout ? "Conversation" : "Isolate message";
-  ui.channel.hidden = !channelLayout;
-  ui.channelName.textContent = channel.name;
-  ui.channelTopic.textContent = state.authorized ? snapshot.channel?.topic || "" : "";
-  ui.channelTopic.hidden = !state.authorized || !snapshot.channel?.topic;
-  ui.composerForm.hidden = !channelLayout || !(state.authorized
-    && (snapshot.channel?.canSendMessages || snapshot.channel?.canUseApplicationCommands || state.editTargetId));
-  ui.surface.classList.toggle("message-surface", !channelLayout);
-  ui.surface.hidden = channelLayout || !target;
-  ui.empty.hidden = channelLayout || Boolean(target);
-  if (!ui.empty.hidden) ui.empty.textContent = messageRows.length
-    ? "Choose a message from Messages."
-    : "No visible messages.";
-  ui.pickerEmpty.hidden = Boolean(messageRows.length);
-  ui.pickerEmpty.textContent = "No visible messages.";
+  workbench.update(snapshot, { authorized: state.authorized, pinnedCapture: state.pinnedCapture,
+    profile: state.profile, pendingAction: Boolean(state.pendingAction), queuedQuery: Boolean(state.queuedQuery),
+    editTargetId: composer.report().editTargetId });
+  composer.setContext({ contextId: state.contextId, targetId: state.targetId,
+    authorized: state.authorized, pinnedCapture: state.pinnedCapture, pending: Boolean(state.pendingAction) });
   composer.update(snapshot);
+  commandPicker.setContext({ authorized: state.authorized, pendingKind: state.pendingAction?.kind || null });
   commandPicker.update(snapshot);
   commandPicker.receiveSnapshot(snapshot);
 }
 
 function revokeAssets() {
   closeLightbox();
-  document.querySelectorAll(".media-player").forEach((wrapper) => wrapper._previewMediaPlayer?.dispose?.());
-  state.assetEpoch += 1;
-  state.assetLoads.clear();
-  state.objectUrls.forEach((url) => URL.revokeObjectURL(url));
-  state.objectUrls.clear();
-  state.mediaCaptureTimes = {};
-  state.mediaMetadata = {};
+  document.querySelectorAll(".media-player").forEach((wrapper) => { if (wrapper instanceof HTMLElement) wrapper._previewMediaPlayer?.dispose(); });
+  assets.reset();
 }
 
-function pruneAssetUrls(assets) {
-  for (const [key, url] of state.objectUrls) {
-    const id = key.slice(0, key.indexOf(":"));
-    if (assets[id] && assets[id].available !== false) continue;
-    URL.revokeObjectURL(url);
-    state.objectUrls.delete(key);
-    delete state.mediaCaptureTimes[id];
-    delete state.mediaMetadata[id];
-  }
+/** @param {Snapshot["assets"]} manifests */
+function pruneAssetUrls(manifests) {
+  assets.update(manifests);
 }
 
 function beginRender() {
@@ -681,70 +372,39 @@ function beginRender() {
   return state.renderGeneration;
 }
 
+/** @returns {Promise<void>} */
 function nextFrames() {
-  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
-const LOCAL_DIAGNOSTICS = {
-  "preview-render": ["rendering", "Preview rendering is incomplete.", "Inspect supported components and offline assets."],
-  "preview-fonts": ["rendering", "Packaged fonts or assets could not be rendered.", "Reinstall simcord[preview] and reload."],
-  "modal-validation": ["validation", "Correct the highlighted modal field.", "Review the associated field guidance; your draft is retained."],
-  "viewport-invalid": ["presentation", "Viewport dimensions are invalid.", "Use bounded dimensions within the capture raster limit."],
-  "missing-capability": ["authorization", "This page has no preview capability.", "Open the active Preview URL."],
-  "access-denied": ["authorization", "Preview access was revoked.", "Restore authorization and explicitly refresh."],
-  "bootstrap-failed": ["transport", "The authorized page could not be opened.", "Reload the active Preview URL."],
-  "state-poll-unavailable": ["transport", "A preview read failed.", "Wait for a healthy read; actions are not retried."],
-  "state-refresh-unavailable": ["transport", "The snapshot read failed after an action.", "Wait for a healthy read before another action."],
-  "action-response-unavailable": ["transport", "The action outcome is uncertain.", "Inspect the action receipt; do not automatically retry."],
-  "action-receipt-unavailable": ["transport", "The action receipt could not be verified.", "Inspect the page before another action."],
-  "premium-sku-icon-unavailable": ["rendering", "The offline premium icon is unavailable.", "Supply the icon's offline asset."],
-  "invalid-link": ["rendering", "A component link is unavailable.", "Use an absolute safe HTTP(S) URL."],
-  "unsupported-component": ["rendering", "This component is not supported.", "Review the supported-component contract."],
-  "unsupported-modal-component": ["rendering", "This modal component is not supported.", "Review the supported-modal contract."],
-  "media-rejected": ["rendering", "An offline media asset was rejected.", "Inspect private asset diagnostics and supported limits."],
-  "media-unavailable": ["rendering", "An offline media asset is unavailable.", "Supply the required offline media asset."],
-  "unsupported-media-type": ["rendering", "This media type cannot be rendered.", "Use a supported offline media format."],
-  "media-process-memory-limit-unavailable": ["rendering", "The platform media-process memory ceiling is unavailable.", "Use a supported Linux runtime for adversarial-media checks."],
-  "sticker-asset-unavailable": ["rendering", "A sticker asset is unavailable.", "Supply the required offline sticker asset."],
-};
-let backendDiagnostics = {};
-function addDiagnostic(diagnostic) {
-  const severity = ["info", "warning", "error"].includes(diagnostic.severity) ? diagnostic.severity : "warning";
-  const code = typeof diagnostic.code === "string" ? diagnostic.code : "preview-render";
-  const known = Object.hasOwn(LOCAL_DIAGNOSTICS, code) || Object.hasOwn(backendDiagnostics, code)
-    ? code : "preview-render";
-  const catalog = Object.hasOwn(LOCAL_DIAGNOSTICS, known) ? LOCAL_DIAGNOSTICS[known] : null;
-  const backend = Object.hasOwn(backendDiagnostics, known) ? backendDiagnostics[known] : null;
-  const item = {
-    id: diagnostic.id || `local:${code}`, code,
-    category: catalog?.[0] || backend?.[0], severity: backend?.[1] || severity,
-    state: diagnostic.state === "recovered" ? "recovered" : "current",
-    complete: backend ? backend[2] : diagnostic.complete !== false,
-    message: catalog?.[1] || backend?.[3],
-    remediation: catalog?.[2] || backend?.[4],
-    ...(diagnostic.renderOwner ? { renderOwner: diagnostic.renderOwner } : {}),
-  };
-  state.localDiagnostics = state.localDiagnostics.filter((entry) => entry.id !== item.id);
-  state.localDiagnostics.push(item);
-  // Active failures belong to the current surface, not bounded diagnostic history.
-  const history = state.localDiagnostics.filter((entry) =>
-    entry.state === "recovered" || entry.complete !== false).slice(-20);
-  state.localDiagnostics = state.localDiagnostics.filter((entry) =>
-    (entry.state !== "recovered" && entry.complete === false) || history.includes(entry));
-  renderDiagnostics();
-}
 
-function clearRenderDiagnostics(owner) {
-  if (!owner) return;
-  const retained = state.localDiagnostics.filter((item) => item.renderOwner !== owner);
-  if (retained.length === state.localDiagnostics.length) return;
-  state.localDiagnostics = retained;
-  renderDiagnostics();
-}
-
-const { recoverActionTransportDiagnostics, noteTransportFailure, noteTransportHealthy, renderTransportStatus, authHeaders, request, requestAction, reconcileUncertainAction } = initTransport({
-  state, ui, addDiagnostic, renderDiagnostics, updateActionStatus, announceStatus, completeActionDrafts, composer, commandPicker
+function renderActivity() { workbench.activity(state.snapshot); }
+/** @param {string} id @param {Receipt["target"]} [source] */
+function viewActivityMessage(id, source) { workbench.viewActivityMessage(id, source); }
+const diagnostics = createDiagnostics({
+  ui, viewActivityMessage,
+  announceStatus: (message, urgent) => { state.lastAnnouncement = null; announceStatus(message, urgent); },
+  changed: (report) => { state.diagnostics = report.diagnostics; if (!state.closed) state.complete = report.complete; },
 });
+/** @param {Diagnostic} item */
+function addDiagnostic(item) { diagnostics.add(item); }
+/** @param {string | null} owner */
+function clearRenderDiagnostics(owner) { diagnostics.clearRender(owner); }
+function renderDiagnostics() { diagnostics.update(state.snapshot, state.publishedRevision, state.closed); }
+const presentation = createPresentation({
+  ui, initialProfile: state.profile, changed: (report) => Object.assign(state, report),
+  addDiagnostic, diagnostics, renderDiagnostics, pageIntent, drainIntents,
+});
+function getHostDimensions() { return presentation.dimensions(); }
+function queuePresentation() { presentation.queue(); }
+function updateCaptureRecipe() { presentation.recipe(); }
+const connection = initConnection({
+  element: ui.transportStatus, changed: (report) => { state.transport = report; updateActionStatus(); },
+  addDiagnostic, announceStatus,
+  recoverDiagnostics: (codes, message) => diagnostics.recover(codes, message),
+});
+const { noteTransportFailure, noteTransportHealthy, renderTransportStatus } = connection;
+/** @param {string} message @param {boolean} [urgent] */
 function announceStatus(message, urgent = false) {
   if (message === state.lastAnnouncement) return;
   state.lastAnnouncement = message;
@@ -753,56 +413,13 @@ function announceStatus(message, urgent = false) {
   ui.liveStatus.textContent = message;
 }
 
-const FONT_REQUIREMENTS = [
-  { family: "Noto Sans", css: 'normal 16px "Noto Sans"', sample: "Discord Preview" },
-  { family: "Noto Sans", css: 'italic 16px "Noto Sans"', sample: "Italic Preview" },
-  { family: "Noto Sans Mono", css: 'normal 16px "Noto Sans Mono"', sample: "const x = 1;" },
-  { family: "Noto Color Emoji", css: 'normal 16px "Noto Color Emoji"', sample: "👩🏽‍💻❤️‍🔥" },
-  { family: "Noto Sans Arabic", css: 'normal 16px "Noto Sans Arabic"', sample: "مرحبا بالعالم" },
-  { family: "Noto Sans Hebrew", css: 'normal 16px "Noto Sans Hebrew"', sample: "שלום עולם" },
-  { family: "Noto Sans Devanagari", css: 'normal 16px "Noto Sans Devanagari"', sample: "नमस्ते दुनिया" },
-  { family: "Noto Sans SC", css: 'normal 16px "Noto Sans SC"', sample: "你好世界" },
-];
-let requiredFontsPromise;
 
-async function loadRequiredFonts() {
-  if (!document.fonts?.load || !document.fonts?.check) {
-    throw new Error("This browser does not expose the CSS Font Loading API.");
-  }
-  if (!requiredFontsPromise) {
-    requiredFontsPromise = Promise.all(FONT_REQUIREMENTS.map(async (requirement) => {
-      try {
-        await document.fonts.load(requirement.css, requirement.sample);
-        const loaded = document.fonts.check(requirement.css, requirement.sample);
-        return { ...requirement, loaded };
-      } catch {
-        return { ...requirement, loaded: false, error: "font load failed" };
-      }
-    }));
-  }
-  const faces = await requiredFontsPromise;
-  const missing = faces.filter((face) => !face.loaded).map((face) => ({
-    family: face.family,
-    sample: face.sample,
-    error: face.error || "font face or certified glyphs are unavailable",
-  }));
-  state.fontStatus = {
-    loaded: faces.filter((face) => face.loaded).map((face) => face.family),
-    missing,
-    faces: faces.map((face) => ({ family: face.family, sample: face.sample, loaded: face.loaded })),
-  };
-  if (missing.length) {
-    const names = missing.map((face) => face.family).join(", ");
-    throw new Error(`Packaged preview fonts failed to load: ${names}. Reinstall simcord[preview] and retry.`);
-  }
-  return faces;
-}
-
+/** @param {number} generation @param {Promise<unknown>[]} pendingMedia */
 async function waitReady(generation, pendingMedia) {
   let fontError = null;
   try {
     await Promise.all([...(pendingMedia || []), ...state.pickerPendingMedia]);
-    await loadRequiredFonts();
+    await presentation.fonts();
     await nextFrames();
   } catch (error) {
     fontError = error;
@@ -818,453 +435,66 @@ async function waitReady(generation, pendingMedia) {
       complete: false,
     });
   }
-  reconcileScrollIntent();
-  if (state.scrollIntent?.policy === "target") state.scrollIntent = captureScrollIntent();
+  timeline.ready();
   state.ready = true;
   ui.app.setAttribute("aria-busy", "false");
 }
 
-function profileFromSnapshot(snapshot) {
-  const configured = snapshot?.profile || {};
-  return {
-    ...state.profile,
-    width: Number(configured.width ?? 960),
-    height: Number(configured.height ?? 720),
-    locale: configured.locale || state.profile.locale || "en-US",
-    timezone: configured.timezone || state.profile.timezone || "UTC",
-    presentationTime: configured.presentationTime || state.profile.presentationTime || null,
-    reducedMotion: configured.reducedMotion ?? state.profile.reducedMotion,
-    mediaTime: Number.isFinite(configured.mediaTime) ? configured.mediaTime : null,
-  };
-}
 
-function applyProfile() {
-  const presentation = state.snapshot?.presentation || {};
-  const viewport = presentation.viewport || { width: state.profile.width, height: state.profile.height };
-  const width = Number(viewport.width) || state.profile.width;
-  const height = Number(viewport.height) || state.profile.height;
-  const fixed = presentation.display === "fixed";
-  ui.app.classList.toggle("presentation-fixed", fixed);
-  ui.app.classList.toggle("presentation-responsive", !fixed);
-  ui.app.style.setProperty("--preview-width", `${width}px`);
-  ui.app.style.setProperty("--preview-height", `${height}px`);
-  ui.app.style.width = `${width}px`;
-  ui.app.style.height = `${height}px`;
-  const exact = presentation.exactProfile || { width, height };
-  if (!state.queuedPageIntents.configure_presentation && state.pendingAction?.kind !== "configure_presentation") {
-    for (const [field, value] of [[ui.width, fixed ? exact.width : width], [ui.height, fixed ? exact.height : height]]) {
-      if (!fixed || Number(field.value) === Number(value)) delete field.dataset.dirty;
-      if (!field.dataset.dirty) field.value = String(value);
-    }
-    ui.display.value = presentation.display || "responsive";
-    ui.layout.value = presentation.layout || state.snapshot?.layout || "message";
-  }
-  ui.width.readOnly = ui.display.value !== "fixed";
-  ui.height.readOnly = ui.display.value !== "fixed";
-  renderPresentationStatus();
-}
-
-function loadAsset(assetId, options = {}) {
-  const { download = false, capture = false, poster = false, mediaTime = null } = options;
-  if (!state.snapshot?.assets?.[assetId] || state.snapshot.assets[assetId].available === false) {
-    return Promise.reject(new Error("asset is unavailable"));
-  }
-  const params = new URLSearchParams();
-  if (download) params.set("download", "1");
-  if (capture) params.set("capture", "1");
-  if (poster) params.set("poster", "1");
-  if (mediaTime !== null && mediaTime !== undefined) params.set("media_time", String(mediaTime));
-  const suffix = params.size ? `?${params.toString()}` : "";
-  const key = `${assetId}:${suffix}`;
-  const cached = state.objectUrls.get(key);
-  if (cached) return Promise.resolve(cached);
-  const epoch = state.assetEpoch;
-  const requestKey = `${epoch}:${key}`;
-  const pending = state.assetLoads.get(requestKey);
-  if (pending) return pending;
-  const request = fetch(`/api/assets/${encodeURIComponent(assetId)}${suffix}`, { headers: authHeaders() }).then(async (response) => {
-    if (!response.ok) throw new Error(`asset request failed (${response.status})`);
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    if (epoch !== state.assetEpoch || !state.snapshot?.assets?.[assetId]
-      || state.snapshot.assets[assetId].available === false || state.closed) {
-      URL.revokeObjectURL(url);
-      throw new Error("stale asset generation");
-    }
-    const manifest = state.snapshot?.assets?.[assetId];
-    if (!download && manifest) {
-      const metadata = response.headers.get("X-Simcord-Media-Metadata");
-      if (metadata) Object.assign(manifest, JSON.parse(metadata));
-      const width = Number(response.headers.get("X-Display-Width"));
-      const height = Number(response.headers.get("X-Display-Height"));
-      if (width > 0 && height > 0) {
-        manifest.displayReady = true;
-        manifest.displayWidth = width;
-        manifest.displayHeight = height;
-      }
-      if (capture && mediaTime !== null && mediaTime !== undefined) {
-        state.mediaCaptureTimes[assetId] = Number(response.headers.get("X-Media-Time") || mediaTime);
-      }
-      state.mediaMetadata[assetId] = {
-        kind: manifest.mediaKind,
-        duration: manifest.duration,
-        sourceCodecs: manifest.sourceCodecs,
-        displayCodecs: manifest.displayCodecs,
-        transformation: manifest.transformation,
-        qualityDifferences: manifest.qualityDifferences,
-        effectiveMediaTime: manifest.effectiveMediaTime,
-        workerMemoryLimited: manifest.workerMemoryLimited,
-      };
-    }
-    state.objectUrls.set(key, url);
-    return url;
-  }).finally(() => {
-    if (state.assetLoads.get(requestKey) === request) state.assetLoads.delete(requestKey);
-  });
-  state.assetLoads.set(requestKey, request);
-  return request;
-}
+/** @param {string} id @param {AssetOptions} [options] */
+function loadAsset(id, options) { return assets.load(id, options); }
 
 
+
+/** @param {unknown} value */
 function fingerprint(value) {
   return value ? JSON.stringify(value) : "";
 }
 
 
 
-function messageRenderOptions(snapshot, pendingMedia, message, channelLayout) {
-  const pollKey = (item) => `poll:${state.contextId}:${item.id}`;
-  const renderOwner = message ? `message:${message.id}` : null;
-  return {
-    drafts: state.drafts,
-    candidates: snapshot.candidates || {},
-    assets: snapshot.assets || {},
-    contextId: state.contextId,
-    viewerId: snapshot.viewerId,
-    spoilerState: state.spoilerState,
-    locale: state.profile.locale,
-    timezone: state.profile.timezone,
-    presentationTime: state.profile.presentationTime,
-    mediaTime: state.profile.mediaTime,
-    reducedMotion: state.profile.reducedMotion,
-    onMediaCaptureTime: (assetId, mediaTime) => {
-      state.mediaCaptureTimes[assetId] = mediaTime;
-      const manifest = snapshot.assets?.[assetId];
-      if (manifest) {
-        manifest.effectiveMediaTime = mediaTime;
-        state.mediaMetadata[assetId] = {
-          kind: manifest.mediaKind,
-          duration: manifest.duration,
-          sourceCodecs: manifest.sourceCodecs,
-          displayCodecs: manifest.displayCodecs,
-          transformation: manifest.transformation,
-          qualityDifferences: manifest.qualityDifferences,
-          effectiveMediaTime: mediaTime,
-          workerMemoryLimited: manifest.workerMemoryLimited,
-        };
-      }
-    },
-    dropdown: state.dropdown,
-    onDiagnostic: (diagnostic) => addDiagnostic({
-      ...diagnostic,
-      ...(renderOwner ? { id: `local:render:${renderOwner}:${diagnostic.code}`, renderOwner } : {}),
-    }),
-    onInit: (key, value) => initSelectDraft(key, value, state.drafts),
-    identityEntries,
-    identityPending: (key) => state.pendingSelectValidations.has(key),
-    candidateQuery: (key) => state.candidateQueries.get(key),
-    onCandidateQuery: queueCandidateQuery,
-    selectionStatus: (key) => state.selectStatuses.get(key)?.message || "",
-    selectionInvalid: (key) => state.selectStatuses.get(key)?.invalid === true,
-    candidateLoading,
-    onOpen: openDropdown,
-    onDraft: updateDraft,
-    onPremiumActivate: () => {
-      state.externalNotice = "Premium purchases are handled by Discord outside this preview. No purchase was started.";
-      updateActionStatus();
-    },
-    onClick: (controlKey) => dispatch("click", { control_key: controlKey }),
-    onCommit: commitDropdown,
-    onCancel: cancelDropdown,
-    onNavigate: navigateDropdown,
-    onClear: clearSelection,
-    loadAsset,
-    onLocalRender: () => localRender(true),
-    pendingMedia,
-    channelLayout,
-    onReply: channelLayout && snapshot.channel?.canSendMessages ? (message) => composer.setReplyTo(message) : null,
-    onEdit: channelLayout ? (message) => composer.setEditMessage(message) : null,
-    onDelete: channelLayout ? (item) => {
-      if (window.confirm("Delete this message? This cannot be undone.")) {
-        dispatch("delete_message", { target_id: String(item.id), confirmed: true });
-      }
-    } : null,
-    onPin: channelLayout ? (item) => dispatch("set_pinned", {
-      target_id: String(item.id),
-      pinned: !item.pinned,
-    }) : null,
-    onReaction: (item, reaction) => {
-      const emoji = reaction.emoji || {};
-      const key = emoji.id ? `${emoji.name || ""}:${emoji.id}` : String(emoji.name || "");
-      dispatch("set_reaction", {
-        target_id: String(item.id),
-        emoji: key,
-        reacted: !reaction.viewer_reacted,
-      });
-    },
-    pollAnswers: (item) => state.pollDrafts.get(pollKey(item)),
-    pollShowingResults: (item) => state.pollResults.has(pollKey(item)),
-    onPollResults: (item, showing) => {
-      if (showing) state.pollResults.add(pollKey(item));
-      else state.pollResults.delete(pollKey(item));
-      localRender(true);
-    },
-    onPollDraft: (item, answers) => {
-      state.pollDrafts.set(pollKey(item), answers.map(String));
-      localRender(true);
-    },
-    onPollSubmit: (item, answers) => dispatch("set_poll_votes", {
-      target_id: String(item.id),
-      answer_ids: answers.map(String),
-    }),
-  };
-}
 
-const { renderChannelTimeline, captureScrollIntent, reconcileScrollIntent } = initTimeline({
-  state, ui, candidateLoading, fingerprint, clearRenderDiagnostics, messageRenderOptions
+/** @param {Parameters<ReturnType<typeof createSurfaces>["options"]>} args */
+function messageRenderOptions(...args) { return surfaces.options(...args); }
+const timeline = initTimeline({
+  ui, candidateLoading, fingerprint, clearRenderDiagnostics, messageRenderOptions, dispatch,
+  candidateFingerprint: (scope) => selections.fingerprint(scope),
+  onScrollLayout: () => fitOpenDropdowns(),
 });
-
-function actionResultMessage(action, kind) {
-  if (action?.uncertain || state.transport.uncertainRequestId) return "Action outcome uncertain. It will not be retried.";
-  if (action?.rejected || ["rejected", "failed", "timeout", "cancelled"].includes(action?.settlement)
-    || action?.acknowledgement === "unacknowledged") return "Action was not completed.";
-  if (action?.settlement !== "settled") return "Action is awaiting a confirmed result.";
-  return ({
-    send_message: "Message sent",
-    edit_message: "Message updated",
-    delete_message: "Message deleted",
-    set_reaction: "Reaction updated",
-    set_poll_votes: "Poll updated",
-    set_pinned: "Pin updated",
-    viewer: "Viewer switched",
-    focus: "Message opened",
-    history: "Conversation updated",
-    refresh: "Preview refreshed",
-    configure_presentation: "Viewport updated",
-    browse_messages: "Message results updated",
-    browse_candidates: "Options updated",
-    click: "Callback completed",
-    select: "Callback completed",
-    modal_submit: "Callback completed",
-  })[kind] || "Action completed";
-}
+const { renderChannelTimeline } = timeline;
 
 function updateActionStatus() {
-  const waiting = Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.publishedRevision;
-  const blocked = Boolean(state.pendingAction || waiting || state.transport.uncertainRequestId);
-  ui.send.disabled = blocked || !state.authorized || state.pinnedCapture || ui.composerForm.hidden
-    || (!state.editTargetId && !(composer.input().dataset.commandMode === "true"
-      ? state.snapshot?.channel?.canUseApplicationCommands : state.snapshot?.channel?.canSendMessages));
-  // Keep callback buttons focusable so closing a modal can still restore its opener.
-  document.querySelectorAll("button.component-button:not(.button-style-5):not(.button-style-6)").forEach((button) => {
-    button.setAttribute("aria-disabled", String(blocked || button.disabled));
-  });
-  ui.message.querySelectorAll(".message-row").forEach((row) => {
-    row.setAttribute("aria-disabled", String(!state.authorized || state.pinnedCapture));
-  });
-  ui.previous.disabled = blocked || !state.snapshot?.navigation?.hasPrevious;
-  ui.next.disabled = blocked || !state.snapshot?.navigation?.hasNext;
-  document.querySelectorAll(".select-draft-actions button").forEach((button) => {
-    button.disabled = blocked || !state.dropdown || state.pinnedCapture;
-  });
-  ui.backActivity.hidden = !state.activityBackStack.length || state.pinnedCapture;
-  const output = (state.lastAction?.outcomes || []).find((outcome) =>
-    ["response", "followup", "message", "deferred"].includes(outcome.kind) && outcome.messageId);
-  ui.viewActionOutput.hidden = !output || state.pinnedCapture || !state.authorized;
-  ui.viewActionOutput.disabled = blocked;
-  const pendingLabel = ({
-    browse_messages: "Updating message results…",
-    browse_candidates: "Updating options…",
-    send_message: "Sending message…",
-    edit_message: "Saving message…",
-    delete_message: "Deleting message…",
-    viewer: "Switching viewer…",
-    focus: "Opening message…",
-    refresh: "Updating preview…",
-    configure_presentation: "Updating viewport…",
-    history: "Loading conversation…",
-  })[state.pendingAction?.kind] || (state.pendingAction ? "Completing action…" : "");
-  const status = state.externalNotice
-    || (state.closed ? "Preview session ended."
-      : state.transport.uncertainRequestId || state.transport.state === "uncertain"
-        ? "Action outcome uncertain. It will not be retried."
-        : state.transport.state === "error"
-          ? "Connection interrupted; trying again…"
-          : pendingLabel || (waiting || state.queuedQueries.size || Object.keys(state.queuedPageIntents).length
-            ? "Updating preview…"
-            : state.lastAction
-              ? actionResultMessage(state.lastAction, state.lastActionKind)
-              : !state.authorized
-                ? "Access to this preview is unavailable."
-                : state.ready ? "Preview ready" : "Loading preview…"));
-  ui.action.textContent = status;
-}
-function renderActivity() {
-  ui.activity.replaceChildren();
-  const receipts = state.snapshot?.activity || [];
-  if (!receipts.length) {
-    ui.activity.append(Object.assign(document.createElement("li"), { textContent: "No activity yet." }));
-    return;
-  }
-  const outcomeLabels = {
-    response: "Response",
-    followup: "Follow-up",
-    source_edit: "Source message updated",
-    message: "Message",
-    modal: "Form opened",
-    no_output: "No response",
-    deferred: "Response deferred",
-    unavailable: "Response unavailable",
-  };
-  receipts.slice(-20).forEach((receipt) => {
-    const row = document.createElement("li");
-    const status = receipt.uncertain ? "Outcome uncertain"
-      : receipt.rejected || ["rejected", "failed", "timeout", "cancelled"].includes(receipt.settlement)
-        || receipt.acknowledgement === "unacknowledged" ? "Action was not completed"
-        : receipt.settlement === "settled"
-          ? receipt.dispatched ? "Callback completed" : "Preview updated"
-          : "Action is awaiting a confirmed result";
-    row.append(Object.assign(document.createElement("p"), {
-      className: "activity-result",
-      textContent: status,
-    }));
-    const details = document.createElement("details");
-    details.append(Object.assign(document.createElement("summary"), { textContent: "Technical details" }));
-    const fields = [
-      `Request ${receipt.requestId || "unavailable"}`,
-      Number.isInteger(receipt.sequence) ? `sequence ${receipt.sequence}` : "",
-      receipt.dispatch || "",
-      receipt.acknowledgement || "",
-      receipt.settlement || "",
-      receipt.uncertain ? "outcome uncertain" : "",
-      receipt.target?.messageId ? `Target message ${receipt.target.messageId}` : "",
-      receipt.target?.controlKey ? `Control ${receipt.target.controlKey}` : "",
-    ].filter(Boolean);
-    details.append(Object.assign(document.createElement("p"), { textContent: fields.join(" · ") }));
-    row.append(details);
-    const outcomes = document.createElement("ul");
-    (receipt.outcomes || []).forEach((outcome) => {
-      const item = document.createElement("li");
-      const kind = Object.hasOwn(outcomeLabels, outcome.kind) ? outcome.kind : "unavailable";
-      item.append(document.createTextNode(outcomeLabels[kind]));
-      if (["response", "followup", "source_edit", "message", "deferred"].includes(kind) && outcome.messageId) {
-        const view = document.createElement("button");
-        view.type = "button";
-        view.textContent = "View response";
-        view.addEventListener("click", () => viewActivityMessage(String(outcome.messageId), receipt.target));
-        item.append(" ", view);
-      }
-      outcomes.append(item);
-    });
-    if (outcomes.childElementCount) row.append(outcomes);
-    ui.activity.append(row);
+  syncActionContext();
+  const blocked = actions.admissionBlocked() || Boolean(state.transport.uncertainRequestId);
+  commandPicker.setContext({ authorized: state.authorized, pendingKind: state.pendingAction?.kind || null });
+  composer.setAdmission({ blocked, authorized: state.authorized, pinnedCapture: state.pinnedCapture });
+  selections.admission({ blocked, pendingAction: state.pendingAction, pinnedCapture: state.pinnedCapture });
+  surfaces.admission(blocked);
+  timeline.admission(blocked);
+  modal.admission(blocked);
+  workbench.admission({ blocked, authorized: state.authorized, pinnedCapture: state.pinnedCapture, receipt: state.lastAction });
+  ui.action.textContent = actions.message({
+    receipt: state.lastAction, kind: state.lastActionKind, externalNotice: state.externalNotice,
+    ready: state.ready, transport: state.transport,
   });
 }
 
-function viewActivityMessage(messageId, source = null) {
-  if (!/^\d+$/.test(messageId)) return;
-  const current = String(source?.messageId || state.targetId || "");
-  if (current && /^\d+$/.test(current) && current !== messageId) {
-    state.activityBackStack.push({ targetId: current, controlKey: source?.controlKey || state.focusKey });
-    state.activityBackStack = state.activityBackStack.slice(-20);
-  }
-  state.activityReturnKey = null;
-  updateActionStatus();
-  dispatch("focus", { target_id: messageId });
-}
 
-function backActivity() {
-  const target = state.activityBackStack.pop();
-  if (!target) return;
-  state.activityReturnKey = target.controlKey;
-  updateActionStatus();
-  dispatch("focus", { target_id: target.targetId });
-}
-
-function safeSupportReport() {
-  const snapshot = state.snapshot;
-  const presentation = snapshot?.presentation;
-  if (!snapshot || typeof snapshot.runtimeVersion !== "string" || !presentation) return null;
-  return {
-    schemaVersion: 1,
-    runtimeVersion: snapshot.runtimeVersion,
-    protocolVersion: 3,
-    rendererVersion: "3",
-    display: presentation.display,
-    dimensions: {
-      viewport: clone(presentation.viewport),
-      host: clone(presentation.host),
-    },
-    publicationRevision: state.publishedRevision,
-    diagnostics: state.diagnostics.slice(-40).map((item) => ({
-      code: Object.hasOwn(backendDiagnostics, item.code) || Object.hasOwn(LOCAL_DIAGNOSTICS, item.code) ? item.code : "internal-error",
-      severity: ["error", "warning", "info"].includes(item.severity) ? item.severity : "warning",
-      state: item.state === "recovered" ? "recovered" : "current",
-      remediation: Object.hasOwn(LOCAL_DIAGNOSTICS, item.code) ? LOCAL_DIAGNOSTICS[item.code][2]
-        : Object.hasOwn(backendDiagnostics, item.code) ? backendDiagnostics[item.code][4]
-        : "Inspect authorized local diagnostics and Env.errors; correct the issue before continuing.",
-      ...((state.snapshot?.activity || []).some((receipt) => receipt.correlation === item.correlation)
-        && /^c_[A-Za-z0-9_-]{8,64}$/.test(item.correlation) ? { correlation: item.correlation } : {}),
-    })),
-  };
-}
-
-function updateCaptureRecipe(dimensions = null) {
-  if (!state.snapshot || state.pinnedCapture) return;
-  const presentation = state.snapshot.presentation || {};
-  const viewport = dimensions || state.captureViewport || presentation.viewport || {};
-  const viewer = String(state.snapshot.viewerId || "");
-  const target = String(state.snapshot.targetId || "");
-  if (!/^\d+$/.test(viewer) || !/^\d+$/.test(target) || !Number.isInteger(Number(viewport.width)) || !Number.isInteger(Number(viewport.height))) {
-    ui.captureRecipe.value = "Capture recipe unavailable until an authorized viewer, target, and viewport are available.";
-    ui.copyRecipe.disabled = true;
-    return;
-  }
-  const layout = presentation.layout || state.snapshot.layout;
-  const modalNote = state.snapshot.modal
-    ? "# Modal state is available only on the live page; this recipe identifies its authorized source message."
-    : "";
-  ui.captureRecipe.value = [
-    "# Run inside this active scenario, with preview in scope. This recipe contains private identifiers.",
-    modalNote,
-    `# Live-page checkpoint: ready, revision ${state.publishedRevision}, renderGeneration ${state.renderGeneration}; inspect pendingAction/lastAction.`,
-    `capture = await preview.screenshot(viewer=${viewer}, target=${target}, viewport=(${Number(viewport.width)}, ${Number(viewport.height)}), layout="${layout}", mode="viewport", media_time=0)`,
-  ].filter(Boolean).join("\n");
-  ui.copyRecipe.disabled = false;
-  ui.copyReport.disabled = !safeSupportReport();
-}
-
-function renderPresentationStatus() {
-  if (!ui.viewportReadout) return;
-  const presentation = state.snapshot?.presentation || {};
-  const actual = ui.app.getBoundingClientRect();
-  const host = presentation.host || state.host;
-  const viewport = presentation.viewport || { width: actual.width, height: actual.height };
-  ui.viewportReadout.textContent = [
-    `Actual ${Math.round(actual.width)} × ${Math.round(actual.height)}`,
-    `viewport ${viewport.width} × ${viewport.height}`,
-    `host ${host.width} × ${host.height}`,
-    presentation.constraint ? `constraint: ${presentation.constraint}` : "",
-  ].filter(Boolean).join(" · ");
-  const presets = ["320x700", "640x700", "960x720", "1280x900"];
-  const exact = presentation.exactProfile || state.profile;
-  const key = `${exact.width}x${exact.height}`;
-  ui.preset.value = presets.includes(key) ? key : "custom";
-}
-
-const { initSelectDraft, identityEntries, reconcileCandidateSelection, clearModalDrafts, openDropdown, updateDraft, navigateDropdown, clearSelection, commitDropdown, cancelDropdown, fitOpenDropdowns } = initSelectDrafts({
-  state, rememberFocus, restoreFocus, localRender, queueCandidateQuery, dispatch, clearModalValidation
+const selections = initSelectDrafts({
+  rememberFocus, restoreFocus, onRender: localRender, queueQuery, dispatch, clearModalValidation,
+  setFocusKey: focus.setKey,
+  changed: (report) => { state.dropdown = report.dropdown; },
+  queryPending: (controlKey, key) => state.pendingQuery?.controlKey === controlKey || actions.hasQuery(key),
 });
+const { clearModalDrafts, openDropdown, updateDraft, navigateDropdown, clearSelection, commitDropdown, cancelDropdown, fitOpenDropdowns } = selections;
+function syncSelectionContext() {
+  selections.updateContext({ pendingAction: state.pendingAction, modalHandle: state.modalHandle, pinnedCapture: state.pinnedCapture });
+}
+/** @param {string} key */
+function candidateLoading(key) { syncSelectionContext(); return selections.candidateLoading(key); }
+/** @param {Parameters<ReturnType<typeof initSelectDrafts>["queueCandidateQuery"]>} args */
+function queueCandidateQuery(...args) { syncSelectionContext(); selections.queueCandidateQuery(...args); }
+function queuePendingCandidateValidations() { syncSelectionContext(); selections.queuePendingCandidateValidations(); }
 
 function localRender(renderDom = true) {
   rememberFocus();
@@ -1277,76 +507,33 @@ function localRender(renderDom = true) {
   }
 }
 
-function scheduleScrollCorrection() {
-  if (state.scrollCorrection !== null) return;
-  state.scrollCorrection = requestAnimationFrame(() => {
-    state.scrollCorrection = null;
-    reconcileScrollIntent();
-    fitOpenDropdowns();
-  });
-}
 
-function clearModalValidation() {
-  const error = state.modalError;
-  if (error) {
-    const field = [...ui.modal.querySelectorAll(".modal-field")]
-      .find((item) => item.dataset.customId === error.controlId);
-    const message = field?.querySelector(".field-error");
-    if (message) {
-      field.querySelectorAll("[aria-invalid='true']").forEach((target) => {
-        target.removeAttribute("aria-invalid");
-        const ids = (target.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== message.id);
-        if (ids.length) target.setAttribute("aria-describedby", ids.join(" "));
-        else target.removeAttribute("aria-describedby");
-      });
-      message.remove();
-    }
-  }
-  state.modalError = null;
-  state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "modal-validation");
-}
-document.addEventListener("pointerdown", (event) => {
-  const activeWrap = event.target instanceof Element ? event.target.closest(".preview-select") : null;
-  if (!state.dropdown || activeWrap?.dataset.controlKey === state.dropdown.key) return;
-  const key = state.dropdown.key;
-  if (state.dropdown.multi) {
-    commitDropdown(key);
-    return;
-  }
-  setTimeout(() => cancelDropdown(key), 0);
+const surfaces = createSurfaces({
+  root: ui.surface, selections, composer, assets, dispatch, localRender, addDiagnostic, clearRenderDiagnostics,
+  premiumNotice: () => {
+    state.externalNotice = "Premium purchases are handled by Discord outside this preview. No purchase was started.";
+    updateActionStatus();
+  },
 });
+const modal = createModal({
+  root: ui.modal, selections, loadAsset, assetMetadata: assets.manifest, dispatch, render: localRender,
+  diagnostic: addDiagnostic, clearRenderDiagnostics, isolate: setModalIsolation, restoreFocus,
+  fallbackFocus: () => ui.messagesToggle.focus(),
+  changed: (report) => { state.modalHandle = report.modalHandle; syncSelectionContext(); },
+  clearDiagnostic: () => diagnostics.clear("modal-validation"),
+});
+function clearModalValidation() { modal.clearValidation(); }
 
-function submitModal(values) {
-  const modal = state.snapshot?.modal;
-  if (!modal || modal.handle !== state.modalHandle) return;
-  const error = validateModalValues(modal.payload || {}, values);
-  if (error) {
-    state.modalError = error;
-    state.modalErrorHandle = modal.handle;
-    state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "modal-validation");
-    addDiagnostic({
-      code: "modal-validation",
-      severity: "error",
-      message: `${error.controlId}: ${error.message}`,
-      complete: false,
-    });
-    state.lastModalFingerprint = "";
-    localRender(true);
-    return;
-  }
-  clearModalValidation();
-  state.modalErrorHandle = null;
-  dispatch("modal_submit", { modal_handle: modal.handle, values });
-}
 
+/** @param {Snapshot} snapshot @param {number} generation @param {boolean} [force] */
 function renderSnapshot(snapshot, generation, force = false) {
   if (generation !== state.renderGeneration || state.closed) return;
   state.rendering = true;
-  if (state.snapshot?.layout === "channel" && state.scrollIntent?.policy !== "target") state.scrollIntent = captureScrollIntent();
+  if (state.snapshot?.layout === "channel") timeline.begin();
   state.snapshot = snapshot;
   state.authorized = snapshot.status !== "access_denied";
   if (state.authorized) {
-    state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "access-denied");
+    diagnostics.clear("access-denied");
   }
   if (!state.authorized) {
     redactPrivateView();
@@ -1357,165 +544,50 @@ function renderSnapshot(snapshot, generation, force = false) {
   const nextGeneration = Number(snapshot.context?.generation || 0);
   const nextRevision = Number(snapshot.publishedRevision || 0);
   const nextViewer = snapshot.viewerId || null;
-  const spoilerContext = `${nextContextId || ""}:${nextViewer || ""}`;
-  if (state.spoilerContext && state.spoilerContext !== spoilerContext) state.spoilerState.clear();
-  state.spoilerContext = spoilerContext;
   state.contextId = nextContextId;
+  transport.setContext(nextContextId);
   const previousTargetId = state.targetId;
-  pruneAssetUrls(snapshot.assets || {});
   if (nextViewer !== state.viewerId) {
-    resetInteractionState();
-    state.localDiagnostics = [];
+    diagnostics.reset();
     state.lastAction = null;
   }
   if (nextViewer !== state.viewerId || snapshot.botGeneration !== state.botGeneration) {
     revokeAssets();
     force = true;
   }
+  pruneAssetUrls(snapshot.assets || {});
   state.contextGeneration = nextGeneration;
   state.botGeneration = Number(snapshot.botGeneration || 0);
   state.publishedRevision = nextRevision;
   state.observedRevision = Math.max(state.observedRevision, nextRevision);
-  state.initialPresentation ||= clone(snapshot.presentation?.exactProfile);
   state.viewerId = nextViewer;
   state.targetId = snapshot.targetId ?? null;
   const previousMediaTime = state.profile.mediaTime;
-  state.profile = profileFromSnapshot(snapshot);
+  presentation.update(snapshot, generation);
   if (previousMediaTime !== state.profile.mediaTime) {
-    state.mediaCaptureTimes = {};
-    state.mediaMetadata = {};
+    assets.clearTimes();
   }
-  applyProfile();
   updatePickers(snapshot);
   const openKey = state.dropdown?.key;
   const pendingMedia = [];
+  surfaces.updateContext(snapshot, state.profile, state.dropdown);
+  timeline.updateContext({ profile: state.profile, openKey });
   if (snapshot.layout === "channel") {
-    disposeSurface(ui.surface);
+    surfaces.clearFocused();
     pendingMedia.push(...renderChannelTimeline(snapshot, previousTargetId, force));
   } else {
-    for (const record of state.messageNodes.values()) disposeSurface(record.element);
-    ui.messageList.replaceChildren();
-    state.messageNodes.clear();
-    state.dayNodes.clear();
-    const selected = snapshot.targetId ? snapshot.messages?.[String(snapshot.targetId)] || null : null;
-    const selectedKey = selected ? String(selected.id) : null;
-    const loading = Boolean(openKey?.startsWith(`message:${selectedKey}:`) && candidateLoading(openKey));
-    const selectedFingerprint = `${fingerprint(selected)}:${state.candidateFingerprints.get(`message:${selectedKey}`) || ""}:${state.profile.mediaTime ?? ""}:${loading}:${selected?.poll ? state.profile.presentationTime : ""}`;
-    const shouldRenderMessage =
-      force || selectedKey !== state.lastMessageKey || selectedFingerprint !== state.lastMessageFingerprint;
-    if (shouldRenderMessage) {
-      clearRenderDiagnostics(`message:${state.lastMessageKey}`);
-      clearRenderDiagnostics(`message:${selectedKey}`);
-      state.lastMessageKey = selectedKey;
-      state.lastMessageFingerprint = selectedFingerprint;
-      state.pendingMedia = [];
-      renderMessage(ui.surface, selected, messageRenderOptions(snapshot, state.pendingMedia, selected, false));
-    }
-    pendingMedia.push(...state.pendingMedia);
+    timeline.reset();
+    pendingMedia.push(...surfaces.focused(snapshot, force));
   }
-  const modal = snapshot.modal && snapshot.modal.handle !== state.dismissedModal ? snapshot.modal : null;
-  const modalLoading = Boolean(openKey?.startsWith(`modal:${snapshot.modal?.handle}:`) && candidateLoading(openKey));
-  const modalKey = snapshot.modal ? `${fingerprint(snapshot.modal)}:${state.candidateFingerprints.get(`modal:${snapshot.modal.handle}`) || ""}:${modalLoading}` : "";
-  if (modal && state.modalErrorHandle !== modal.handle) {
-    clearModalValidation();
-    state.modalErrorHandle = modal.handle;
-  } else if (!modal) {
-    clearModalValidation();
-    state.modalErrorHandle = null;
-  }
-  const nextHandle = modal?.handle || null;
   const previousHandle = state.modalHandle;
-  if (nextHandle && !previousHandle) state.modalOpenerFocusKey = state.focusKey;
-  if (nextHandle !== state.modalHandle) {
-    clearModalDrafts();
-  }
-  setModalIsolation(Boolean(nextHandle));
-  ui.modal.hidden = !nextHandle;
-  if (force || modalKey !== state.lastModalFingerprint) {
-    const scrollTop = ui.modal.querySelector(".modal-body")?.scrollTop || 0;
-    clearRenderDiagnostics(state.modalHandle ? `modal:${state.modalHandle}` : null);
-    if (modal) clearRenderDiagnostics(`modal:${modal.handle}`);
-    state.modalPendingMedia = [];
-    const rendered = renderModal(ui.modal, modal?.payload, {
-      drafts: state.modalDrafts,
-      dropdown: state.dropdown,
-      candidates: snapshot.candidates || {},
-      modalHandle: modal?.handle || "",
-      isTouched: (key) => state.modalTouched.has(key),
-      loadAsset,
-      assets: snapshot.assets || {},
-      contextId: state.contextId,
-      spoilerState: state.spoilerState,
-      validationError: state.modalError,
-      scrollTop,
-      locale: state.profile.locale,
-      timezone: state.profile.timezone,
-      mediaTime: state.profile.mediaTime,
-      presentationTime: state.profile.presentationTime,
-      pendingMedia: state.modalPendingMedia,
-      onInit: (key, value) => initSelectDraft(key, value, state.modalDrafts),
-      identityEntries,
-      identityPending: (key) => state.pendingSelectValidations.has(key),
-      candidateQuery: (key) => state.candidateQueries.get(key),
-      onCandidateQuery: queueCandidateQuery,
-      selectionStatus: (key) => state.selectStatuses.get(key)?.message || "",
-      selectionInvalid: (key) => state.selectStatuses.get(key)?.invalid === true,
-      candidateLoading,
-      onSelectOpen: openDropdown,
-      onSelectDraft: (key, value, multi, minimum, maximum, selected, entry) => {
-        clearModalValidation();
-        state.modalTouched.add(key);
-        updateDraft(key, value, multi, minimum, maximum, selected, entry);
-      },
-      onSelectCommit: commitDropdown,
-      onSelectCancel: cancelDropdown,
-      onNavigate: navigateDropdown,
-      onClear: clearSelection,
-      onDraft: (key, value) => {
-        clearModalValidation();
-        state.modalDrafts.set(key, value);
-        state.modalTouched.add(key);
-        localRender(false);
-      },
-      onFiles: (key, files) => {
-        clearModalValidation();
-        state.modalDrafts.set(key, files);
-        state.modalTouched.add(key);
-        localRender(true);
-      },
-      onCancel: () => {
-        state.dropdown = null;
-        clearModalValidation();
-        state.dismissedModal = state.modalHandle;
-        clearModalDrafts();
-        state.modalErrorHandle = null;
-        localRender(true);
-      },
-      onSubmit: submitModal,
-      onDiagnostic: (diagnostic) => addDiagnostic({
-        ...diagnostic,
-        id: `local:render:modal:${modal.handle}:${diagnostic.code}`,
-        renderOwner: `modal:${modal.handle}`,
-      }),
-    });
-    if (nextHandle && state.modalError && rendered.errorTarget) {
-      rendered.errorTarget.scrollIntoView({ block: "nearest" });
-      rendered.errorTarget.focus({ preventScroll: true });
-    } else if (nextHandle && !previousHandle) requestAnimationFrame(() => rendered.focus?.focus());
-    else if (nextHandle) {
-      fitOpenDropdowns();
-      restoreFocus();
-    }
-    else if (previousHandle) {
-      if (!restoreFocus(state.modalOpenerFocusKey)) ui.messagesToggle.focus();
-    }
-  }
-  pendingMedia.push(...state.modalPendingMedia);
-  state.modalHandle = nextHandle;
-  state.lastModalFingerprint = modalKey;
+  pendingMedia.push(...modal.update(snapshot, {
+    profile: state.profile, dropdown: state.dropdown, focusKey: focus.report().key, spoilerOptions: surfaces.spoilerOptions,
+  }, force));
+  const nextHandle = state.modalHandle;
   renderDiagnostics();
   updateActionStatus();
   renderActivity();
+  connection.update(snapshot.publication?.publishedAt, state.profile.presentationTime);
   renderTransportStatus();
   updateCaptureRecipe();
   fitOpenDropdowns();
@@ -1523,9 +595,9 @@ function renderSnapshot(snapshot, generation, force = false) {
   state.renderPendingMedia = pendingMedia;
   state.rendering = false;
   waitReady(generation, pendingMedia).then(() => {
-    if (generation !== state.renderGeneration || !state.activityReturnKey) return;
-    const key = state.activityReturnKey;
-    state.activityReturnKey = null;
+    if (generation !== state.renderGeneration) return;
+    const key = workbench.returnKey();
+    if (!key) return;
     restoreFocus(key);
   });
   if (!nextHandle && !previousHandle) {
@@ -1536,33 +608,18 @@ function renderSnapshot(snapshot, generation, force = false) {
   }
 }
 
-window.addEventListener("resize", fitOpenDropdowns);
+window.addEventListener("resize", () => fitOpenDropdowns());
 document.addEventListener("scroll", (event) => {
   if (!(event.target instanceof Element) || !event.target.closest(".select-list")) fitOpenDropdowns();
 }, true);
 
+/** @param {unknown} snapshot @param {boolean} [force] @returns {Promise<boolean>} */
 async function installSnapshot(snapshot, force = false) {
   if (!snapshot || state.closed) return false;
-  const compatible = Number(snapshot.protocolVersion) === 3
-    && snapshot.context && typeof snapshot.context.id === "string"
-    && Number.isInteger(snapshot.context.generation)
-    && Array.isArray(snapshot.messageIndex) && snapshot.messageIndex.length <= 50
-    && snapshot.messages && typeof snapshot.messages === "object" && !Array.isArray(snapshot.messages)
-    && Array.isArray(snapshot.timeline)
-    && snapshot.history && typeof snapshot.history === "object"
-    && snapshot.navigation && typeof snapshot.navigation === "object"
-    && snapshot.presentation && typeof snapshot.presentation === "object"
-    && snapshot.publication && typeof snapshot.publication === "object"
-    && snapshot.candidates && typeof snapshot.candidates === "object" && !Array.isArray(snapshot.candidates)
-    && Array.isArray(snapshot.activity)
-    && Number.isInteger(snapshot.publishedRevision);
-  const generationsValid = Number.isInteger(snapshot.botGeneration) && snapshot.botGeneration >= 0
-    && Number.isInteger(snapshot.context?.generation) && snapshot.context.generation >= 0;
-  if (compatible && generationsValid && !session.accept(snapshot)) return false;
-  if (!compatible || !generationsValid) {
+  if (!session.compatible(snapshot)) {
     terminateSession("Preview protocol 3 is required; reload this page.");
     state.protocolCompatible = false;
-    state.localDiagnostics = [{
+    diagnostics.replace([{
       id: "local:protocol-mismatch",
       code: "protocol-mismatch",
       category: "protocol",
@@ -1571,292 +628,86 @@ async function installSnapshot(snapshot, force = false) {
       message: "Preview protocol 3 is required; reload this page.",
       remediation: "Reload the Preview URL to receive a compatible snapshot.",
       complete: false,
-    }];
+    }]);
     renderDiagnostics();
     ui.app.setAttribute("aria-busy", "false");
     return false;
   }
+  if (!session.accept(snapshot)) return false;
   state.protocolCompatible = true;
   state.pinnedCapture = snapshot.context.id.startsWith("capture_");
   if (state.pinnedCapture) document.body.dataset.managedCapture = "true";
   else delete document.body.dataset.managedCapture;
-  const action = state.pendingAction;
-  const query = action?.queryIntent;
-  const receipt = state.lastAction;
-  const validatedControl = query && action.kind === "browse_candidates" && !state.pendingQuery
-    && receipt?.requestId === action.requestId && !receipt.rejected && receipt.settlement === "settled"
-    && snapshot.publishedRevision >= receipt.revision && snapshot.botGeneration === action.botGeneration
-    && state.queryIntents.get(query.key) === query.token
-    && query.scope === `${snapshot.viewerId}:${snapshot.context.generation}`
-    && (!query.body.modal_handle || snapshot.modal?.handle === query.body.modal_handle)
-    && Array.isArray(query.body.selected_values)
-    && fingerprint(query.body.selected_values) === fingerprint(state.selectDrafts.get(query.body.control_key) || [])
-      ? query.body.control_key : null;
-  const groups = new Map();
-  for (const [key, descriptor] of Object.entries(snapshot.candidates || {})) {
-    const scope = key.split(":").slice(0, 2).join(":");
-    if (!groups.has(scope)) groups.set(scope, []);
-    groups.get(scope).push([key, descriptor]);
-  }
-  for (const [key, values] of state.selectDrafts) {
-    if (!state.selectValidationRevisions.has(key)) continue;
-    const selected = snapshot.candidates?.[key]?.selected;
-    const verified = state.selectVerifiedValues.get(key);
-    const selectedValues = Array.isArray(selected)
-      ? new Set(selected.map((entry) => String(entry.value ?? entry.id)))
-      : null;
-    const selectedCoversDraft = selectedValues
-      && values.every((value) => selectedValues.has(String(value)));
-    if (!values.length) {
-      state.selectValidationRevisions.set(key, Number(snapshot.publishedRevision));
-      state.selectVerifiedValues.set(key, []);
-      state.pendingSelectValidations.delete(key);
-    } else if (Array.isArray(selected)
-      && (key === validatedControl || selectedCoversDraft
-        || (Array.isArray(verified) && fingerprint(verified) === fingerprint(values)))) {
-      reconcileCandidateSelection(key, selected, values, snapshot.publishedRevision);
-    } else {
-      state.pendingSelectValidations.set(key, Number(snapshot.publishedRevision));
-      if (state.dropdown?.key === key) state.dropdown = null;
-    }
-  }
-  state.candidateFingerprints = new Map([...groups].map(([scope, entries]) => [
-    scope,
-    fingerprint(entries.map(([key, descriptor]) => [
-      key, descriptor, state.pendingSelectValidations.has(key),
-    ])),
-  ]));
+  const validatedControl = actions.validatedCandidate(snapshot, selections.values);
   if (snapshot.viewerId !== state.viewerId || snapshot.botGeneration !== state.botGeneration) resetInteractionState();
+  selections.observe(snapshot, validatedControl);
   state.observedRevision = snapshot.publishedRevision;
   state.statusFingerprint = queryStatusFingerprint(snapshot);
   rememberFocus();
   if (!state.pendingAction && "lastAction" in snapshot) {
     if (state.lastAction?.requestId !== snapshot.lastAction?.requestId) state.lastActionKind = null;
-    state.lastAction = snapshot.lastAction;
+    state.lastAction = snapshot.lastAction || null;
   }
   reconcileUncertainAction(snapshot);
   const generation = beginRender();
   renderSnapshot(snapshot, generation, force);
+  syncActionContext();
   queuePendingCandidateValidations();
   return true;
 }
 
-function validateModalValues(modal, values) {
-  const controls = {};
-  const uploadLimit = 10 * 1024 * 1024;
-  let totalUploadBytes = 0;
-  const walk = (node) => {
-    if (!node || typeof node !== "object") return;
-    if (typeof node.custom_id === "string") controls[node.custom_id] = node;
-    Object.values(node).forEach((value) => Array.isArray(value) ? value.forEach(walk) : walk(value));
-  };
-  (modal.components || []).forEach(walk);
-  for (const [id, component] of Object.entries(controls)) {
-    const type = Number(component.type);
-    const supplied = Object.prototype.hasOwnProperty.call(values, id);
-    const value = values[id];
-    const required = component.required === true
-      || (component.required === undefined && (type === 4 || [3, 5, 6, 7, 8].includes(type)));
-    const invalid = (message) => ({ controlId: id, message });
-    if (type === 4) {
-      const text = String(value ?? component.value ?? component.default ?? "");
-      const length = Array.from(text).length;
-      if (required && !text) return invalid("This field is required.");
-      if (text && component.min_length !== undefined && length < Number(component.min_length)) {
-        return invalid(`Enter at least ${component.min_length} characters.`);
-      }
-      if (component.max_length !== undefined && length > Number(component.max_length)) {
-        return invalid(`Enter no more than ${component.max_length} characters.`);
-      }
-    } else if ([3, 5, 6, 7, 8, 19, 22].includes(type)) {
-      const selected = Array.isArray(value) ? value : [];
-      const minimum = Number(component.min_values ?? 1);
-      const maximum = Number(component.max_values ?? (type === 22 ? component.options?.length || 1 : 1));
-      if (required && selected.length === 0) return invalid("Choose at least one value.");
-      if ((selected.length || required) && selected.length < minimum) {
-        return invalid(`Choose at least ${minimum} value(s).`);
-      }
-      if (selected.length > maximum) return invalid(`Choose no more than ${maximum} value(s).`);
-      if (type === 19) {
-        for (const file of selected) {
-          if (!file || typeof file.size !== "number") return invalid("Choose a valid file.");
-          if (file.size > uploadLimit) return invalid(`${file.name} exceeds the 10 MiB per-file limit.`);
-          totalUploadBytes += file.size;
-          if (totalUploadBytes > 25 * 1024 * 1024) {
-            return invalid("Uploads exceed the 25 MiB aggregate limit.");
-          }
-        }
-      }
-    } else if (type === 21) {
-      if (required && !value) return invalid("Choose one option.");
-      if (value != null && !(component.options || []).some((item) => String(item.value) === String(value))) {
-        return invalid("Choose an available option.");
-      }
-    } else if (type === 23 && supplied && typeof value !== "boolean") {
-      return invalid("Choose a valid checkbox value.");
-    }
-  }
-  return null;
-}
-function normalizeSearch(value) {
-  return Array.from(String(value || "").normalize("NFC")).slice(0, 128).join("");
-}
 
-function pageIntent(kind, body) {
-  state.queuedPageIntents[kind] = body;
-  updateActionStatus();
-}
-
+/** @param {string} kind @param {ActionBody} body */
+function pageIntent(kind, body) { syncActionContext(); actions.pageIntent(kind, body); }
+/** @param {string} key @param {string} kind @param {ActionBody} body @param {ActionMetadata | null} [metadata] */
 function queueQuery(key, kind, body, metadata = null) {
-  const intent = { key, kind, body, metadata, scope: `${state.viewerId}:${state.contextGeneration}`, token: ++state.queryIntent };
-  state.queryIntents.set(key, intent.token);
-  state.queuedQueries.set(key, intent);
-  state.queuedQuery = intent;
-  updateActionStatus();
-  drainIntents();
-}
-
-function candidateLoading(controlKey) {
-  const intentKey = `candidate:${controlKey}:${state.modalHandle || ""}`;
-  return state.pendingQuery?.controlKey === controlKey
-    || state.queuedQueries.has(intentKey) || state.selectQueryTimers.has(intentKey);
-}
-
-function queueCandidateQuery(controlKey, query, cursor = null, modalHandle = null) {
-  if (state.pinnedCapture || typeof controlKey !== "string") return;
-  const normalized = normalizeSearch(query);
-  state.candidateQueries.set(controlKey, normalized);
-  const key = `candidate:${controlKey}:${modalHandle || ""}`;
-  clearTimeout(state.selectQueryTimers.get(key));
-  const body = {
-    control_key: controlKey,
-    query: normalized,
-    cursor: typeof cursor === "string" ? cursor : null,
-    ...(modalHandle ? { modal_handle: modalHandle } : {}),
-    selected_values: [...(state.selectDrafts.get(controlKey) || [])],
-  };
-  if (cursor == null) {
-    const timer = window.setTimeout(() => {
-      state.selectQueryTimers.delete(key);
-      queueQuery(key, "browse_candidates", body);
-    }, 180);
-    state.selectQueryTimers.set(key, timer);
-  } else {
-    state.selectQueryTimers.delete(key);
-    queueQuery(key, "browse_candidates", body);
-  }
-}
-function queuePendingCandidateValidations() {
-  for (const [key, revision] of state.pendingSelectValidations) {
-    if (revision !== state.publishedRevision || !state.snapshot?.candidates?.[key] || candidateLoading(key)) continue;
-    const modalHandle = state.modalHandle && key.startsWith(`modal:${state.modalHandle}:`)
-      ? state.modalHandle : null;
-    queueCandidateQuery(key, state.candidateQueries.get(key) ?? state.snapshot.candidates[key].query ?? "", null, modalHandle);
-  }
-}
-
-function queueMessageQuery(query, cursor = null) {
-  if (state.pinnedCapture) return;
-  const normalized = normalizeSearch(query);
-  ui.search.value = normalized;
-  queueQuery("messages", "browse_messages", {
-    query: normalized,
-    filter: "all",
-    cursor: typeof cursor === "string" ? cursor : null,
-  });
-}
-
-function getHostDimensions() {
-  return { width: Math.max(1, Math.floor(ui.stage.clientWidth)), height: Math.max(1, Math.floor(ui.stage.clientHeight)) };
-}
-
-function queuePresentation() {
-  if (state.pinnedCapture) return;
-  const host = getHostDimensions();
-  state.host = host;
-  pageIntent("configure_presentation", {
-    layout: ui.layout.value || "message",
-    display: ui.display.value || "responsive",
-    width: ui.display.value === "fixed" ? Number(ui.width.value) : (state.snapshot?.presentation?.exactProfile.width || state.profile.width),
-    height: ui.display.value === "fixed" ? Number(ui.height.value) : (state.snapshot?.presentation?.exactProfile.height || state.profile.height),
-    host_width: host.width,
-    host_height: host.height,
-  });
-  drainIntents();
+  syncActionContext(); actions.queueQuery(key, kind, body, metadata);
 }
 
 
+/** @param {string | undefined} query @param {string | null} [cursor] */
+function queueMessageQuery(query, cursor = null) { workbench.browseMessages(query, cursor); }
+
+
+
+/** @param {AdmittedAction | null} action @param {Receipt} receipt */
 function completeActionDrafts(action, receipt) {
   if (!action || receipt.rejected || receipt.settlement !== "settled") return;
   composer.completeActionDrafts(action, receipt);
-  if (action.kind === "set_poll_votes") {
-    state.pollDrafts.delete(`poll:${action.contextId}:${action.targetId}`);
-    state.pollResults.delete(`poll:${action.contextId}:${action.targetId}`);
-  }
+  surfaces.outcome(action);
 }
 
 
 function resetInteractionState() {
   commandPicker.clear();
-  for (const timer of state.selectQueryTimers.values()) clearTimeout(timer);
-  state.selectQueryTimers.clear();
-  state.queuedQueries.clear();
-  state.queryIntents.clear();
-  delete state.queuedPageIntents.focus;
-  state.focusKey = null;
-  state.focusSelection = null;
-  state.focusElement = null;
-  state.focusIdentity = null;
-  state.focusDescendant = -1;
+  selections.reset();
+  actions.resetInteraction();
+  focus.reset();
   state.pickerPendingMedia = [];
-  state.commandUploads = {};
-  state.uncertainAction = null;
-  state.busyQueryDeferred = false;
-  state.dropdown = null;
-  state.drafts.clear();
-  state.draftVersions.clear();
-  state.selectDrafts.clear();
-  state.selectStatuses.clear();
-  state.candidateIdentities.clear();
-  state.candidateQueries.clear();
-  state.selectValidationRevisions.clear();
-  state.selectVerifiedValues.clear();
-  state.pendingSelectValidations.clear();
-  state.pollDrafts.clear();
-  state.pollResults.clear();
+  selections.closeDropdown();
+  composer.reset();
+  surfaces.reset();
   clearModalDrafts();
-  state.editTargetId = null;
-  state.replyToId = null;
-  state.dismissedModal = null;
+  modal.reset();
   state.lastActionKind = null;
-  state.activityBackStack = [];
-  state.activityReturnKey = null;
+  workbench.resetNavigation();
 }
 
 function redactPrivateView() {
   revokeAssets();
-  disposeSurface(ui.surface);
-  disposeSurface(ui.modal);
-  for (const record of state.messageNodes.values()) disposeSurface(record.element);
-  ui.modal.replaceChildren();
-  ui.modal.hidden = true;
-  state.modalHandle = null;
-  state.lastModalFingerprint = "";
-  state.modalOpenerFocusKey = null;
-  setModalIsolation(false);
-  state.localDiagnostics = [];
+  surfaces.reset();
+  timeline.reset();
+  modal.reset();
+  diagnostics.reset();
   state.diagnostics = [];
   state.complete = false;
   state.ready = false;
   state.renderGeneration += 1;
-  state.queuedPageIntents = {};
+  actions.redact();
   resetInteractionState();
   composer.clear();
   resetWorkbench();
-  state.queuedQuery = null;
-  state.pendingQuery = null;
-  state.pendingMedia = [];
-  state.modalPendingMedia = [];
+  presentation.reset();
   state.renderPendingMedia = [];
   state.snapshot = null;
   state.lastAction = null;
@@ -1879,16 +730,12 @@ function redactPrivateView() {
   ui.empty.hidden = true;
   ui.pickerEmpty.hidden = false;
   ui.pickerEmpty.textContent = "No visible messages.";
-  state.lastMessageKey = null;
-  state.lastMessageFingerprint = "";
-  state.messageNodes.clear();
-  state.dayNodes.clear();
-  state.spoilerState.clear();
   ui.surface.replaceChildren();
   ui.messageList.replaceChildren();
   renderActivity();
 }
 
+/** @param {Receipt} receipt */
 function rememberReceipt(receipt) {
   receipt = { ...receipt };
   delete receipt.result;
@@ -1901,211 +748,61 @@ function rememberReceipt(receipt) {
 }
 
 
+/** @param {Snapshot} snapshot */
 function queryStatusFingerprint(snapshot) {
   return JSON.stringify(snapshot);
 }
-function drainIntents() {
-  if (state.busyQueryDeferred && !Object.keys(state.queuedPageIntents).length) return;
-  const uncertain = state.transport.uncertainRequestId;
-  const canClose = Boolean(uncertain && "close" in state.queuedPageIntents
-    && state.transport.uncertainCloseAttemptFor !== uncertain);
-  if (
-    state.pendingAction || state.closed || state.pinnedCapture
-    || !state.protocolCompatible || !state.contextId || (uncertain && !canClose)
-    || ((Number.isInteger(state.awaitingRevision) && state.awaitingRevision > state.observedRevision)
-      && !Object.keys(state.queuedPageIntents).length)
-  ) return;
-  for (const kind of ["close", "viewer", "refresh", "focus", "configure_presentation"]) {
-    if (!(kind in state.queuedPageIntents)) continue;
-    if (uncertain && kind !== "close") continue;
-    if (!state.authorized && !["close", "viewer", "refresh"].includes(kind)) continue;
-    const body = state.queuedPageIntents[kind];
-    delete state.queuedPageIntents[kind];
-    dispatch(kind, body);
-    return;
-  }
-  if (!state.authorized || uncertain) return;
-  const next = state.queuedQueries.entries().next().value;
-  if (!next) return;
-  const [key, intent] = next;
-  state.queuedQueries.delete(key);
-  state.queuedQuery = state.queuedQueries.values().next().value || null;
-  if (intent.scope !== `${state.viewerId}:${state.contextGeneration}`) { drainIntents(); return; }
-  performAction(intent.kind, intent.body, intent);
+function syncActionContext() {
+  actions.setContext({
+    contextId: state.contextId, contextGeneration: state.contextGeneration,
+    botGeneration: state.botGeneration, publishedRevision: state.publishedRevision,
+    observedRevision: state.observedRevision, viewerId: state.viewerId, targetId: state.targetId,
+    closed: state.closed, authorized: state.authorized, protocolCompatible: state.protocolCompatible,
+    pinnedCapture: state.pinnedCapture,
+  });
 }
-
-function pageAction(kind) {
-  return ["close", "refresh", "focus", "viewer", "configure_presentation"].includes(kind);
-}
-async function performAction(kind, extra, queryIntentValue = null, metadata = queryIntentValue?.metadata || null) {
-  session.beginAction(kind === "viewer" || kind === "focus");
-  const requestId = globalThis.crypto?.randomUUID?.() || `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const sequence = state.sequence + 1;
-  const body = {
-    protocol_version: 3,
-    sequence,
-    request_id: requestId,
-    generation: state.contextGeneration,
-    bot_generation: state.botGeneration,
-    published_revision: state.observedRevision || state.publishedRevision,
-    kind,
-    ...extra,
-  };
-  if (["click", "select"].includes(kind)) {
-    body.target_id = /^message:(\d+):component:/.exec(extra.control_key)?.[1] ?? state.targetId;
-  }
-  state.pendingAction = {
-    kind, contextId: state.contextId, requestId, sequence, controlKey: extra.control_key || null, targetId: body.target_id || null,
-    commandEnvelope: kind === "run_command" ? clone(extra) : null,
-    commandDraftId: kind === "run_command" ? metadata?.commandDraftId ?? null : null,
-    queryBody: queryIntentValue ? clone(extra) : null,
-    queryMetadata: queryIntentValue?.metadata || null,
-    queryIntent: queryIntentValue, botGeneration: body.bot_generation,
-    draftVersion: state.draftVersions.get(kind === "send_message" ? `composer:${state.contextId}` : `edit:${state.contextId}:${body.target_id}`) || 0,
-    closeProbe: kind === "close" && state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId
-      && Boolean(state.transport.uncertainRequestId),
-  };
-  if (queryIntentValue) {
-    state.pendingQuery = { kind, key: queryIntentValue.key, controlKey: extra.control_key || null, requestId, sequence, query: extra.query ?? extra.value ?? "" };
-  }
-  if (kind === "run_command") commandPicker.setPending();
-  localRender(false);
-  let receipt;
-  try {
-    receipt = await requestAction(body);
-  } catch (error) {
-    session.endAction();
-    if (state.closed) return;
-    state.uncertainAction = state.pendingAction;
-    state.pendingAction = null;
-    state.pendingQuery = null;
-    noteTransportFailure("action-response-unavailable", requestId, sequence);
-    if (error.status === 401 || error.status === 410) {
-      terminateSession("Preview session is unavailable. Reload the active Preview URL.");
-      return;
-    }
-    localRender(false);
-    return;
-  }
-  const acceptedClose = kind === "close" && receipt?.requestId === requestId
-    && !receipt?.rejected && receipt?.settlement === "settled";
-  session.endAction(receipt?.requestId === requestId && receipt?.rejected === true);
-  if (state.closed && !acceptedClose) return;
-  if (!receipt || typeof receipt !== "object" || receipt.requestId !== requestId) {
-    state.uncertainAction = state.pendingAction;
-    state.pendingAction = null;
-    state.pendingQuery = null;
-    noteTransportFailure("action-receipt-unavailable", requestId, sequence);
-    localRender(false);
-    return;
-  }
-  noteTransportHealthy();
-  const busyQuery = Boolean(queryIntentValue && receipt.rejected
-    && receipt.diagnostics?.some((item) => item.code === "busy"));
-  if (!busyQuery) {
-    const actionMetadata = kind === "run_command"
-      ? { draftId: state.pendingAction?.commandDraftId }
-      : queryIntentValue?.metadata;
-    commandPicker.receiveAction(kind, receipt, extra, actionMetadata);
-  }
-  if (kind === "run_command") state.commandUploads = {};
-  if (busyQuery) receipt = { ...receipt, diagnostics: (receipt.diagnostics || []).filter((item) => item.code !== "busy") };
-  if (Number.isInteger(receipt.expectedSequence)) state.sequence = receipt.expectedSequence;
-  if (Number.isInteger(receipt.revision) && receipt.revision > state.publishedRevision) {
-    state.awaitingRevision = receipt.revision;
-  }
-  if (busyQuery) {
-    const intent = state.queuedQueries.get(queryIntentValue.key) || queryIntentValue;
-    state.queuedQueries.set(queryIntentValue.key, intent);
-    state.queuedQuery = intent;
-    state.busyQueryDeferred = true;
-  }
-  if (Array.isArray(receipt.diagnostics)) receipt.diagnostics.forEach((item) => addDiagnostic(item));
-  if (kind === "close" && receipt.rejected && state.pendingAction?.closeProbe) {
-    state.queuedPageIntents.close = extra;
-  }
-  if (acceptedClose && Number.isInteger(state.transport.uncertainSequence)
-    && receipt.sequence === state.transport.uncertainSequence) {
-    const ownClose = state.transport.uncertainRequestId === requestId;
-    state.transport.uncertainRequestId = null;
-    state.transport.uncertainSequence = null;
-    state.transport.uncertainCloseAttemptFor = null;
-    state.uncertainAction = null;
-    state.transport.state = "recovered";
-    state.transport.recoveries += 1;
-    state.transport.history.push({ state: "recovered",
-      code: ownClose ? "action-receipt-observed" : "action-not-admitted-by-close", at: Date.now() });
-    state.transport.history = state.transport.history.slice(-20);
-    recoverActionTransportDiagnostics(ownClose
-      ? "The matching Close receipt was observed; transport failure remains in history."
-      : "The accepted Close proved the uncertain action was not admitted; transport failure remains in history.");
-    renderTransportStatus();
-    renderDiagnostics();
-  }
-  if (acceptedClose) {
-    session.stop();
-    state.resizeObserver?.disconnect();
-    state.scrollObserver?.disconnect();
-    state.closed = true;
-    state.authorized = false;
-    state.pendingAction = null;
-    state.pendingQuery = null;
-    state.ready = false;
-    state.queuedPageIntents = {};
-    state.queuedQueries.clear();
-    state.awaitingRevision = null;
-    state.externalNotice = "Preview session closed.";
-    announceStatus(state.externalNotice);
-    redactPrivateView();
-    state.complete = !state.transport.uncertainRequestId;
-    updateActionStatus();
-    return;
-  }
-  if (!queryIntentValue) completeActionDrafts(state.pendingAction, receipt);
-  rememberReceipt(receipt);
-  state.lastActionKind = kind;
-  state.pendingQuery = null;
-  if (!await session.readState() && !state.closed) localRender(false);
-  if (state.closed) return;
-  state.pendingAction = null;
-  queuePendingCandidateValidations();
-  commandPicker.resume();
-  updateActionStatus();
-  drainIntents();
-}
+const actions = createActions({
+  session: {
+    beginAction: (invalidate) => session.beginAction(invalidate),
+    endAction: (rejected) => session.endAction(rejected),
+    readState: () => session.readState(),
+  },
+  send: requestAction,
+  readResult: (action) => request(`/api/action-result?request_id=${encodeURIComponent(action.requestId)}&sequence=${action.sequence}`),
+  changed: (report) => { Object.assign(state, report); presentation.setAdmission(report); syncSelectionContext(); updateActionStatus(); },
+  render: () => { if (state.pendingAction?.kind === "run_command") commandPicker.setPending(); localRender(false); },
+  healthy: noteTransportHealthy, failure: noteTransportFailure, diagnostic: addDiagnostic,
+  outcome: (action, receipt, body, metadata) => commandPicker.receiveAction(action.kind, receipt, body, metadata),
+  completeDraft: completeActionDrafts,
+  idle: () => { queuePendingCandidateValidations(); commandPicker.resume(); updateActionStatus(); },
+  rememberReceipt: (receipt, kind) => { rememberReceipt(receipt); state.lastActionKind = kind; },
+  terminate: terminateSession,
+  beforePage: (kind, extra) => {
+    state.externalNotice = null;
+    if (kind === "viewer") redactPrivateView();
+    if (kind === "configure_presentation") presentation.noteHost(extra.host_width, extra.host_height);
+  },
+  acceptedClose: () => {
+    session.stop(); presentation.dispose(); timeline.dispose();
+    state.closed = true; state.authorized = false; state.ready = false;
+    state.externalNotice = "Preview session closed."; announceStatus(state.externalNotice);
+    redactPrivateView(); state.complete = !state.transport.uncertainRequestId; updateActionStatus();
+  },
+  recovered: (own) => connection.recovered(own),
+});
+function drainIntents() { syncActionContext(); actions.drain(); }
+/** @param {Snapshot} snapshot */
+function reconcileUncertainAction(snapshot) { syncActionContext(); actions.observe(snapshot); }
+/** @param {string} kind @param {ActionBody} [extra] @param {ActionMetadata | null} [metadata] */
 function dispatch(kind, extra = {}, metadata = null) {
-  if (["browse_messages", "browse_candidates", "autocomplete_command"].includes(kind)) {
-    const key = kind === "browse_messages"
-      ? "messages"
-      : kind === "browse_candidates"
-        ? `candidate:${extra.control_key}:${extra.modal_handle || ""}`
-        : `command-autocomplete:${extra.command_id}:${(extra.path || []).join(".")}:${extra.focused}`;
-    queueQuery(key, kind, extra, metadata);
-    return;
-  }
-  if (state.closed || !state.contextId || !state.protocolCompatible || state.pinnedCapture) return;
-  if (!state.authorized && !["close", "viewer", "refresh"].includes(kind)) return;
-  if (state.pendingAction || (state.transport.uncertainRequestId && kind !== "close")) {
-    if (pageAction(kind)) pageIntent(kind, extra);
-    return;
-  }
-  if (state.transport.uncertainRequestId) {
-    if (state.transport.uncertainCloseAttemptFor === state.transport.uncertainRequestId) {
-      pageIntent(kind, extra);
-      return;
-    }
-    state.transport.uncertainCloseAttemptFor = state.transport.uncertainRequestId;
-  }
-  if (!pageAction(kind) && Number.isInteger(state.awaitingRevision)
-    && state.awaitingRevision > state.publishedRevision) {
-    return;
-  }
-  state.externalNotice = null;
-  if (kind === "viewer") redactPrivateView();
-  if (kind === "configure_presentation") state.host = { width: extra.host_width, height: extra.host_height };
-  performAction(kind, extra, null, metadata);
+  syncActionContext();
+  actions.dispatch(kind, extra, { ...metadata,
+    ...(["send_message", "edit_message"].includes(kind)
+      ? { draftVersion: composer.draftVersion(kind, state.contextId, extra.target_id) } : {}),
+  });
 }
 
+/** @param {string} message */
 function terminateSession(message) {
   session.stop();
   if (state.pendingAction && !state.transport.uncertainRequestId) {
@@ -2113,22 +810,22 @@ function terminateSession(message) {
   }
   state.closed = true;
   state.authorized = false;
-  state.pendingAction = null;
-  state.pendingQuery = null;
-  state.awaitingRevision = null;
+  actions.stop();
   state.externalNotice = message;
-  state.resizeObserver?.disconnect();
-  state.scrollObserver?.disconnect();
+  presentation.dispose();
+  timeline.dispose();
   redactPrivateView();
   ui.app.setAttribute("aria-busy", "false");
   updateActionStatus();
 }
 
+/** @type {ReturnType<typeof createSession>} */
 const session = createSession({
   read: (signal) => request("/api/state", "GET", undefined, state.contextId, signal),
+  /** @param {unknown} snapshot @returns {Promise<boolean>} */
   install: async (snapshot) => {
     const completingQuery = state.pendingAction?.queryIntent && !state.pendingQuery;
-    if (!completingQuery && queryStatusFingerprint(snapshot) === state.statusFingerprint) {
+    if (session.compatible(snapshot) && !completingQuery && queryStatusFingerprint(snapshot) === state.statusFingerprint) {
       if (!session.accept(snapshot)) return false;
       reconcileUncertainAction(snapshot);
       return true;
@@ -2137,12 +834,12 @@ const session = createSession({
   },
   tick: () => {
     noteTransportHealthy();
-    state.busyQueryDeferred = false;
+    syncActionContext(); actions.tick();
     queuePendingCandidateValidations();
     drainIntents();
   },
   failure: (error) => {
-    if (error.status === 401 || error.status === 410) terminateSession("Preview session is unavailable. Reload the active Preview URL.");
+    if (error instanceof Error && "status" in error && (error.status === 401 || error.status === 410)) terminateSession("Preview session is unavailable. Reload the active Preview URL.");
     else noteTransportFailure("state-poll-unavailable");
   },
 });
@@ -2158,7 +855,7 @@ window.addEventListener("pagehide", (event) => {
 window.addEventListener("pageshow", (event) => { if (event.persisted) session.resume(); });
 
 async function bootstrap() {
-  applyProfile();
+  presentation.apply();
   renderDiagnostics();
   if (!state.capability) {
     addDiagnostic({ code: "missing-capability", severity: "error", message: "Open this page from a Preview URL fragment", complete: false });
@@ -2168,25 +865,13 @@ async function bootstrap() {
   try {
     const metadata = await fetch("/backend-diagnostics.json", { cache: "no-store" });
     if (!metadata.ok) throw new Error("Preview diagnostic metadata unavailable");
-    backendDiagnostics = await metadata.json();
-    if (!backendDiagnostics || typeof backendDiagnostics !== "object" || Array.isArray(backendDiagnostics)
-      || Object.values(backendDiagnostics).some((entry) => !Array.isArray(entry) || entry.length !== 5
-        || typeof entry[0] !== "string" || !["info", "warning", "error"].includes(entry[1])
-        || typeof entry[2] !== "boolean" || typeof entry[3] !== "string" || typeof entry[4] !== "string")) {
-      throw new Error("Invalid preview diagnostic metadata");
-    }
+    diagnostics.catalog(await metadata.json());
+    /** @type {Snapshot} */
     const snapshot = await request("/api/pages", "POST", {}, null);
     noteTransportHealthy();
     state.statusFingerprint = "";
     await installSnapshot(snapshot, true);
-    if (!state.pinnedCapture) {
-      queuePresentation();
-      state.resizeObserver = new ResizeObserver(() => {
-        const dimensions = getHostDimensions();
-        if (dimensions.width !== state.host.width || dimensions.height !== state.host.height) queuePresentation();
-      });
-      state.resizeObserver.observe(ui.stage);
-    }
+    presentation.observe();
     session.resume();
   } catch (_) {
     addDiagnostic({ code: "bootstrap-failed", severity: "error", message: "The authorized preview could not be opened.", remediation: "Reload the active Preview URL.", complete: false });
@@ -2195,145 +880,24 @@ async function bootstrap() {
 }
 
 ui.viewer.addEventListener("change", () => dispatch("viewer", { viewer_id: ui.viewer.value }));
-const { updateWorkbenchIsolation, resetWorkbench } = initWorkbench({ state, ui });
-function updateViewport(field, minimum, maximum) {
-  const value = Number(field.value);
-  if (!Number.isInteger(value) || value < minimum || value > maximum
-    || Number(ui.width.value) * Number(ui.height.value) > 32 * 1024 * 1024) {
-    addDiagnostic({ code: "viewport-invalid", message: "Viewport dimensions must be bounded integers", complete: true });
-    delete field.dataset.dirty;
-    applyProfile();
-    return;
-  }
-  state.localDiagnostics = state.localDiagnostics.filter((item) => item.code !== "viewport-invalid");
-  renderDiagnostics();
-  ui.display.value = "fixed";
-  queuePresentation();
-}
-ui.display.addEventListener("change", () => {
-  const exact = state.snapshot?.presentation?.exactProfile || state.profile;
-  ui.width.value = exact.width;
-  ui.height.value = exact.height;
-  queuePresentation();
-});
-ui.layout.addEventListener("change", queuePresentation);
-ui.preset.addEventListener("change", () => {
-  if (ui.preset.value === "custom") return;
-  const [width, height] = ui.preset.value.split("x").map(Number);
-  ui.width.value = width;
-  ui.height.value = height;
-  ui.display.value = "fixed";
-  queuePresentation();
-});
-ui.useAvailable.addEventListener("click", () => {
-  const host = getHostDimensions();
-  ui.width.value = Math.max(240, host.width);
-  ui.height.value = Math.max(180, host.height);
-  ui.display.value = "fixed";
-  queuePresentation();
-});
-ui.resetProfile.addEventListener("click", () => {
-  ui.width.value = state.initialPresentation.width;
-  ui.height.value = state.initialPresentation.height;
-  ui.display.value = "fixed";
-  queuePresentation();
-});
-ui.captureCurrent.addEventListener("click", () => {
-  const rect = ui.app.getBoundingClientRect();
-  state.captureViewport = { width: Math.round(rect.width), height: Math.round(rect.height) };
-  updateCaptureRecipe();
-});
+const workbench = initWorkbench({ ui, dispatch, updateActionStatus, focusKey: () => focus.report().key });
+const { updateWorkbenchIsolation, resetWorkbench } = workbench;
 ui.searchForm.addEventListener("submit", (event) => { event.preventDefault(); queueMessageQuery(ui.search.value); });
-ui.previous.addEventListener("click", () => queueMessageQuery(state.snapshot.navigation.query, state.snapshot.navigation.previousCursor));
-ui.next.addEventListener("click", () => queueMessageQuery(state.snapshot.navigation.query, state.snapshot.navigation.nextCursor));
+ui.previous.addEventListener("click", () => { if (state.snapshot) queueMessageQuery(state.snapshot.navigation.query, state.snapshot.navigation.previousCursor); });
+ui.next.addEventListener("click", () => { if (state.snapshot) queueMessageQuery(state.snapshot.navigation.query, state.snapshot.navigation.nextCursor); });
 ui.exactForm.addEventListener("submit", (event) => {
   event.preventDefault();
   dispatch("focus", { target_id: ui.exactId.value });
 });
-ui.backActivity.addEventListener("click", backActivity);
+ui.backActivity.addEventListener("click", workbench.backActivity);
 ui.viewActionOutput.addEventListener("click", () => {
   const output = (state.lastAction?.outcomes || []).find((outcome) =>
     ["response", "followup", "message", "deferred"].includes(outcome.kind) && outcome.messageId);
-  if (output) viewActivityMessage(String(output.messageId), state.lastAction.target);
+  if (output) viewActivityMessage(String(output.messageId), state.lastAction?.target);
 });
-async function copyText(value, recovery) {
-  try { await navigator.clipboard.writeText(value); ui.captureStatus.textContent = "Copied."; }
-  catch (_) { recovery(); }
-}
-ui.copyRecipe.addEventListener("click", () => copyText(ui.captureRecipe.value, () => {
-  ui.captureRecipe.focus();
-  ui.captureRecipe.select();
-  ui.captureStatus.textContent = "Clipboard unavailable; the private recipe is selected for manual copying.";
-}));
-ui.copyReport.addEventListener("click", () => copyText(JSON.stringify(safeSupportReport(), null, 2), () => {
-  ui.downloadReport.focus();
-  ui.captureStatus.textContent = "Clipboard unavailable; use Download support report for the redacted JSON.";
-}));
-ui.downloadReport.addEventListener("click", () => {
-  const report = safeSupportReport();
-  if (!report) return;
-  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "simcord-support.json";
-  link.click();
-  URL.revokeObjectURL(url);
-});
-ui.timeline.addEventListener("scroll", () => {
-  if (!state.ready && state.scrollIntent?.policy === "target") return;
-  state.scrollIntent = captureScrollIntent();
-  if (state.scrollIntent.policy === "bottom") ui.newMessages.hidden = true;
-}, { passive: true });
-ui.newMessages.addEventListener("click", () => {
-  state.scrollIntent = { policy: "bottom" };
-  ui.newMessages.hidden = true;
-  dispatch("history", { direction: "latest" });
-});
-ui.diagnosticFilter.addEventListener("change", () => {
-  state.diagnosticFilter = ui.diagnosticFilter.value;
-  renderDiagnostics();
-});
-state.scrollObserver = new ResizeObserver(scheduleScrollCorrection);
-state.scrollObserver.observe(ui.messageList);
-state.scrollObserver.observe(ui.timeline);
-ui.width.addEventListener("input", () => { ui.width.dataset.dirty = "true"; });
-ui.height.addEventListener("input", () => { ui.height.dataset.dirty = "true"; });
-ui.width.addEventListener("change", () => updateViewport(ui.width, 240, 32768));
-ui.height.addEventListener("change", () => updateViewport(ui.height, 180, 32768));
 ui.refresh.addEventListener("click", () => dispatch("refresh"));
 ui.close.addEventListener("click", () => dispatch("close"));
 ui.historyOlder.addEventListener("click", () => dispatch("history", { direction: "older" }));
 ui.historyNewer.addEventListener("click", () => dispatch("history", { direction: "newer" }));
-ui.modal.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    if (state.dropdown) { event.preventDefault(); cancelDropdown(state.dropdown.key); return; }
-    if (state.modalHandle) {
-      event.preventDefault();
-      clearModalValidation();
-      state.dismissedModal = state.modalHandle;
-      clearModalDrafts();
-      state.modalErrorHandle = null;
-      localRender(true);
-    }
-    return;
-  }
-  if (event.key !== "Tab") return;
-  const focusable = [...ui.modal.querySelectorAll("a[href], button, input, textarea, select, [tabindex]:not([tabindex='-1'])")]
-    .filter((item) => !item.disabled && item.tabIndex >= 0 && item.checkVisibility())
-    .filter((item, index, items) => !(item instanceof HTMLInputElement) || item.type !== "radio"
-      || !item.name || item.checked || !items.some((other) => other instanceof HTMLInputElement
-        && other.type === "radio" && other.name === item.name && (other.checked || items.indexOf(other) < index)));
-  if (!focusable.length) {
-    event.preventDefault();
-    ui.modal.querySelector(".modal-dialog")?.focus();
-    return;
-  }
-  const active = document.activeElement;
-  if (event.shiftKey && (active === focusable[0] || !ui.modal.contains(active))) {
-    event.preventDefault(); focusable.at(-1).focus();
-  } else if (!event.shiftKey && (active === focusable.at(-1) || !ui.modal.contains(active))) {
-    event.preventDefault(); focusable[0].focus();
-  }
-});
 
 bootstrap();

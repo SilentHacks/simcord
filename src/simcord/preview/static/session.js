@@ -1,7 +1,27 @@
+/** @import {Snapshot} from "./preview-types" */
+/** @param {unknown} value @returns {value is Snapshot} */
+function compatible(value) {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = /** @type {Partial<Snapshot>} */ (value);
+  return Boolean(Number(snapshot.protocolVersion) === 3
+    && snapshot.context && typeof snapshot.context.id === "string"
+    && Number.isInteger(snapshot.context.generation) && snapshot.context.generation >= 0
+    && Array.isArray(snapshot.messageIndex) && snapshot.messageIndex.length <= 50
+    && snapshot.messages && typeof snapshot.messages === "object" && !Array.isArray(snapshot.messages)
+    && Array.isArray(snapshot.timeline)
+    && snapshot.history && typeof snapshot.history === "object"
+    && snapshot.navigation && typeof snapshot.navigation === "object"
+    && snapshot.presentation && typeof snapshot.presentation === "object"
+    && snapshot.publication && typeof snapshot.publication === "object"
+    && snapshot.candidates && typeof snapshot.candidates === "object" && !Array.isArray(snapshot.candidates)
+    && Array.isArray(snapshot.activity) && Number.isInteger(snapshot.publishedRevision)
+    && typeof snapshot.botGeneration === "number" && Number.isInteger(snapshot.botGeneration) && snapshot.botGeneration >= 0);
+}
 /** @typedef {{context: {id: string, generation: number}, botGeneration: number, publishedRevision: number}} Checkpoint */
 /**
  * One page's state reads and polling lifetime. Action POSTs deliberately stay outside it.
- * @param {{read: (signal: AbortSignal) => Promise<unknown>, install: (value: unknown) => Promise<boolean>, tick: () => void, failure: (error: unknown) => void, interval?: number}} options
+ * @template T
+ * @param {{read: (signal: AbortSignal) => Promise<T>, install: (value: T) => Promise<boolean>, tick: () => void, failure: (error: unknown) => void, interval?: number}} options
  */
 export function createSession({ read, install, tick, failure, interval = 500 }) {
   let epoch = 0;
@@ -92,5 +112,5 @@ export function createSession({ read, install, tick, failure, interval = 500 }) 
     void poll();
   }
   function stop() { pause(); stopped = true; }
-  return { accept, invalidate, beginAction, endAction, readState, pause, resume, stop };
+  return { compatible, accept, invalidate, beginAction, endAction, readState, pause, resume, stop };
 }

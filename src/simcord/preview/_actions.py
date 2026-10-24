@@ -7,6 +7,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Callable, Coroutine, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from ..results import InteractionResult
     from . import Preview
     from ._pages import _Page
+    from ._queries import _SummarySource
 
 _ACTIVITY_LIMIT = 20
 
@@ -102,6 +104,10 @@ class _Action:
     uncertain: bool = False
     outcomes: list[dict[str, Any]] = field(default_factory=list)
     scope: tuple[Any, ...] = ()
+    summary_sources: dict[str, _SummarySource] = field(default_factory=dict)
+    candidate_handle: str | None = None
+    candidate_schema: str | None = None
+    result_assets: set[str] = field(default_factory=set)
 
 
 class _ActionOps:
@@ -121,12 +127,12 @@ class _ActionOps:
     _viewer: Callable[[Any], Any]
     _initial_target: Callable[[Any, int], int | None]
     _target_id: Callable[..., int | None]
+    _release_result_assets: Callable[[_Page], None]
     _clear_page_assets: Callable[[_Page], None]
     _redact_page_receipts: Callable[[_Page], None]
     _publish: Callable[..., None]
     _pages: dict[str, _Page]
-    _receipt_payload: Callable[..., Any]
-    _filter_dependencies: Callable[[_Page, dict[str, Any]], None]
+    _filter_receipt: Callable[..., dict[str, Any]]
     _advance_presentation_time: Callable[[], None]
 
     _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset(
@@ -269,29 +275,48 @@ class _ActionOps:
     def _replay_response(self, page: _Page, action: _Action) -> dict[str, Any]:
         response = json.loads(json.dumps(action.response or {}))
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
-        response.update(self._receipt_payload(page, response, allowed=allowed))
+        self._filter_receipt(page, response, allowed=allowed)
         result = response.get("result")
-        if not isinstance(result, Mapping):
+        if not isinstance(result, dict):
             return response
         if not allowed or (
             action.kind == "autocomplete_command" and not self._action_scope_current(page, action)
         ):
             response.pop("result", None)
-        elif action.kind in {"browse_messages", "browse_candidates"}:
-            published = json.loads(json.dumps(page.snapshot))
-            if action.kind == "browse_messages":
-                published["messageIndex"] = result.get("messageIndex", [])
-            else:
-                published["candidates"] = {result["control_key"]: result["candidate"]}
-            self._filter_dependencies(page, published)
-            if action.kind == "browse_messages":
-                response["result"] = {**result, "messageIndex": published["messageIndex"]}
-            else:
-                candidate = published["candidates"].get(result["control_key"])
-                if candidate is None:
-                    response.pop("result", None)
-                else:
-                    response["result"] = {"control_key": result["control_key"], "candidate": candidate}
+        elif action.kind == "browse_messages":
+            from ._dependencies import _DependencyRead
+            from ._queries import _filter_summaries
+
+            read = _DependencyRead(cast("Preview", self), page)
+            result["messageIndex"] = _filter_summaries(
+                cast("Preview", self),
+                page,
+                result.get("messageIndex", []),
+                action.summary_sources,
+                read,
+            )
+        elif action.kind == "browse_candidates":
+            from ._dependencies import _DependencyRead
+            from ._queries import _filter_candidates
+
+            read = _DependencyRead(cast("Preview", self), page)
+            key, candidate = result["control_key"], result.get("candidate")
+            schema_current = True
+            if action.candidate_schema is not None:
+                entry_key = ":".join(key.split(":")[1:3])
+                schema_current = any(
+                    entry.get("key") == entry_key
+                    and entry.get("schemaFingerprint") == action.candidate_schema
+                    for entry in page.command_catalog.get("entries", [])
+                )
+            if (
+                not isinstance(candidate, dict)
+                or not schema_current
+                or not _filter_candidates(
+                    cast("Preview", self), page, key, candidate, action.candidate_handle, read
+                )
+            ):
+                response.pop("result", None)
         return response
 
     async def _action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -421,6 +446,14 @@ class _ActionOps:
                 # Redact the previous latest action before admission replaces it.
                 self._redact_page_receipts(page)
             page.last_sequence = sequence  # consumed only after full admission
+            previous = page.latest_action
+            if previous is not None:
+                previous.summary_sources.clear()
+                previous.candidate_handle = None
+                self._release_result_assets(page)
+                previous.candidate_schema = None
+                if previous.response is not None:
+                    previous.response.pop("result", None)
             page.latest_action = action
             self._active_action = action
             self._active_task = asyncio.current_task()
@@ -450,7 +483,7 @@ class _ActionOps:
                 page.status = "stale"
                 result = self._finish_action(page, action, "failed", cursor, exc)
             action.response = result
-            return dict(result)
+            return deepcopy(result)
         finally:
             self.env._end_operation()
             self._active_action = None

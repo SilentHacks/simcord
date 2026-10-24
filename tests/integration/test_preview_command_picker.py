@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,10 +20,23 @@ def _start_playwright():
     return async_playwright()
 
 
+@asynccontextmanager
+async def _picker_page(preview):
+    async with _start_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 1000, "height": 760})
+            await page.goto(preview.url)
+            await page.wait_for_function(
+                "() => window.simcordPreview?.ready && window.simcordPreview.commandPicker.catalog.state === 'ready'"
+            )
+            yield page
+        finally:
+            await browser.close()
+
+
 @pytest.mark.asyncio
-async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_states(
-    env, channel, alice, monkeypatch
-):
+async def test_browser_command_picker_group_and_autocomplete_journey(env, channel, alice):
     async with env.preview(channel, viewers=[alice], layout="channel") as preview:
         async with _start_playwright() as playwright:
             browser = await playwright.chromium.launch()
@@ -42,7 +56,6 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                 await composer.fill("/config s")
                 await page.wait_for_function("() => window.simcordPreview.commandPicker.state === 'browsing'")
                 assert await page.locator("#live-status").inner_text() == "1 commands"
-                await page.screenshot(path="/tmp/simcord-picker-browsing.png")
                 await composer.press("Enter")
                 await page.wait_for_function(
                     "() => window.simcordPreview.commandPicker.state === 'composing'"
@@ -51,13 +64,11 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                     "invocation"
                 ] == "config set"
                 assert "/config set" in await page.locator("#live-status").inner_text()
-                await page.screenshot(path="/tmp/simcord-picker-composing.png")
 
                 await page.locator('.command-option-input[data-option="key"]').fill("theme")
                 await page.locator('.command-option-input[data-option="value"]').fill("dark")
                 state = await page.evaluate("() => window.simcordPreview.commandPicker")
                 assert state["draft"]["submittable"] is True
-                await page.screenshot(path="/tmp/simcord-picker-filled.png")
                 await page.locator('.command-option-input[data-option="value"]').press("Enter")
                 await page.wait_for_function("() => window.simcordPreview.commandPicker.draft === null")
                 await page.locator("#channel-timeline").get_by_text("theme=dark", exact=True).wait_for()
@@ -78,7 +89,6 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                     "() => window.simcordPreview.commandPicker.autocomplete.state === 'answered'"
                 )
                 await page.locator(".command-suggestion").first.wait_for(timeout=5000)
-                await page.screenshot(path="/tmp/simcord-picker-autocomplete.png")
                 await tag.press("Escape")
                 await tag.press("Enter")
                 await page.wait_for_function("() => window.simcordPreview.commandPicker.draft === null")
@@ -86,112 +96,6 @@ async def test_browser_command_picker_runs_group_and_autocomplete_and_captures_s
                     "() => document.querySelector('#channel-timeline')?.innerText.includes('Tag: py')"
                 )
 
-                await composer.fill("/picker_options")
-                await composer.press("Enter")
-                await page.wait_for_function(
-                    "() => window.simcordPreview.commandPicker.state === 'composing'"
-                )
-                await page.locator('.command-option-input[data-option="text"]').fill("hello")
-                await page.locator('.command-option-input[data-option="count"]').fill("2")
-                await page.locator('.command-option-input[data-option="ratio"]').fill("0.5")
-                assert (
-                    await page.locator('.command-option-input[data-option="text"]').input_value() == "hello"
-                )
-                assert await page.locator('.command-option-input[data-option="count"]').input_value() == "2"
-                assert await page.locator('.command-option-input[data-option="ratio"]').input_value() == "0.5"
-                enabled = page.locator('.command-option-input[data-option="enabled"]')
-                await enabled.focus()
-                await page.screenshot(path="/tmp/simcord-picker-boolean.png")
-                await page.locator(".command-suggestion").filter(has_text="True").click()
-                await enabled.fill("False")
-                assert (
-                    await page.evaluate(
-                        "() => window.simcordPreview.commandPicker.draft.options.find(option => option.name === 'enabled').display"
-                    )
-                    is False
-                )
-                user = page.locator('.command-option-input[data-option="user"]')
-                await user.fill("ali")
-                await page.wait_for_function(
-                    "() => document.querySelector('.command-popup-heading')?.textContent === 'MEMBERS'"
-                )
-                await page.locator(".command-suggestion").first.wait_for(timeout=5000)
-                await page.screenshot(path="/tmp/simcord-picker-members.png")
-                assert await page.locator(".command-suggestion").count() >= 1
-                await page.locator(".command-suggestion").first.click()
-                await page.locator(".command-mention").wait_for()
-                assert await page.locator(".command-mention").inner_text() == "@alice"
-                await page.screenshot(path="/tmp/simcord-picker-mention.png")
-                await page.get_by_role("button", name="Exit command mode").click()
-                assert await composer.input_value() == "/picker_options"
-
-                await composer.fill("/all-optional")
-                await composer.press("Enter")
-                await page.wait_for_function(
-                    "() => window.simcordPreview.commandPicker.state === 'composing'"
-                )
-                assert await page.locator(".command-option-input").count() == 0
-                await page.screenshot(path="/tmp/simcord-picker-all-optional.png")
-                await page.screenshot(path="/tmp/simcord-picker-options.png")
-                await page.locator(".command-suggestion").filter(has_text="user").click()
-                user_option = page.locator('.command-option-input[data-option="user"]')
-                await user_option.wait_for()
-                await page.wait_for_function(
-                    "() => document.querySelector('.command-popup-heading')?.textContent === 'MEMBERS' "
-                    "&& document.querySelectorAll('.command-suggestion').length > 0"
-                )
-                await page.locator(".command-suggestion-label").get_by_text("alice", exact=True).wait_for()
-                await page.screenshot(path="/tmp/simcord-picker-all-optional-added.png")
-                await user_option.fill("ali")
-                await page.screenshot(path="/tmp/simcord-picker-members.png")
-                await page.get_by_role("button", name="Remove user option").click()
-                assert await page.locator('.command-option-input[data-option="user"]').count() == 0
-                await page.get_by_role("button", name="Exit command mode").click()
-
-                await composer.fill("/tag")
-                await composer.press("Enter")
-                await page.wait_for_function(
-                    "() => window.simcordPreview.commandPicker.state === 'composing'"
-                )
-                tag = page.locator('.command-option-input[data-option="name"]')
-                from simcord.preview import _action_plans
-
-                original_autocomplete = _action_plans._autocomplete_result
-                fake_interaction = env.backend.new_interaction(4, channel.id, alice.id, env.guild.id)
-
-                async def unanswered(actor, command_channel, invocation, focused, value, options, **kwargs):
-                    if value == "silent":
-                        return SimpleNamespace(autocomplete_choices=None, _interaction=fake_interaction)
-                    return await original_autocomplete(
-                        actor, command_channel, invocation, focused, value, options, **kwargs
-                    )
-
-                monkeypatch.setattr(_action_plans, "_autocomplete_result", unanswered)
-                await tag.fill("silent")
-                await page.wait_for_function(
-                    "() => window.simcordPreview.commandPicker.autocomplete.state === 'failed'"
-                )
-                assert await page.locator(".command-empty").inner_text() == "Loading options failed"
-                await tag.fill("empty")
-                await page.wait_for_function(
-                    "() => window.simcordPreview.commandPicker.autocomplete.state === 'answered' "
-                    "&& window.simcordPreview.commandPicker.autocomplete.choiceCount === 0"
-                )
-                assert await page.locator(".command-empty").inner_text() == "No options match"
-                await page.get_by_role("button", name="Exit command mode").click()
-
-                await composer.fill("/feedback")
-                await composer.press("Enter")
-                await page.wait_for_function(
-                    "() => window.simcordPreview.commandPicker.state === 'composing'"
-                )
-                assert await page.locator(".command-option-input").count() == 0
-                await page.screenshot(path="/tmp/simcord-picker-no-options.png")
-                await page.locator(".command-chip").press("Enter")
-                await page.get_by_role("dialog").wait_for()
-                assert (await page.evaluate("() => window.simcordPreview.lastAction"))["command"][
-                    "invocation"
-                ] == "feedback"
             finally:
                 await browser.close()
 
@@ -250,7 +154,6 @@ async def test_browser_validation_upload_viewer_privacy_and_narrow_composer(env,
                 await page.locator(".command-file-input").set_input_files(
                     {"name": "payload.txt", "mimeType": "text/plain", "buffer": b"hello"}
                 )
-                await page.screenshot(path="/tmp/simcord-picker-attachment.png")
                 assert (
                     await page.evaluate("() => window.simcordPreview.commandPicker.draft.submittable") is True
                 )
@@ -1056,8 +959,8 @@ async def test_browser_picker_cached_catalog_reversion_and_private_teardown(env,
                   let catalogOffline = boundary === 'cached-failure';
                   const picker = createCommandPicker({form, input,
                     composer: {inputContainer: row, replaceInput: element => row.replaceChildren(element),
+                      report: () => ({editTargetId: null, replyToId: null}),
                       setKeyInterceptor: callback => { interceptor = callback; }},
-                    getState: () => ({authorized: true}), getSnapshot: () => snapshot,
                     dispatch: () => {}, run: () => {},
                     fetchCatalog: () => {
                       calls++;
@@ -1068,6 +971,7 @@ async def test_browser_picker_cached_catalog_reversion_and_private_teardown(env,
                       if (catalogOffline && calls > 2) return Promise.reject(new Error('Catalog offline'));
                       return Promise.resolve(catalog);
                     }});
+                  picker.setContext({authorized: true, pendingKind: null});
                   form.addEventListener('keydown', event => {
                     if (interceptor(event)) event.preventDefault();
                   });
@@ -1238,3 +1142,105 @@ async def test_browser_picker_compose_and_entity_media_release_obsolete_owners(e
                 )
             finally:
                 await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_picker_scalar_boolean_and_entity_options(env, channel, alice):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _picker_page(preview) as page:
+            composer = page.locator("#channel-composer-input")
+            await composer.fill("/picker_options")
+            await composer.press("Enter")
+            for name, value in [("text", "hello"), ("count", "2"), ("ratio", "0.5")]:
+                field = page.locator(f'.command-option-input[data-option="{name}"]')
+                await field.fill(value)
+                assert await field.input_value() == value
+            enabled = page.locator('.command-option-input[data-option="enabled"]')
+            await enabled.focus()
+            await page.locator(".command-suggestion").filter(has_text="True").click()
+            await enabled.fill("False")
+            assert (
+                await page.evaluate(
+                    "() => window.simcordPreview.commandPicker.draft.options.find(option => option.name === 'enabled').display"
+                )
+                is False
+            )
+            await page.locator('.command-option-input[data-option="user"]').fill("ali")
+            await page.wait_for_function(
+                "() => document.querySelector('.command-popup-heading')?.textContent === 'MEMBERS'"
+            )
+            await page.locator(".command-suggestion").first.wait_for()
+            assert await page.locator(".command-suggestion").count() >= 1
+            await page.locator(".command-suggestion").first.click()
+            assert await page.locator(".command-mention").inner_text() == "@alice"
+            await page.get_by_role("button", name="Exit command mode").click()
+            assert await composer.input_value() == "/picker_options"
+
+
+@pytest.mark.asyncio
+async def test_browser_picker_all_optional_adds_and_removes_entity(env, channel, alice):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _picker_page(preview) as page:
+            composer = page.locator("#channel-composer-input")
+            await composer.fill("/all-optional")
+            await composer.press("Enter")
+            await page.wait_for_function("() => window.simcordPreview.commandPicker.state === 'composing'")
+            assert await page.locator(".command-option-input").count() == 0
+            await page.locator(".command-suggestion").filter(has_text="user").click()
+            field = page.locator('.command-option-input[data-option="user"]')
+            await field.wait_for()
+            await page.locator(".command-suggestion-label").get_by_text("alice", exact=True).wait_for()
+            await field.fill("ali")
+            await page.get_by_role("button", name="Remove user option").click()
+            assert await field.count() == 0
+            await page.get_by_role("button", name="Exit command mode").click()
+
+
+@pytest.mark.asyncio
+async def test_browser_picker_unanswered_and_empty_autocomplete_are_distinct(
+    env, channel, alice, monkeypatch
+):
+    from simcord.preview import _action_plans
+
+    original = _action_plans._autocomplete_result
+    interaction = env.backend.new_interaction(4, channel.id, alice.id, env.guild.id)
+
+    async def unanswered(actor, command_channel, invocation, focused, value, options, **kwargs):
+        if value == "silent":
+            return SimpleNamespace(autocomplete_choices=None, _interaction=interaction)
+        return await original(actor, command_channel, invocation, focused, value, options, **kwargs)
+
+    monkeypatch.setattr(_action_plans, "_autocomplete_result", unanswered)
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _picker_page(preview) as page:
+            composer = page.locator("#channel-composer-input")
+            await composer.fill("/tag")
+            await composer.press("Enter")
+            tag = page.locator('.command-option-input[data-option="name"]')
+            await tag.fill("silent")
+            await page.wait_for_function(
+                "() => window.simcordPreview.commandPicker.autocomplete.state === 'failed'"
+            )
+            assert await page.locator(".command-empty").inner_text() == "Loading options failed"
+            await tag.fill("empty")
+            await page.wait_for_function(
+                "() => window.simcordPreview.commandPicker.autocomplete.state === 'answered' "
+                "&& window.simcordPreview.commandPicker.autocomplete.choiceCount === 0"
+            )
+            assert await page.locator(".command-empty").inner_text() == "No options match"
+
+
+@pytest.mark.asyncio
+async def test_browser_picker_optionless_command_opens_modal(env, channel, alice):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        async with _picker_page(preview) as page:
+            composer = page.locator("#channel-composer-input")
+            await composer.fill("/feedback")
+            await composer.press("Enter")
+            await page.wait_for_function("() => window.simcordPreview.commandPicker.state === 'composing'")
+            assert await page.locator(".command-option-input").count() == 0
+            await page.locator(".command-chip").press("Enter")
+            await page.get_by_role("dialog").wait_for()
+            assert (await page.evaluate("() => window.simcordPreview.lastAction"))["command"][
+                "invocation"
+            ] == "feedback"

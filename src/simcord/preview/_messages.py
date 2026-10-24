@@ -30,6 +30,7 @@ from ._markdown import markdown_tokens
 if TYPE_CHECKING:
     from ..env import Env
     from . import Preview
+    from ._dependencies import _DependencyRead
     from ._pages import _Page
 
 
@@ -249,6 +250,10 @@ def _system_projection(
                     and reference_channel.guild_id == channel.guild_id
                 ):
                     page.referenced_messages.add((reference_channel_id, referenced.id))
+                    page.message_references[(str(message.id), "system")] = (
+                        reference_channel_id,
+                        referenced.id,
+                    )
                     system["reference"] = {
                         "id": str(referenced.id),
                         "author": _identity_wire(
@@ -530,6 +535,10 @@ def _message_projection(
                     target_channel = None
                 if target_channel is not None and target_channel.guild_id is not None:
                     page.referenced_messages.add((target_channel_id, target_message.id))
+                    page.message_references[(str(message.id), "interaction")] = (
+                        target_channel_id,
+                        target_message.id,
+                    )
                     interaction_header["target_message"] = {
                         "id": str(target_message.id),
                         "url": _discord_message_link(
@@ -699,3 +708,85 @@ def _markdown_context(
         "commands": commands,
         "everyone": bool(message.mention_everyone) if message is not None else False,
     }
+
+
+def _filter_message(value: dict[str, Any], page: _Page, read: _DependencyRead) -> None:
+    from ._component_projection import (
+        _filter_body,
+        _filter_emoji,
+        _filter_identity,
+        _filter_tokens,
+    )
+
+    _filter_body(value, read)
+    _filter_identity(value["author"], read)
+    # Forward snapshots are owned by this message, not live source references.
+    for snapshot in value.get("snapshots", []):
+        _filter_body(snapshot, read)
+    for field, kind in (
+        ("mention_names", "user"),
+        ("mention_entities", "user"),
+        ("mention_channel_names", "channel"),
+    ):
+        value[field] = {
+            identity: item for identity, item in value.get(field, {}).items() if read.entity(kind, identity)
+        }
+    for identity in value.get("mention_entities", {}).values():
+        _filter_identity(identity, read)
+    for field, kind in (
+        ("mention_user_ids", "user"),
+        ("mention_role_ids", "role"),
+        ("mention_channel_ids", "channel"),
+    ):
+        value[field] = [identity for identity in value.get(field, []) if read.entity(kind, identity)]
+    for collection, kind in (("users", "user"), ("roles", "role"), ("channels", "channel")):
+        value["mentions"][collection] = [
+            identity for identity in value["mentions"].get(collection, []) if read.entity(kind, identity)
+        ]
+    reply = value.get("reply")
+    if isinstance(reply, dict) and reply.get("state") == "resolved":
+        if not read.message(reply["channel_id"], reply["message_id"]):
+            value["reply"] = {"state": "unavailable"}
+        else:
+            _filter_identity(reply["author"], read)
+            _filter_tokens(reply.get("excerpt_tokens", []), read)
+    thread = value.get("thread")
+    if isinstance(thread, dict) and not read.entity("history_channel", thread["id"]):
+        value["thread"] = None
+    system = value.get("system")
+    if isinstance(system, dict):
+        _filter_tokens(system.get("text_tokens", []), read)
+        _filter_identity(system["author"], read)
+        recipient = system.get("recipient")
+        if isinstance(recipient, dict):
+            if read.entity("user", recipient["id"]):
+                _filter_identity(recipient, read)
+            else:
+                system.pop("recipient")
+        channel = system.get("channel")
+        if isinstance(channel, dict) and not read.entity("history_channel", channel["id"]):
+            system["channel"] = None
+        source = page.message_references.get((value["id"], "system"))
+        if source is not None:
+            if not read.message(*source):
+                system.pop("reference", None)
+            elif isinstance(system.get("reference"), dict):
+                _filter_identity(system["reference"]["author"], read)
+    header = value.get("interaction_header")
+    if isinstance(header, dict):
+        for field in ("user", "target_user"):
+            identity = header.get(field)
+            if isinstance(identity, dict):
+                if read.entity("user", identity["id"]):
+                    _filter_identity(identity, read)
+                else:
+                    header.pop(field)
+        source = page.message_references.get((value["id"], "interaction"))
+        if source is not None and not read.message(*source):
+            header.pop("target_message", None)
+    for reaction in value.get("reactions", []):
+        _filter_emoji(reaction.get("emoji"), read)
+    poll = value.get("poll")
+    if isinstance(poll, dict):
+        for answer in poll.get("answers", []):
+            _filter_emoji(answer.get("emoji"), read)
