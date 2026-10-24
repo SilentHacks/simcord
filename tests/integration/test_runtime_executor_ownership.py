@@ -826,3 +826,119 @@ async def test_future_policy_registration_context_owns_descendants():
         finally:
             release.set()
         await env.settle(timeout=1)
+
+
+@pytest.mark.parametrize("kind", ["task", "executor"])
+@pytest.mark.parametrize("handled", [False, True])
+async def test_live_owner_gets_first_refusal_of_child_failure(kind, handled):
+    loop = asyncio.get_running_loop()
+    ready = asyncio.Event()
+    release = asyncio.Event()
+    children = []
+    failure = ValueError("child failure")
+    async with simcord.run(create_bot(), check_errors=False) as env:
+
+        def fail():
+            raise failure
+
+        async def fail_async():
+            fail()
+
+        async def owner():
+            child = (
+                loop.run_in_executor(None, fail) if kind == "executor" else asyncio.create_task(fail_async())
+            )
+            children.append(child)
+            ready.set()
+            await env.external_wait(release.wait(), reason="wait before observing the child")
+            if handled:
+                with pytest.raises(ValueError) as observed:
+                    await child
+                assert observed.value is failure
+            return "parent completed"
+
+        with env._bot_scope():
+            parent = asyncio.create_task(owner())
+        try:
+            await ready.wait()
+            await asyncio.wait(children)
+            await env.settle()
+            assert not env.errors
+            release.set()
+            assert await parent == "parent completed"
+            await env.settle()
+            assert env.errors == ([] if handled else [failure])
+        finally:
+            release.set()
+            await asyncio.gather(parent, return_exceptions=True)
+
+
+async def test_owned_callback_failure_is_reported_once_and_retires_work():
+    loop = asyncio.get_running_loop()
+    reached = asyncio.Event()
+    failure = ValueError("scheduled callback failure")
+    async with simcord.run(create_bot(), check_errors=False) as env:
+
+        def fail():
+            reached.set()
+            raise failure
+
+        with env._bot_scope():
+            loop.call_soon(fail)
+        await reached.wait()
+        await env.settle()
+        assert env.errors == [failure]
+        continued = []
+        with env._bot_scope():
+            loop.call_soon(continued.append, "continued")
+        await env.settle()
+        assert continued == ["continued"]
+
+
+@pytest.mark.parametrize("handled", [False, True])
+async def test_cancelled_native_job_does_not_consume_later_facade_error(handled):
+    loop = asyncio.get_running_loop()
+    original = loop.run_in_executor
+    entered = asyncio.Event()
+    release = threading.Event()
+    native_calls = []
+    called = []
+    failure = ValueError("deferred caller policy failure")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+
+        def foreign():
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(10)
+
+        foreign_caller = original(executor, foreign)
+        await entered.wait()
+
+        def custom(pool, func, *args):
+            native = original(pool, func, *args)
+            native.cancel()
+            native_calls.append(native)
+            return loop.create_future()
+
+        loop.run_in_executor = custom
+        caller = None
+        try:
+            async with simcord.run(create_bot(), check_errors=False) as env:
+                caller = await _submit(env, executor, lambda: called.append("executed"))
+                await env.settle()
+                assert not foreign_caller.done()
+                assert not caller.done()
+                caller.set_exception(failure)
+                if handled:
+                    with pytest.raises(ValueError) as observed:
+                        await caller
+                    assert observed.value is failure
+                await env.settle()
+                assert env.errors == ([] if handled else [failure])
+                assert called == []
+        finally:
+            release.set()
+            await foreign_caller
+            await asyncio.gather(*native_calls, return_exceptions=True)
+            if caller is not None and caller.done() and not caller.cancelled():
+                caller.exception()
+            loop.run_in_executor = original
