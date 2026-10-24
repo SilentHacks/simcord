@@ -9,3 +9,5 @@ Move selection-state reporting into its owner, leaving the bootstrap to assemble
 Observe native executor submission and completion independently of failed or cancelled caller facades, including initializer rejection and picklable process-pool calls. Preserve live gateway, shard and webhook machinery after a native-work shutdown timeout. Keep deleted session-owned grants out of later baselines without weakening receipt checks. Preserve earlier bot avatars when a human DM message is focused or captured, while retaining live revocation checks; construct uncached SDK messages with native partial channels.
 
 Release successful executor callables without retaining them until long-lived parent tasks finish; preserve unobserved-error handling.
+
+Reject DM and cross-guild service-message references at the fixture boundary while preserving valid same-guild, cross-channel references.

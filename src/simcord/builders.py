@@ -476,7 +476,10 @@ class GuildHandle:
         target_channel: ChannelHandle | None = None,
         referenced_message: discord.Message | ResponseMessage | None = None,
     ) -> discord.Message:
-        """Seed a typed service message with real identities, not arbitrary content."""
+        """Seed a typed service message with real identities, not arbitrary content.
+
+        References must belong to this Env and guild, but may come from another channel.
+        """
         if channel._env is not self._env or channel.guild is None or channel.guild.id != self.id:
             raise SetupError("system message channel must belong to this guild and environment")
         _require_handle(self._env, author, guild_id=self.id)
@@ -494,6 +497,8 @@ class GuildHandle:
             from .actors import _channel_id_of
 
             referenced_channel_id = _channel_id_of(referenced_message, self._env)
+            if self._env.backend.get_channel(referenced_channel_id).guild_id != self.id:
+                raise SetupError("system message reference must belong to this guild and environment")
             referenced_message_id = referenced_message.id
         stored = self._env.backend.create_system_message(
             channel.id,
