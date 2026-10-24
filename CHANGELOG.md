@@ -4,6 +4,25 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.2.1 (2026-10-24)
+
+### Bug fixes
+
+- Fix obsolete preview responses restoring an older viewer, and reauthorize cached references, identities, command catalogs, and retained autocomplete results without publishing unrelated edits. Centralize browser read/poll ownership and capture geometry; release evicted media, clear private modal and command-picker state, preserve native keyboard focus, and make simulated layouts follow their logical viewport. Preserve affected-message diagnostic navigation and terminal completeness across Inspector redraws; recover cached catalogs even when an obsolete read fails. Keep protocol 3 and status schema 1 unchanged; add development-only checks for the extracted JavaScript boundaries.
+
+  Give browser actions, assets, catalog observations, File-bearing drafts and rendered surfaces explicit lifetimes; strictly check all first-party JavaScript and preserve frozen publication/result provenance across revocation and capture. Validate compound member/voice and forum mutations before committing state, enforce actor and bot REST authority without conflating token access, and track actual executor execution separately from caller cancellation. Split capture configuration, journal/recovery and transport responsibilities; independently verify exact API test-grant provenance and retain distinct capture crop policies. Networked reference capture now requires aiohttp 3.12+ to prevent implicit uncertain-write retries; Preview library requirements are unchanged.
+
+  Preserve supported native SDK overwrite targets while rejecting foreign state and cross-guild roles/members; apply existing-emoji reaction permissions consistently in actors, REST and preview controls. Keep newer Reply intents when older sends settle, reconcile refreshed entity selections, and restore Escape after applying modal choices. Verify captured animation content and timing without depending on unrelated avatar antialiasing.
+
+  Move selection-state reporting into its owner, leaving the bootstrap to assemble read-only status.
+
+  Observe native executor submission and completion independently of failed or cancelled caller facades, including initializer rejection and picklable process-pool calls. Preserve live gateway, shard and webhook machinery after a native-work shutdown timeout. Keep deleted session-owned grants out of later baselines without weakening receipt checks. Preserve earlier bot avatars when a human DM message is focused or captured, while retaining live revocation checks; construct uncached SDK messages with native partial channels.
+
+  Release successful executor callables without retaining them until long-lived parent tasks finish; preserve unobserved-error handling.
+
+  Reject DM and cross-guild service-message references at the fixture boundary while preserving valid same-guild, cross-channel references. ([#41](https://github.com/SilentHacks/simcord/pull/41))
+
+
 ## 3.2.0 (2026-10-22)
 
 ### Features
