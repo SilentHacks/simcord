@@ -412,7 +412,29 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
       key, state.pendingSelectValidations.has(key) ? [] : [...values],
     ]));
   }
-  return { observe, reset, renderOptions, report,
+  function reportStates() {
+    const activity = [...(state.snapshot?.activity || [])].reverse();
+    return Object.fromEntries(elements(".preview-select").map((element) => {
+      const key = element.dataset.controlKey || "";
+      const values = state.pendingSelectValidations.has(key) ? [] : [...(state.selectDrafts.get(key) || [])];
+      const minimum = Number(element.dataset.minimum), maximum = Number(element.dataset.maximum);
+      const optional = element.dataset.optional === "true";
+      const touched = state.modalTouched.has(key);
+      const receipt = activity.find((item) =>
+        item.target?.controlKey === key && item.acknowledgement !== "not_applicable");
+      return [key, {
+        values, minimum, maximum, optional,
+        valid: (optional && !values.length) || (values.length >= minimum && values.length <= maximum),
+        editing: state.dropdown?.key === key, touched,
+        pending: state.pendingAction?.controlKey === key,
+        commit: receipt ? {
+          requestId: receipt.requestId, sequence: receipt.sequence, dispatch: receipt.dispatch,
+          settlement: receipt.settlement, uncertain: receipt.uncertain,
+        } : null,
+      }];
+    }));
+  }
+  return { observe, reset, renderOptions, report, reportStates,
     /** @param {{blocked: boolean, pendingAction: AdmittedAction | null, pinnedCapture: boolean}} admission */
     admission: ({blocked, pendingAction, pinnedCapture}) => {
       state.blocked = blocked; state.pendingAction = pendingAction; state.pinnedCapture = pinnedCapture;
@@ -424,8 +446,6 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
     updateContext: (context) => { state.pendingAction = context.pendingAction; state.modalHandle = context.modalHandle; state.pinnedCapture = context.pinnedCapture; },
     /** @param {string} key */
     values: (key) => [...(state.selectDrafts.get(key) || [])],
-    /** @param {string} key */
-    isPending: (key) => state.pendingSelectValidations.has(key),
     /** @param {string} key */
     isTouched: (key) => state.modalTouched.has(key),
     /** @param {string} key */

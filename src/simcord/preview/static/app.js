@@ -233,27 +233,6 @@ function visibleMessageIds() {
   return timeline.visibleIds(crop);
 }
 
-function selectStates() {
-  return Object.fromEntries([...document.querySelectorAll(".preview-select")].filter((element) => element instanceof HTMLElement).map((element) => {
-    const key = element.dataset.controlKey || "";
-    const values = selections.isPending(key) ? [] : selections.values(key);
-    const minimum = Number(element.dataset.minimum), maximum = Number(element.dataset.maximum);
-    const optional = element.dataset.optional === "true";
-    const touched = selections.isTouched(key);
-    const receipt = [...(state.snapshot?.activity || [])].reverse().find((item) =>
-      item.target?.controlKey === key && item.acknowledgement !== "not_applicable");
-    return [key, {
-      values, minimum, maximum, optional,
-      valid: (optional && !values.length) || (values.length >= minimum && values.length <= maximum),
-      editing: state.dropdown?.key === key, touched,
-      pending: state.pendingAction?.controlKey === key,
-      commit: receipt ? {
-        requestId: receipt.requestId, sequence: receipt.sequence, dispatch: receipt.dispatch,
-        settlement: receipt.settlement, uncertain: receipt.uncertain,
-      } : null,
-    }];
-  }));
-}
 
 function statusObject() {
   const activeControl = document.activeElement?.closest("[data-control-key]");
@@ -281,7 +260,7 @@ function statusObject() {
     renderGeneration: state.renderGeneration,
     renderState,
     selectDrafts: selections.report(),
-    selectStates: selectStates(),
+    selectStates: selections.reportStates(),
     commandPicker: commandPicker.status(),
     lastAction: state.authorized ? clone(state.lastAction) : null,
     pendingAction: state.pendingAction ? {
