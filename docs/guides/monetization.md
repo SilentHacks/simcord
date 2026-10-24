@@ -251,6 +251,13 @@ and Send Messages permissions, and one text channel named `parity`. Leave
 privileged intents disabled and the Interactions Endpoint URL blank. Do not run
 alongside another process using the same bot.
 
+Networked reference capture requires **aiohttp 3.12+** for its public per-request
+middleware API. This prevents aiohttp from silently retrying uncertain writes,
+including DELETE/PUT; only explicitly recorded HTTP 429 retries remain enabled.
+The recorder checks this prerequisite before requesting credentials or recording
+a mutation intent. Preview's library dependency remains `aiohttp>=3.9`; offline
+evidence validation does not need the capture transport.
+
 From the repository root, run in your own interactive terminal:
 
 ```bash
@@ -409,6 +416,11 @@ It does **not** turn captured facts into simulator calibration approval.
 inspect the named blocked cases and reasons in `manifest.json`. A completed run
 does not prove all lifecycle cases or fix simulator behavior.
 
+Validation is independent of recorder ownership flags. API test-create proof needs
+an exact integer type 8, the requested application/SKU/owner and a fresh,
+non-manual ID. Explicitly authorized manual type-4 purchases use a separate proof
+path. Malformed evidence produces located error codes without echoing raw values.
+
 The validator can also run without credentials:
 
 ```bash
@@ -435,6 +447,11 @@ may be cleaned separately:
 uv run python scripts/capture_remaining_monetization.py \
   --resume CAPTURE_DIRECTORY --cleanup-only
 ```
+
+Cleanup-only loads the saved identities and verifies correlated positive receipts;
+it does not require a new capture's checkout configuration or source fixtures.
+Recovery preserves schema-1 ordered correlation and schema-2 request IDs. A
+success-looking manifest flag or an earlier retry response cannot establish ownership.
 
 Recovery cannot change the original app/server/owner identities. A second owner
 may be added to a run that previously lacked one; the relevant comparison

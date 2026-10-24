@@ -129,6 +129,16 @@ def load_expiry_source(directory):
     }
 
 
+def load_upgrade_source(directory, *, cancellation_only=False):
+    source = load_expiry_source(directory)
+    end = _instant(source["period_end"])
+    if not cancellation_only and (end is None or datetime.now(UTC) >= end):
+        raise RuntimeError(
+            "Expired subscription source cannot authorize a new checkout; preserve it for expiry evidence."
+        )
+    return source
+
+
 async def check_expiry_subscription(ctx, case):
     source = ctx.state["expiry_source"]
     status, rows = await ctx.request(

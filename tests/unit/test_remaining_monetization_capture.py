@@ -32,6 +32,7 @@ async def server(handler):
 async def context(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(SCRIPTS))
     module = importlib.import_module("capture_remaining_monetization")
+    transport = importlib.import_module("monetization_reference_transport")
     args = SimpleNamespace(
         user=200,
         guild=300,
@@ -56,16 +57,17 @@ async def context(tmp_path, monkeypatch):
         "baseline_ids": [],
         "source_bundles": [],
     }
-    ctx = module.Capture(args, module.Evidence(tmp_path / "capture", "dummy-local-secret"), state)
+    config = module.CaptureConfig.from_namespace(args)
+    ctx = module.Capture(config, transport.Evidence(tmp_path / "capture", "dummy-local-secret"), state)
     ctx.app, ctx.base = {"id": "100"}, "/applications/100/entitlements"
     async with aiohttp.ClientSession() as http:
-        ctx.rest = module.Rest(http, ctx.evidence)
+        ctx.rest = transport.Rest(http, ctx.evidence)
         yield module, ctx
     await ctx.client.close()
 
 
 async def test_successful_write_is_journaled_before_network_and_cleanup_is_owned(context):
-    module, ctx = context
+    _, ctx = context
     operations = []
 
     async def endpoint(request):
@@ -88,7 +90,8 @@ async def test_successful_write_is_journaled_before_network_and_cleanup_is_owned
         assert operations == ["POST", "DELETE"]
         assert ctx.state["owned_entitlements"][eid]["deleted"] is True
         assert ctx.state["owned_entitlements"][eid]["create_ref"] == "rest.jsonl:1"
-        resumed = module.Evidence(ctx.evidence.directory, "dummy-local-secret", resume=True)
+        transport = importlib.import_module("monetization_reference_transport")
+        resumed = transport.Evidence(ctx.evidence.directory, "dummy-local-secret", resume=True)
         assert (
             resumed.record("actions", event="resume") == f"actions.jsonl:{ctx.evidence.counts['actions'] + 1}"
         )
@@ -142,6 +145,12 @@ async def test_preexisting_or_foreign_resource_never_acquires_cleanup_provenance
     "patch,manual_ids",
     [
         ({"type": 1}, []),
+        ({"type": 4}, []),
+        ({"type": True}, []),
+        ({"id": 500}, []),
+        ({"id": "0"}, []),
+        ({"deleted": True}, []),
+        ({"guild_id": "300"}, []),
         ({}, ["500"]),
         ({"sku_id": "401"}, []),
         ({"user_id": "201"}, []),
@@ -150,7 +159,7 @@ async def test_preexisting_or_foreign_resource_never_acquires_cleanup_provenance
 async def test_successful_create_cannot_adopt_manual_or_wrong_fixture(context, patch, manual_ids):
     _, ctx = context
     ctx.state["manual_live_entitlement_ids"] = manual_ids
-    ctx.args.other_user = 201
+    ctx.identity.other_user = 201
     writes = []
 
     async def endpoint(request):
@@ -239,7 +248,7 @@ async def test_recorded_response_recovers_without_resubmitting_create(context):
 async def test_checkout_baseline_traverses_large_history_before_requesting_interaction(context):
     _, ctx = context
     checkout = importlib.import_module("monetization_reference_checkout")
-    ctx.args.user_sku_a, ctx.args.user_sku_b = "A", "B"
+    ctx.checkout.user_sku_a, ctx.checkout.user_sku_b = "A", "B"
     ctx.skus = [
         {"id": "400", "name": "A", "type": 5, "flags": 256},
         {"id": "401", "name": "B", "type": 5, "flags": 256},
@@ -301,7 +310,7 @@ async def test_checkout_baseline_traverses_large_history_before_requesting_inter
 async def test_cancellation_only_recovery_finds_real_purchase_without_new_checkout(context):
     _, ctx = context
     checkout = importlib.import_module("monetization_reference_checkout")
-    ctx.args.user_sku_a, ctx.args.user_sku_b = "A", "B"
+    ctx.checkout.user_sku_a, ctx.checkout.user_sku_b = "A", "B"
     ctx.skus = [
         {"id": "400", "name": "A", "type": 5, "flags": 256},
         {"id": "401", "name": "B", "type": 5, "flags": 256},
@@ -365,3 +374,272 @@ async def test_cancellation_only_recovery_finds_real_purchase_without_new_checko
     assert ctx.state["manual_live_entitlement_ids"] == ["500"]
     assert not ctx.state["owned_entitlements"] and not writes
     assert not stage.get("upgrade_prompted")
+
+
+async def test_intent_without_request_is_recoverable_without_inventing_ownership(context, monkeypatch):
+    import asyncio
+
+    module, ctx = context
+
+    async def interrupted(*args, **kwargs):
+        saved = json.loads((ctx.evidence.directory / "manifest.json").read_text())
+        assert saved["pending_write"]["method"] == "POST"
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ctx.rest, "request", interrupted)
+    with pytest.raises(asyncio.CancelledError):
+        await ctx.create("interrupted.before_request", {"id": "400"})
+    assert not ctx.evidence.counts.get("requests")
+    module.reconcile(ctx)
+    assert ctx.state["pending_write"] is None
+    assert not ctx.state["uncertain_writes"] and not ctx.state["owned_entitlements"]
+    assert ctx.state["cases"]["interrupted.before_request"]["status"] == "blocked"
+
+
+async def test_remote_success_before_ownership_checkpoint_recovers_only_receipt(context, monkeypatch):
+    import asyncio
+
+    module, ctx = context
+    settle = ctx.settle_write
+    operations = []
+
+    async def endpoint(request):
+        operations.append(request.method)
+        return web.json_response(
+            {"id": "500", "sku_id": "400", "application_id": "100", "user_id": "200", "type": 8}
+        )
+
+    def interrupted(*args):
+        raise asyncio.CancelledError
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        monkeypatch.setattr(ctx, "settle_write", interrupted)
+        with pytest.raises(asyncio.CancelledError):
+            await ctx.create("interrupted.after_receipt", {"id": "400"})
+        assert not ctx.state["owned_entitlements"]
+        monkeypatch.setattr(ctx, "settle_write", settle)
+        module.reconcile(ctx)
+    assert operations == ["POST"]
+    assert ctx.state["owned_entitlements"]["500"]["create_ref"] == "rest.jsonl:1"
+    assert not ctx.state["uncertain_writes"] and ctx.state["pending_write"] is None
+
+
+async def test_lost_cleanup_write_is_retained_and_never_replayed(context):
+    module, ctx = context
+    operations = []
+
+    async def endpoint(request):
+        operations.append(request.method)
+        if request.method == "POST":
+            return web.json_response(
+                {"id": "500", "sku_id": "400", "application_id": "100", "user_id": "200", "type": 8}
+            )
+        request.transport.close()
+        return web.Response(status=204)
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        await ctx.create("cleanup.fixture", {"id": "400"})
+        await ctx.cleanup()
+        assert not ctx.cleaning
+        module.reconcile(ctx)
+        await ctx.cleanup()
+    assert operations == ["POST", "DELETE"]
+    assert ctx.state["uncertain_writes"]
+    assert not ctx.state["owned_entitlements"]["500"]["deleted"]
+    assert ctx.state["cleanup_errors"]
+
+
+async def test_earlier_429_cannot_resolve_later_unknown_attempt(context):
+    module, ctx = context
+    attempts = []
+
+    async def endpoint(request):
+        attempts.append(request.method)
+        if len(attempts) == 1:
+            return web.json_response({"retry_after": 0}, status=429)
+        request.transport.close()
+        return web.Response(status=204)
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        with pytest.raises(aiohttp.ClientError):
+            await ctx.create("retry.then_unknown", {"id": "400"})
+        module.reconcile(ctx)
+    assert attempts == ["POST", "POST"]
+    assert ctx.state["uncertain_writes"] and not ctx.state["owned_entitlements"]
+
+
+async def test_manifest_ownership_flag_without_receipt_never_authorizes_cleanup(context):
+    _, ctx = context
+    ctx.state["owned_entitlements"]["500"] = {
+        "deleted": False,
+        "sku_id": "400",
+        "owner_type": 2,
+        "owner_id": "200",
+        "create_ref": "rest.jsonl:1",
+    }
+    await ctx.cleanup()
+    assert not ctx.evidence.counts.get("requests")
+    assert ctx.state["cleanup_errors"]
+
+
+async def test_authenticated_application_mismatch_stops_before_mutation(context):
+    module, ctx = context
+    operations = []
+
+    async def endpoint(request):
+        operations.append(request.method)
+        return web.json_response({"id": "999", "name": "Wrong application"})
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        with pytest.raises(RuntimeError, match="different application"):
+            await module.authenticate_application(ctx)
+    assert operations == ["GET"]
+    assert ctx.app == {"id": "100"}
+
+
+async def test_cleanup_configuration_ignores_fresh_source_and_checkout_prerequisites(context):
+    module, ctx = context
+    parser = module.build_parser()
+    original = parser.parse_args(["--guild", "300", "--user", "200"])
+    original.live_upgrade = True
+    original.team_discount_confirmed = False
+    original.upgrade_from = "/missing/source"
+    original.watch_seconds = -1
+    ctx.state["config"] = {
+        key: value for key, value in vars(original).items() if key not in {"resume", "output", "cleanup_only"}
+    }
+    ctx.save()
+    args = parser.parse_args(["--resume", str(ctx.evidence.directory), "--cleanup-only"])
+    state, expiry, upgrade, config = module.prepare_local(parser, args, {"--resume", "--cleanup-only"})
+    assert state["application_id"] == "100" and expiry is None and upgrade is None
+    assert isinstance(config, module.CleanupConfig)
+    assert config.identity.user == 200 and not hasattr(config, "checkout")
+    args = parser.parse_args(["--resume", str(ctx.evidence.directory), "--cleanup-only", "--user", "201"])
+    with pytest.raises(SystemExit):
+        module.prepare_local(parser, args, {"--resume", "--cleanup-only", "--user"})
+
+
+async def test_evidence_never_persists_raw_secrets_and_resume_rejects_truncation(context):
+    _, ctx = context
+    transport = importlib.import_module("monetization_reference_transport")
+    ctx.evidence.record(
+        "gateway",
+        token="interaction-secret",
+        nested={"authorization": "another-secret"},
+        message="dummy-local-secret",
+    )
+    ctx.state["token"] = "manifest-secret"
+    ctx.save()
+    combined = "".join(path.read_text() for path in ctx.evidence.directory.iterdir() if path.is_file())
+    for secret in ("dummy-local-secret", "interaction-secret", "another-secret", "manifest-secret"):
+        assert secret not in combined
+    with (ctx.evidence.directory / "rest.jsonl").open("a") as output:
+        output.write('{"status":')
+    with pytest.raises(RuntimeError, match="Truncated"):
+        transport.Evidence(ctx.evidence.directory, "replacement-secret", resume=True)
+
+
+@pytest.mark.parametrize("method", ["DELETE", "PUT"])
+async def test_disconnect_after_write_dispatch_never_retries_idempotent_verbs(context, method):
+    _, ctx = context
+    remote_mutations = []
+
+    async def endpoint(request):
+        remote_mutations.append(request.method)
+        request.transport.close()
+        return web.Response(status=204)
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        with pytest.raises(aiohttp.ClientError):
+            await ctx.request("unknown." + method, method, ctx.base + "/500")
+    assert remote_mutations == [method]
+    assert ctx.evidence.counts["requests"] == 1
+    receipts = (ctx.evidence.directory / "rest.jsonl").read_text().splitlines()
+    assert len(receipts) == 1
+    assert json.loads(receipts[0])["outcome_unknown"] is True
+    assert ctx.state["pending_write"]["method"] == method
+
+
+@pytest.mark.parametrize("name", ["capture_monetization_reference", "capture_remaining_monetization"])
+def test_tooling_preflight_rejects_missing_public_middleware_before_credentials(
+    tmp_path, monkeypatch, capsys, name
+):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    module = importlib.import_module(name)
+
+    class WithoutMiddleware:
+        def __init__(self):
+            raise AssertionError("No session may be created")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No credentials may be requested")
+
+    monkeypatch.setattr(aiohttp, "ClientSession", WithoutMiddleware)
+    monkeypatch.setattr(module.getpass, "getpass", forbidden)
+    output = tmp_path / "unused"
+    monkeypatch.setattr(
+        module.sys, "argv", ["capture", "--guild", "300", "--user", "200", "--output", str(output)]
+    )
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 2
+    assert "aiohttp>=3.12" in capsys.readouterr().err
+    assert not output.exists()
+    monkeypatch.setattr(module.sys, "argv", ["capture", "--help"])
+    with pytest.raises(SystemExit) as help_exit:
+        module.main()
+    assert help_exit.value.code == 0
+
+
+async def test_failure_to_fsync_intent_never_dispatches_request(context, monkeypatch):
+    _, ctx = context
+    ctx.save()
+
+    def cannot_persist(**state):
+        raise OSError("simulated durable intent failure")
+
+    monkeypatch.setattr(ctx.evidence, "manifest", cannot_persist)
+    with pytest.raises(OSError):
+        await ctx.create("interrupted.before_intent", {"id": "400"})
+    saved = json.loads((ctx.evidence.directory / "manifest.json").read_text())
+    assert saved["pending_write"] is None and not ctx.evidence.counts.get("requests")
+
+
+async def test_cancellation_during_cleanup_retains_unknown_delete_for_resume(context):
+    import asyncio
+
+    module, ctx = context
+    dispatched, release = asyncio.Event(), asyncio.Event()
+    operations = []
+
+    async def endpoint(request):
+        operations.append(request.method)
+        if request.method == "POST":
+            return web.json_response(
+                {"id": "500", "sku_id": "400", "application_id": "100", "user_id": "200", "type": 8}
+            )
+        dispatched.set()
+        await release.wait()
+        return web.Response(status=204)
+
+    async with server(endpoint) as base:
+        ctx.rest.base = base
+        await ctx.create("cleanup.cancel.fixture", {"id": "400"})
+        cleanup = asyncio.create_task(ctx.cleanup())
+        try:
+            await dispatched.wait()
+            cleanup.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cleanup
+        finally:
+            release.set()
+        assert not ctx.cleaning and ctx.state["pending_write"]["method"] == "DELETE"
+        module.reconcile(ctx)
+        await ctx.cleanup()
+    assert operations == ["POST", "DELETE"]
+    assert ctx.state["uncertain_writes"] and not ctx.state["owned_entitlements"]["500"]["deleted"]
