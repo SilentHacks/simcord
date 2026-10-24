@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import simcord
+from simcord.backend.command_access import command_access
 from simcord.backend.models import Overwrite
 from simcord.enums import AppCommandType
 from simcord.http import router
@@ -24,7 +25,7 @@ def _seed_denial(env, command, channel, user, reason):
         other_guild = env.create_guild()
         other_channel = other_guild.create_text_channel("elsewhere")
         command["guild_id"] = str(env.guild.id)
-        return other_channel
+        return other_channel, other_guild.add_member(user.user)
     if reason == "context":
         command["contexts"] = [1]
     elif reason == "use-application-commands":
@@ -43,7 +44,7 @@ def _seed_denial(env, command, channel, user, reason):
         env.guild.set_command_permissions(int(command["id"]), {user: False})
     elif reason == "default-member-permissions":
         command["default_member_permissions"] = str(discord.Permissions(manage_guild=True).value)
-    return channel
+    return channel, user
 
 
 @pytest.mark.parametrize(
@@ -60,12 +61,19 @@ def _seed_denial(env, command, channel, user, reason):
 async def test_slash_and_autocomplete_refuse_invisible_commands(env, channel, alice, reason):
     command = env.backend.find_command("tag", None)
     assert command is not None
-    invoke_channel = _seed_denial(env, command, channel, alice, reason)
+    invoke_channel, actor = _seed_denial(env, command, channel, alice, reason)
+    access = command_access(env.backend, command, user_id=actor.id, channel_id=invoke_channel.id)
+    assert not access.allowed
+    assert access.reason == reason
+    interactions_before = len(env.backend.interactions)
+    dispatches_before = env.transcript().count("INTERACTION_CREATE")
 
-    with pytest.raises(simcord.SetupError, match=f"reason: {reason}"):
-        await alice.slash(invoke_channel, "tag", name="python")
-    with pytest.raises(simcord.SetupError, match=f"reason: {reason}"):
-        await alice.autocomplete(invoke_channel, "tag", "name", "py")
+    with pytest.raises(simcord.SetupError):
+        await actor.slash(invoke_channel, "tag", name="python")
+    with pytest.raises(simcord.SetupError):
+        await actor.autocomplete(invoke_channel, "tag", "name", "py")
+    assert len(env.backend.interactions) == interactions_before
+    assert env.transcript().count("INTERACTION_CREATE") == dispatches_before
 
 
 @pytest.mark.parametrize(
@@ -82,11 +90,18 @@ async def test_slash_and_autocomplete_refuse_invisible_commands(env, channel, al
 async def test_context_menu_refuses_invisible_commands(env, channel, alice, reason):
     command = env.backend.find_command("Report Member", env.guild.id, type=AppCommandType.USER)
     assert command is not None
-    invoke_channel = _seed_denial(env, command, channel, alice, reason)
-    target = env.guild.add_member(env.create_user("target"))
+    invoke_channel, actor = _seed_denial(env, command, channel, alice, reason)
+    target = invoke_channel.guild.add_member(env.create_user("target"))
+    access = command_access(env.backend, command, user_id=actor.id, channel_id=invoke_channel.id)
+    assert not access.allowed
+    assert access.reason == reason
+    interactions_before = len(env.backend.interactions)
+    dispatches_before = env.transcript().count("INTERACTION_CREATE")
 
-    with pytest.raises(simcord.SetupError, match=f"reason: {reason}"):
-        await alice.context_menu(invoke_channel, "Report Member", target)
+    with pytest.raises(simcord.SetupError):
+        await actor.context_menu(invoke_channel, "Report Member", target)
+    assert len(env.backend.interactions) == interactions_before
+    assert env.transcript().count("INTERACTION_CREATE") == dispatches_before
 
 
 async def test_command_sync_discards_default_field_at_http_boundary(env):
@@ -153,11 +168,19 @@ async def test_guild_command_scope_reason_for_slash_and_autocomplete(env, channe
     )[0]
     other_guild = env.create_guild()
     other_channel = other_guild.create_text_channel("elsewhere")
+    actor = other_guild.add_member(alice.user)
+    access = command_access(env.backend, scoped, user_id=actor.id, channel_id=other_channel.id)
+    assert not access.allowed
+    assert access.reason == "scope"
+    interactions_before = len(env.backend.interactions)
+    dispatches_before = env.transcript().count("INTERACTION_CREATE")
 
-    with pytest.raises(simcord.SetupError, match="reason: scope"):
-        await alice.slash(other_channel, "scoped-probe", query="x")
-    with pytest.raises(simcord.SetupError, match="reason: scope"):
-        await alice.autocomplete(other_channel, "scoped-probe", "query", "x")
+    with pytest.raises(simcord.SetupError):
+        await actor.slash(other_channel, "scoped-probe", query="x")
+    with pytest.raises(simcord.SetupError):
+        await actor.autocomplete(other_channel, "scoped-probe", "query", "x")
+    assert len(env.backend.interactions) == interactions_before
+    assert env.transcript().count("INTERACTION_CREATE") == dispatches_before
     assert scoped["guild_id"] == str(env.guild.id)
 
 

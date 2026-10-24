@@ -191,3 +191,78 @@ async def test_editing_deferred_response_completes_message(env, channel, alice):
     result = await alice.slash(channel, "patient")
     assert result.response.content == "All done"
     assert result.ephemeral
+
+
+async def test_opened_modal_is_bound_to_opener_and_guild_and_dispatches_once(env, channel, alice):
+    submissions = []
+
+    class Form(discord.ui.Modal, title="Identity"):
+        answer = discord.ui.TextInput(custom_id="answer")
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            submissions.append((interaction.user.id, interaction.guild_id, self.answer.value))
+            await interaction.response.send_message("accepted")
+
+    @env.bot.tree.command(description="Open an identity-bound modal")
+    async def identity_form(interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(Form())
+
+    await env.bot.tree.sync()
+    shown = await alice.slash(channel, "identity_form")
+    bob = env.guild.add_member(env.create_user("bob"))
+    elsewhere = env.create_guild("Other").add_member(alice.user)
+    before = len(env.backend.interactions)
+
+    with pytest.raises(simcord.SetupError):
+        await bob.submit_modal(shown, {"answer": "stolen"})
+    with pytest.raises(simcord.SetupError):
+        await elsewhere.submit_modal(shown, {"answer": "wrong context"})
+    assert submissions == []
+    assert len(env.backend.interactions) == before
+
+    accepted = await alice.submit_modal(shown, {"answer": "original"})
+    assert accepted.response.content == "accepted"
+    assert submissions == [(alice.id, env.guild.id, "original")]
+
+    with pytest.raises(simcord.SetupError):
+        await alice.submit_modal(shown, {"answer": "replayed"})
+    assert submissions == [(alice.id, env.guild.id, "original")]
+
+
+async def test_component_modal_rechecks_channel_access_without_consuming_on_denial(env, channel, alice):
+    submissions = []
+
+    class Form(discord.ui.Modal, title="Channel access"):
+        answer = discord.ui.TextInput(custom_id="answer")
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            submissions.append(self.answer.value)
+            await interaction.response.edit_message(content=self.answer.value, view=None)
+
+    async def open_form(interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(Form())
+
+    view = discord.ui.View()
+    button = discord.ui.Button(label="Open", custom_id="access-form")
+    button.callback = open_form
+    view.add_item(button)
+    native_channel = env.bot.get_channel(channel.id)
+    source = await native_channel.send("original", view=view)
+    shown = await alice.click(source, custom_id="access-form")
+    before = len(env.backend.interactions)
+
+    await native_channel.set_permissions(
+        alice.member, overwrite=discord.PermissionOverwrite(view_channel=False)
+    )
+    with pytest.raises(simcord.SetupError):
+        await alice.submit_modal(shown, {"answer": "denied"})
+    assert submissions == []
+    assert len(env.backend.interactions) == before
+    assert env.backend.get_message(channel.id, source.id).content == "original"
+
+    await native_channel.set_permissions(alice.member, overwrite=None)
+    accepted = await alice.submit_modal(shown, {"answer": "restored"})
+    assert accepted.response.id == source.id
+    assert accepted.response.content == "restored"
+    assert submissions == ["restored"]
+    assert len(env.backend.interactions) == before + 1

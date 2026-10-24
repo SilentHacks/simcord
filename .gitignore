@@ -15,6 +15,9 @@ build/
 .hypothesis/
 .coverage
 htmlcov/
+node_modules/
+npm-debug.log*
+*.tsbuildinfo
 
 # Editors
 .idea/

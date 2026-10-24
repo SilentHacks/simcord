@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...backend import errors, serializers
+from ...backend.access import channel_accessible
 from ...enums import AuditLogAction, ChannelType
 from .._helpers import bot_message, message_edit_changes, message_response
 from ..router import RequestContext, route
@@ -31,7 +32,9 @@ def send_message(ctx: RequestContext) -> Any:
 @route("GET", "/channels/{channel_id}/messages/{message_id}")
 def get_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    message = backend.get_message(ctx.int_arg("channel_id"), ctx.int_arg("message_id"))
+    message = ctx.require_message(
+        ctx.int_arg("channel_id"), ctx.int_arg("message_id"), "read_message_history"
+    )
     return message_response(ctx, message, for_user=backend.bot_user.id)
 
 
@@ -39,7 +42,9 @@ def get_message(ctx: RequestContext) -> Any:
 def get_history(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    backend.get_channel(channel_id)
+    ctx.require_channel_permissions(channel_id)
+    if not channel_accessible(backend, channel_id, backend.bot_user.id, history=True):
+        return []
     limit = int(ctx.params.get("limit", 50))
     # Ephemeral messages are never returned by the channel-messages endpoint,
     # just as they are invisible in a real client's channel scrollback.
@@ -65,7 +70,7 @@ def get_history(ctx: RequestContext) -> Any:
 def edit_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
     # Real Discord only lets you edit your own messages (50005); the bot editing
     # someone else's message is exactly the kind of bug this framework surfaces.
     if message.author_id != backend.bot_user.id:
@@ -103,7 +108,9 @@ def crosspost_message(ctx: RequestContext) -> Any:
     if channel.type != ChannelType.NEWS:
         # Only announcement (news) channels can crosspost; real Discord 50024s.
         raise errors.cannot_execute_on_channel_type()
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
+    if message.author_id != backend.bot_user.id:
+        ctx.require_channel_permissions(channel_id, "manage_messages")
     return message_response(ctx, backend.crosspost_message(channel_id, message.id))
 
 
@@ -111,7 +118,7 @@ def crosspost_message(ctx: RequestContext) -> Any:
 def delete_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
     channel = backend.get_channel(channel_id)
     if message.author_id != backend.bot_user.id and channel.guild_id is not None:
         ctx.require_channel_permissions(channel_id, "manage_messages")
@@ -124,12 +131,14 @@ def delete_message(ctx: RequestContext) -> Any:
 @route("PUT", "/channels/{channel_id}/messages/pins/{message_id}")
 def pin_message(ctx: RequestContext) -> Any:
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ctx.require_message(channel.id, ctx.int_arg("message_id"))
     ctx.backend.set_pinned(channel.id, ctx.int_arg("message_id"), True)
 
 
 @route("DELETE", "/channels/{channel_id}/messages/pins/{message_id}")
 def unpin_message(ctx: RequestContext) -> Any:
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ctx.require_message(channel.id, ctx.int_arg("message_id"))
     ctx.backend.set_pinned(channel.id, ctx.int_arg("message_id"), False)
 
 
@@ -137,7 +146,7 @@ def unpin_message(ctx: RequestContext) -> Any:
 def expire_poll(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
     if message.author_id != backend.bot_user.id:
         raise errors.cannot_edit_other_user()
     message = backend.expire_poll(channel_id, message.id)
@@ -147,7 +156,9 @@ def expire_poll(ctx: RequestContext) -> Any:
 @route("GET", "/channels/{channel_id}/polls/{message_id}/answers/{answer_id}")
 def get_poll_answer_voters(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    message = backend.get_message(ctx.int_arg("channel_id"), ctx.int_arg("message_id"))
+    message = ctx.require_message(
+        ctx.int_arg("channel_id"), ctx.int_arg("message_id"), "read_message_history"
+    )
     answer_id = ctx.int_arg("answer_id")
     voters = message.poll.votes.get(answer_id, set()) if message.poll else set()
     limit = int(ctx.params.get("limit", 25))
@@ -159,7 +170,7 @@ def get_poll_answer_voters(ctx: RequestContext) -> Any:
 def get_pins(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    backend.get_channel(channel_id)
+    ctx.require_channel_permissions(channel_id, "read_message_history")
     items = [
         {"message": message_response(ctx, m), "pinned_at": backend.now_iso()}
         for m in backend.messages[channel_id].values()

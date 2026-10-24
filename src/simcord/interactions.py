@@ -13,6 +13,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .backend import Backend, serializers
+from .backend.access import channel_accessible
 from .backend.errors import OptionError, SetupError
 from .backend.models import Interaction
 from .enums import AppCommandType, InteractionType, OptionType
@@ -133,23 +134,39 @@ def command_leaves(command: dict[str, Any]) -> list[tuple[list[str], dict[str, A
 
 
 def resolve_handle(
-    backend: Backend, value: Any, resolved: dict[str, dict[str, Any]], *, user_id: int
+    actor: MemberActor | UserHandle,
+    value: Any,
+    resolved: dict[str, dict[str, Any]],
+    *,
+    channel_id: int,
 ) -> None:
     """Add a single handle's ``resolved`` payload, by kind, into ``resolved``.
 
     Shared by slash-command option building and entity-select interactions so
     the ``users``/``members``/``roles``/``channels`` payload shapes have a single
-    source of truth. ``user_id`` is the acting user, used to stamp the per-channel
-    ``permissions`` field Discord includes on resolved channels.
+    source of truth. Handle provenance is checked before any backend lookup.
     """
     from .actors import MemberActor
-    from .builders import ChannelHandle, RoleHandle, UserHandle
+    from .builders import ChannelHandle, RoleHandle, UserHandle, _require_handle
 
+    _require_handle(actor._env, value)
+    backend = actor._env.backend
+    context = backend.get_channel(channel_id)
+    guild_id = context.guild_id
+    if isinstance(value, (RoleHandle, ChannelHandle)) and guild_id is None:
+        raise SetupError("Guild entity handles cannot be resolved in a DM")
+    if guild_id is not None and isinstance(value, (MemberActor, RoleHandle, ChannelHandle)):
+        _require_handle(actor._env, value, guild_id=guild_id)
+    if isinstance(value, MemberActor) and guild_id is not None:
+        if value.id not in backend.get_guild(guild_id).members:
+            raise SetupError("That user is not a member of the interaction guild")
+    if isinstance(value, ChannelHandle) and not channel_accessible(backend, value.id, actor.id):
+        raise SetupError("That channel is not accessible to this user")
     wire_id = str(value.id)
     if isinstance(value, (MemberActor, UserHandle)):
         resolved.setdefault("users", {})[wire_id] = dict(serializers.user_payload(backend.get_user(value.id)))
-        if isinstance(value, MemberActor):
-            guild = backend.get_guild(value.guild.id)
+        if isinstance(value, MemberActor) and guild_id is not None:
+            guild = backend.get_guild(guild_id)
             resolved.setdefault("members", {})[wire_id] = dict(
                 serializers.member_payload(backend, guild, guild.members[value.id], with_user=False)
             )
@@ -161,7 +178,7 @@ def resolve_handle(
         # Resolved channels carry the acting user's permissions in that channel,
         # which AppCommandChannel requires.
         if channel.guild_id is not None:
-            payload["permissions"] = str(backend.compute_permissions(channel.guild_id, user_id, channel.id))
+            payload["permissions"] = str(backend.compute_permissions(channel.guild_id, actor.id, channel.id))
         resolved.setdefault("channels", {})[wire_id] = payload
     else:
         raise SetupError(f"Don't know how to resolve {type(value).__name__} into interaction data")
@@ -451,13 +468,18 @@ def build_options(
     declared = {option["name"]: option for option in (spec.get("options") or [])}
     built: list[dict[str, Any]] = []
     resolved: dict[str, Any] = {}
+    # Resolve every handle before storing any attachment, irrespective of option order.
+    for name, value in accepted.items():
+        if declared[name]["type"] in _SNOWFLAKE_TYPES:
+            if channel_id is None:
+                raise SetupError("channel_id is required to resolve an interaction handle")
+            resolve_handle(actor, value, resolved, channel_id=channel_id)
 
     for name, value in accepted.items():
         option = declared[name]
         option_type = option["type"]
         if option_type in _SNOWFLAKE_TYPES:
             wire_value = str(value.id)
-            resolve_handle(backend, value, resolved, user_id=actor.id)
         elif option_type == OptionType.ATTACHMENT:
             if partial:
                 continue

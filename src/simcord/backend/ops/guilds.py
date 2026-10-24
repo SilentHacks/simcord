@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 import discord
@@ -172,23 +173,64 @@ class GuildMixin(BackendBase):
             {"guild_id": str(guild_id), "user": serializers.user_payload(self.get_user(user_id))},
         )
 
+    def remove_ban(self, guild_id: int, user_id: int) -> None:
+        """Remove an existing ban, then announce the unbanned user."""
+        guild = self.get_guild(guild_id)
+        if user_id not in guild.bans:
+            raise errors.unknown_ban()
+        user = self.get_user(user_id)
+        del guild.bans[user_id]
+        self.emit(
+            "GUILD_BAN_REMOVE",
+            {"guild_id": str(guild_id), "user": serializers.user_payload(user)},
+        )
+
     def announce_member_update(self, guild_id: int, user_id: int) -> None:
         guild = self.get_guild(guild_id)
         payload = dict(serializers.member_payload(self, guild, guild.members[user_id]))
         payload["guild_id"] = str(guild_id)
         self.emit("GUILD_MEMBER_UPDATE", payload)
 
-    def edit_member(self, guild_id: int, user_id: int, changes: Mapping[str, Any]) -> Member:
-        """Apply validated field changes (nick/roles/timeout/…) and announce the update.
+    def edit_member(
+        self,
+        guild_id: int,
+        user_id: int,
+        changes: Mapping[str, Any],
+        *,
+        move_voice: bool = False,
+        channel_id: int | None = None,
+    ) -> Member:
+        """Prepare the complete REST member edit, commit, then member/voice emit.
 
-        ``changes`` maps :class:`Member` attribute names to values; callers
-        validate permissions and hierarchy before calling, so this only writes
-        and emits — keeping the mutation and its GUILD_MEMBER_UPDATE atomic.
+        API permissions, hierarchy and audit context remain with the caller.
+        ``move_voice`` distinguishes an omitted channel from a disconnect.
         """
+        backend = cast("Backend", self)
+        guild = self.get_guild(guild_id)
         member = self.get_member(guild_id, user_id)
-        for attr, value in changes.items():
-            setattr(member, attr, value)
+        if changes.keys() - {"nick", "role_ids", "timed_out_until", "mute", "deaf"}:
+            raise errors.invalid_form_body("Unknown member field")
+        prepared = replace(member, **changes)
+        state = guild.voice_states.get(user_id)
+        voice_changed = move_voice or "mute" in changes or "deaf" in changes
+        next_state = None
+        if voice_changed:
+            if state is None:
+                raise errors.target_not_connected_to_voice()
+            destination = channel_id if move_voice else state.channel_id
+            next_state = backend.prepare_voice_state(
+                guild_id, user_id, destination, mute=prepared.mute, deaf=prepared.deaf
+            )
+        member.nick = prepared.nick
+        member.role_ids = prepared.role_ids
+        member.timed_out_until = prepared.timed_out_until
+        member.mute = prepared.mute
+        member.deaf = prepared.deaf
+        if next_state is not None:
+            backend.commit_voice_state(next_state, broadcast=False)
         self.announce_member_update(guild_id, user_id)
+        if next_state is not None:
+            self.emit("VOICE_STATE_UPDATE", serializers.voice_state_payload(self, next_state))
         return member
 
     def add_member_role(self, guild_id: int, user_id: int, role_id: int) -> None:

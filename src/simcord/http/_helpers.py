@@ -8,7 +8,6 @@ from .. import intents
 from ..backend import errors, serializers
 from ..backend.cdn import sticker_url
 from ..backend.models import (
-    EPHEMERAL_FLAG,
     AllowedMentions,
     Interaction,
     Message,
@@ -213,7 +212,7 @@ def prepare_bot_message(
     body: dict[str, Any] | None = None,
     webhook_execute: bool = False,
     pending: bool = False,
-) -> tuple[dict[str, Any], list[bytes]]:
+) -> tuple[Message, list[bytes]]:
     """Validate all fields and read all uploads without changing backend state."""
     backend = ctx.backend
     handled = _MESSAGE_HANDLED
@@ -313,35 +312,32 @@ def prepare_bot_message(
         "author_avatar": author_avatar,
         "poll": poll,
         "message_type": message_type,
-        "broadcast": not flags & EPHEMERAL_FLAG,
     }
-    return fields, [file.fp.read() for file in ctx.files]
+    message = backend.prepare_message(channel_id, attachments=uploads, **fields)
+    return message, [file.fp.read() for file in ctx.files]
 
 
 def commit_bot_message(
     ctx: RequestContext,
     channel_id: int,
-    prepared: tuple[dict[str, Any], list[bytes]],
+    prepared: tuple[Message, list[bytes]],
     *,
     broadcast: bool | None = None,
 ) -> Message:
-    fields, upload_data = prepared
+    message, upload_data = prepared
+    if message.channel_id != channel_id or len(ctx.files) != len(upload_data):
+        raise errors.invalid_form_body("Prepared message does not match destination or uploads")
     attachments = [
         ctx.backend.cdn.store_attachment(
             ctx.backend.snowflake(), channel_id, file.filename, data, file.description
         )
         for file, data in zip(ctx.files, upload_data, strict=True)
     ]
-    fields = {
-        **fields,
-        "attachments": attachments,
-        "components": resolve_attachment_references(fields["components"], attachments),
-    }
-    if fields["reference"] is not None:
-        fields["reference"] = {"channel_id": str(channel_id), **fields["reference"]}
-    if broadcast is not None:
-        fields["broadcast"] = broadcast
-    return ctx.backend.create_message(channel_id, **fields)
+    message.attachments = attachments
+    message.components = resolve_attachment_references(message.components, attachments)
+    return ctx.backend.commit_message(
+        message, broadcast=not message.is_ephemeral if broadcast is None else broadcast
+    )
 
 
 def _preview_uploads(ctx: RequestContext) -> list[dict[str, Any]]:

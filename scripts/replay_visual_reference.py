@@ -147,9 +147,14 @@ def _history_chain(
             message_id = str(fixture.get("messageId", ""))
             if message_id:
                 by_message.setdefault(message_id, record)
-    chain = sorted(by_message.values(), key=lambda row: str(row["fixture"]["createdAt"]))
-    previous_id = str(chain[0]["fixture"].get("previousMessageId", "")) if chain else ""
-    return chain, bool(previous_id and previous_id not in by_message)
+    chain = sorted(
+        by_message.values(), key=lambda row: datetime.fromisoformat(str(row["fixture"]["createdAt"]))
+    )
+    missing_predecessor = any(
+        fixture.get("previousMessageId") and str(fixture["previousMessageId"]) not in by_message
+        for fixture in (row["fixture"] for row in chain)
+    )
+    return chain, missing_predecessor
 
 
 async def _ready(page: Any) -> None:
@@ -167,6 +172,21 @@ async def _ready(page: Any) -> None:
     )
 
 
+async def _natural_capture(page: Any, surface: Any, popup: bool = False) -> tuple[bytes, dict[str, Any]]:
+    geometry = await surface.evaluate(
+        """async (element, popup) => {
+      const {completeCrop} = await import('/geometry.js');
+      const menu = popup ? document.querySelector('.select-list:popover-open') : null;
+      if (popup && !menu) throw new Error('select menu is unavailable');
+      return completeCrop(menu ? [element, menu] : [element]);
+    }""",
+        popup,
+    )
+    if geometry["width"] <= 0 or geometry["height"] <= 0:
+        raise ValueError("capture has no raster intersection")
+    return await page.screenshot(clip=geometry), geometry
+
+
 async def _capture_scope(
     page: Any, row: Mapping[str, Any], state: str, message: Any
 ) -> tuple[bytes, dict[str, Any], str]:
@@ -177,18 +197,14 @@ async def _capture_scope(
         modal = page.get_by_role("dialog", name="REF-51-TEXT-MODAL", exact=True)
         if await modal.count() != 1 or not await modal.is_visible():
             raise ValueError("text modal has no visible capture scope")
-        geometry = await modal.bounding_box()
-        if geometry is None:
-            raise ValueError("text modal has no natural geometry")
-        return await modal.screenshot(), geometry, '[role="dialog"][aria-label="REF-51-TEXT-MODAL"]'
+        pixels, geometry = await _natural_capture(page, modal)
+        return pixels, geometry, '[role="dialog"][aria-label="REF-51-TEXT-MODAL"]'
     if state in {"closed", "escape-cancel"}:
         label = _select_label(fixture, state)
         if label:
             control = target.get_by_role("combobox", name=label, exact=True)
-            box = await control.bounding_box()
-            if box is None:
-                raise ValueError("closed select control has no natural geometry")
-            return await page.screenshot(clip=box), box, f'[role="combobox"][aria-label="{label}"]'
+            pixels, geometry = await _natural_capture(page, control)
+            return pixels, geometry, f'[role="combobox"][aria-label="{label}"]'
     if reference_id == "REF-40-V2-LAYOUT-MEDIA" and state in {
         "idle-top",
         "idle-media",
@@ -200,18 +216,13 @@ async def _capture_scope(
             scope = scope.filter(has=page.get_by_role("heading", name="Expedition status", exact=True))
         if await scope.count() != 1 or not await scope.is_visible():
             raise ValueError(f"named V2 section {selector} is unavailable")
-        geometry = await scope.evaluate("""el => {
-          const r=el.getBoundingClientRect();
-          return {x:r.x,y:r.y,width:r.width,height:r.height};
-        }""")
-        return await scope.screenshot(), geometry, f'article[data-message-id="{message.id}"] {selector}'
+        pixels, geometry = await _natural_capture(page, scope)
+        return pixels, geometry, f'article[data-message-id="{message.id}"] {selector}'
     if state == "user-selected":
         label = _select_label(fixture, state)
         control = target.get_by_role("combobox", name=label, exact=True)
-        box = await control.bounding_box()
-        if box is None:
-            raise ValueError("selected invoking-user control has no natural geometry")
-        return await page.screenshot(clip=box), box, f'[role="combobox"][aria-label="{label}"]'
+        pixels, geometry = await _natural_capture(page, control)
+        return pixels, geometry, f'[role="combobox"][aria-label="{label}"]'
     if state in {"open", "two-selected"} or state.endswith("-open"):
         listbox = page.get_by_role("listbox")
         if await listbox.count() != 1 or not await listbox.is_visible():
@@ -220,28 +231,12 @@ async def _capture_scope(
         if not label:
             raise ValueError("select capture has no fixture-derived accessible label")
         control = target.get_by_role("combobox", name=label, exact=True)
-        control_box = await control.bounding_box()
-        menu_box = await page.locator(".select-list:popover-open").bounding_box()
-        if control_box is None or menu_box is None:
-            raise ValueError("select control or menu has no visible natural geometry")
-        left = min(control_box["x"], menu_box["x"])
-        top = min(control_box["y"], menu_box["y"])
-        right = max(control_box["x"] + control_box["width"], menu_box["x"] + menu_box["width"])
-        bottom = max(control_box["y"] + control_box["height"], menu_box["y"] + menu_box["height"])
-        viewport = await page.evaluate("() => ({width: innerWidth, height: innerHeight})")
-        if left < 0 or top < 0 or right > viewport["width"] or bottom > viewport["height"]:
-            raise ValueError("complete select/menu capture is outside the browser viewport")
-        if right <= left or bottom <= top:
-            raise ValueError("select/menu capture has no natural geometry")
-        clip = {"x": left, "y": top, "width": right - left, "height": bottom - top}
-        return await page.screenshot(clip=clip), clip, '.select-list:popover-open [role="listbox"]'
+        pixels, geometry = await _natural_capture(page, control, popup=True)
+        return pixels, geometry, '.select-list:popover-open [role="listbox"]'
     if await target.count() != 1 or not await target.is_visible():
         raise ValueError("target message surface is unavailable")
-    geometry = await target.evaluate("""el => {
-      const r=el.getBoundingClientRect();
-      return {x:r.x,y:r.y,width:r.width,height:r.height};
-    }""")
-    return await target.screenshot(), geometry, f'article[data-message-id="{message.id}"]'
+    pixels, geometry = await _natural_capture(page, target)
+    return pixels, geometry, f'article[data-message-id="{message.id}"]'
 
 
 async def _platform_fonts(page: Any, selector: str) -> dict[str, Any]:
@@ -409,6 +404,299 @@ def _scrub(value: Any) -> Any:
     return value
 
 
+def _replay_spec(
+    sidecar_path: Path,
+    reference_dir: Path,
+    history_records: Sequence[Mapping[str, Any]],
+    scene: Mapping[str, Any],
+) -> dict[str, Any]:
+    sidecar = _load_json(sidecar_path)
+    fixture = sidecar.get("fixture")
+    if not isinstance(fixture, Mapping):
+        raise ValueError("fixture payload missing")
+    name = str(sidecar.get("name", sidecar_path.with_suffix(".png").name))
+    if Path(name).name != name or "\\" in name or name in {".", ".."}:
+        raise ValueError("unsafe capture filename")
+    if not (reference_dir / name).is_file():
+        raise ValueError("reference PNG missing")
+    profile = sidecar.get("profile")
+    observed = profile.get("observed") if isinstance(profile, Mapping) else None
+    presentation = scene.get("presentation")
+    if not isinstance(presentation, Mapping) or any(
+        type(presentation.get(key)) is not int or presentation[key] <= 0 for key in ("width", "height")
+    ):
+        raise ValueError("scene requires measured presentation.width and height")
+    if not isinstance(observed, Mapping) or any(
+        type(observed.get(key)) is not int or observed[key] <= 0 for key in ("width", "height")
+    ):
+        raise ValueError("source browser viewport is unobserved")
+    if (
+        type(observed.get("deviceScaleFactor")) not in {int, float}
+        or observed["deviceScaleFactor"] != 1
+        or type(observed.get("reducedMotion")) is not bool
+    ):
+        raise ValueError("source scale-1/motion profile is unobserved")
+    if any(not isinstance(observed.get(key), str) or not observed[key] for key in ("locale", "timezone")):
+        raise ValueError("source locale/timezone is unobserved")
+    if not isinstance(scene.get("viewerLabel"), str) or not scene["viewerLabel"]:
+        raise ValueError("observed invoking-viewer identity is unavailable")
+    author = fixture.get("author")
+    if not isinstance(author, Mapping) or not author.get("displayName"):
+        raise ValueError("source author display identity is unavailable in this sidecar")
+    for key in ("messageId", "channelId", "viewerMention"):
+        if not isinstance(fixture.get(key), str) or not fixture[key]:
+            raise ValueError(f"source {key} is unavailable")
+    source_time = datetime.fromisoformat(str(fixture.get("createdAt", "")))
+    if source_time.tzinfo is None:
+        raise ValueError("source timestamp has no timezone")
+    history, missing_predecessor = _history_chain(sidecar, [*history_records, sidecar])
+    return {
+        "sidecar": sidecar,
+        "fixture": fixture,
+        "name": name,
+        "observed": observed,
+        "presentation": presentation,
+        "history": history,
+        "sourceTime": source_time,
+        "missingPredecessor": missing_predecessor,
+        "state": str(sidecar.get("state", "unknown")),
+    }
+
+
+async def _build_world(
+    env: Any,
+    spec: Mapping[str, Any],
+    scene: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    catalog: Any,
+    reference_dir: Path,
+) -> dict[str, Any]:
+    fixture = spec["fixture"]
+    viewer_label = scene["viewerLabel"]
+    viewer = env.create_user(str(scene.get("viewerUsername", viewer_label)), global_name=viewer_label)
+    guild = env.create_guild("reference-replay", owner=viewer)
+    channel_names = scene.get("channels", [])
+    channel = guild.create_text_channel(channel_names[0] if channel_names else "reference-gallery")
+    viewer_member = guild.add_member(viewer)
+    for role in scene.get("roles", []):
+        if isinstance(role, Mapping) and isinstance(role.get("label"), str):
+            guild.create_role(
+                role["label"], color=int(str(role.get("observedIconColor", "0")).removeprefix("#"), 16)
+            )
+    for channel_name in channel_names:
+        if isinstance(channel_name, str) and channel_name != channel.name:
+            guild.create_text_channel(channel_name)
+    await env.settle()
+    bot_guild = env.bot.get_guild(guild.id)
+    if bot_guild is None or bot_guild.me is None:
+        raise RuntimeError("SimCord bot guild member unavailable")
+    author = fixture["author"]
+    await env.bot.user.edit(username=str(author.get("username", author["displayName"])))
+    await bot_guild.me.edit(nick=author["displayName"])
+    bot_channel = env.bot.get_channel(channel.id)
+    if bot_channel is None:
+        raise RuntimeError("SimCord bot channel unavailable")
+    local_messages: dict[str, Any] = {}
+    missing_context = 0
+    for entry in spec["history"]:
+        entry_fixture = entry["fixture"]
+        source_id = str(entry_fixture.get("messageId", ""))
+        if source_id in local_messages:
+            continue
+        target = source_id == fixture["messageId"]
+        entry_payload, reason = (
+            (payload, None) if target else _payload_matches(entry_fixture, catalog, reference_dir)
+        )
+        if reason:
+            missing_context += 1
+            continue
+        try:
+            source_time = datetime.fromisoformat(str(entry_fixture["createdAt"]))
+            if source_time.tzinfo is None:
+                if target:
+                    raise ValueError("target timestamp has no timezone")
+                missing_context += 1
+                continue
+            current_time = datetime.fromisoformat(env.backend.now_iso())
+            await env.advance_time(max(0.0, (source_time - current_time).total_seconds()))
+            posted = dict(entry_payload)
+            posted["content"] = str(posted.get("content", "")).replace("@simcord-viewer", viewer.mention)
+            local_messages[source_id] = await bot_channel.send(**posted)
+        finally:
+            if not target:
+                catalog.close_payload(entry_payload)
+    message = local_messages.get(fixture["messageId"])
+    if message is None:
+        raise ValueError("target reference message could not be replayed")
+    id_mapping = {
+        str(fixture["channelId"]): str(channel.id),
+        str(fixture["viewerMention"]).removeprefix("<@").removesuffix(">"): str(viewer.id),
+        **{source_id: str(item.id) for source_id, item in local_messages.items()},
+    }
+    if author.get("id"):
+        id_mapping[str(author["id"])] = str(env.bot.user.id)
+    target_index = next(
+        index
+        for index, item in enumerate(spec["history"])
+        if str(item["fixture"].get("messageId", "")) == fixture["messageId"]
+    )
+    return {
+        "channel": channel,
+        "viewer": viewer_member,
+        "message": message,
+        "idMapping": id_mapping,
+        "missingContext": missing_context,
+        "predecessorCount": sum(
+            str(item["fixture"].get("messageId", "")) in local_messages
+            for item in spec["history"][:target_index]
+        ),
+    }
+
+
+async def _drive_capture(
+    env: Any,
+    spec: Mapping[str, Any],
+    world: Mapping[str, Any],
+    scene: Mapping[str, Any],
+) -> dict[str, Any]:
+    from playwright.async_api import async_playwright
+
+    observed, presentation = spec["observed"], spec["presentation"]
+    message = world["message"]
+    async with env.preview(
+        world["channel"],
+        viewers=[world["viewer"]],
+        layout="channel",
+        width=presentation["width"],
+        height=presentation["height"],
+        display="fixed",
+        locale=observed["locale"],
+        timezone=observed["timezone"],
+    ) as preview:
+        await preview.show(message)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                context = await browser.new_context(
+                    viewport={"width": observed["width"], "height": observed["height"]},
+                    device_scale_factor=1,
+                    reduced_motion="reduce" if observed["reducedMotion"] else "no-preference",
+                    locale=observed["locale"],
+                    timezone_id=observed["timezone"],
+                )
+                try:
+                    page = await context.new_page()
+                    await page.goto(preview.url, wait_until="domcontentloaded", timeout=30_000)
+                    await _ready(page)
+                    await page.locator(f'article[data-message-id="{message.id}"]').evaluate(
+                        "el => el.scrollIntoView({block: 'start', behavior: 'instant'})"
+                    )
+                    action = await _act(page, spec["sidecar"], spec["state"], scene, message)
+                    pixels, geometry, selector = await _capture_scope(
+                        page, spec["sidecar"], spec["state"], message
+                    )
+                    fonts = await _platform_fonts(page, selector)
+                    profile = await page.evaluate("""() => ({
+                      viewport:{width:innerWidth,height:innerHeight}, deviceScaleFactor:devicePixelRatio,
+                      userAgent:navigator.userAgent,
+                      reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,
+                      locale:navigator.language, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone
+                    })""")
+                    return {
+                        "pixels": pixels,
+                        "geometry": geometry,
+                        "selector": selector,
+                        "action": action,
+                        "fonts": fonts,
+                        "profile": profile,
+                    }
+                finally:
+                    await context.close()
+            finally:
+                await browser.close()
+
+
+def _provenance(
+    spec: Mapping[str, Any],
+    world: Mapping[str, Any],
+    capture: Mapping[str, Any],
+    scene: Mapping[str, Any],
+    source_batch: str | None,
+) -> dict[str, Any]:
+    sidecar, fixture, message = spec["sidecar"], spec["fixture"], world["message"]
+    timestamp = message.created_at.isoformat()
+    width, height = struct.unpack_from(">II", capture["pixels"], 16)
+    profile = sidecar.get("profile", {})
+    return {
+        "fixtureId": sidecar.get("fixtureId"),
+        "evidenceStatus": "observed-unreviewed",
+        "calibrated": False,
+        "sourceCapture": spec["name"],
+        "sourceState": spec["state"],
+        "sourceBatch": source_batch,
+        "normalizedPayloadHash": fixture.get("normalizedPayloadHash"),
+        "assetHashes": fixture.get("assetHashes", {}),
+        "normalizedContent": fixture.get("normalizedPayload", {}).get("content", ""),
+        "originalToLocalIds": world["idMapping"],
+        "sourceGroup": "same captured channel; replayed known predecessor fixtures in source order",
+        "predecessorCountReplayed": world["predecessorCount"],
+        "sourcePredecessorRecorded": bool(fixture.get("previousMessageId")),
+        "missingPredecessorPayload": spec["missingPredecessor"],
+        "missingPredecessorSnowflakeTime": None,
+        "predecessorReconstruction": None,
+        "additionalContextMessagesUnavailable": world["missingContext"],
+        "sourceBrowserProfile": profile,
+        "observedCreatedAt": fixture.get("createdAt"),
+        "replayedCreatedAt": timestamp,
+        "timestampDeltaMilliseconds": round(
+            (message.created_at - spec["sourceTime"]).total_seconds() * 1000, 3
+        ),
+        "postedContentReplay": "recorded content preserved; source viewer mention remapped to local viewer ID",
+        "timestampMatch": timestamp == fixture.get("createdAt"),
+        "action": capture["action"],
+        "sourceCrop": sidecar.get("crop"),
+        "candidateCrop": capture["geometry"],
+        "candidateCropSelector": capture["selector"],
+        "candidatePixelDimensions": {"width": width, "height": height},
+        "sceneDifferences": [
+            "source author is represented by SimCord bot member; exact source avatar bytes are unavailable",
+            "role-to-member assignments and permissions are unobserved; roles are not assigned speculatively",
+            "local viewer is the replay guild owner to avoid inventing another visible candidate; source ownership is unobserved",
+            "source channel's own private name is unavailable; first observed channel candidate is used as the local replay target",
+            *(
+                ["source predecessor exists but its payload/sidecar was not supplied"]
+                if spec["missingPredecessor"]
+                else []
+            ),
+        ],
+        "entityRoster": {
+            "seededRoleCount": len(scene.get("roles", [])),
+            "seededChannelCount": len(scene.get("channels", [])),
+            "roleAssignmentsObserved": False,
+        },
+        "themeEvidence": {
+            "observed": profile.get("userAttested", {}).get("theme"),
+            "candidate": "SimCord dark default",
+            "themeControlAvailable": False,
+        },
+        "densityEvidence": {
+            "sourceAttested": profile.get("userAttested", {}).get("density"),
+            "candidate": "SimCord preview default",
+            "verified": False,
+        },
+        "fontEvidence": {
+            "sourceDeclaredFamilies": profile.get("observed", {}).get("loadedFonts", []),
+            "candidatePlatformFonts": capture["fonts"],
+            "ggSansResolved": capture["fonts"].get("ggSansResolved"),
+            "sourceGlyphUsageUnverified": True,
+        },
+        "candidateBrowserProfile": capture["profile"],
+        "candidateLogicalViewport": dict(spec["presentation"]),
+        "avatarEvidence": "source avatar URL is remote; no matching local avatar bytes supplied; default avatar used",
+        "localIdentity": {"authorDisplayFromEvidence": True, "viewerDisplayFromEvidence": True},
+    }
+
+
 async def _replay_one(
     sidecar_path: Path,
     reference_dir: Path,
@@ -418,313 +706,44 @@ async def _replay_one(
     history_records: Sequence[Mapping[str, Any]],
     scene: Mapping[str, Any],
 ) -> dict[str, Any]:
-    sidecar = _load_json(sidecar_path)
-    fixture = sidecar.get("fixture")
-    if not isinstance(fixture, Mapping):
-        return {"capture": sidecar_path.name, "status": "blocked", "reason": "fixture payload missing"}
-    name = str(sidecar.get("name", sidecar_path.with_suffix(".png").name))
-    output_png = output_dir / name
-    output_json = output_png.with_suffix(".json")
-    reference_png = reference_dir / name
-    if not reference_png.is_file():
-        return {"capture": name, "status": "blocked", "reason": "reference PNG missing"}
-    profile = sidecar.get("profile")
-    observed = profile.get("observed") if isinstance(profile, Mapping) else None
-    presentation = scene.get("presentation")
-    if not isinstance(presentation, Mapping) or any(
-        type(presentation.get(key)) is not int or presentation[key] <= 0 for key in ("width", "height")
-    ):
-        return {
-            "capture": name,
-            "status": "blocked",
-            "reason": "scene requires measured presentation.width and height",
-        }
-    if not isinstance(observed, Mapping) or any(
-        type(observed.get(key)) is not int or observed[key] <= 0 for key in ("width", "height")
-    ):
-        return {"capture": name, "status": "blocked", "reason": "source browser viewport is unobserved"}
-    if (
-        type(observed.get("deviceScaleFactor")) not in {int, float}
-        or observed["deviceScaleFactor"] != 1
-        or type(observed.get("reducedMotion")) is not bool
-    ):
-        return {"capture": name, "status": "blocked", "reason": "source scale-1/motion profile is unobserved"}
-    if any(not isinstance(observed.get(key), str) or not observed[key] for key in ("locale", "timezone")):
-        return {"capture": name, "status": "blocked", "reason": "source locale/timezone is unobserved"}
-    payload, reason = _payload_matches(fixture, catalog, reference_dir)
-    if reason:
-        return {"capture": name, "status": "blocked", "reason": reason}
-    state = str(sidecar.get("state", "unknown"))
-    history, missing_predecessor = _history_chain(sidecar, history_records)
-    target_source_id = str(fixture.get("messageId", ""))
+    name = sidecar_path.with_suffix(".png").name
+    payload: dict[str, Any] | None = None
     try:
+        spec = _replay_spec(sidecar_path, reference_dir, history_records, scene)
+        name = spec["name"]
+        payload, reason = _payload_matches(spec["fixture"], catalog, reference_dir)
+        if reason:
+            raise ValueError(reason)
         bot = commands.Bot(
             command_prefix=commands.when_mentioned,
             intents=discord.Intents(guilds=True),
             allowed_mentions=discord.AllowedMentions.none(),
         )
         async with simcord.run(bot) as env:
-            viewer_label = scene.get("viewerLabel")
-            if not isinstance(viewer_label, str) or not viewer_label:
-                raise ValueError("observed invoking-viewer identity is unavailable")
-            viewer = env.create_user(str(scene.get("viewerUsername", viewer_label)), global_name=viewer_label)
-            guild = env.create_guild("reference-replay", owner=viewer)
-            channel_names = scene.get("channels", [])
-            channel = guild.create_text_channel(channel_names[0] if channel_names else "reference-gallery")
-            viewer_member = guild.add_member(viewer)
-            for role in scene.get("roles", []):
-                if isinstance(role, Mapping) and isinstance(role.get("label"), str):
-                    guild.create_role(
-                        role["label"],
-                        color=int(str(role.get("observedIconColor", "0")).removeprefix("#"), 16),
-                    )
-            for channel_name in scene.get("channels", []):
-                if isinstance(channel_name, str) and channel_name != channel.name:
-                    guild.create_text_channel(channel_name)
-            await env.settle()
-            bot_guild = env.bot.get_guild(guild.id)
-            if bot_guild is None or bot_guild.me is None:
-                raise RuntimeError("SimCord bot guild member unavailable")
-            author_data = fixture.get("author", {})
-            author_display = (
-                str(author_data.get("displayName", "")) if isinstance(author_data, Mapping) else ""
+            world = await _build_world(env, spec, scene, payload, catalog, reference_dir)
+            capture = await _drive_capture(env, spec, world, scene)
+            metadata = _provenance(spec, world, capture, scene, source_batch)
+            output_png = output_dir / name
+            output_png.write_bytes(capture["pixels"])
+            output_png.with_suffix(".json").write_text(
+                json.dumps(_scrub(metadata), indent=2) + "\n", encoding="utf-8"
             )
-            if not author_display:
-                raise ValueError("source author display identity is unavailable in this sidecar")
-            await env.bot.user.edit(username=str(author_data.get("username", author_display)))
-            await bot_guild.me.edit(nick=author_display)
-            bot_channel = env.bot.get_channel(channel.id)
-            if bot_channel is None:
-                raise RuntimeError("SimCord bot channel unavailable")
-            missing_predecessor_time = None
-            if missing_predecessor and history:
-                first_fixture = history[0].get("fixture")
-                previous_id = (
-                    first_fixture.get("previousMessageId") if isinstance(first_fixture, Mapping) else None
-                )
-                if isinstance(previous_id, str) and previous_id.isdigit():
-                    missing_predecessor_time = discord.utils.snowflake_time(int(previous_id))
-                    current_time = datetime.fromisoformat(env.backend.now_iso())
-                    await env.advance_time(
-                        max(0.0, (missing_predecessor_time - current_time).total_seconds())
-                    )
-                    first_reference = str(first_fixture["referenceId"])
-                    reference_index = catalog.REFERENCE_IDS.index(first_reference)
-                    if reference_index:
-                        predecessor = catalog.gallery_payload(
-                            catalog.REFERENCE_IDS[reference_index - 1], viewer_mention=viewer.mention
-                        )
-                        try:
-                            await bot_channel.send(**predecessor)
-                        finally:
-                            catalog.close_payload(predecessor)
-            target_history_index = next(
-                index
-                for index, item in enumerate(history)
-                if isinstance(item.get("fixture"), Mapping)
-                and str(item["fixture"].get("messageId", "")) == target_source_id
-            )
-            local_messages: dict[str, Any] = {}
-            missing_context = 0
-            for entry in history:
-                entry_fixture = entry.get("fixture")
-                if not isinstance(entry_fixture, Mapping):
-                    continue
-                source_id = str(entry_fixture.get("messageId", ""))
-                if source_id in local_messages:
-                    continue
-                if source_id == target_source_id:
-                    entry_payload = payload
-                    close_entry_payload = False
-                else:
-                    entry_payload, entry_reason = _payload_matches(entry_fixture, catalog, reference_dir)
-                    close_entry_payload = entry_payload != {}
-                    if entry_reason:
-                        missing_context += 1
-                        continue
-                try:
-                    source_time = datetime.fromisoformat(str(entry_fixture["createdAt"]))
-                    if source_time.tzinfo is None:
-                        missing_context += 1
-                        continue
-                    current_time = datetime.fromisoformat(env.backend.now_iso())
-                    await env.advance_time(max(0.0, (source_time - current_time).total_seconds()))
-                    posted = dict(entry_payload)
-                    posted["content"] = str(posted.get("content", "")).replace(
-                        "@simcord-viewer", viewer.mention
-                    )
-                    local_messages[source_id] = await bot_channel.send(**posted)
-                finally:
-                    if close_entry_payload:
-                        catalog.close_payload(entry_payload)
-            message = local_messages.get(target_source_id)
-            if message is None:
-                raise ValueError("target reference message could not be replayed")
-            id_mapping = {
-                str(fixture["messageId"]): str(message.id),
-                str(author_data["id"]): str(env.bot.user.id),
-                str(fixture["viewerMention"]).removeprefix("<@").removesuffix(">"): str(viewer.id),
-                str(fixture["channelId"]): str(channel.id),
-                **{source_id: str(item.id) for source_id, item in local_messages.items()},
+            return {
+                "capture": name,
+                "status": "captured",
+                "action": capture["action"],
+                "reference": str(reference_dir / name),
+                "actual": str(output_png),
+                "timestampMatch": metadata["timestampMatch"],
+                "timestampDeltaMilliseconds": metadata["timestampDeltaMilliseconds"],
+                "fontEvidence": capture["fonts"],
+                "candidateCrop": capture["geometry"],
             }
-            predecessor_count = sum(
-                1
-                for item in history[:target_history_index]
-                if isinstance(item.get("fixture"), Mapping)
-                and str(item["fixture"].get("messageId", "")) in local_messages
-            )
-            async with env.preview(
-                channel,
-                viewers=[viewer_member],
-                layout="channel",
-                width=presentation["width"],
-                height=presentation["height"],
-                display="fixed",
-                locale=observed["locale"],
-                timezone=observed["timezone"],
-            ) as preview:
-                await preview.show(message)
-                from playwright.async_api import async_playwright
-
-                async with async_playwright() as playwright:
-                    browser = await playwright.chromium.launch()
-                    context = await browser.new_context(
-                        viewport={"width": observed["width"], "height": observed["height"]},
-                        device_scale_factor=1,
-                        reduced_motion="reduce" if observed["reducedMotion"] else "no-preference",
-                        locale=observed["locale"],
-                        timezone_id=observed["timezone"],
-                    )
-                    page = await context.new_page()
-                    try:
-                        await page.goto(preview.url, wait_until="domcontentloaded", timeout=30_000)
-                        await _ready(page)
-                        target_row = page.locator(f'article[data-message-id="{message.id}"]')
-                        await target_row.evaluate(
-                            "el => el.scrollIntoView({block: 'start', behavior: 'instant'})"
-                        )
-                        action = await _act(page, sidecar, state, scene, message)
-                        capture_bytes, geometry, selector = await _capture_scope(
-                            page, sidecar, state, message
-                        )
-                        font_info = await _platform_fonts(page, selector)
-                        browser_profile = await page.evaluate("""() => ({
-                          viewport:{width:innerWidth,height:innerHeight},
-                          deviceScaleFactor:devicePixelRatio,
-                          userAgent:navigator.userAgent,
-                          reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,
-                          locale:navigator.language,
-                          timezone:Intl.DateTimeFormat().resolvedOptions().timeZone
-                        })""")
-                        timestamp = message.created_at.isoformat()
-                        pixel_width, pixel_height = struct.unpack_from(">II", capture_bytes, 16)
-                        target_time = datetime.fromisoformat(str(fixture["createdAt"]))
-                        metadata = {
-                            "fixtureId": sidecar.get("fixtureId"),
-                            "evidenceStatus": "observed-unreviewed",
-                            "calibrated": False,
-                            "sourceCapture": name,
-                            "sourceState": state,
-                            "sourceBatch": source_batch,
-                            "normalizedPayloadHash": fixture.get("normalizedPayloadHash"),
-                            "assetHashes": fixture.get("assetHashes", {}),
-                            "normalizedContent": fixture.get("normalizedPayload", {}).get("content", ""),
-                            "originalToLocalIds": id_mapping,
-                            "sourceGroup": "same captured channel; replayed known predecessor fixtures in source order",
-                            "predecessorCountReplayed": predecessor_count,
-                            "sourcePredecessorRecorded": bool(fixture.get("previousMessageId")),
-                            "missingPredecessorPayload": missing_predecessor,
-                            "missingPredecessorSnowflakeTime": missing_predecessor_time.isoformat()
-                            if missing_predecessor_time
-                            else None,
-                            "predecessorReconstruction": "canonical preceding catalog fixture from producing bot's ordered send loop; original predecessor sidecar not supplied"
-                            if missing_predecessor
-                            else None,
-                            "additionalContextMessagesUnavailable": missing_context,
-                            "sourceBrowserProfile": sidecar.get("profile"),
-                            "observedCreatedAt": fixture.get("createdAt"),
-                            "replayedCreatedAt": timestamp,
-                            "timestampDeltaMilliseconds": round(
-                                (message.created_at - target_time).total_seconds() * 1000, 3
-                            ),
-                            "postedContentReplay": "recorded content preserved; source viewer mention remapped to local viewer ID",
-                            "timestampMatch": timestamp == fixture.get("createdAt"),
-                            "action": action,
-                            "sourceCrop": sidecar.get("crop"),
-                            "candidateCrop": geometry,
-                            "candidateCropSelector": selector,
-                            "candidatePixelDimensions": {"width": pixel_width, "height": pixel_height},
-                            "sceneDifferences": [
-                                "source author is represented by SimCord bot member; exact source avatar bytes are unavailable",
-                                "role-to-member assignments and permissions are unobserved; roles are not assigned speculatively",
-                                "local viewer is the replay guild owner to avoid inventing another visible candidate; source ownership is unobserved",
-                                "source channel's own private name is unavailable; first observed channel candidate is used as the local replay target",
-                                *(
-                                    ["source predecessor exists but its payload/sidecar was not supplied"]
-                                    if missing_predecessor
-                                    else []
-                                ),
-                            ],
-                            "entityRoster": {
-                                "seededRoleCount": len(scene.get("roles", [])),
-                                "seededChannelCount": len(scene.get("channels", [])),
-                                "roleAssignmentsObserved": False,
-                            },
-                            "themeEvidence": {
-                                "observed": sidecar.get("profile", {}).get("userAttested", {}).get("theme"),
-                                "candidate": "SimCord dark default",
-                                "themeControlAvailable": False,
-                            },
-                            "densityEvidence": {
-                                "sourceAttested": sidecar.get("profile", {})
-                                .get("userAttested", {})
-                                .get("density"),
-                                "candidate": "SimCord preview default",
-                                "verified": False,
-                            },
-                            "fontEvidence": {
-                                "sourceDeclaredFamilies": sidecar.get("profile", {})
-                                .get("observed", {})
-                                .get("loadedFonts", []),
-                                "candidatePlatformFonts": font_info,
-                                "ggSansResolved": font_info.get("ggSansResolved"),
-                                "sourceGlyphUsageUnverified": True,
-                            },
-                            "candidateBrowserProfile": browser_profile,
-                            "candidateLogicalViewport": {
-                                "width": presentation["width"],
-                                "height": presentation["height"],
-                            },
-                            "avatarEvidence": "source avatar URL is remote; no matching local avatar bytes supplied; default avatar used",
-                            "localIdentity": {
-                                "authorDisplayFromEvidence": True,
-                                "viewerDisplayFromEvidence": True,
-                            },
-                        }
-                        output_png.write_bytes(capture_bytes)
-                        output_json.write_text(
-                            json.dumps(_scrub(metadata), indent=2) + "\n", encoding="utf-8"
-                        )
-                        return {
-                            "capture": name,
-                            "status": "captured",
-                            "action": action,
-                            "reference": str(reference_png),
-                            "actual": str(output_png),
-                            "timestampMatch": timestamp == fixture.get("createdAt"),
-                            "timestampDeltaMilliseconds": round(
-                                (message.created_at - target_time).total_seconds() * 1000, 3
-                            ),
-                            "fontEvidence": font_info,
-                            "candidateCrop": geometry,
-                        }
-                    finally:
-                        await context.close()
-                        await browser.close()
     except Exception as exc:
         return {"capture": name, "status": "blocked", "reason": str(exc)}
     finally:
-        catalog.close_payload(payload)
+        if payload:
+            catalog.close_payload(payload)
 
 
 async def replay(

@@ -716,3 +716,24 @@ async def test_service_references_reject_foreign_fixture_identities(env, channel
     dm = await alice.send_dm("private DM reference")
     with pytest.raises(simcord.SetupError):
         env.guild.create_system_message(channel, MessageType.PINS_ADD, author=alice, referenced_message=dm)
+
+
+@pytest.mark.asyncio
+async def test_service_message_references_follow_guild_not_channel_scope(env, channel, alice):
+    guild = channel.guild
+    source_channel = guild.create_text_channel("same-guild-reference")
+    source = await alice.send(source_channel, "public source")
+    message = guild.create_system_message(
+        channel, MessageType.PINS_ADD, author=alice, referenced_message=source
+    )
+    assert message.reference.channel_id == source_channel.id
+    assert message.reference.resolved.id == source.id
+
+    other = env.create_guild("Other guild")
+    private = other.create_text_channel("private-reference")
+    other_alice = other.add_member(alice.user)
+    denied = await other_alice.send(private, "private source")
+    before = [item.id for item in channel.history()]
+    with pytest.raises(simcord.SetupError):
+        guild.create_system_message(channel, MessageType.PINS_ADD, author=alice, referenced_message=denied)
+    assert [item.id for item in channel.history()] == before

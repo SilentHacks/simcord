@@ -73,6 +73,34 @@ latest-Env fallback, global datetime patch, or general application-time virtuali
 Inject `env.now` into your application's own clock seam. Only one live Env per event
 loop is supported; a second start rejects before altering hooks.
 
+Executor ownership follows actual execution, not the caller's Future. Native
+cancellation that removes a queued job prevents execution; cancelling a shielded
+or non-forwarding facade does not. Cancelling a running job never claims that its
+thread stopped. Work it enqueues before completion retains bot ownership.
+
+While Envs are active, paired, reference-counted hooks observe owned submissions
+through the standard `ThreadPoolExecutor.submit` and `ProcessPoolExecutor.submit`
+APIs, including interpreter pools where available. Unrelated submissions retain
+their original behavior; SimCord neither replaces nor shuts down supplied
+executors. Native rejection, initializer failure and completion retire the
+actual job independently of the facade. Isolated process/interpreter pools
+receive only the original picklable callable, not an Env or its in-process state.
+The hooks are restored when the last Env detaches.
+
+SimCord preserves the original executor hook and caller Future. Custom hooks
+should forward the submitted callable unchanged to the native executor. An
+opaque callable adapter can hide pre-entry cancellation or rejection, leaving
+ownership unresolved and timing out rather than guessing that no work remains.
+A custom hook can also hide later asynchronous post-processing behind an
+already-completed facade; settlement cannot join that invisible work. The hook
+must expose or await its own completion. Captured callback context is preserved
+when later work is scheduled.
+
+A shutdown timeout while draining native work retains the gateway, shards and
+webhook adapter until a later successful drain. The attempt may already have
+cancelled asynchronous tasks: it is not a rollback. Release outstanding work
+and retry shutdown.
+
 !!! tip "Stepwise vs. one jump"
     `advance_time` consumes timers in order, settling between each, so intermediate effects
     actually happen. If a handler sleeps 30s, posts, then sleeps another 30s and posts

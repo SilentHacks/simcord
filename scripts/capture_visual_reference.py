@@ -468,35 +468,26 @@ async def _capture_row(
                         )
                         if not await surface.is_visible():
                             raise ValueError("expected capture surface is unavailable")
-                        if action == "none":
-                            capture = await preview.screenshot(path, mode="surface")
-                            geometry = dict(capture.geometry)
-                            capture_action = capture.action
-                            capture_profile = dict(capture.profile)
-                        else:
-                            geometry = await surface.evaluate("""element => {
-                              const rect = element.getBoundingClientRect();
-                              const app = document.querySelector('#preview-app').getBoundingClientRect();
-                              const host = document.querySelector('#preview-stage').getBoundingClientRect();
-                              const x = Math.ceil(Math.max(rect.left, app.left, host.left, 0));
-                              const y = Math.ceil(Math.max(rect.top, app.top, host.top, 0));
-                              const right = Math.floor(Math.min(rect.right, app.right, host.right, innerWidth));
-                              const bottom = Math.floor(Math.min(rect.bottom, app.bottom, host.bottom, innerHeight));
-                              return {mode:'surface', scope:'visible',
-                                logicalViewport:{x:app.x,y:app.y,width:app.width,height:app.height,right:app.right,bottom:app.bottom},
-                                contentExtent:{width:element.scrollWidth,height:element.scrollHeight},
-                                visibleCrop:{x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)},
-                                scrollOffset:{x:element.scrollLeft,y:element.scrollTop},
-                                overflow:{horizontal:element.scrollWidth>element.clientWidth,vertical:element.scrollHeight>element.clientHeight},
-                                viewportWidth:app.width,viewportHeight:app.height,
-                                outputWidth:Math.max(0,right-x),outputHeight:Math.max(0,bottom-y)};
-                            }""")
-                            if geometry["outputWidth"] <= 0 or geometry["outputHeight"] <= 0:
-                                raise ValueError("capture surface has no visible intersection")
-                            await page.screenshot(path=str(path), type="png", clip=geometry["visibleCrop"])
-                            status = await _status(page)
-                            capture_action = status.get("lastAction")
-                            capture_profile = dict(status.get("profile", {}))
+                        geometry = await surface.evaluate("""async element => {
+                          const {measureCapture, rasterCrop} = await import('/geometry.js');
+                          const app = document.querySelector('#preview-app');
+                          const stage = document.querySelector('#preview-stage');
+                          const measured = measureCapture({
+                            mode:'surface', target:element, owner:element, scroll:element, app, stage
+                          });
+                          if (!measured) throw new Error('capture surface is unavailable');
+                          const clip = rasterCrop(measured.visibleCrop);
+                          return {mode:'surface', ...measured, visibleCrop:clip,
+                            viewportWidth:measured.logicalViewport.width,
+                            viewportHeight:measured.logicalViewport.height,
+                            outputWidth:clip.width,outputHeight:clip.height};
+                        }""")
+                        if geometry["outputWidth"] <= 0 or geometry["outputHeight"] <= 0:
+                            raise ValueError("capture surface has no visible intersection")
+                        await page.screenshot(path=str(path), type="png", clip=geometry["visibleCrop"])
+                        status = await _status(page)
+                        capture_action = status.get("lastAction")
+                        capture_profile = dict(status.get("profile", {}))
                         metadata = _scrub(
                             {
                                 "schemaVersion": 1,

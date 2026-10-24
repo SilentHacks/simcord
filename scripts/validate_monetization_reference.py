@@ -70,13 +70,8 @@ def _json(text):
     return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
 
 
-def _validate_bundle(directory: Path) -> dict:
-    """Return a JSON-safe, value-free integrity report; never follow source bundles.
-
-    Source bundle links are provenance pointers, not imported proof. Legacy
-    correlation is ordered because schema 1 did not persist request IDs.
-    """
-    report = {
+def _new_report():
+    return {
         "valid": False,
         "schema_version": None,
         "legacy": False,
@@ -93,9 +88,17 @@ def _validate_bundle(directory: Path) -> dict:
         },
     }
 
-    def issue(code, location, warning=False):
-        report["warnings" if warning else "errors"].append({"code": code, "location": location})
 
+def _claimed(version, cases, stream, ref):
+    if version == 1 or not cases:
+        return True
+    return any(
+        isinstance(case, dict) and case.get("status") == "observed" and ref in case.get(stream, [])
+        for case in cases.values()
+    )
+
+
+def _load_bundle(directory, report, issue):
     def load(path):
         try:
             return path.read_text(encoding="utf-8")
@@ -113,16 +116,16 @@ def _validate_bundle(directory: Path) -> dict:
             raise ValueError
     except (ValueError, TypeError):
         issue("invalid_manifest", "manifest.json")
-        return report
+        return None
     version = manifest.get("schema_version")
     report["schema_version"] = version if type(version) is int else None
     report["legacy"] = version == 1
     if type(version) is not int or version not in (1, 2):
         issue("unsupported_schema", "manifest.json")
-        return report
+        return None
     if _secret(manifest):
         issue("unredacted_secret", "manifest.json")
-    if manifest.get("status") not in {"completed", "completed_with_blockers"}:
+    if manifest.get("status") not in ("completed", "completed_with_blockers"):
         issue("unfinished_capture", "manifest.json")
     if manifest.get("pending_write") is not None or manifest.get("uncertain_writes"):
         issue("unresolved_mutation", "manifest.json")
@@ -131,15 +134,6 @@ def _validate_bundle(directory: Path) -> dict:
     app = manifest.get("application_id")
     if not isinstance(app, str) or not app.isdigit():
         issue("missing_application_identity", "manifest.json")
-    declared_cases = manifest.get("cases", {})
-
-    def claimed(stream, ref):
-        if version == 1 or not declared_cases:
-            return True
-        return isinstance(declared_cases, dict) and any(
-            isinstance(case, dict) and case.get("status") == "observed" and ref in case.get(stream, [])
-            for case in declared_cases.values()
-        )
 
     streams = {}
     times = {}
@@ -181,21 +175,175 @@ def _validate_bundle(directory: Path) -> dict:
             mono = row.get("monotonic_ns", row.get("monotonic"))
             if mono is not None and (type(mono) not in (int, float) or mono < 0):
                 issue("invalid_monotonic_timestamp", location)
+    _check_shapes(manifest, streams, issue)
+    return manifest, streams, times, version
 
-    def ref_rows(case, key, location):
-        refs = case.get(key, [])
-        if not isinstance(refs, list):
-            issue("invalid_references", location)
-            return []
-        found = []
-        for ref in refs:
-            match = REFERENCE.fullmatch(ref) if isinstance(ref, str) else None
-            if not match or match[1] != key or int(match[2]) > len(streams[match[1]]):
-                issue("broken_reference", location)
-            else:
-                found.append(streams[match[1]][int(match[2]) - 1])
-        return found
 
+def _check_shapes(manifest, streams, issue):
+    """Reject expected malformed fields at their source without discarding other diagnostics."""
+
+    def bad(location):
+        issue("malformed_evidence_structure", location)
+
+    def string_fields(record, keys, location):
+        for key in keys:
+            if key in record and record[key] is not None and not isinstance(record[key], str):
+                bad(location)
+                record[key] = None
+
+    def string_list(record, key, location):
+        if key in record and (
+            not isinstance(record[key], list) or any(not isinstance(item, str) for item in record[key])
+        ):
+            bad(location)
+            record[key] = []
+
+    string_fields(
+        manifest,
+        (
+            "application_id",
+            "user_id",
+            "other_user_id",
+            "guild_id",
+            "other_guild_id",
+            "status",
+            "temporary_command_id",
+        ),
+        "manifest.json",
+    )
+    for key in ("created_entitlement_ids", "deleted_entitlement_ids", "purchase_entitlement_ids"):
+        string_list(manifest, key, "manifest.json")
+    for key in ("manual_test_purchase_ids", "manual_live_entitlement_ids"):
+        value = manifest.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            issue("invalid_manual_entitlement_registry", "manifest.json")
+            manifest[key] = []
+    if not isinstance(manifest.get("config", {}), dict):
+        bad("manifest.json")
+        manifest["config"] = {}
+    string_list(manifest.get("config", {}), "consume_history", "manifest.json")
+    if not isinstance(manifest.get("skus", []), list):
+        bad("manifest.json")
+        manifest["skus"] = []
+    for sku in manifest.get("skus", []):
+        if isinstance(sku, dict):
+            string_fields(sku, ("id",), "manifest.json")
+    commands = manifest.get("temporary_commands", {})
+    if isinstance(commands, dict):
+        for entry in commands.values():
+            if isinstance(entry, dict):
+                string_fields(entry, ("id", "create_ref"), "manifest.json")
+    if not isinstance(manifest.get("cases", {}), dict):
+        issue("invalid_cases", "manifest.json")
+        manifest["cases"] = {}
+    for index, case in enumerate(manifest.get("cases", {}).values(), 1):
+        location = f"cases[{index}]"
+        if not isinstance(case, dict):
+            continue
+        string_fields(
+            case,
+            (
+                "status",
+                "selected_entitlement_id",
+                "verification_ref",
+                "expected_actor_id",
+                "expected_guild_id",
+                "source_bundle",
+            ),
+            location,
+        )
+        for key in (*STREAMS, "baseline_refs", "baseline_ids"):
+            if key in case and (
+                not isinstance(case[key], list) or any(not isinstance(ref, str) for ref in case[key])
+            ):
+                issue("invalid_references", location)
+                case[key] = []
+    for stream, rows in streams.items():
+        for index, row in enumerate(rows, 1):
+            location = f"{stream}.jsonl:{index}"
+            string_fields(
+                row,
+                (
+                    "method",
+                    "path",
+                    "path_query",
+                    "request_id",
+                    "event",
+                    "action",
+                    "interaction_id",
+                ),
+                location,
+            )
+            if stream == "requests":
+                query = row.get("query")
+                if query is not None and (
+                    not isinstance(query, dict)
+                    or any(
+                        not isinstance(value, (str, int, float, bool, type(None)))
+                        and not (
+                            isinstance(value, list)
+                            and all(isinstance(item, (str, int, float, bool)) for item in value)
+                        )
+                        for value in query.values()
+                    )
+                ):
+                    issue("invalid_request", location)
+                    row["method"] = None
+                try:
+                    if isinstance(row.get("path"), str):
+                        _path(row["path"])
+                except ValueError:
+                    issue("invalid_request", location)
+                    row["method"] = None
+            if stream == "rest" and isinstance(row.get("path_query"), str):
+                try:
+                    _path(row["path_query"])
+                except ValueError:
+                    issue("invalid_response", location)
+                    row["path_query"] = None
+            for key in ("connection_epoch", "monotonic_ns", "monotonic"):
+                if key in row and type(row[key]) not in (int, float):
+                    bad(location)
+                    row.pop(key)
+            payload = row.get("payload") if stream in ("gateway", "interactions") else row.get("response")
+            objects = payload if isinstance(payload, list) else [payload]
+            for item in objects:
+                if not isinstance(item, dict):
+                    continue
+                if stream == "gateway":
+                    string_fields(item, ("t",), location)
+                    item = item.get("d")
+                    if not isinstance(item, dict):
+                        continue
+                string_fields(item, ("id", "application_id", "user_id", "guild_id", "sku_id"), location)
+                string_list(item, "sku_ids", location)
+                if stream == "interactions":
+                    for key in ("member", "user"):
+                        if key in item and item[key] is not None and not isinstance(item[key], dict):
+                            bad(location)
+                            item[key] = {}
+                    member = item.get("member") or {}
+                    if "user" in member and not isinstance(member["user"], dict):
+                        bad(location)
+                        member["user"] = {}
+
+
+def _ref_rows(streams, case, key, location, issue):
+    refs = case.get(key, [])
+    if not isinstance(refs, list):
+        issue("invalid_references", location)
+        return []
+    found = []
+    for ref in refs:
+        match = REFERENCE.fullmatch(ref) if isinstance(ref, str) else None
+        if not match or match[1] != key or int(match[2]) > len(streams[match[1]]):
+            issue("broken_reference", location)
+        else:
+            found.append(streams[match[1]][int(match[2]) - 1])
+    return found
+
+
+def _correlate(streams, times, version, cases, issue):
     requests = streams["requests"]
     responses = streams["rest"]
     pairs = []
@@ -208,6 +356,7 @@ def _validate_bundle(directory: Path) -> dict:
             continue
         if version == 2 and not isinstance(request.get("request_id"), str):
             issue("missing_request_id", location)
+            continue
         matches = [
             i
             for i, row in enumerate(responses)
@@ -225,14 +374,14 @@ def _validate_bundle(directory: Path) -> dict:
             issue(
                 "unresolved_mutation" if method in MUTATIONS else "missing_response",
                 location,
-                warning=method == "GET" and not claimed("requests", location),
+                warning=method == "GET" and not _claimed(version, cases, "requests", location),
             )
             continue
         match = matches[0]
         used.add(match)
         response = responses[match]
-        pairs.append((request, response, f"rest.jsonl:{match + 1}"))
         raw_path = response.get("path_query")
+        correlated = True
         if (
             response.get("method") != method
             or not isinstance(raw_path, str)
@@ -240,10 +389,14 @@ def _validate_bundle(directory: Path) -> dict:
             or response.get("body") != request.get("body")
         ):
             issue("correlation_mismatch", location)
+            correlated = False
         if isinstance(raw_path, str):
             expected = parse_qs(urlencode(request.get("query") or {}, doseq=True), keep_blank_values=True)
             if parse_qs(urlsplit(raw_path).query, keep_blank_values=True) != expected:
                 issue("query_mismatch", location)
+                correlated = False
+        if correlated:
+            pairs.append((request, response, f"rest.jsonl:{match + 1}"))
         if times.get(f"rest.jsonl:{match + 1}", 0) < times.get(location, 0):
             issue("response_precedes_request", location)
     if len(used) != len(responses):
@@ -251,6 +404,113 @@ def _validate_bundle(directory: Path) -> dict:
     ids = [row.get("request_id") for row in requests if row.get("request_id") is not None]
     if len(ids) != len(set(str(value) for value in ids)):
         issue("duplicate_request_id", "requests.jsonl")
+    return pairs
+
+
+def _manual_authorized(manifest, pair_lookup, entitlement, mutation_ref):
+    app = manifest.get("application_id")
+    cases = manifest.get("cases", {})
+    manual_ids = manifest.get("manual_test_purchase_ids", [])
+    live_ids = manifest.get("manual_live_entitlement_ids", [])
+    if entitlement not in manual_ids or entitlement in live_ids:
+        return False
+    if manifest.get("config", {}).get("test_mode_confirmed") is not True:
+        return False
+    for case in cases.values() if isinstance(cases, dict) else ():
+        if (
+            not isinstance(case, dict)
+            or case.get("explicit_manual_test_purchase") is not True
+            or case.get("selected_entitlement_id") != entitlement
+            or mutation_ref not in case.get("rest", [])
+        ):
+            continue
+        verification = pair_lookup.get(case.get("verification_ref"))
+        if verification is None:
+            continue
+        position, request, response = verification
+        snapshot = response.get("response")
+        if (
+            position >= pair_lookup[mutation_ref][0]
+            or request.get("method") != "GET"
+            or _path(request.get("path", "")) != f"/applications/{app}/entitlements/{entitlement}"
+            or response.get("status") != 200
+            or not isinstance(snapshot, dict)
+            or snapshot.get("id") != entitlement
+            or snapshot.get("type") != 4
+            or snapshot.get("application_id") != app
+            or snapshot.get("user_id") not in {manifest.get("user_id"), manifest.get("other_user_id")}
+            or snapshot.get("user_id") is None
+            or snapshot.get("deleted") is not False
+            or snapshot.get("consumed") is not False
+        ):
+            continue
+        baseline = case.get("baseline_ids")
+        refs = case.get("baseline_refs", [])
+        if (
+            not isinstance(baseline, list)
+            or any(not isinstance(value, str) for value in baseline)
+            or len(set(baseline)) != len(baseline)
+            or entitlement in baseline
+            or not isinstance(refs, list)
+            or not refs
+        ):
+            continue
+        collected, first, branches, valid = [], None, {}, True
+        for ref in refs:
+            page = pair_lookup.get(ref)
+            if page is None:
+                valid = False
+                break
+            page_position, page_request, page_response = page
+            query = page_request.get("query") or {}
+            rows = page_response.get("response")
+            if (
+                page_position >= position
+                or page_request.get("method") != "GET"
+                or _path(page_request.get("path", "")) != f"/applications/{app}/entitlements"
+                or page_response.get("status") != 200
+                or not isinstance(rows, list)
+                or str(query.get("user_id")) != snapshot["user_id"]
+                or str(query.get("sku_ids")) != snapshot.get("sku_id")
+                or str(query.get("exclude_deleted")).lower() != "false"
+                or str(query.get("limit", 100)) != "100"
+                or any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in rows)
+            ):
+                valid = False
+                break
+            cursor = "after" if "after" in query else "before" if "before" in query else None
+            if first is None:
+                valid = cursor is None and len(rows) <= 100
+                first = (page_position, rows)
+            else:
+                old_position, old_rows = branches.get(cursor, first)
+                old_ids = [int(row["id"]) for row in old_rows if row["id"].isdigit()]
+                valid = (
+                    page_position > old_position
+                    and len(old_rows) == 100
+                    and bool(old_ids)
+                    and cursor is not None
+                    and str(query[cursor]) == str(max(old_ids) if cursor == "after" else min(old_ids))
+                    and len(rows) <= 100
+                )
+            if not valid:
+                break
+            collected.extend(row["id"] for row in rows)
+            if cursor:
+                branches[cursor] = (page_position, rows)
+        complete = first is not None and (
+            (len(first[1]) < 100 and not branches)
+            or (
+                set(branches) == {"before", "after"} and all(len(page[1]) < 100 for page in branches.values())
+            )
+        )
+        if valid and complete and len(collected) == len(set(collected)) and set(collected) == set(baseline):
+            return True
+    return False
+
+
+def _prove_mutations(manifest, pairs, coverage, version, issue):
+    app = manifest.get("application_id")
     created, deleted, command_created, command_deleted = {}, set(), {}, set()
     identity = False
     list_pages = []
@@ -275,133 +535,28 @@ def _validate_bundle(directory: Path) -> dict:
     )
     manual_ids = manifest.get("manual_test_purchase_ids", [])
     live_ids = manifest.get("manual_live_entitlement_ids", [])
-    if (
-        not isinstance(manual_ids, list)
-        or not isinstance(live_ids, list)
-        or any(not isinstance(value, str) for value in [*manual_ids, *live_ids])
-    ):
-        issue("invalid_manual_entitlement_registry", "manifest.json")
-        manual_ids, live_ids = [], []
     pair_lookup = {ref: (index, request, response) for index, (request, response, ref) in enumerate(pairs)}
-
-    def manual_authorized(entitlement, mutation_ref):
-        if entitlement not in manual_ids or entitlement in live_ids:
-            return False
-        if manifest.get("config", {}).get("test_mode_confirmed") is not True:
-            return False
-        for case in cases.values() if isinstance(cases, dict) else ():
-            if (
-                not isinstance(case, dict)
-                or case.get("explicit_manual_test_purchase") is not True
-                or case.get("selected_entitlement_id") != entitlement
-                or mutation_ref not in case.get("rest", [])
-            ):
-                continue
-            verification = pair_lookup.get(case.get("verification_ref"))
-            if verification is None:
-                continue
-            position, request, response = verification
-            snapshot = response.get("response")
-            if (
-                position >= pair_lookup[mutation_ref][0]
-                or request.get("method") != "GET"
-                or _path(request.get("path", "")) != f"/applications/{app}/entitlements/{entitlement}"
-                or response.get("status") != 200
-                or not isinstance(snapshot, dict)
-                or snapshot.get("id") != entitlement
-                or snapshot.get("type") != 4
-                or snapshot.get("application_id") != app
-                or snapshot.get("user_id") not in {manifest.get("user_id"), manifest.get("other_user_id")}
-                or snapshot.get("user_id") is None
-                or snapshot.get("deleted") is not False
-                or snapshot.get("consumed") is not False
-            ):
-                continue
-            baseline = case.get("baseline_ids")
-            refs = case.get("baseline_refs", [])
-            if (
-                not isinstance(baseline, list)
-                or any(not isinstance(value, str) for value in baseline)
-                or len(set(baseline)) != len(baseline)
-                or entitlement in baseline
-                or not isinstance(refs, list)
-                or not refs
-            ):
-                continue
-            collected, first, branches, valid = [], None, {}, True
-            for ref in refs:
-                page = pair_lookup.get(ref)
-                if page is None:
-                    valid = False
-                    break
-                page_position, page_request, page_response = page
-                query = page_request.get("query") or {}
-                rows = page_response.get("response")
-                if (
-                    page_position >= position
-                    or page_request.get("method") != "GET"
-                    or _path(page_request.get("path", "")) != f"/applications/{app}/entitlements"
-                    or page_response.get("status") != 200
-                    or not isinstance(rows, list)
-                    or str(query.get("user_id")) != snapshot["user_id"]
-                    or str(query.get("sku_ids")) != snapshot.get("sku_id")
-                    or str(query.get("exclude_deleted")).lower() != "false"
-                    or str(query.get("limit", 100)) != "100"
-                    or any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in rows)
-                ):
-                    valid = False
-                    break
-                cursor = "after" if "after" in query else "before" if "before" in query else None
-                if first is None:
-                    valid = cursor is None and len(rows) <= 100
-                    first = (page_position, rows)
-                else:
-                    old_position, old_rows = branches.get(cursor, first)
-                    old_ids = [int(row["id"]) for row in old_rows if row["id"].isdigit()]
-                    valid = (
-                        page_position > old_position
-                        and len(old_rows) == 100
-                        and bool(old_ids)
-                        and cursor is not None
-                        and str(query[cursor]) == str(max(old_ids) if cursor == "after" else min(old_ids))
-                        and len(rows) <= 100
-                    )
-                if not valid:
-                    break
-                collected.extend(row["id"] for row in rows)
-                if cursor:
-                    branches[cursor] = (page_position, rows)
-            complete = first is not None and (
-                (len(first[1]) < 100 and not branches)
-                or (
-                    set(branches) == {"before", "after"}
-                    and all(len(page[1]) < 100 for page in branches.values())
-                )
-            )
-            if (
-                valid
-                and complete
-                and len(collected) == len(set(collected))
-                and set(collected) == set(baseline)
-            ):
-                return True
-        return False
 
     for request, row, location in pairs:
         status, payload = row.get("status"), row.get("response")
         method, path = request["method"], _path(request["path"])
         if row.get("outcome_unknown") is True:
             issue("unresolved_mutation", location)
+            continue
         if status is None:
             if method in MUTATIONS or row.get("outcome_unknown"):
                 issue("unresolved_mutation", location)
             else:
-                issue("transport_capture_failed", location, warning=not claimed("rest", location))
+                issue(
+                    "transport_capture_failed",
+                    location,
+                    warning=not _claimed(version, cases, "rest", location),
+                )
             continue
         if type(status) is not int or not 100 <= status <= 599 or "response" not in row:
             issue("invalid_response", location)
             continue
-        report["coverage"]["rest_outcomes"] += 1
+        coverage["rest_outcomes"] += 1
         success = 200 <= status < 300
         if path == "/oauth2/applications/@me" and success:
             identity = isinstance(payload, dict) and payload.get("id") == app
@@ -420,8 +575,9 @@ def _validate_bundle(directory: Path) -> dict:
             if not isinstance(body, dict) or not isinstance(payload, dict):
                 issue("invalid_create_provenance", location)
             else:
-                owner_field = "guild_id" if payload.get("guild_id") is not None else "user_id"
-                owner_type = 1 if owner_field == "guild_id" else 2
+                owner_type = body.get("owner_type")
+                owner_field = "guild_id" if owner_type == 1 else "user_id"
+                other_field = "user_id" if owner_type == 1 else "guild_id"
                 authorized = (
                     {manifest.get("guild_id"), manifest.get("other_guild_id")}
                     if owner_type == 1
@@ -430,9 +586,20 @@ def _validate_bundle(directory: Path) -> dict:
                 entitlement = payload.get("id")
                 if (
                     not isinstance(entitlement, str)
+                    or not entitlement.isdigit()
                     or entitlement in live_ids
                     or entitlement in manual_ids
-                    or (entitlement in seen_entitlements and entitlement not in created)
+                    or entitlement in seen_entitlements
+                    or entitlement in created
+                    or type(payload.get("type")) is not int
+                    or payload.get("type") != 8
+                    or type(owner_type) is not int
+                    or owner_type not in (1, 2)
+                    or not isinstance(body.get("sku_id"), str)
+                    or payload.get("sku_id") != body.get("sku_id")
+                    or not isinstance(body.get("owner_id"), str)
+                    or payload.get(owner_field) != body.get("owner_id")
+                    or payload.get(other_field) is not None
                     or payload.get(owner_field) is None
                     or payload.get(owner_field) not in authorized
                     or payload.get("application_id") != app
@@ -463,7 +630,7 @@ def _validate_bundle(directory: Path) -> dict:
                     and str(request.get("action", "")).startswith("reject.unknown_entitlement")
                 )
                 allowed = (
-                    manual_authorized(entitlement, location)
+                    _manual_authorized(manifest, pair_lookup, entitlement, location)
                     if entitlement in manual_ids
                     else allowed_probe or unknown_probe
                 )
@@ -547,7 +714,7 @@ def _validate_bundle(directory: Path) -> dict:
                 and str(request.get("action", "")).startswith("reject.unknown_entitlement")
             )
             allowed = (
-                manual_authorized(eid, location)
+                _manual_authorized(manifest, pair_lookup, eid, location)
                 if eid in manual_ids
                 else eid in created or (explicit and verified_test) or unknown_probe
             )
@@ -555,6 +722,12 @@ def _validate_bundle(directory: Path) -> dict:
                 issue("unverified_consume_target", location)
     if not identity:
         issue("missing_application_identity_response", "rest.jsonl")
+    return created, deleted, command_created, command_deleted, list_pages
+
+
+def _check_cleanup_registry(manifest, version, created, deleted, command_created, command_deleted, issue):
+    manual_ids = manifest.get("manual_test_purchase_ids", [])
+    live_ids = manifest.get("manual_live_entitlement_ids", [])
     owned = (
         manifest.get("owned_entitlements", {})
         if version == 2
@@ -608,8 +781,8 @@ def _validate_bundle(directory: Path) -> dict:
             ):
                 issue("unsupported_command_cleanup", "manifest.json")
 
-    coverage = report["coverage"]
-    pagination = coverage["pagination"]
+
+def _pagination(list_pages, times, pagination, issue):
     pagination["pages"] = len(list_pages)
     groups = {}
     cursor_checks = []
@@ -691,7 +864,8 @@ def _validate_bundle(directory: Path) -> dict:
     if pagination["full_pages"]:
         issue("list_history_may_be_partial", "rest.jsonl", warning=True)
 
-    health = streams["health"]
+
+def _observations(health, times, requested_seconds, version, cases, windows, issue):
     starts = {}
     window_refs = set()
     for index, row in enumerate(health, 1):
@@ -701,7 +875,11 @@ def _validate_bundle(directory: Path) -> dict:
             event in {"capture_failed", "sequence_gap", "invalid_session", "gateway_error"}
             or row.get("sequence_contiguous") is False
         ):
-            issue("gateway_capture_unhealthy", location, warning=not claimed("health", location))
+            issue(
+                "gateway_capture_unhealthy",
+                location,
+                warning=not _claimed(version, cases, "health", location),
+            )
         if event == "observation_start":
             action = row.get("action")
             if not isinstance(action, str):
@@ -711,21 +889,21 @@ def _validate_bundle(directory: Path) -> dict:
                 issue(
                     "unfinished_observation",
                     starts[action][1],
-                    warning=not claimed("health", starts[action][1]),
+                    warning=not _claimed(version, cases, "health", starts[action][1]),
                 )
             starts[action] = (row, location, index)
         elif event == "observation_end":
             begin = starts.pop(row.get("action"), None)
             if begin is None:
-                issue("invalid_observation", location, warning=not claimed("health", location))
+                issue(
+                    "invalid_observation", location, warning=not _claimed(version, cases, "health", location)
+                )
                 continue
             start, start_ref, start_index = begin
             elapsed = times.get(location, 0) - times.get(start_ref, 0)
             if "monotonic_ns" in row and "monotonic_ns" in start:
                 elapsed = (row["monotonic_ns"] - start["monotonic_ns"]) / 1_000_000_000
-            requested = row.get(
-                "requested_seconds", start.get("requested_seconds", manifest.get("observation_seconds", 0))
-            )
+            requested = row.get("requested_seconds", start.get("requested_seconds", requested_seconds))
             valid_duration = (
                 type(requested) in (int, float)
                 and requested >= 0
@@ -753,11 +931,14 @@ def _validate_bundle(directory: Path) -> dict:
                 issue(
                     "invalid_observation_window",
                     location,
-                    warning=not (claimed("health", start_ref) or claimed("health", location)),
+                    warning=not (
+                        _claimed(version, cases, "health", start_ref)
+                        or _claimed(version, cases, "health", location)
+                    ),
                 )
             else:
                 window_refs.update((start_ref, location))
-                coverage["observation_windows"].append(
+                windows.append(
                     {
                         "start": start_ref,
                         "end": location,
@@ -766,7 +947,17 @@ def _validate_bundle(directory: Path) -> dict:
                     }
                 )
     for _, start_ref, _ in starts.values():
-        issue("unfinished_observation", start_ref, warning=claimed("health", start_ref) is False)
+        issue(
+            "unfinished_observation",
+            start_ref,
+            warning=_claimed(version, cases, "health", start_ref) is False,
+        )
+    return window_refs
+
+
+def _raw_payloads(manifest, streams, times, coverage, issue):
+    app = manifest.get("application_id")
+    health = streams["health"]
     sequence = {}
     for stream in ("gateway", "interactions"):
         ready_times = sorted(
@@ -822,6 +1013,9 @@ def _validate_bundle(directory: Path) -> dict:
                     issue("subscription_identity_mismatch", location)
             elif data.get("application_id") != app:
                 issue("application_identity_mismatch", location)
+
+
+def _claims(manifest, streams, window_refs, case_coverage, pending, issue):
     cases = manifest.get("cases", {})
     if not isinstance(cases, dict):
         issue("invalid_cases", "manifest.json")
@@ -831,7 +1025,7 @@ def _validate_bundle(directory: Path) -> dict:
         if not isinstance(case, dict):
             issue("invalid_case", location)
             continue
-        evidence = {key: ref_rows(case, key, location) for key in STREAMS}
+        evidence = {key: _ref_rows(streams, case, key, location, issue) for key in STREAMS}
         status = case.get("status")
         if status == "blocked":
             label = (
@@ -839,9 +1033,7 @@ def _validate_bundle(directory: Path) -> dict:
                 if isinstance(case_name, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", case_name)
                 else location
             )
-            report["pending_prerequisites"].append(
-                {"case": label, "location": location, "reason": "external_prerequisite"}
-            )
+            pending.append({"case": label, "location": location, "reason": "external_prerequisite"})
             if not isinstance(case.get("reason"), str) or not case["reason"].strip():
                 issue("missing_blocker_reason", location)
         elif status == "capture_failed":
@@ -861,7 +1053,9 @@ def _validate_bundle(directory: Path) -> dict:
                     manifest.get("guild_id"),
                     manifest.get("other_guild_id"),
                 }
-                payloads = [row.get("payload", {}) for row in evidence["interactions"]]
+                payloads = [
+                    row["payload"] for row in evidence["interactions"] if isinstance(row.get("payload"), dict)
+                ]
                 receipts = [row for row in evidence["actions"] if row.get("event") == "probe_received"]
                 if receipts:
                     accepted = {row.get("interaction_id") for row in receipts}
@@ -889,35 +1083,62 @@ def _validate_bundle(directory: Path) -> dict:
                 if row.get("event") in {"observation_start", "observation_end"}
             ):
                 issue("unsupported_observation_claim", location)
-            coverage["cases"].append(
+            case_coverage.append(
                 {"location": location, "raw_streams": [key for key, rows in evidence.items() if rows]}
             )
         if case.get("pagination_complete") is True or case.get("pagination_calibrated") is True:
             issue("unsupported_pagination_claim", location)
     if manifest.get("pagination_calibrated") is True:
         issue("unsupported_pagination_claim", "manifest.json")
+
+
+def _validate_bundle(directory, report, issue):
+    loaded = _load_bundle(directory, report, issue)
+    if loaded is None:
+        return report
+    manifest, streams, times, version = loaded
+    coverage = report["coverage"]
+    cases = manifest.get("cases", {})
+    pairs = _correlate(streams, times, version, cases, issue)
+    created, deleted, commands, removed_commands, pages = _prove_mutations(
+        manifest, pairs, coverage, version, issue
+    )
+    _check_cleanup_registry(manifest, version, created, deleted, commands, removed_commands, issue)
+    _pagination(pages, times, coverage["pagination"], issue)
+    windows = _observations(
+        streams["health"],
+        times,
+        manifest.get("observation_seconds", 0),
+        version,
+        cases,
+        coverage["observation_windows"],
+        issue,
+    )
+    _raw_payloads(manifest, streams, times, coverage, issue)
+    _claims(manifest, streams, windows, coverage["cases"], report["pending_prerequisites"], issue)
     if version == 1:
         issue("legacy_partial_evidence", "manifest.json", warning=True)
-    if any(row.get("event") == "disconnected" and row.get("action") != "cleanup" for row in health):
+    if any(
+        row.get("event") == "disconnected" and row.get("action") != "cleanup" for row in streams["health"]
+    ):
         issue("connection_gap_outside_window", "health.jsonl", warning=True)
     report["valid"] = not report["errors"]
     return report
 
 
 def validate_bundle(directory: Path) -> dict:
-    """Validate a directory without exposing raw values in errors."""
+    """Validate integrity, not calibration or permission to mutate; never echo raw values."""
+    report = _new_report()
+
+    def issue(code, location, warning=False):
+        report["warnings" if warning else "errors"].append({"code": code, "location": location})
+
     try:
-        return _validate_bundle(Path(directory))
+        return _validate_bundle(Path(directory), report, issue)
     except (TypeError, ValueError, KeyError, AttributeError, OverflowError, RecursionError):
-        return {
-            "valid": False,
-            "schema_version": None,
-            "legacy": False,
-            "errors": [{"code": "malformed_evidence_structure", "location": "bundle"}],
-            "warnings": [],
-            "pending_prerequisites": [],
-            "coverage": {},
-        }
+        issue("malformed_evidence_structure", "bundle")
+        report["valid"] = False
+        return report
 
 
 def main(argv=None):

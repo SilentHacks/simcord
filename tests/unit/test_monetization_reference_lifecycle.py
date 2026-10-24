@@ -116,7 +116,7 @@ def test_no_fixture_run_only_records_blockers_without_operator_prompts():
         state=state,
         save=lambda: None,
         block=block,
-        args=SimpleNamespace(watch_entitlement=[], consume_history=[]),
+        lifecycle=SimpleNamespace(watch_entitlement=[], consume_history=[]),
         owner_type=2,
         skus=[{"id": "789", "type": 5, "flags": 256}],
         subscriptions=[],

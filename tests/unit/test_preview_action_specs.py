@@ -1,12 +1,11 @@
 import json
-import re
 from importlib import resources
 
 from simcord.backend.models import Interaction
 from simcord.preview._actions import ACTION_SPECS, _Action, _ActionOps
 
 
-def test_action_specs_match_protocol_schema_and_browser() -> None:
+def test_action_specs_match_protocol_schema() -> None:
     package = resources.files("simcord.preview")
     schema = json.loads(package.joinpath("protocol.schema.json").read_text())
     action_request = schema["$defs"]["actionRequest"]
@@ -41,16 +40,6 @@ def test_action_specs_match_protocol_schema_and_browser() -> None:
     assert set(branch_kinds) == set(ACTION_SPECS)
     assert len(branch_kinds) == len(ACTION_SPECS)
     assert all(branch_kinds.count(kind) == 1 for kind in ACTION_SPECS)
-
-    app_js = package.joinpath("static", "app.js").read_text()
-    page_action = re.search(
-        r"function\s+pageAction\s*\(\s*kind\s*\)\s*\{\s*return\s*\[([^\]]*)\]\.includes\(kind\);\s*\}",
-        app_js,
-    )
-    assert page_action is not None
-    assert set(re.findall(r"[\"']([^\"']+)[\"']", page_action.group(1))) == {
-        kind for kind, spec in ACTION_SPECS.items() if spec.page_intent
-    }
 
 
 def test_thinking_original_receipt_tracks_completion_without_duplicate_followup() -> None:

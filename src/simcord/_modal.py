@@ -14,7 +14,7 @@ from .actors import (
     _ensure_unique,
 )
 from .backend import serializers
-from .backend.access import can_access_channel
+from .backend.access import can_access_channel, can_access_message
 from .backend.errors import SetupError
 from .builders import ChannelHandle
 from .components import validate_modal
@@ -160,7 +160,7 @@ def _modal_leaf(
         else:
             _check_select_handles(typ, chosen)
             for item in chosen:
-                _interactions.resolve_handle(actor._env.backend, item, resolved, user_id=actor.id)
+                _interactions.resolve_handle(actor, item, resolved, channel_id=channel_id)
             chosen = [str(item.id) for item in chosen]
         data["values"] = chosen
     elif typ == ComponentType.FILE_UPLOAD:
@@ -286,6 +286,9 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
     _check_user_dm_channel(actor, channel_id)
     if not can_access_channel(actor._env, channel_id, actor):
         raise SetupError("That modal is no longer available to this user")
+    actor_guild = getattr(actor, "guild", None)
+    if interaction.guild_id != (actor_guild.id if actor_guild is not None else None):
+        raise SetupError("That modal belongs to another guild context")
     controls = _modal_control_map(spec)
     unknown = set(values) - set(controls)
     if unknown:
@@ -298,6 +301,8 @@ async def _submit_modal(actor: Any, shown: InteractionResult, values: dict[str, 
     extra = None
     if source_message_id is not None:
         source = backend.get_message(channel_id, source_message_id)
+        if not can_access_message(actor._env, channel_id, source, actor):
+            raise SetupError("That modal's source message is no longer available")
         extra = {"message": dict(serializers.message_payload(backend, source))}
     channel = ChannelHandle(actor._env, getattr(actor, "guild", None), backend.get_channel(channel_id))
     _commit_modal_uploads(actor, channel_id, pending_uploads, resolved)

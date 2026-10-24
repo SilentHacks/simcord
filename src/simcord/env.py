@@ -16,7 +16,16 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 import discord
 
 from . import _dpy_internals
-from ._runtime import _BOT_SCOPE, _CLOCK_SCOPE, _LIVE_LOOPS, _attach_bot, _current_task, _TaskRecord
+from ._runtime import (
+    _BOT_SCOPE,
+    _CLOCK_SCOPE,
+    _LIVE_LOOPS,
+    _attach_bot,
+    _current_task,
+    _restore_loop,
+    _Runtime,
+    _WorkState,
+)
 from ._settlement import (
     _active_callbacks,
     _callback_is_parked,
@@ -25,7 +34,9 @@ from ._settlement import (
     _owned_tasks,
     _run_due_virtual_callbacks,
     _settle_timeout_message,
+    _SettlementState,
     _virtualize_recognized_waits,
+    _wakes_recognized_wait,
 )
 from .backend import Backend
 from .backend.errors import SetupError
@@ -69,22 +80,15 @@ class Env:
         self._error_ids: set[int] = set()
         self._errors_acknowledged = 0
         self._guilds: list[GuildHandle] = []
-        self._task_records: dict[asyncio.Task[Any], _TaskRecord] = {}
-        self._callbacks: list[_CallbackRecord] = []
+        self._work = _WorkState()
         self._generation = 0
         # Old SDK handles remain valid across bot restarts without retaining old caches.
         self._message_states: weakref.WeakSet[Any] = weakref.WeakSet()
-        self._external_waits: dict[asyncio.Task[Any], str] = {}
         self._operation_task: asyncio.Task[Any] | None = None
         self._operation_depth = 0
         self._operation_label: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._orig_create_task: Any = None
-        self._orig_call_soon: Any = None
-        self._orig_call_later: Any = None
-        self._orig_call_at: Any = None
-        self._orig_call_soon_threadsafe: Any = None
-        self._orig_run_in_executor: Any = None
+        self._runtime: _Runtime | None = None
         self._advancing = False
         self._advance_task: asyncio.Task[Any] | None = None
         self._real_advance_task: asyncio.Task[None] | None = None
@@ -255,6 +259,10 @@ class Env:
             await self._detach_bot()
             await _attach_bot(self, bot or self.bot)
         except BaseException:
+            if self._work.executors:
+                # A failed drain cannot terminate a native worker or retire
+                # its generation. Keep hooks installed for its descendants.
+                raise
             await self._detach_bot()
             self._started = False
             if self._loop is not None and _LIVE_LOOPS.get(self._loop) is self:
@@ -301,57 +309,94 @@ class Env:
         context.run(_BOT_SCOPE.set, scope if scope is not None and scope[0] is self else None)
         return context
 
-    def _inspect_task_result(
-        self,
-        completed: asyncio.Task[Any],
-        record: _TaskRecord | None,
-        *,
-        force: bool = False,
-    ) -> None:
-        if record is None or self._task_records.get(completed) is not record:
-            return
-        if not completed.done():
-            return
-        if completed.cancelled():
-            self._task_records.pop(completed, None)
-            return
-        error = getattr(completed, "_exception", None)
-        if error is None or not getattr(completed, "_log_traceback", False):
-            self._task_records.pop(completed, None)
-            return
-        owner = record.owner() if record.owner is not None else None
-        if not force and owner is not None and owner is not completed and not owner.done():
-            if not record.inspection_waiting:
-                record.inspection_waiting = True
-
-                def retry(_owner: asyncio.Task[Any]) -> None:
-                    if self._loop is None:
-                        self._inspect_task_result(completed, record)
-                    else:
-                        self._loop.call_soon(self._inspect_task_result, completed, record)
-
-                owner.add_done_callback(retry)
-            return
-        self._record_error(error)
-        completed.exception()
-        self._task_records.pop(completed, None)
-
-    def _track_task(self, task: asyncio.Task[Any], generation: int, label: str) -> None:
-        owner = _current_task()
-        self._task_records[task] = _TaskRecord(
-            generation,
-            label,
-            weakref.ref(owner) if owner is not None else None,
+    def _settlement_state(self) -> _SettlementState:
+        return _SettlementState(
+            self._work,
+            self.bot,
+            self._loop,
+            self._virtual_time,
+            self._advancing,
+            self._generation,
+            self._last_dispatch,
         )
 
-        def done(completed: asyncio.Task[Any]) -> None:
-            record = self._task_records.get(completed)
-            if self._loop is None:
-                self._inspect_task_result(completed, record)
-                return
-            self._loop.call_soon(self._inspect_task_result, completed, record)
+    def _schedule_timer(
+        self,
+        record: _CallbackRecord,
+        callback: Any,
+        args: tuple[Any, ...],
+        schedule_context: contextvars.Context | None,
+    ) -> None:
+        assert self._runtime is not None
+        when = record.when
+        assert when is not None
+        real_call_at = self._runtime.call_at
+        real_monotonic = _dpy_internals.real_monotonic
 
-        task.add_done_callback(done)
+        def run_real() -> None:
+            if record.handle is not None and not record.handle.cancelled():
+                if _wakes_recognized_wait(self._settlement_state(), record):
+                    # The task suspended on a recognized wait after this
+                    # timer was scheduled: the wake-up now belongs to the
+                    # virtual clock alone.
+                    record.real_handle = None
+                    return
+                # A future fallback can fire while another advance is settling.
+                # Re-arm it: that advance may stop before this timer's instant.
+                previous = self._real_advance_task
+                if self._advancing or (
+                    previous is not None
+                    and (
+                        not previous.done() or (not previous.cancelled() and previous.exception() is not None)
+                    )
+                ):
+                    if when > self._virtual_time:
+                        assert real_call_at is not None and real_monotonic is not None
+                        record.real_handle = real_call_at(
+                            real_monotonic() + max(when - self._virtual_time, 0.000001),
+                            run_real,
+                            context=schedule_context,
+                        )
+                    return
+
+                async def advance_real() -> None:
+                    assert self._loop is not None
+                    try:
+                        await self._advance_to(
+                            max(self._virtual_time, when), self._loop.time() + self.settle_timeout
+                        )
+                    except TimeoutError:
+                        # This is a settlement failure, not a bot exception.
+                        # The retained task delivers it to the waiting/next operation.
+                        raise
+                    except Exception as error:
+                        if self._operation_task is None:
+                            self._record_error(error)
+                        raise
+
+                assert self._runtime is not None
+                task = self._real_advance_task = self._runtime.create_task(
+                    advance_real(), context=contextvars.Context()
+                )
+                # The waiting public operation receives the original failure via
+                # result(); otherwise the catch above records asynchronous errors.
+                task.add_done_callback(
+                    lambda finished: None if finished.cancelled() else finished.exception()
+                )
+
+        assert real_call_at is not None and real_monotonic is not None
+        remaining = max(when - self._virtual_time, 0.0)
+        current = _current_task()
+        virtual_birth = current is not None and (
+            (current in self._work.external_waits and _dpy_internals.is_wakeup_shaped(callback))
+            or _dpy_internals.is_intentional_wait_wakeup(self.bot, callback, args, current)
+        )
+        if not virtual_birth:
+            # Wake-up timers behind a recognized wait are virtual from
+            # birth — only advance_time() may ever fire them.
+            record.real_handle = real_call_at(
+                real_monotonic() + remaining, run_real, context=schedule_context
+            )
 
     async def shutdown(self) -> None:
         await self._run_pre_shutdown()
@@ -366,6 +411,44 @@ class Env:
 
     async def _detach_bot(self) -> None:
         """Detach bot machinery and cancel bot-owned work only."""
+        current = _current_task()
+        assert self._loop is not None or not self._work.executors
+        deadline = self._loop.time() + self.settle_timeout if self._loop is not None else 0.0
+        if self._real_advance_task is not None and self._real_advance_task is not current:
+            self._real_advance_task.cancel()
+            await asyncio.gather(self._real_advance_task, return_exceptions=True)
+            self._real_advance_task = None
+        while True:
+            to_cancel = [task for task in self._work.tasks if task is not current and not task.done()]
+            for executor_record in self._work.executors.values():
+                if executor_record.caller is not None:
+                    executor_record.caller.cancel()
+            if not to_cancel:
+                if self._work.executors:
+                    assert self._loop is not None
+                    remaining = deadline - self._loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError("bot did not detach; native executor work remains tracked")
+                    await asyncio.wait(
+                        tuple(self._work.executors),
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    continue
+                await asyncio.sleep(0)
+                if not self._work.executors and not any(
+                    task is not current and not task.done() for task in self._work.tasks
+                ):
+                    break
+                continue
+            for task in to_cancel:
+                task.cancel()
+            await asyncio.gather(*to_cancel, return_exceptions=True)
+            for task in to_cancel:
+                if not task.cancelled() and (error := task.exception()) is not None:
+                    self._record_error(error)
+            await asyncio.sleep(0)
+
         if self._gateway_feed is not None:
             try:
                 self.backend.subscribers.remove(self._gateway_feed)
@@ -378,51 +461,20 @@ class Env:
             _dpy_internals.reset_webhook_adapter(self._adapter_token)
             self._adapter_token = None
         self._webhook_adapter = None
-        current = _current_task()
-        if self._real_advance_task is not None and self._real_advance_task is not current:
-            self._real_advance_task.cancel()
-            await asyncio.gather(self._real_advance_task, return_exceptions=True)
-            self._real_advance_task = None
-        while True:
-            to_cancel = [task for task in self._task_records if task is not current and not task.done()]
-            if not to_cancel:
-                await asyncio.sleep(0)
-                if not any(task is not current and not task.done() for task in self._task_records):
-                    break
-                continue
-            for task in to_cancel:
-                task.cancel()
-            await asyncio.gather(*to_cancel, return_exceptions=True)
-            for task in to_cancel:
-                if not task.cancelled() and (error := task.exception()) is not None:
-                    self._record_error(error)
-            await asyncio.sleep(0)
-
-        for task, record in list(self._task_records.items()):
+        for task, record in list(self._work.tasks.items()):
             if task.done():
-                self._inspect_task_result(task, record, force=True)
-        for record in self._callbacks:
+                assert self._loop is not None
+                self._work.inspect_task(task, record, self._loop, self._record_error, force=True)
+        for record in self._work.callbacks:
             if record.handle is not None:
                 record.handle.cancel()
             if record.real_handle is not None:
                 record.real_handle.cancel()
-        self._callbacks.clear()
-        if self._loop is not None and self._orig_create_task is not None:
-            self._loop.create_task = self._orig_create_task  # type: ignore[method-assign]
-            self._loop.call_soon = self._orig_call_soon  # type: ignore[method-assign]
-            self._loop.call_later = self._orig_call_later  # type: ignore[method-assign]
-            self._loop.call_at = self._orig_call_at  # type: ignore[method-assign]
-            self._loop.call_soon_threadsafe = self._orig_call_soon_threadsafe  # type: ignore[method-assign]
-            self._loop.run_in_executor = self._orig_run_in_executor  # type: ignore[method-assign]
-            self._orig_create_task = None
-            self._orig_call_soon = None
-            self._orig_call_later = None
-            self._orig_call_at = None
-            self._orig_call_soon_threadsafe = None
-            self._orig_run_in_executor = None
+        self._work.callbacks.clear()
+        _restore_loop(self)
         _dpy_internals.release_clocks(self)
-        self._task_records.clear()
-        self._external_waits.clear()
+        self._work.tasks.clear()
+        self._work.external_waits.clear()
 
     async def external_wait(self, awaitable: Any, *, reason: str) -> Any:
         """Await one explicitly declared external input without blocking settlement.
@@ -437,12 +489,12 @@ class Env:
         already-running tasks keep their normal real-time behavior.
         """
         task = _current_task()
-        record = self._task_records.get(task) if task is not None else None
+        record = self._work.tasks.get(task) if task is not None else None
         if not isinstance(reason, str) or not reason.strip():
             message = "external_wait reason must be a non-empty string"
         elif record is None:
             message = "external_wait must run inside bot-owned work"
-        elif task in self._external_waits:
+        elif task in self._work.external_waits:
             message = "external_wait declarations cannot be nested"
         else:
             message = None
@@ -452,11 +504,11 @@ class Env:
                 close()
             raise SetupError(message)
         assert task is not None
-        self._external_waits[task] = reason.strip()
+        self._work.external_waits[task] = reason.strip()
         try:
             return await awaitable
         finally:
-            self._external_waits.pop(task, None)
+            self._work.external_waits.pop(task, None)
 
     async def settle(
         self,
@@ -485,7 +537,7 @@ class Env:
         deadline = self._loop.time() + effective if _deadline is None else _deadline
         stable_empty = 0
         while True:
-            _run_due_virtual_callbacks(self, deadline)
+            _run_due_virtual_callbacks(self._settlement_state(), deadline)
             await asyncio.sleep(0)
             advancing = self._real_advance_task or self._advance_task
             if advancing is not None and advancing is not _current_task():
@@ -496,81 +548,70 @@ class Env:
                     self._real_advance_task = None
                 advancing.result()
                 continue
-            pending = [
-                task
-                for task in _owned_tasks(
-                    self,
-                )
-                if not task.done()
-            ]
-            callbacks = _active_callbacks(
-                self,
-            )
-            if not pending and not callbacks:
+            pending = [task for task in _owned_tasks(self._settlement_state()) if not task.done()]
+            callbacks = _active_callbacks(self._settlement_state())
+            native_pending = tuple(self._work.executors)
+            if not pending and not callbacks and not native_pending:
                 stable_empty += 1
                 if stable_empty >= 2:
                     return
                 continue
             stable_empty = 0
-            _virtualize_recognized_waits(self, pending)
-            parked = [task for task in pending if _is_parked(self, task, deadline)]
+            _virtualize_recognized_waits(self._settlement_state(), pending)
+            parked = [task for task in pending if _is_parked(self._settlement_state(), task, deadline)]
             active_callbacks = [
-                record for record in callbacks if not _callback_is_parked(self, record, deadline)
+                record
+                for record in callbacks
+                if not _callback_is_parked(self._settlement_state(), record, deadline)
             ]
-            if not active_callbacks and len(parked) == len(pending):
+            if not native_pending and not active_callbacks and len(parked) == len(pending):
                 # Recheck after another loop turn so a resumed continuation or
                 # callback scheduled by a just-finished task cannot escape.
                 await asyncio.sleep(0)
-                again = [
-                    task
-                    for task in _owned_tasks(
-                        self,
-                    )
-                    if not task.done()
-                ]
-                _virtualize_recognized_waits(self, again)
+                again = [task for task in _owned_tasks(self._settlement_state()) if not task.done()]
+                _virtualize_recognized_waits(self._settlement_state(), again)
                 again_callbacks = [
                     record
-                    for record in _active_callbacks(
-                        self,
-                    )
-                    if not _callback_is_parked(self, record, deadline)
+                    for record in _active_callbacks(self._settlement_state())
+                    if not _callback_is_parked(self._settlement_state(), record, deadline)
                 ]
-                if not again_callbacks and all(_is_parked(self, task, deadline) for task in again):
+                if (
+                    not self._work.executors
+                    and not again_callbacks
+                    and all(_is_parked(self._settlement_state(), task, deadline) for task in again)
+                ):
                     return
                 continue
             remaining = deadline - self._loop.time()
             if remaining <= 0:
                 stuck = [task for task in pending if task not in parked]
-                raise TimeoutError(_settle_timeout_message(self, stuck, pending, effective, active_callbacks))
+                raise TimeoutError(
+                    _settle_timeout_message(
+                        self._settlement_state(), stuck, pending, effective, active_callbacks
+                    )
+                )
             wait_for = min(interval, remaining)
-            if pending:
-                await asyncio.wait(pending, timeout=wait_for, return_when=asyncio.FIRST_COMPLETED)
+            if pending or native_pending:
+                await asyncio.wait(
+                    (*pending, *native_pending), timeout=wait_for, return_when=asyncio.FIRST_COMPLETED
+                )
             else:
                 await asyncio.sleep(wait_for)
             # A busy task can make progress forever. The deadline is absolute,
             # so progress never extends it.
             if self._loop.time() >= deadline:
-                pending = [
-                    task
-                    for task in _owned_tasks(
-                        self,
-                    )
-                    if not task.done()
-                ]
-                _virtualize_recognized_waits(self, pending)
-                parked = [task for task in pending if _is_parked(self, task, deadline)]
+                pending = [task for task in _owned_tasks(self._settlement_state()) if not task.done()]
+                _virtualize_recognized_waits(self._settlement_state(), pending)
+                parked = [task for task in pending if _is_parked(self._settlement_state(), task, deadline)]
                 active_callbacks = [
                     record
-                    for record in _active_callbacks(
-                        self,
-                    )
-                    if not _callback_is_parked(self, record, deadline)
+                    for record in _active_callbacks(self._settlement_state())
+                    if not _callback_is_parked(self._settlement_state(), record, deadline)
                 ]
-                if active_callbacks or len(parked) != len(pending):
+                if self._work.executors or active_callbacks or len(parked) != len(pending):
                     raise TimeoutError(
                         _settle_timeout_message(
-                            self,
+                            self._settlement_state(),
                             [task for task in pending if task not in parked],
                             pending,
                             effective,
@@ -619,7 +660,10 @@ class Env:
                 if self._loop is not None and self._loop.time() >= deadline:
                     raise TimeoutError("bot did not settle while advancing time")
                 candidates = [target]
-                for instant in (self._next_resource_deadline(), _next_virtual_timer(self)):
+                for instant in (
+                    self._next_resource_deadline(),
+                    _next_virtual_timer(self._settlement_state()),
+                ):
                     if instant is not None:
                         candidates.append(max(self._virtual_time, instant))
                 self._move_clock(min(candidates))

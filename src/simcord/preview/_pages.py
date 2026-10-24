@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..env import Env
     from . import Preview
     from ._actions import _Action
+    from ._queries import _SummarySource
 
 HISTORY_WINDOW_SIZE = 50
 HISTORY_STEP = 25
@@ -50,6 +51,9 @@ class _Page:
     referenced_assets: set[str] = field(default_factory=set)
     referenced_messages: set[tuple[int, int]] = field(default_factory=set)
     snapshot: dict[str, Any] = field(default_factory=dict)
+    summary_sources: dict[str, _SummarySource] = field(default_factory=dict)
+    referenced_users: dict[str, tuple[int, int]] = field(default_factory=dict)
+    message_references: dict[tuple[str, str], tuple[int, int]] = field(default_factory=dict)
     command_catalog: dict[str, Any] = field(default_factory=dict)
     pinned_snapshot: dict[str, Any] | None = None
     pinned_generation: int | None = None
@@ -61,6 +65,7 @@ class _Page:
     host_height: int = 720
     navigation_query: str = ""
     navigation_cursor: str | None = None
+    disabled_candidates: set[str] = field(default_factory=set)
     candidate_queries: dict[str, dict[str, Any]] = field(default_factory=dict)
     cursor_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
     published_at: str | None = None
@@ -75,9 +80,10 @@ class _Page:
     def asset_id(
         self, key: str, metadata: Mapping[str, Any], *, source: tuple[Any, ...] | None = None
     ) -> str:
-        existing = next((asset for asset, item in self.assets.items() if item.key == key), None)
+        existing = next((asset for asset, item in reversed(self.assets.items()) if item.key == key), None)
         if existing is not None:
             old = self.assets[existing]
+            retained = self.latest_action is not None and existing in self.latest_action.result_assets
             filename = str(metadata.get("filename", old.filename))
             content_type = str(metadata.get("content_type") or "application/octet-stream")
             if content_type == "application/octet-stream":
@@ -93,7 +99,11 @@ class _Page:
             )
             self._resolve_blob(replacement, metadata, source)
             old_released = False
-            if replacement.diagnostic == "session media budget exceeded" and old.digest is not None:
+            if (
+                replacement.diagnostic == "session media budget exceeded"
+                and old.digest is not None
+                and not retained
+            ):
                 self.preview._release_asset_record(old)
                 old_released = True
                 replacement = _Asset(
@@ -124,10 +134,11 @@ class _Page:
                 return existing
             # A handle binds source bytes/metadata, including unavailable transitions.
             asset = "a_" + secrets.token_urlsafe(12)
-            if not old_released:
-                self.preview._release_asset_record(old)
+            if not retained:
+                if not old_released:
+                    self.preview._release_asset_record(old)
+                self.assets.pop(existing)
             replacement.id = asset
-            self.assets.pop(existing)
             self.assets[asset] = replacement
             self.referenced_assets.add(asset)
             return asset
@@ -236,7 +247,9 @@ class _PageOps:
     _PAGE_LEASE_SECONDS: ClassVar[float]
     _publish: Callable[..., None]
     _clear_page_assets: Callable[[_Page], None]
+    _release_result_assets: Callable[[_Page], None]
     _assert_capture_live: Callable[[_Page], None]
+    _authorize_asset: Callable[..., _Asset]
 
     def _initial_target(self, viewer: Any, channel_id: int) -> int | None:
         if not can_access_channel(self.env, channel_id, viewer, history=True):
@@ -295,6 +308,10 @@ class _PageOps:
             page.latest_action.interaction = None
             page.latest_action.target = None
             page.latest_action.outcomes.clear()
+            page.latest_action.summary_sources.clear()
+            page.latest_action.candidate_handle = None
+            page.latest_action.candidate_schema = None
+            self._release_result_assets(page)
             self._redact_receipt(page.latest_action.response)
         page.activity.clear()
         page.activity_actions.clear()
@@ -302,8 +319,10 @@ class _PageOps:
     def _receipt_payload(self, page: _Page, receipt: Any, *, allowed: bool) -> Any:
         if not isinstance(receipt, Mapping):
             return None
-        safe = json.loads(json.dumps(receipt))
-        safe.pop("result", None)
+        safe = json.loads(json.dumps({key: value for key, value in receipt.items() if key != "result"}))
+        return self._filter_receipt(page, safe, allowed=allowed)
+
+    def _filter_receipt(self, page: _Page, safe: dict[str, Any], *, allowed: bool) -> dict[str, Any]:
         if not allowed:
             self._redact_receipt(safe)
             return safe
@@ -377,6 +396,111 @@ class _PageOps:
         payload["activity"] = []
         return payload
 
+    def _filter_dependencies(self, page: _Page, payload: dict[str, Any]) -> bool:
+        """Filter detached domain projections, returning explicit dependency loss."""
+        from ._commands import _authorized_catalog
+        from ._component_projection import _filter_components, _filter_identity
+        from ._dependencies import _DependencyRead
+        from ._messages import _can_send_message, _filter_message, _message_allowed_actions
+        from ._queries import _filter_candidates, _filter_summaries
+
+        preview = cast("Preview", self)
+        read = _DependencyRead(preview, page)
+        payload["messages"] = {
+            identity: item
+            for identity, item in payload.get("messages", {}).items()
+            if read.message(page.channel_id, identity)
+        }
+        payload["timeline"] = [
+            identity for identity in payload.get("timeline", []) if identity in payload["messages"]
+        ]
+        if payload.get("targetId") not in payload["messages"]:
+            payload["targetId"] = None
+        channel = self.env.backend.get_channel(page.channel_id)
+        # Revocation may remove a frozen capability; a grant must wait for Refresh.
+        can_send = _can_send_message(preview, page, channel)
+        if payload["channel"]["canSendMessages"] and not can_send:
+            read.retain(False)
+            payload["channel"]["canSendMessages"] = False
+        for identity, projected in payload["messages"].items():
+            live = self.env.backend.get_message(page.channel_id, int(identity))
+            permitted = _message_allowed_actions(preview, page, channel, live)
+            if any(action not in permitted for action in projected["allowed_actions"]):
+                read.retain(False)
+            projected["allowed_actions"] = [
+                action for action in projected["allowed_actions"] if action in permitted
+            ]
+            _filter_message(projected, page, read)
+        payload["messageIndex"] = _filter_summaries(
+            preview, page, payload.get("messageIndex", []), page.summary_sources, read
+        )
+        for collection, kind in (
+            ("users", "user"),
+            ("members", "user"),
+            ("roles", "role"),
+            ("channels", "channel"),
+        ):
+            entities = payload.get("entities", {}).get(collection, {})
+            kept = {}
+            for identity, item in entities.items():
+                if not read.entity(kind, identity):
+                    continue
+                source = page.referenced_users.get(identity)
+                if (
+                    source is not None
+                    and not any(
+                        message.get("author", {}).get("id") == identity
+                        for message in payload["messages"].values()
+                    )
+                    and not read.message(*source)
+                ):
+                    continue
+                if collection in {"users", "members"}:
+                    _filter_identity(item, read)
+                kept[identity] = item
+            payload.get("entities", {})[collection] = kept
+        for application in payload.get("entities", {}).get("applications", {}).values():
+            _filter_identity(application, read)
+        for identity in payload.get("viewers", []):
+            _filter_identity(identity, read)
+        recipient = payload["channel"].get("recipient")
+        if isinstance(recipient, dict):
+            _filter_identity(recipient, read)
+        modal = payload.get("modal")
+        if isinstance(modal, dict):
+            if modal.get("handle") != page.modal_handle or page.modal is None:
+                read.retain(False)
+                payload["modal"] = None
+            else:
+                _filter_components(modal["payload"].get("components", []), read)
+                application = modal["payload"].get("application_identity")
+                if isinstance(application, dict):
+                    _filter_identity(application, read)
+        for key, descriptor in list(payload.get("candidates", {}).items()):
+            handle = key.split(":", 2)[1] if key.startswith("modal:") else None
+            if not _filter_candidates(
+                preview,
+                page,
+                key,
+                descriptor,
+                handle,
+                read,
+                allow_disabled=key in page.disabled_candidates,
+            ):
+                payload["candidates"].pop(key)
+        catalog = _authorized_catalog(preview, page)
+        if catalog["fingerprint"] != page.command_catalog.get("fingerprint"):
+            read.retain(False)
+        payload["commands"] = {key: catalog[key] for key in ("state", "fingerprint")}
+        payload["commands"]["count"] = len(catalog["entries"])
+        if payload["channel"]["canUseApplicationCommands"] and catalog["state"] == "unavailable":
+            read.retain(False)
+            payload["channel"]["canUseApplicationCommands"] = False
+        for asset_id in list(payload.get("assets", {})):
+            if not read.asset(asset_id):
+                payload["assets"].pop(asset_id)
+        return read.lost
+
     def _page_payload(self, page: _Page) -> dict[str, Any]:
 
         if page.pinned_snapshot is not None:
@@ -401,11 +525,16 @@ class _PageOps:
             page.status = "access_denied"
         payload = json.loads(json.dumps(page.snapshot))
         if allowed:
+            published_assets = payload.get("assets", {})
             payload["assets"] = {}
-            for asset_id, record in page.assets.items():
+            for asset_id in published_assets:
+                record = page.assets.get(asset_id)
+                if record is None:
+                    continue
                 item = record.to_wire()
                 item.pop("diagnostic", None)
                 payload["assets"][asset_id] = item
+            self._filter_dependencies(page, payload)
         else:
             self._denied_payload(payload)
         if allowed:

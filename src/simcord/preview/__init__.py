@@ -265,6 +265,9 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 raise SetupError("managed capture projected message is unavailable") from exc
             if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("managed capture projected message access was revoked")
+        authorized = json.loads(json.dumps(page.pinned_snapshot))
+        if self._filter_dependencies(page, authorized):
+            raise SetupError("managed capture published dependency access was revoked")
         for asset_id, record in page.assets.items():
             try:
                 source = record.source

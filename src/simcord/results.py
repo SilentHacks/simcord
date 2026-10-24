@@ -22,6 +22,11 @@ def to_discord_message(env: Env, message: Message) -> discord.Message:
     state = get_state(env.bot)
     channel = env.bot.get_channel(message.channel_id)
     payload = deepcopy(serializers.message_payload(env.backend, message))
+    if channel is None:
+        guild_id = payload.get("guild_id")
+        channel = env.bot.get_partial_messageable(
+            message.channel_id, guild_id=int(guild_id) if guild_id is not None else None
+        )
     return discord.Message(state=state, channel=channel, data=payload)  # type: ignore[arg-type]
 
 

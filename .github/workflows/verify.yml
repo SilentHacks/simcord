@@ -11,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run check:preview
       - uses: astral-sh/setup-uv@v7
       # screenshot extra pulls in playwright/PIL/markdown-it so pyright resolves
       # the lazy optional imports in simcord.preview with real type info.

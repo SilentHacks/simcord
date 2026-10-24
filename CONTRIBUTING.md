@@ -16,8 +16,9 @@ uv run ruff check src tests examples benchmarks scripts && uv run ruff format --
 uv run pyright src
 ```
 
-The pre-commit hooks mirror the CI `lint` job (ruff on commit, pyright on push)
-using the project's own pinned tools, so a clean commit means a green CI lint.
+The Python hooks run ruff on commit and pyright on push using the project's
+pinned tools. Run the frontend check below separately; passing Python hooks
+does not replace the JavaScript CI gate.
 
 Optional extras layer on top of `dev` depending on what you work on:
 
@@ -31,6 +32,19 @@ uv sync --extra dev --extra screenshot                # matches the CI lint job
 uv run playwright install --with-deps chromium        # needed once for browser capture tests + the example
 ```
 
+Frontend contributors also need Node 24:
+
+```bash
+npm ci --ignore-scripts
+npm run check:preview
+```
+
+This strict JSDoc check includes every first-party `static/*.js` module and the
+composing callers. The explicit root glob and `noResolve` keep unchanged vendored
+Highlight.js code behind narrow declarations, not behind disabled first-party
+checks. New first-party modules belong in that checked root and the server's
+static allowlist. Preview users and installed-wheel captures do not need Node.
+
 ## Project layout
 
 - `src/simcord/backend/`: the virtual Discord with dataclass models, wire-format
@@ -42,6 +56,18 @@ uv run playwright install --with-deps chromium        # needed once for browser 
 - `src/simcord/{env,builders,actors,results,interactions}.py`: the public API.
 - `src/simcord/_dpy_internals.py`: **every** touch of a private discord.py API,
   behind an import-time self-check. New private-API usage goes here, nowhere else.
+- `src/simcord/_runtime.py`: paired loop hooks and owned task/callback/executor
+  bookkeeping; `_settlement.py` consumes a narrow settlement view, not the world.
+- `src/simcord/preview/static/app.js`: page composition and event wiring.
+  `actions.js` owns POST admission; `session.js` owns state reads/polling;
+  `assets.js` owns shared URLs and derived metadata. Composer, select, modal,
+  timeline and workbench owners keep their own mutable feature state.
+- `command-catalog.js` owns catalog observations, `command-drafts.js` owns
+  versioned File-bearing drafts, and `commands.js` owns the native picker view.
+- `scripts/monetization_reference_{config,journal,transport}.py`: validated
+  capture-mode configuration, durable ownership/recovery and raw transport.
+  `validate_monetization_reference.py` independently verifies evidence in explicit
+  phases; recorder flags alone are not authorization.
 
 ## Guidelines
 
