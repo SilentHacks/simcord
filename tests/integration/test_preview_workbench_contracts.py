@@ -165,6 +165,14 @@ async def test_workbench_modal_isolates_chrome_and_restores_select_focus(env, ch
                     "element => document.activeElement === element"
                 )
                 await page.locator(".select-trigger").click()
+                await page.get_by_role("option", name="Second", exact=True).click()
+                await page.keyboard.press("Escape")
+                assert await page.locator(".modal-dialog").count() == 1
+                assert await page.evaluate("() => window.simcordPreview.renderState.openPopupKey === null")
+                assert await page.locator(".select-trigger").evaluate(
+                    "element => document.activeElement === element"
+                )
+                await page.locator(".select-trigger").click()
                 await page.get_by_role("option", name="First", exact=True).click()
                 await page.locator(".select-apply").focus()
                 await page.keyboard.press("Enter")
@@ -175,5 +183,8 @@ async def test_workbench_modal_isolates_chrome_and_restores_select_focus(env, ch
                 await page.locator(".modal-dialog").wait_for(state="detached")
                 assert await page.locator("#toolbar").evaluate("element => !element.inert")
                 assert await page.locator("#messages-sidebar").evaluate("element => !element.inert")
+                assert await page.get_by_role("button", name="Open form").evaluate(
+                    "element => document.activeElement === element"
+                )
             finally:
                 await browser.close()

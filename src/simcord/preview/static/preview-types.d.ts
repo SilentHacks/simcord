@@ -83,7 +83,7 @@ export interface ActionBody {
 }
 export interface ActionMetadata {
   draftId?: number | null; draftVersion?: number | null; commandDraftId?: number | null;
-  commandDraftVersion?: number | null; uploads?: Readonly<Record<string, File>>;
+  commandDraftVersion?: number | null; composerModeVersion?: number; uploads?: Readonly<Record<string, File>>;
 }
 export interface QueryIntent {
   key: string; kind: string; body: ActionBody; metadata: ActionMetadata | null; scope: string; token: number;
@@ -96,7 +96,7 @@ export interface AdmittedAction {
   targetId: string | null; commandEnvelope: ActionBody | null; commandDraftId: number | null;
   commandDraftVersion: number | null; uploads: Readonly<Record<string, File>>; queryBody: ActionBody | null;
   queryMetadata: ActionMetadata | null; queryIntent: QueryIntent | null; botGeneration: number;
-  draftVersion: number; closeProbe: boolean; queryPending: boolean; queryStatus: PendingQuery | null;
+  draftVersion: number; composerModeVersion: number; closeProbe: boolean; queryPending: boolean; queryStatus: PendingQuery | null;
   contextGeneration: number; publishedRevision: number; submittedValues: ActionBody['values'] | null;
 }
 export interface ActionContext {

@@ -454,11 +454,16 @@ async def test_search_target_stays_visible_and_keyboard_row_keeps_focus(env, cha
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("newer_draft", ["", "Keep this next draft"])
-async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, alice, newer_draft):
+@pytest.mark.parametrize(
+    ("newer_draft", "newer_reply"),
+    [("", False), ("Keep this next draft", False), ("", True)],
+)
+async def test_lost_send_receipt_clears_only_confirmed_sent_draft(
+    env, channel, alice, newer_draft, newer_reply
+):
     from playwright.async_api import async_playwright
 
-    await env.bot.get_channel(channel.id).send("Conversation")
+    conversation_message = await env.bot.get_channel(channel.id).send("Conversation")
     async with env.preview(channel, viewers=[alice], layout="channel") as preview:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
@@ -482,6 +487,9 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
 
                 await page.route("**/api/action", lose_send_receipt)
                 composer = page.get_by_role("textbox", name="Message")
+                conversation = page.locator(f'.channel-message[data-message-id="{conversation_message.id}"]')
+                if newer_reply:
+                    await conversation.get_by_role("button", name="Reply").click()
                 await composer.fill("Send exactly once")
                 await page.get_by_role("button", name="Send").click()
                 await delivered.wait()
@@ -492,6 +500,9 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
                 )
                 if newer_draft:
                     await composer.fill(newer_draft)
+                if newer_reply:
+                    await conversation.get_by_role("button", name="Reply").click()
+                    assert await page.locator("#reply-context").is_visible()
                 release.set()
                 await page.wait_for_function(
                     "id => window.simcordPreview?.lastAction?.requestId === id && window.simcordPreview.lastAction.settlement === 'settled' && !window.simcordPreview.pendingAction",
@@ -500,6 +511,16 @@ async def test_lost_send_receipt_clears_only_confirmed_sent_draft(env, channel, 
                 assert channel.last_message.content == "Send exactly once"
                 assert await composer.input_value() == newer_draft
                 assert len(submissions) == 1
+                if newer_reply:
+                    assert await page.locator("#reply-context").is_visible()
+                    revision = await page.evaluate("() => window.simcordPreview.publishedRevision")
+                    await preview.refresh()
+                    await page.wait_for_function(
+                        "revision => window.simcordPreview.publishedRevision > revision && window.simcordPreview.ready",
+                        arg=revision,
+                    )
+                    assert await page.locator("#reply-context").is_visible()
+                    assert "Conversation" in await page.locator("#reply-label").inner_text()
             finally:
                 await browser.close()
 

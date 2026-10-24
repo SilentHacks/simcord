@@ -17,6 +17,8 @@ from PIL import Image
 from preview_helpers import action_body, control_key, gif_bytes, png_bytes, preview_headers, target_message
 
 import simcord
+from fixtures.sample_bot import create_bot
+from simcord.backend import serializers
 
 _SCHEMA = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
 _BROWSER_STATUS_VALIDATOR = jsonschema.Draft202012Validator(
@@ -631,6 +633,76 @@ async def test_browser_close_proceeds_after_unadmitted_uncertain_action(env, cha
                 )
             finally:
                 await browser.close()
+
+
+@pytest.mark.parametrize("kind", ["role", "member", "user", "client_user"])
+async def test_builder_accepts_same_environment_native_overwrite_targets(env, alice, kind):
+    guild = env.bot.get_guild(env.guild.id)
+    targets = {
+        "role": guild.default_role,
+        "member": guild.get_member(alice.id),
+        "user": env.bot.get_user(alice.id),
+        "client_user": env.bot.user,
+    }
+    target = targets[kind]
+    assert target is not None
+    channel = env.guild.create_text_channel(
+        "native-overwrite", overwrites={target: discord.PermissionOverwrite(send_messages=False)}
+    )
+    overwrite = env.backend.get_channel(channel.id).overwrites[0]
+    assert overwrite.target_id == target.id
+    assert overwrite.type == (0 if kind == "role" else 1)
+    assert overwrite.deny == discord.Permissions(send_messages=True).value
+
+
+@pytest.mark.parametrize("kind", ["role", "member", "user", "client_user"])
+async def test_builder_rejects_foreign_native_overwrite_before_mutation(env, kind, monkeypatch):
+    foreign = simcord.Env(create_bot())
+    guild = foreign.create_guild()
+    member = guild.add_member(foreign.create_user("foreign"))
+    state = foreign.bot._connection
+    native_guild = discord.Guild(
+        data=serializers.guild_create_payload(foreign.backend, guild._guild), state=state
+    )
+    targets = {
+        "role": native_guild.default_role,
+        "member": native_guild.get_member(member.id),
+        "user": discord.User(state=state, data=serializers.user_payload(member.user._user)),
+        "client_user": discord.ClientUser(
+            state=state, data=serializers.user_payload(foreign.backend.bot_user)
+        ),
+    }
+
+    def unexpected_mutation(*args, **kwargs):
+        raise AssertionError("Foreign SDK overwrite reached channel creation")
+
+    monkeypatch.setattr(env.backend, "create_channel", unexpected_mutation)
+    monkeypatch.setattr(env.backend, "get_guild", unexpected_mutation)
+    monkeypatch.setattr(env.backend, "get_user", unexpected_mutation)
+    monkeypatch.setattr(env.backend, "get_channel", unexpected_mutation)
+    with pytest.raises(simcord.SetupError):
+        env.guild.create_text_channel(
+            "foreign-overwrite", overwrites={targets[kind]: discord.PermissionOverwrite(view_channel=True)}
+        )
+
+
+@pytest.mark.parametrize("kind", ["role", "member"])
+async def test_builder_rejects_native_overwrite_from_another_guild(env, alice, kind, monkeypatch):
+    other = env.create_guild()
+    member = other.add_member(alice.user)
+    await env.settle()
+    native_guild = env.bot.get_guild(other.id)
+    target = native_guild.default_role if kind == "role" else native_guild.get_member(member.id)
+    assert target is not None
+
+    def unexpected_mutation(*args, **kwargs):
+        raise AssertionError("Wrong-guild SDK overwrite reached channel creation")
+
+    monkeypatch.setattr(env.backend, "create_channel", unexpected_mutation)
+    with pytest.raises(simcord.SetupError):
+        env.guild.create_text_channel(
+            "wrong-guild-overwrite", overwrites={target: discord.PermissionOverwrite(view_channel=True)}
+        )
 
 
 @pytest.mark.asyncio

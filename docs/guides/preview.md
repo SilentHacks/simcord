@@ -808,6 +808,11 @@ logical preview viewport, including its modal backdrop and dialog but excluding 
 Use an interactive browser session to inspect modal content at both scroll extremes. Width and height
 are positive bounded integers and are checked against the screenshot raster limits above.
 
+Captures pin the presentation profile and requested media time, but native browser
+antialiasing can still vary between renders. Do not use whole-image PNG or decoded-RGBA
+byte equality as proof of frame selection: check the rendered media content and its
+reported time and geometry. A pinned profile does not certify pixel parity with Discord.
+
 The report includes viewer, channel, target and modal IDs, published and render generations, geometry,
 media metadata (effective frame times, codec selection, transformations), readiness, calibration,
 action status and diagnostics. Captures reject unsettled actions, unavailable authorization,

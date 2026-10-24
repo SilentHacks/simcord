@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from ...backend import serializers
+from ...backend.access import reaction_permissions
 from ..router import RequestContext, route
 
 
@@ -19,11 +20,9 @@ def add_own_reaction(ctx: RequestContext) -> Any:
     message = ctx.require_message(
         ctx.int_arg("channel_id"), ctx.int_arg("message_id"), "read_message_history"
     )
-    # ADD_REACTIONS is required only to introduce an emoji, not to join an
-    # existing reaction; READ_MESSAGE_HISTORY is required in either case.
-    if message.reaction_for(_emoji(ctx)) is None:
-        ctx.require_channel_permissions(message.channel_id, "add_reactions")
-    backend.add_reaction(message.channel_id, message.id, _emoji(ctx), backend.bot_user.id)
+    emoji = _emoji(ctx)
+    ctx.require_channel_permissions(message.channel_id, *reaction_permissions(message, emoji))
+    backend.add_reaction(message.channel_id, message.id, emoji, backend.bot_user.id)
 
 
 @route("DELETE", "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me")

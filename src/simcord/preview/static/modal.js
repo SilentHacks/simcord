@@ -30,8 +30,6 @@ export function createModal({ root, selections, loadAsset, assetMetadata, dispat
   let fingerprint = "";
   /** @type {Promise<unknown>[]} */
   let pending = [];
-  /** @type {Readonly<Dropdown> | null} */
-  let dropdown = null;
   function report() { return Object.freeze({ modalHandle: handle, validationPaths: error ? [error.controlId] : [] }); }
   function publish() { changed(report()); }
   function clearValidation() {
@@ -68,7 +66,8 @@ export function createModal({ root, selections, loadAsset, assetMetadata, dispat
   /** @param {Snapshot} next @param {{profile: Readonly<Profile>, dropdown: Readonly<Dropdown> | null, focusKey: string | null,
    * spoilerOptions: Pick<RenderOptions, "isSpoilerRevealed" | "onRevealSpoiler">}} context @param {boolean} [force] */
   function update(next, context, force = false) {
-    snapshot = next; dropdown = context.dropdown;
+    snapshot = next;
+    const dropdown = context.dropdown;
     const modal = next.modal && next.modal.handle !== dismissed ? next.modal : null;
     const loading = Boolean(dropdown?.key?.startsWith(`modal:${next.modal?.handle}:`) && selections.candidateLoading(dropdown.key));
     const key = next.modal ? `${JSON.stringify(next.modal)}:${selections.fingerprint(`modal:${next.modal.handle}`)}:${loading}` : "";
@@ -110,12 +109,12 @@ export function createModal({ root, selections, loadAsset, assetMetadata, dispat
   function reset() {
     disposeSurface(root); root.replaceChildren(); root.hidden = true;
     snapshot = null; handle = null; dismissed = null; error = null; errorHandle = null;
-    openerKey = null; fingerprint = ""; pending = []; dropdown = null; isolate(false); publish();
+    openerKey = null; fingerprint = ""; pending = []; isolate(false); publish();
   }
   root.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (event.isComposing || event.keyCode === 229) return;
-      if (dropdown) { event.preventDefault(); selections.cancelDropdown(dropdown.key); return; }
+      if (selections.cancelOpenDropdown()) { event.preventDefault(); return; }
       if (handle) { event.preventDefault(); cancel(); }
       return;
     }

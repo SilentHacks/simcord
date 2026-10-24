@@ -89,4 +89,17 @@ def can_access_message(
     return message_accessible(env.backend, channel_id, message, _viewer_id(viewer), history=history)
 
 
-__all__ = ["can_access_channel", "can_access_message", "channel_accessible", "message_accessible"]
+def reaction_permissions(message: Message, emoji: str, *, reacted: bool = True) -> tuple[str, ...]:
+    """Joining an existing emoji or removing oneself only requires history."""
+    if reacted and message.reaction_for(emoji) is None:
+        return ("read_message_history", "add_reactions")
+    return ("read_message_history",)
+
+
+__all__ = [
+    "can_access_channel",
+    "can_access_message",
+    "channel_accessible",
+    "message_accessible",
+    "reaction_permissions",
+]

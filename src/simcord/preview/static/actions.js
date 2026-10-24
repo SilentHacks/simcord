@@ -109,6 +109,7 @@ export function createActions({ session, send, readResult, changed, render, heal
       uploads: Object.freeze({ ...metadata?.uploads }),
       queryBody: intent ? submission : null, queryMetadata: intent?.metadata || null, queryIntent: intent,
       botGeneration: body.bot_generation, draftVersion: metadata?.draftVersion || 0,
+      composerModeVersion: metadata?.composerModeVersion || 0,
       closeProbe: Boolean(kind === "close" && uncertain && closeAttemptFor === uncertain.requestId),
       queryPending: Boolean(intent), queryStatus: intent ? Object.freeze({ kind, key: intent.key,
         controlKey: extra.control_key || null, requestId, sequence: body.sequence, query: extra.query ?? extra.value ?? "" }) : null,

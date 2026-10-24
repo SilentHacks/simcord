@@ -16,7 +16,7 @@ import discord
 from . import interactions as _interactions
 from ._dpy_internals import message_belongs_to_states, resource_belongs_to_states
 from .backend import serializers
-from .backend.access import can_access_channel, can_access_message
+from .backend.access import can_access_channel, can_access_message, reaction_permissions
 from .backend.command_access import command_access
 from .backend.errors import BackendError, SetupError
 from .backend.models import ScheduledEvent
@@ -170,11 +170,7 @@ class MemberActor:
 
     async def react(self, message: MessageLike, emoji: str) -> None:
         stored = self._message(message)
-        permissions = (
-            ("read_message_history", "add_reactions")
-            if stored.reaction_for(emoji) is None
-            else ("read_message_history",)
-        )
+        permissions = reaction_permissions(stored, emoji)
         self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, *permissions)
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, True)
         self._env._mark_mutation()
@@ -191,11 +187,7 @@ class MemberActor:
 
     async def set_reaction(self, message: MessageLike, emoji: str, *, reacted: bool) -> None:
         stored = self._message(message)
-        permissions = (
-            ("read_message_history", "add_reactions")
-            if reacted and stored.reaction_for(emoji) is None
-            else ("read_message_history",)
-        )
+        permissions = reaction_permissions(stored, emoji, reacted=reacted)
         self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, *permissions)
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
         self._env._mark_mutation()

@@ -8,6 +8,7 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 import asyncio
 import asyncio.timeouts
 import datetime as _datetime
+import inspect
 import sys
 import threading
 import time as _time
@@ -127,7 +128,7 @@ def verify() -> None:
     impl_probe = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
     if (
         impl_probe is None
-        or not asyncio.iscoroutinefunction(impl_probe)
+        or not inspect.iscoroutinefunction(impl_probe)
         or "self" not in impl_probe.__code__.co_varnames
     ):  # pragma: no cover
         problems.append("BaseView._BaseView__timeout_task_impl coroutine")
@@ -497,9 +498,18 @@ def message_belongs_to_states(message: discord.Message, states: Collection[Any])
 
 
 def resource_belongs_to_states(
-    resource: discord.app_commands.AppCommand | discord.ScheduledEvent, states: Collection[Any]
+    resource: (
+        discord.app_commands.AppCommand
+        | discord.ScheduledEvent
+        | discord.Guild
+        | discord.Role
+        | discord.Member
+        | discord.User
+        | discord.ClientUser
+    ),
+    states: Collection[Any],
 ) -> bool:
-    """Check SDK command/event provenance before their IDs enter builder or actor operations."""
+    """Check native SDK connection provenance before IDs enter public operations."""
     return resource._state in states
 
 

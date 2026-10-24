@@ -95,7 +95,7 @@ async def test_downloaded_support_report_is_share_safe_after_real_error_and_reco
             "action_request_ids": [],
             "callback_request_ids": [],
             "auth_headers": set(),
-            "callback_completed": False,
+            "interrupt_reads": False,
             "failed_read": False,
             "injected": False,
             "injected_values": [],
@@ -114,11 +114,9 @@ async def test_downloaded_support_report_is_share_safe_after_real_error_and_reco
                     if value:
                         browser_state["auth_headers"].add(value)
             await route.continue_()
-            if isinstance(body, dict) and body.get("kind") == "modal_submit":
-                browser_state["callback_completed"] = True
 
         async def interrupt_one_read(route):
-            if browser_state["callback_completed"] and not browser_state["failed_read"]:
+            if browser_state["interrupt_reads"] and not browser_state["failed_read"]:
                 browser_state["failed_read"] = True
                 await route.fulfill(status=503, content_type="application/json", body='{"error":"temporary"}')
                 return
@@ -205,6 +203,10 @@ async def test_downloaded_support_report_is_share_safe_after_real_error_and_reco
                     isinstance(error, RuntimeError) and str(error) == private["raw_exception"]
                     for error in errors
                 )
+                # Arm only after the callback's receipt and post-action read settle.
+                # A read started while the POST is pending is invalidated by endAction;
+                # consuming the injected failure there does not reach the consumer.
+                browser_state["interrupt_reads"] = True
 
                 await page.wait_for_function(
                     """() => {

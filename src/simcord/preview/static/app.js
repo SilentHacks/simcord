@@ -798,7 +798,8 @@ function dispatch(kind, extra = {}, metadata = null) {
   syncActionContext();
   actions.dispatch(kind, extra, { ...metadata,
     ...(["send_message", "edit_message"].includes(kind)
-      ? { draftVersion: composer.draftVersion(kind, state.contextId, extra.target_id) } : {}),
+      ? { draftVersion: composer.draftVersion(kind, state.contextId, extra.target_id),
+        composerModeVersion: composer.modeVersion() } : {}),
   });
 }
 

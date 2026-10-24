@@ -719,6 +719,8 @@ async def test_browser_video_seek_audio_pause_and_capture_time(env, channel, ali
 @pytest.mark.asyncio
 async def test_screenshot_captures_animated_custom_emoji_at_media_time(env, channel, alice):
     pytest.importorskip("playwright")
+    from PIL import Image
+
     emoji = env.guild.create_emoji("dancer", animated=True)
     original = gif_bytes()
     message = await alice.send(channel, f"<a:dancer:{emoji.id}>")
@@ -727,12 +729,21 @@ async def test_screenshot_captures_animated_custom_emoji_at_media_time(env, chan
         await preview.show(message)
         first = await preview.screenshot(media_time=0.1)
         second = await preview.screenshot(media_time=0.1)
-        assert len(first.media_metadata["captureTimes"]) == 1
-        asset_id = next(iter(first.media_metadata["captureTimes"]))
-        assert first.complete is True and second.complete is True
-        assert first.media_metadata["captureTimes"][asset_id] == 0.1
-        assert first.media_metadata["assets"][asset_id]["effectiveMediaTime"] == 0.1
-        assert first.png is not None and first.png == second.png
+        assert (first.output_width, first.output_height) == (second.output_width, second.output_height)
+        for capture in (first, second):
+            assert capture.complete is True and capture.ready is True
+            assert len(capture.media_metadata["captureTimes"]) == 1
+            asset_id = next(iter(capture.media_metadata["captureTimes"]))
+            assert capture.media_metadata["captureTimes"][asset_id] == 0.1
+            assert capture.media_metadata["assets"][asset_id]["effectiveMediaTime"] == 0.1
+            assert capture.png is not None
+            with Image.open(io.BytesIO(capture.png)).convert("RGBA") as image:
+                assert image.size == (capture.output_width, capture.output_height)
+                colors = image.getcolors(image.width * image.height)
+                assert colors is not None
+                palette = {color for _, color in colors}
+                assert (0, 0, 255, 255) in palette
+                assert (255, 0, 0, 255) not in palette
 
 
 @pytest.mark.asyncio

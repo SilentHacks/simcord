@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from ..backend.access import can_access_channel, can_access_message
+from ..backend.access import can_access_channel, can_access_message, reaction_permissions
 from ..backend.cdn import sticker_url
 from ..backend.errors import BackendError
 from ..backend.models import EPHEMERAL_FLAG, Message
@@ -401,9 +401,7 @@ def _message_projection(
     context = _markdown_context(preview, page, message, channel)
     type_info = _message_type_info(int(message.type))
     attachments = list(message.attachments)
-    can_add_reactions = channel.guild_id is None or _has_channel_permission(
-        preview, page, channel, "add_reactions"
-    )
+    can_toggle_reactions = can_access_message(env, channel.id, message, page.viewer, history=True)
     author = _identity_wire(
         resolve_identity(preview, page, message.author_id, message=message, override=message.author_name)
     )
@@ -444,7 +442,14 @@ def _message_projection(
                 "emoji": _reaction_emoji_projection(page, reaction.emoji),
                 "count": len(reaction.user_ids),
                 "viewer_reacted": page.viewer.id in reaction.user_ids,
-                "can_toggle": can_add_reactions or page.viewer.id in reaction.user_ids,
+                "can_toggle": can_toggle_reactions
+                and (
+                    channel.guild_id is None
+                    or all(
+                        _has_channel_permission(preview, page, channel, permission)
+                        for permission in reaction_permissions(message, reaction.emoji)
+                    )
+                ),
             }
             for reaction in message.reactions
         ],

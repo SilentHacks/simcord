@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import weakref
 from _thread import LockType
 from collections.abc import Callable
@@ -354,7 +355,7 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
         if loop.is_closed():
             raise RuntimeError("Event loop is closed")
         if loop.get_debug():
-            if asyncio.iscoroutine(func) or asyncio.iscoroutinefunction(func):
+            if asyncio.iscoroutine(func) or inspect.iscoroutinefunction(func):
                 raise TypeError("coroutines cannot be used with run_in_executor()")
             if not callable(func):
                 raise TypeError(f"a callable object was expected by run_in_executor(), got {func!r}")

@@ -36,6 +36,7 @@ export function initComposer({
   let currentInput = input;
   let keyInterceptor = onBeforeKey || null;
   let composing = false;
+  let modeVersion = 0;
   const row = inputContainer || input.parentElement || form;
   /** @type {Snapshot | null} */
   let lastSnapshot = null;
@@ -155,11 +156,17 @@ export function initComposer({
     }
   }
 
+  function modeChanged() {
+    modeVersion += 1;
+    if (lastSnapshot) update(lastSnapshot);
+    onModeChange?.();
+  }
+
   /** @param {{id: string | number}} message */
   function setReplyTo(message) {
     state.editTargetId = null;
     state.replyToId = String(message.id);
-    onModeChange?.();
+    modeChanged();
     const key = `composer:${state.contextId}`;
     setFocusKey?.(key);
     focusAtEnd();
@@ -172,7 +179,7 @@ export function initComposer({
     state.editTargetId = String(message.id);
     const key = `edit:${state.contextId}:${state.editTargetId}`;
     if (!state.drafts.has(key)) state.drafts.set(key, String(message.content || ""));
-    onModeChange?.();
+    modeChanged();
     setFocusKey?.(key);
     focusAtEnd();
   }
@@ -180,7 +187,7 @@ export function initComposer({
   function cancelMode() {
     state.replyToId = null;
     state.editTargetId = null;
-    onModeChange?.();
+    modeChanged();
     currentInput.focus();
   }
 
@@ -190,14 +197,15 @@ export function initComposer({
     const { kind, contextId, targetId } = action;
     const draftKey = kind === "send_message" ? `composer:${contextId}` : `edit:${contextId}:${targetId}`;
     const unchanged = (state.draftVersions.get(draftKey) || 0) === action.draftVersion;
+    const sameMode = modeVersion === action.composerModeVersion;
     if ((["send_message", "edit_message"].includes(kind) && unchanged) || kind === "delete_message") {
       state.drafts.delete(draftKey);
     }
     if (contextId !== state.contextId) return;
-    if ((kind === "send_message" && unchanged) || (kind === "delete_message" && state.replyToId === String(targetId))) {
+    if ((kind === "send_message" && unchanged && sameMode) || (kind === "delete_message" && state.replyToId === String(targetId))) {
       state.replyToId = null;
     }
-    if (((kind === "edit_message" && unchanged) || kind === "delete_message") && state.editTargetId === String(targetId)) {
+    if (((kind === "edit_message" && unchanged && sameMode) || kind === "delete_message") && state.editTargetId === String(targetId)) {
       state.editTargetId = null;
     }
   }
@@ -248,6 +256,7 @@ export function initComposer({
       Object.assign(state, { contextId, targetId, authorized, pinnedCapture, pendingAction: pending });
     },
     report: () => Object.freeze({ editTargetId: state.editTargetId, replyToId: state.replyToId }),
+    modeVersion: () => modeVersion,
     /** @param {string} kind @param {string | null} contextId @param {string | null | undefined} targetId */
     draftVersion: (kind, contextId, targetId) => state.draftVersions.get(
       kind === "send_message" ? `composer:${contextId}` : `edit:${contextId}:${targetId}`,
@@ -255,8 +264,10 @@ export function initComposer({
     /** @param {boolean} enabled @param {string | null | undefined} replyToId */
     commandMode: (enabled, replyToId) => {
       state.replyToId = enabled ? null : replyToId || null;
+      modeVersion += 1;
     },
     reset: () => {
+      modeVersion += 1;
       state.drafts.clear();
       state.draftVersions.clear();
       state.replyToId = null;

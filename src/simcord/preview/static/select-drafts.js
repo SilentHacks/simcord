@@ -11,14 +11,14 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
    * drafts: Map<string, DraftValue>, modalDrafts: Map<string, DraftValue>, modalTouched: Set<string>,
    * selectDrafts: Map<string, string[]>, selectStatuses: Map<string, {fingerprint: string, message: string, authorization?: boolean, invalid?: boolean}>,
    * candidateIdentities: Map<string, Map<string, Identity>>, candidateQueries: Map<string, string>,
-   * selectValidationRevisions: Map<string, number>, selectVerifiedValues: Map<string, string[]>,
+   * selectValidationRevisions: Map<string, number>,
    * pendingSelectValidations: Map<string, number>, selectQueryTimers: Map<string, number>, candidateFingerprints: Map<string, string>}} */
   const state = {
     snapshot: null, publishedRevision: 0, pendingAction: null, modalHandle: null, pinnedCapture: false,
     blocked: false,
     drafts: new Map(), modalDrafts: new Map(), modalTouched: new Set(), dropdown: null,
     selectDrafts: new Map(), selectStatuses: new Map(), candidateIdentities: new Map(), candidateQueries: new Map(),
-    selectValidationRevisions: new Map(), selectVerifiedValues: new Map(), pendingSelectValidations: new Map(),
+    selectValidationRevisions: new Map(), pendingSelectValidations: new Map(),
     selectQueryTimers: new Map(), candidateFingerprints: new Map(),
   };
   /** @param {string} selector */
@@ -57,7 +57,6 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
       state.selectDrafts.set(key, current.map(String));
       if (state.snapshot?.candidates?.[key] && !state.selectValidationRevisions.has(key)) {
         state.selectValidationRevisions.set(key, state.publishedRevision);
-        state.selectVerifiedValues.set(key, current.map(String));
       }
     }
   }
@@ -77,7 +76,6 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
     if (identities.size) state.candidateIdentities.set(key, identities);
     else state.candidateIdentities.delete(key);
     state.selectValidationRevisions.set(key, Number(revision));
-    state.selectVerifiedValues.set(key, values);
     state.pendingSelectValidations.delete(key);
     if (values.length !== requested.length) {
       state.selectStatuses.set(key, {
@@ -102,7 +100,6 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
       state.candidateIdentities.delete(key);
       state.candidateQueries.delete(key);
       state.selectValidationRevisions.delete(key);
-      state.selectVerifiedValues.delete(key);
       state.pendingSelectValidations.delete(key);
     }
     state.modalDrafts.clear();
@@ -214,7 +211,6 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
     state.selectDrafts.set(key, []);
     if (state.snapshot?.candidates?.[key]) {
       state.selectValidationRevisions.set(key, state.publishedRevision);
-      state.selectVerifiedValues.set(key, []);
     }
     state.pendingSelectValidations.delete(key);
     state.selectStatuses.delete(key);
@@ -372,15 +368,15 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
     }
     for (const [key, values] of state.selectDrafts) {
       if (!state.selectValidationRevisions.has(key)) continue;
-      const selected = snapshot.candidates?.[key]?.selected;
-      const verified = state.selectVerifiedValues.get(key);
-      const ids = Array.isArray(selected) ? new Set(selected.map((entry) => String(entry.value ?? entry.id))) : null;
+      const descriptor = snapshot.candidates?.[key];
+      const selected = descriptor?.selected;
+      const available = [...(selected || []), ...(descriptor?.entries || [])];
+      const ids = new Set(available.map((entry) => String(entry.value ?? entry.id)));
       if (!values.length) {
         state.selectValidationRevisions.set(key, snapshot.publishedRevision);
-        state.selectVerifiedValues.set(key, []); state.pendingSelectValidations.delete(key);
-      } else if (Array.isArray(selected) && (key === validatedControl || ids && values.every((value) => ids.has(String(value)))
-        || Array.isArray(verified) && fingerprint(verified) === fingerprint(values))) {
-        reconcileCandidateSelection(key, selected, values, snapshot.publishedRevision);
+        state.pendingSelectValidations.delete(key);
+      } else if (Array.isArray(selected) && (key === validatedControl || values.every((value) => ids.has(String(value))))) {
+        reconcileCandidateSelection(key, key === validatedControl ? selected : available, values, snapshot.publishedRevision);
       } else { state.pendingSelectValidations.set(key, snapshot.publishedRevision); if (state.dropdown?.key === key) state.dropdown = null; }
     }
     state.candidateFingerprints = new Map([...groups].map(([scope, entries]) => [scope,
@@ -392,7 +388,7 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
     for (const timer of state.selectQueryTimers.values()) clearTimeout(timer);
     state.selectQueryTimers.clear();
     for (const map of [state.drafts, state.selectDrafts, state.selectStatuses, state.candidateIdentities,
-      state.candidateQueries, state.selectValidationRevisions, state.selectVerifiedValues, state.pendingSelectValidations,
+      state.candidateQueries, state.selectValidationRevisions, state.pendingSelectValidations,
       state.candidateFingerprints]) map.clear();
     clearModalDrafts(); state.dropdown = null; publish();
   }
@@ -437,6 +433,11 @@ export function initSelectDrafts({ rememberFocus, restoreFocus, onRender, queueQ
     /** @param {string} key @param {DraftValue} value */
     modalDraft: (key, value) => { state.modalDrafts.set(key, value); state.modalTouched.add(key); },
     closeDropdown: () => { state.dropdown = null; publish(); },
+    cancelOpenDropdown: () => {
+      if (!state.dropdown) return false;
+      cancelDropdown(state.dropdown.key);
+      return true;
+    },
     /** @param {string} scope */
     fingerprint: (scope) => state.candidateFingerprints.get(scope) || "",
     queueCandidateQuery, candidateLoading, queuePendingCandidateValidations,

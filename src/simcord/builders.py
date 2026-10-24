@@ -322,7 +322,17 @@ class GuildHandle:
         self,
         name: str,
         *,
-        overwrites: dict[RoleHandle | MemberActor, discord.PermissionOverwrite] | None = None,
+        overwrites: dict[
+            RoleHandle
+            | MemberActor
+            | UserHandle
+            | discord.Role
+            | discord.Member
+            | discord.User
+            | discord.ClientUser,
+            discord.PermissionOverwrite,
+        ]
+        | None = None,
         topic: str | None = None,
         category: ChannelHandle | None = None,
     ) -> ChannelHandle:
@@ -330,12 +340,16 @@ class GuildHandle:
         if category is not None:
             _require_handle(self._env, category, guild_id=self.id)
         for target, overwrite in (overwrites or {}).items():
-            _require_handle(self._env, target, guild_id=self.id)
+            _require_overwrite_target(self._env, target, guild_id=self.id)
             allow, deny = overwrite.pair()
             model_overwrites.append(
                 Overwrite(
                     target_id=target.id,
-                    type=OverwriteType.ROLE if isinstance(target, RoleHandle) else OverwriteType.MEMBER,
+                    type=(
+                        OverwriteType.ROLE
+                        if isinstance(target, (RoleHandle, discord.Role))
+                        else OverwriteType.MEMBER
+                    ),
                     allow=allow.value,
                     deny=deny.value,
                 )
@@ -665,6 +679,17 @@ def _require_handle(env: Env, handle: Any, *, guild_id: int | None = None) -> No
         guild = getattr(handle, "guild", None)
         if guild is None or guild.id != guild_id or guild._env is not env:
             raise SetupError("That handle must belong to this guild")
+
+
+def _require_overwrite_target(env: Env, target: Any, *, guild_id: int) -> None:
+    if not isinstance(target, (discord.Role, discord.Member, discord.User, discord.ClientUser)):
+        _require_handle(env, target, guild_id=guild_id)
+        return
+    if not resource_belongs_to_states(target, env._message_states):
+        raise SetupError("That overwrite target must belong to this environment")
+    if isinstance(target, (discord.Role, discord.Member)):
+        if not resource_belongs_to_states(target.guild, env._message_states) or target.guild.id != guild_id:
+            raise SetupError("That overwrite target must belong to this guild")
 
 
 def _guard_builder_operation(method: Any) -> Any:
