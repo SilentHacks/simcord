@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from .. import intents
+from .._payload import detach
 from ..backend import errors, serializers
 from ..backend.cdn import sticker_url
 from ..backend.models import (
@@ -516,7 +517,7 @@ def message_edit_changes(
 def message_response(
     ctx: RequestContext, message: Message, *, for_user: int | None = None, exempt_root: bool = False
 ) -> dict[str, Any]:
-    payload = deepcopy(dict(serializers.message_payload(ctx.backend, message, for_user=for_user)))
+    payload = detach(dict(serializers.message_payload(ctx.backend, message, for_user=for_user)))
     if not ctx.message_content_access:
         intents.censor_message(payload, ctx.backend.bot_user.id, backend=ctx.backend, exempt_root=exempt_root)
     return payload

@@ -43,14 +43,38 @@ startup or actor-operation guarantee.
   end-to-end scenarios as well as focused diagnostic probes.
 - Report wall-clock latency and process CPU separately using `perf_counter()`
   and `process_time()`. SDK-selected monotonic clocks can be virtualized.
-- Repeat reference/candidate runs on the same host; preserve raw samples and
+- Interleave reference/candidate batches on the same host; preserve raw samples and
   report uncertainty. Small differences on noisy shared runners are inconclusive.
+- Separate the original implementation, an ownership-correct reference and the
+  optimized implementation. Added isolation work does not establish that every
+  observed slowdown is unavoidable.
 - Profile separately. cProfile's cumulative times overlap and its instrumentation
   amplifies Python-loop costs; do not add nested times or treat them as unprofiled
   speedup measurements. Collect allocation profiles separately too.
 - Measure small worlds, writes, deletion/cancellation churn and retained memory,
   not only large read-side wins. Indexes exchange extra write work and memory for
   bounded selection and scheduling.
+
+`benchmarks/simulation_attribution.py` runs fresh-process, randomized
+forward/reverse batches of plain/rich sends and edits, reply ancestry, parked
+listeners with callbacks, and exact search through signed cursors. Supply frozen
+source directories containing `src/simcord`; output directories must be new:
+
+```bash
+uv run python benchmarks/simulation_attribution.py \
+  --original /absolute/original-source --before /absolute/pre-repair-source \
+  --output /absolute/new-evidence-directory
+```
+
+Use `--smoke` for small behavioral qualification. Allocation (`--instrument
+allocation`) and profiling (`--instrument profile`) are separate runs. Raw files
+include source hashes, dependencies, construction, batch order and completed
+outputs. The correctness-only source overlay restores original search, wake and
+index work and always creates independent history/delivery graphs. It shares the
+stack-safe traversal repair with the candidate, so that traversal's efficiency
+cannot be isolated as a pure correctness cost. Search timings cover Python
+navigation, not an HTTP request or a full Preview snapshot. Individual first-page
+and all-pages query spans are retained alongside complete-world timings.
 
 ## What remains real work
 
@@ -76,6 +100,14 @@ memory; synchronous subscribers still share their live envelope in registration
 order. Input detachment finishes before edit/upload side effects. A later event
 snapshot or subscriber failure can occur after state commits: inspect the state
 and settle/refresh rather than replaying the action.
+
+Plain wire dict/list graphs are detached iteratively, preserving aliases and
+cycles without lowering the functioning reply-ancestry depth through recursive
+copying. A graph containing custom/non-wire values falls back as a whole to
+standard-library `deepcopy`, retaining its hooks, recursion limits and failures.
+Subscriber-free emission retains one independent snapshot rather than also
+allocating an unused delivery graph. Complete recursive ancestry serialization
+and SDK parsing still have their own limits; there is no arbitrary-depth promise.
 
 The synchronous send guards retain a generous absolute budget and compare send
 latency in 100- and 10,000-message channels. They are useful catastrophe guards,

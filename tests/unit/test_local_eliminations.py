@@ -204,24 +204,25 @@ def test_history_copy_failure_keeps_commit_without_record_or_delivery(monkeypatc
     backend, _, channel = _world()
     seen = []
     backend.subscribers.append(lambda event, payload: seen.append(event))
-    copy = base.deepcopy
-    copies = 0
+    detach = base.detach
 
-    def fail_history(value):
-        nonlocal copies
-        copies += 1
-        if copies == 2:
+    class Uncopyable:
+        def __deepcopy__(self, memo):
             raise RuntimeError("history snapshot")
-        return copy(value)
 
-    monkeypatch.setattr(base, "deepcopy", fail_history)
+    def poison_envelope(value):
+        envelope = detach(value)
+        envelope["uncopyable"] = Uncopyable()
+        return envelope
+
+    monkeypatch.setattr(base, "detach", poison_envelope)
     start = len(backend.transcript)
     with pytest.raises(RuntimeError, match="history snapshot"):
         backend.create_message(channel.id, backend.bot_user.id, "committed")
     assert len(backend.transcript) == start
     assert seen == []
     assert [message.content for message in backend.select_messages(channel.id)] == ["committed"]
-    monkeypatch.setattr(base, "deepcopy", copy)
+    monkeypatch.setattr(base, "detach", detach)
     backend.create_message(channel.id, backend.bot_user.id, "next")
     assert seen == ["MESSAGE_CREATE"]
     assert [message.content for message in backend.select_messages(channel.id)] == ["committed", "next"]

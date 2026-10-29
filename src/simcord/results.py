@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from ._payload import detach
 from .backend import serializers
 from .backend.errors import BackendError
 from .backend.models import EPHEMERAL_FLAG, Interaction, Message
@@ -21,7 +22,7 @@ def to_discord_message(env: Env, message: Message) -> discord.Message:
 
     state = get_state(env.bot)
     channel = env.bot.get_channel(message.channel_id)
-    payload = deepcopy(serializers.message_payload(env.backend, message))
+    payload = detach(serializers.message_payload(env.backend, message))
     if channel is None:
         guild_id = payload.get("guild_id")
         channel = env.bot.get_partial_messageable(

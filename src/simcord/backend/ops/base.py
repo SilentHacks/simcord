@@ -12,13 +12,13 @@ from __future__ import annotations
 import datetime
 import heapq
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from copy import deepcopy
 from itertools import islice
 from typing import Any
 
 from sortedcontainers import SortedList
 
 from ..._clock import Clock
+from ..._payload import detach
 from ...types import HttpLogEntry
 from .. import errors, permissions, serializers
 from .._deadlines import Deadlines, parse_deadline
@@ -137,8 +137,10 @@ class BackendBase:
         self.clock.advance(seconds)
 
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
-        envelope = deepcopy(payload)
-        self.transcript.append(("GATEWAY", event, deepcopy(envelope)))
+        envelope = detach(payload)
+        # Without live consumers the first detached graph is already history.
+        history = detach(envelope) if self.subscribers else envelope
+        self.transcript.append(("GATEWAY", event, history))
         for listener in self.subscribers:
             listener(event, envelope)
 

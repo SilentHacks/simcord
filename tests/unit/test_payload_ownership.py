@@ -1,11 +1,13 @@
 """Ownership at real request, return, event, and edit preparation seams."""
 
+import sys
 from copy import deepcopy
 from io import BytesIO
 
 import discord
 import pytest
 
+from simcord._payload import detach
 from simcord.backend import Backend
 from simcord.backend.errors import BackendError
 from simcord.backend.models import Interaction, Poll, PollAnswer
@@ -211,23 +213,24 @@ def test_postcommit_copy_failure_does_not_replay_or_rollback(monkeypatch, bounda
     backend, _, channel = _world()
     seen = []
     backend.subscribers.append(lambda *_: seen.append("delivered"))
-    original = base.deepcopy
-    calls = 0
+    original = base.detach
 
-    def failing_copy(value):
-        nonlocal calls
-        calls += 1
-        if calls == (1 if boundary == "envelope" else 2):
+    class Uncopyable:
+        def __deepcopy__(self, memo):
             raise RuntimeError("snapshot")
-        return original(value)
 
-    def fail_response(value):
+    def fail_copy(value):
         raise RuntimeError("snapshot")
 
+    def poison_envelope(value):
+        envelope = original(value)
+        envelope["uncopyable"] = Uncopyable()
+        return envelope
+
     if boundary == "response":
-        monkeypatch.setattr(_helpers, "deepcopy", fail_response)
+        monkeypatch.setattr(_helpers, "detach", fail_copy)
     else:
-        monkeypatch.setattr(base, "deepcopy", failing_copy)
+        monkeypatch.setattr(base, "detach", fail_copy if boundary == "envelope" else poison_envelope)
     before = len(backend.transcript)
     with pytest.raises(RuntimeError, match="snapshot"):
         router.dispatch(backend, "POST", f"/channels/{channel.id}/messages", json={"content": "committed"})
@@ -383,3 +386,93 @@ async def test_sdk_response_is_built_after_synchronous_backend_edit(env, channel
     finally:
         env.backend.subscribers.remove(edit)
     assert response.content == "synchronous edit"
+
+
+@pytest.mark.parametrize("depth", [550, 750])
+@pytest.mark.parametrize("subscribed", [False, True])
+def test_long_reply_history_retains_complete_independent_ancestry(depth, subscribed):
+    backend, _, channel = _world()
+    recursion_limit = sys.getrecursionlimit()
+    ancestry = []
+    previous = None
+    for index in range(depth):
+        previous = backend.create_message(
+            channel.id,
+            backend.bot_user.id,
+            str(index),
+            embeds=[{"footer": {"text": "original"}}],
+            reference={"message_id": str(previous.id)} if previous is not None else None,
+            broadcast=False,
+        )
+        ancestry.append(previous)
+    delivered = []
+    if subscribed:
+        backend.subscribers.append(lambda event, payload: delivered.append(payload))
+    reply = backend.create_message(
+        channel.id,
+        backend.bot_user.id,
+        "reply",
+        reference={"message_id": str(previous.id)},
+    )
+    history = backend.transcript[-1][2]
+    response = router.dispatch(backend, "GET", f"/channels/{channel.id}/messages/{reply.id}")
+    graphs = [history, response, *delivered]
+    oldest = []
+    for graph in graphs:
+        assert graph["id"] == str(reply.id)
+        for ancestor in reversed(ancestry):
+            graph = graph["referenced_message"]
+            assert graph["id"] == str(ancestor.id)
+            assert graph["embeds"][0]["footer"]["text"] == "original"
+        assert "referenced_message" not in graph
+        oldest.append(graph)
+    oldest[0]["embeds"][0]["footer"]["text"] = "history"
+    oldest[1]["embeds"][0]["footer"]["text"] = "response"
+    assert ancestry[0].embeds[0]["footer"]["text"] == "original"
+    if subscribed:
+        assert oldest[2]["embeds"][0]["footer"]["text"] == "original"
+        oldest[2]["embeds"][0]["footer"]["text"] = "subscriber"
+    ancestry[0].embeds[0]["footer"]["text"] = "canonical"
+    assert oldest[0]["embeds"][0]["footer"]["text"] == "history"
+    assert oldest[1]["embeds"][0]["footer"]["text"] == "response"
+    assert sys.getrecursionlimit() == recursion_limit
+
+
+def test_wire_detachment_preserves_aliases_cycles_and_mapping_order():
+    shared = {"nested": ["original"]}
+    source = {"first": shared, "second": shared, "cycle": []}
+    source["cycle"].extend([source, source["cycle"]])
+    copied = detach(source)
+    assert list(copied) == list(source)
+    assert copied is not source
+    assert copied["first"] is copied["second"]
+    assert copied["first"] is not shared
+    assert copied["cycle"][0] is copied
+    assert copied["cycle"][1] is copied["cycle"]
+    copied["first"]["nested"].append("consumer")
+    assert shared["nested"] == ["original"]
+
+
+def test_nonwire_detachment_uses_stdlib_hooks_once_with_original_traversal():
+    observations = []
+
+    class Custom:
+        def __deepcopy__(self, memo):
+            observations.append(list(memo[id(source)]))
+            return {"copied": True}
+
+    shared = {"custom": Custom()}
+    source = {"first": shared, "second": shared, "tuple": (shared,)}
+    copied = detach(source)
+    assert observations == [[]]
+    assert copied["first"] is copied["second"] is copied["tuple"][0]
+    assert copied["first"]["custom"] == {"copied": True}
+
+
+def test_nonwire_detachment_preserves_copy_failure():
+    class Uncopyable:
+        def __deepcopy__(self, memo):
+            raise RuntimeError("custom copy")
+
+    with pytest.raises(RuntimeError, match="custom copy"):
+        detach({"plain": {"nested": []}, "custom": Uncopyable()})
