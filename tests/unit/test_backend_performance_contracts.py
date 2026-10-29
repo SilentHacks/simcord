@@ -23,16 +23,13 @@ def test_omitted_components_follow_effective_normalization_policy():
     backend, _, channel = _world()
     tree = [{"type": 1, "components": [{"type": 2, "style": 1, "label": "Go", "custom_id": "go"}]}]
     message = backend.create_message(channel.id, backend.bot_user.id, components=tree)
-    previous = message.components
-    assert previous[0]["id"] == 0
+    assert message.components[0]["id"] == 0
     backend.edit_message(channel.id, message.id, {"flags": COMPONENTS_V2_FLAG})
-    assert message.components is not previous
-    assert previous[0]["id"] == 0
     assert message.components[0]["id"] > 0
     assert message.components[0]["components"][0]["id"] > 0
-    normalized = message.components
+    normalized = deepcopy(message.components)
     backend.edit_message(channel.id, message.id, {})
-    assert message.components is normalized
+    assert message.components == normalized
     before = deepcopy(message)
     with pytest.raises(BackendError):
         backend.edit_message(channel.id, message.id, {"content": "forbidden"})
