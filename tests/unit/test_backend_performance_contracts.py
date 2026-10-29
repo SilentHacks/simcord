@@ -299,3 +299,33 @@ def test_deadline_replacements_cancel_old_actions_without_early_transition():
     assert backend.next_scheduled_event_deadline().isoformat() == backend.iso_after(1)
     backend.delete_scheduled_event(guild.id, event.id)
     assert backend.next_scheduled_event_deadline() is None
+
+
+def test_shared_poll_state_does_not_leave_a_finalized_deadline_live():
+    backend, _, channel = _world()
+    poll = Poll("Question", [PollAnswer(1, "Yes")], backend.iso_after(1))
+    first = backend.create_message(channel.id, backend.bot_user.id, poll=poll)
+    second = backend.create_message(channel.id, backend.bot_user.id, poll=poll)
+    backend.advance_clock(2)
+    backend.expire_due_polls()
+    assert first.poll.finalized and second.poll.finalized
+    assert backend.next_poll_deadline() is None
+
+
+@pytest.mark.parametrize(
+    ("kinds", "error"),
+    [(("aware", "naive", "invalid"), TypeError), (("aware", "invalid", "naive"), ValueError)],
+)
+def test_deadline_errors_follow_resource_traversal_order(kinds, error):
+    backend, _, channel = _world()
+    values = {
+        "aware": backend.iso_after(1),
+        "naive": backend.clock.now().replace(tzinfo=None).isoformat(),
+        "invalid": "invalid",
+    }
+    for kind in kinds:
+        backend.create_message(
+            channel.id, backend.bot_user.id, poll=Poll("Question", [PollAnswer(1, "Yes")], values[kind])
+        )
+    with pytest.raises(error):
+        backend.next_poll_deadline()

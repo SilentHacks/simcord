@@ -123,9 +123,8 @@ async def test_mixed_parked_waiter_and_active_executor_work():
 
 
 @pytest.mark.asyncio
-async def test_timeout_names_event_and_task_with_hint():
-    """An event-owned worker that never finishes raises TimeoutError naming
-    the dispatched event and why the task was considered active."""
+async def test_timeout_does_not_abandon_event_owned_executor_work():
+    """A timed-out operation leaves its worker able to finish after release."""
     bot = create_bot()
     release = threading.Event()
 
@@ -134,18 +133,23 @@ async def test_timeout_names_event_and_task_with_hint():
         if message.content != "stuck":
             return
         await asyncio.to_thread(lambda: release.wait(timeout=10))
+        await message.channel.send("released")
 
-    async with simcord.run(bot, settle_timeout=0.02) as env:
+    async with simcord.run(bot) as env:
         guild = env.create_guild()
         alice = guild.add_member(env.create_user("alice"))
         channel = guild.create_text_channel("general")
-        with pytest.raises(asyncio.TimeoutError) as exc_info:
-            await alice.send(channel, "stuck")
-        release.set()
-        cause = exc_info.value.__cause__ or exc_info.value
-        text = str(cause)
-        assert "bot-owned" in text
-        assert "unknown wait" in text
+        timeout = env.settle_timeout
+        env.settle_timeout = 0.02
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await alice.send(channel, "stuck")
+        finally:
+            env.settle_timeout = timeout
+            release.set()
+        await env.settle()
+        assert channel.last_message is not None
+        assert channel.last_message.content == "released"
 
 
 @pytest.mark.asyncio
@@ -1448,3 +1452,19 @@ async def test_callback_chain_and_staggered_timers_settle_without_lost_progress(
         await env.advance_time(100)
         assert [index for index, _ in seen] == list(range(1, 101))
         assert [(instant - start).total_seconds() for _, instant in seen] == list(range(1, 101))
+
+
+@pytest.mark.asyncio
+async def test_native_cancellation_during_settlement_does_not_keep_work_active():
+    async with simcord.run(create_bot()) as env:
+        loop = asyncio.get_running_loop()
+        observed = []
+
+        def cancel_child():
+            handle = loop.call_soon(observed.append, "canceled")
+            handle.cancel()
+
+        with env._bot_scope():
+            loop.call_soon(cancel_child)
+        await env.settle(timeout=1, idle=10)
+        assert observed == []

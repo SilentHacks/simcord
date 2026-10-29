@@ -103,9 +103,8 @@ class PollMixin(BackendBase):
         with self._poll_deadlines.due(now) as due:
             for channel_id, message_id in due:
                 message = self.messages.get(channel_id, {}).get(message_id)
-                if message is None:
+                if message is None or message.poll is None or message.poll.finalized:
+                    self._poll_deadlines.set((channel_id, message_id), None, ())
                     continue
-                poll = message.poll
-                if poll is not None and not poll.finalized:
-                    if datetime.datetime.fromisoformat(poll.expiry) <= now:
-                        self.expire_poll(channel_id, message_id)
+                if datetime.datetime.fromisoformat(message.poll.expiry) <= now:
+                    self.expire_poll(channel_id, message_id)

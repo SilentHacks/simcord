@@ -194,11 +194,14 @@ def _active_callbacks(self: _SettlementState, deadline: float | None = None) -> 
     if deadline is None:
         self.work.reconcile(self.loop.time() if self.loop is not None else 0.0)
         return list(self.work.callbacks.values())
-    if self.advancing:
-        return list(self.work.ready.values())
-    return [
-        record for record in self.work.callbacks.values() if not _callback_is_parked(self, record, deadline)
-    ]
+    candidates = self.work.ready if self.advancing else self.work.callbacks
+    active = []
+    for record in tuple(candidates.values()):
+        if record.handle is None or record.handle.cancelled():
+            self.work.retire(record)
+        elif self.advancing or not _callback_is_parked(self, record, deadline):
+            active.append(record)
+    return active
 
 
 def _callback_is_parked(self: _SettlementState, record: _CallbackRecord, deadline: float) -> bool:

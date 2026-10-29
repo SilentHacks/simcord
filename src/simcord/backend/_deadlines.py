@@ -87,12 +87,18 @@ class Deadlines:
 
     def next(self) -> datetime.datetime | None:
         errors = self._errors.keys() - self._process_only_errors
-        if errors:
-            key = min(errors, key=lambda key: self._live[key][2])
-            error_type, args = self._errors[key]
-            raise error_type(*args)
-        if self._naive and len(self._naive) != len(self._live) - len(self._errors):
-            raise TypeError("can't compare offset-naive and offset-aware datetimes")
+        mixed_clocks = self._naive and len(self._naive) != len(self._live) - len(self._errors)
+        if errors or mixed_clocks:
+            # ponytail: O(n log n) exceptional metadata replay; index traversal
+            # order separately only if invalid-state lookup becomes a real workload.
+            earliest: datetime.datetime | None = None
+            for key, (_, value, _) in sorted(self._live.items(), key=lambda item: item[1][2]):
+                if isinstance(value, datetime.datetime):
+                    if earliest is None or value < earliest:
+                        earliest = value
+                elif key not in self._process_only_errors:
+                    error_type, args = value
+                    raise error_type(*args)
         self._trim()
         if not self._heap:
             return None
