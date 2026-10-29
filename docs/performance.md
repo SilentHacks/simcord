@@ -65,6 +65,18 @@ before projecting them; text search still honors rendered labels, spoilers,
 Unicode and authorization. Required detached request-log, gateway and returned
 SDK payload copies protect isolation and must not be removed to improve a score.
 
+Text navigation seeks through the existing numeric message indexes and stops once
+the requested page and its boundary witnesses are known. Frequent matches can
+avoid most summaries; sparse or absent matches can still require a full eligible
+history scan. Forward/backward cursor and live authorization rules are unchanged.
+
+REST/SDK response payloads, retained request/event history and live subscriber
+envelopes have independent nested mutable data. This isolation costs CPU and
+memory; synchronous subscribers still share their live envelope in registration
+order. Input detachment finishes before edit/upload side effects. A later event
+snapshot or subscriber failure can occur after state commits: inspect the state
+and settle/refresh rather than replaying the action.
+
 The synchronous send guards retain a generous absolute budget and compare send
 latency in 100- and 10,000-message channels. They are useful catastrophe guards,
 not proof that timer settlement, projections, memory or every end-to-end operation

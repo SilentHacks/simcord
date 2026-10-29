@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from .. import intents
@@ -474,6 +475,12 @@ def message_edit_changes(
     if effective_components is not current_components:
         fields["components"] = effective_components
 
+    # Detach retained request fields before installing uploads. Prepared edits
+    # transfer these owned values to the backend without another fallible copy.
+    for key in ("embeds", "attachments"):
+        if key in fields:
+            fields[key] = deepcopy(fields[key])
+
     if upload_indices:
         upload_data = {index: ctx.files[index].fp.read() for index in dict.fromkeys(upload_indices)}
         staged = {
@@ -509,7 +516,7 @@ def message_edit_changes(
 def message_response(
     ctx: RequestContext, message: Message, *, for_user: int | None = None, exempt_root: bool = False
 ) -> dict[str, Any]:
-    payload = dict(serializers.message_payload(ctx.backend, message, for_user=for_user))
+    payload = deepcopy(dict(serializers.message_payload(ctx.backend, message, for_user=for_user)))
     if not ctx.message_content_access:
         intents.censor_message(payload, ctx.backend.bot_user.id, backend=ctx.backend, exempt_root=exempt_root)
     return payload

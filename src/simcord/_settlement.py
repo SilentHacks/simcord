@@ -152,6 +152,8 @@ def _recognized_wait(self: _SettlementState, task: asyncio.Task[Any], waiter: An
 
 def _wakes_recognized_wait(self: _SettlementState, record: _CallbackRecord) -> bool:
     """True when a timer about to fire only resumes a currently recognized wait."""
+    if not record.wake_targets:
+        return False
     handle = record.handle
     if handle is None or handle.cancelled():
         return False

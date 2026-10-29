@@ -9,10 +9,10 @@ import hmac
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from itertools import chain
+from itertools import chain, islice
 from typing import TYPE_CHECKING, Any
 
 from ..backend.access import can_access_channel, can_access_message
@@ -509,22 +509,56 @@ def _message_navigation(
             },
         )
 
-    def source() -> Iterable[dict[str, Any]]:
-        for message in backend.iter_messages(page.channel_id, viewer_id=page.viewer.id):
+    state = _read_cursor(page, cursor, "messages:all", query, "message-id", 1)
+    direction = state["direction"] if state is not None else None
+    pivot = _message_position(state["position"])[0] if state is not None else None
+
+    def source(
+        *, before: int | None = None, after: int | None = None, newest_first: bool = False
+    ) -> Iterator[dict[str, Any]]:
+        for message in backend.iter_messages(
+            page.channel_id,
+            viewer_id=page.viewer.id,
+            before=before,
+            after=after,
+            newest_first=newest_first,
+        ):
             parts = _message_summary_parts(preview, page, message, channel)
             if _summary_matches(parts, message, query):
                 yield {"message": message, "parts": parts}
 
-    records, has_previous, has_next, previous, following = _paginate(
-        page,
-        "messages:all",
-        query,
-        "message-id",
-        source,
-        lambda item: (item["message"].id,),
-        cursor,
-        position_length=1,
-        position_parser=_message_position,
+    matches = list(
+        islice(
+            source(
+                before=pivot if direction == "before" else None,
+                after=pivot if direction == "after" else None,
+                newest_first=direction == "before",
+            ),
+            QUERY_PAGE_SIZE + 1,
+        )
+    )
+    records = matches[:QUERY_PAGE_SIZE]
+    has_previous = False
+    has_next = False
+    if direction == "before":
+        records.reverse()
+        has_previous = len(matches) > QUERY_PAGE_SIZE
+        if records:
+            has_next = next(source(after=records[-1]["message"].id), None) is not None
+    else:
+        has_next = len(matches) > QUERY_PAGE_SIZE
+        if records and direction == "after":
+            # Seek from the returned edge so a surviving pivot is also a witness.
+            has_previous = next(source(before=records[0]["message"].id, newest_first=True), None) is not None
+    previous = (
+        _make_cursor(page, "messages:all", query, "message-id", "before", (records[0]["message"].id,))
+        if has_previous
+        else None
+    )
+    following = (
+        _make_cursor(page, "messages:all", query, "message-id", "after", (records[-1]["message"].id,))
+        if has_next
+        else None
     )
     return (
         [_message_summary(preview, page, item["message"], item["parts"]) for item in records],

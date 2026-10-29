@@ -209,7 +209,9 @@ def dispatch(
     backend.http_requests.append(
         HttpLogEntry(method, path, copy.deepcopy(params or {}), copy.deepcopy(json), reason)
     )
-    backend.transcript.append(("HTTP", f"{method} {path}", json if isinstance(json, dict) else None))
+    backend.transcript.append(
+        ("HTTP", f"{method} {path}", copy.deepcopy(json) if isinstance(json, dict) else None)
+    )
     _check_faults(backend, method, path)
     segments = path.strip("/").split("/")
     # Prefer the most-literal match so e.g. ".../messages/pins" beats ".../messages/{message_id}".

@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import heapq
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from copy import deepcopy
 from itertools import islice
 from typing import Any
 
@@ -136,9 +137,10 @@ class BackendBase:
         self.clock.advance(seconds)
 
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
-        self.transcript.append(("GATEWAY", event, payload))
+        envelope = deepcopy(payload)
+        self.transcript.append(("GATEWAY", event, deepcopy(envelope)))
         for listener in self.subscribers:
-            listener(event, payload)
+            listener(event, envelope)
 
     # ----------------------------------------------------------------- users
 
@@ -222,18 +224,30 @@ class BackendBase:
         except (TypeError, ValueError):
             return -1
 
-    def _index_message(self, message: Message, *, remove: bool = False) -> None:
+    def _message_index_keys(self, message: Message) -> tuple[tuple[int, int | None, bool], ...]:
         owner = self._message_owner(message)
-        for pinned in (False, True) if message.pinned else (False,):
-            key = (message.channel_id, owner, pinned)
-            if remove:
-                values = self._message_ids.get(key)
-                if values is not None:
-                    values.discard(message.id)
-                    if not values:
-                        del self._message_ids[key]
-            else:
-                self._message_ids.setdefault(key, SortedList()).add(message.id)
+        return tuple(
+            (message.channel_id, owner, pinned) for pinned in ((False, True) if message.pinned else (False,))
+        )
+
+    def _remove_message_index(self, message_id: int, keys: tuple[tuple[int, int | None, bool], ...]) -> None:
+        for key in keys:
+            values = self._message_ids.get(key)
+            if values is not None:
+                values.discard(message_id)
+                if not values:
+                    del self._message_ids[key]
+
+    def _index_message(self, message: Message, *, remove: bool = False) -> None:
+        keys = self._message_index_keys(message)
+        if remove:
+            self._remove_message_index(message.id, keys)
+            return
+        for key in keys:
+            values = self._message_ids.get(key)
+            if values is None:
+                values = self._message_ids[key] = SortedList()
+            values.add(message.id)
 
     def _message_buckets(self, channel_id: int, viewer_id: int | None, pinned: bool) -> list[SortedList]:
         owners = (None,) if viewer_id is None else (None, viewer_id)
@@ -298,10 +312,13 @@ class BackendBase:
         )
 
     def _drop_channel_messages(self, channel_id: int) -> None:
+        keys: set[tuple[int, int | None, bool]] = set()
         for message in self.messages.pop(channel_id, {}).values():
-            self._index_message(message, remove=True)
+            keys.update(self._message_index_keys(message))
             self._poll_deadlines.set((channel_id, message.id), None, ())
             self._message_order.pop(message.id, None)
+        for key in keys:
+            self._message_ids.pop(key, None)
         self._channel_order.pop(channel_id, None)
 
     def get_role(self, guild_id: int, role_id: int) -> Role:

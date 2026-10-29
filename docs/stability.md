@@ -165,9 +165,8 @@ prevent rejected forum requests from publishing partial state. Tests depending o
 invalid Discord payloads must change; nullable edits remain supported.
 Independent startup budgets and `strict_sync=False` remain supported.
 
-This release retains preview protocol 2. The protocol-3 work and its additional
-action kinds remain on the separate 3.0 development line. No Discord visual
-calibration or human accessibility sign-off is implied by local automated checks.
+The current release uses Preview protocol 3. No Discord visual calibration or
+human accessibility sign-off is implied by local automated checks.
 
 ## Deprecation policy
 

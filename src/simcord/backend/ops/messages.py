@@ -506,16 +506,24 @@ class MessageMixin(BackendBase):
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
             channel, message.author_id, mention_content, policy, message.reply_author_id
         )
+        # HTTP preparation already owns these fields; direct backend edits must
+        # finish detachment before deferred completion or any canonical writes.
+        if not isinstance(fields, _PreparedEdit):
+            if "embeds" in fields:
+                embeds = deepcopy(embeds)
+            if "attachments" in fields:
+                attachments = deepcopy(attachments)
+        old_id = message.id
+        old_keys = self._message_index_keys(message)
         if message.flags & (1 << 7) and message.interaction_metadata is not None:
             flags &= ~(1 << 7)
             record = self.interactions.get(int(message.interaction_metadata["id"]))
             if record is not None and record.message_id == message.id and record.loading:
                 record.complete_deferred()
-        self._index_message(message, remove=True)
         message.content = content_value
-        message.embeds = list(embeds or [])
+        message.embeds = embeds or []
         message.components = normalized_components
-        message.attachments = list(attachments or [])
+        message.attachments = attachments or []
         message.poll = poll
         message.flags = flags
         message.allowed_mentions = policy
@@ -525,7 +533,9 @@ class MessageMixin(BackendBase):
         message.mention_role_ids = mention_roles
         message.mention_everyone = mention_everyone
         message.edited_timestamp = self.now_iso()
-        self._index_message(message)
+        if (message.id, self._message_index_keys(message)) != (old_id, old_keys):
+            self._remove_message_index(old_id, old_keys)
+            self._index_message(message)
         self._schedule_poll(message)
         if not message.is_ephemeral:
             self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))

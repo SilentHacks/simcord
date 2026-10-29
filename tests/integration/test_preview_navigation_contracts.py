@@ -220,3 +220,230 @@ async def test_snapshot_selects_independent_navigation_and_centered_history(env,
         expected = [item for item in messages if item.id != messages[85].id][-50:]
         assert backfilled["timeline"] == [str(item.id) for item in expected]
         assert not backfilled["history"]["hasAfter"]
+
+
+def _assert_navigation(result, messages, has_previous, has_next):
+    assert [row["id"] for row in result["messageIndex"]] == [str(message.id) for message in messages]
+    navigation = result["navigation"]
+    assert navigation["hasPrevious"] is has_previous
+    assert navigation["hasNext"] is has_next
+    assert bool(navigation["previousCursor"]) is has_previous
+    assert bool(navigation["nextCursor"]) is has_next
+    if not has_previous:
+        assert navigation["previousCursor"] is None
+    if not has_next:
+        assert navigation["nextCursor"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 1, 49, 50, 51, 100, 101])
+@pytest.mark.parametrize("query", ["needle", ""])
+async def test_navigation_exact_page_edges_in_both_directions(env, channel, alice, count, query):
+    native = env.bot.get_channel(channel.id)
+    messages = [await native.send(f"needle {number}") for number in range(count)]
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        sequence = 0
+        cursor = None
+        for start in range(0, max(count, 1), 50):
+            sequence += 1
+            response = await preview._action(
+                page.id, action_body(page, "browse_messages", sequence, query=query, cursor=cursor)
+            )
+            assert not response["rejected"]
+            result = response["result"]
+            _assert_navigation(result, messages[start : start + 50], start > 0, start + 50 < count)
+            cursor = result["navigation"]["nextCursor"]
+        while start > 0:
+            cursor = result["navigation"]["previousCursor"]
+            end = start
+            start = max(0, start - 50)
+            sequence += 1
+            response = await preview._action(
+                page.id, action_body(page, "browse_messages", sequence, query=query, cursor=cursor)
+            )
+            assert not response["rejected"]
+            result = response["result"]
+            _assert_navigation(result, messages[start:end], start > 0, end < count)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direction", ["after", "before"])
+async def test_text_navigation_retains_pivot_witness_and_collapses_empty_side(env, channel, alice, direction):
+    native = env.bot.get_channel(channel.id)
+    messages = [await native.send(f"needle {number}") for number in range(51)]
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        first = await preview._action(page.id, action_body(page, "browse_messages", 1, query="needle"))
+        cursor = first["result"]["navigation"]["nextCursor"]
+        sequence = 2
+        if direction == "before":
+            last = await preview._action(
+                page.id, action_body(page, "browse_messages", sequence, query="needle", cursor=cursor)
+            )
+            sequence += 1
+            cursor = last["result"]["navigation"]["previousCursor"]
+            # Leave 1 and the pivot 51: the latter is the sole next-page witness.
+            for message in messages[1:50]:
+                await message.delete()
+            expected = messages[:1]
+        else:
+            # Leave the pivot 50 and 51: the former is the sole previous-page witness.
+            for message in messages[:49]:
+                await message.delete()
+            expected = messages[-1:]
+        response = await preview._action(
+            page.id, action_body(page, "browse_messages", sequence, query="needle", cursor=cursor)
+        )
+        assert not response["rejected"]
+        _assert_navigation(response["result"], expected, direction == "after", direction == "before")
+        await expected[0].delete()
+        empty = await preview._action(
+            page.id, action_body(page, "browse_messages", sequence + 1, query="needle", cursor=cursor)
+        )
+        assert not empty["rejected"]
+        _assert_navigation(empty["result"], [], False, False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["delete", "edit"])
+@pytest.mark.parametrize("direction", ["after", "before"])
+async def test_text_navigation_does_not_assume_changed_anchor_is_a_match(
+    env, channel, alice, mutation, direction
+):
+    native = env.bot.get_channel(channel.id)
+    messages = [await native.send(f"needle {number}") for number in range(51)]
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        first = await preview._action(page.id, action_body(page, "browse_messages", 1, query="needle"))
+        cursor = first["result"]["navigation"]["nextCursor"]
+        sequence = 2
+        if direction == "before":
+            last = await preview._action(
+                page.id, action_body(page, "browse_messages", sequence, query="needle", cursor=cursor)
+            )
+            sequence += 1
+            cursor = last["result"]["navigation"]["previousCursor"]
+            changed = messages[50:]
+            expected = messages[:50]
+        else:
+            changed = messages[:50]
+            expected = messages[50:]
+        for message in changed:
+            if mutation == "delete":
+                await message.delete()
+            else:
+                await message.edit(content="unrelated replacement")
+        response = await preview._action(
+            page.id, action_body(page, "browse_messages", sequence, query="needle", cursor=cursor)
+        )
+        assert not response["rejected"]
+        _assert_navigation(response["result"], expected, False, False)
+
+
+@pytest.mark.asyncio
+async def test_text_navigation_filters_private_matches_before_page_limits(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    backend = env.backend
+    private = [
+        backend.create_message(
+            channel.id,
+            env.bot.user.id,
+            f"needle private {number}",
+            flags=64,
+            interaction_metadata={"user": {"id": str(alice.id)}},
+            broadcast=False,
+        )
+        for number in range(51)
+    ]
+    public = await env.bot.get_channel(channel.id).send("needle public")
+    async with env.preview(channel, viewers=[alice, bob]) as preview:
+        alice_page = preview._open_page(alice.id)
+        bob_page = preview._open_page(bob.id)
+        visible = await preview._action(
+            alice_page.id, action_body(alice_page, "browse_messages", 1, query="needle")
+        )
+        _assert_navigation(visible["result"], private[:50], False, True)
+        cursor = visible["result"]["navigation"]["nextCursor"]
+        rejected = await preview._action(
+            bob_page.id, action_body(bob_page, "browse_messages", 1, query="needle", cursor=cursor)
+        )
+        assert rejected["rejected"] and bob_page.last_sequence == 0
+        assert rejected["diagnostics"][0]["code"] == "stale-cursor"
+        filtered = await preview._action(
+            bob_page.id, action_body(bob_page, "browse_messages", 1, query="needle")
+        )
+        _assert_navigation(filtered["result"], [public], False, False)
+        numeric = await preview._action(
+            bob_page.id, action_body(bob_page, "browse_messages", 2, query=str(private[0].id))
+        )
+        _assert_navigation(numeric["result"], [], False, False)
+
+
+@pytest.mark.asyncio
+async def test_text_navigation_matches_rendered_summary_not_hidden_raw_fields(env, channel, alice):
+    message = env.backend.create_message(
+        channel.id,
+        env.bot.user.id,
+        "Visible Café ||classifiedneedle|| " + "x" * 300 + "tailneedle",
+        author_name="Aliasneedle",
+        embeds=[{"title": "embedneedle"}],
+        components=[
+            {
+                "type": 1,
+                "components": [{"type": 2, "style": 1, "label": "Labelneedle", "custom_id": "rawneedle"}],
+            }
+        ],
+        broadcast=False,
+    )
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        for sequence, query in enumerate(
+            [
+                "CAFE\u0301",
+                "aliasneedle",
+                "labelneedle",
+                "button",
+                "components",
+                "embeds",
+                message.timestamp[:10],
+                "classifiedneedle",
+                "tailneedle",
+                "embedneedle",
+                "rawneedle",
+                str(message.id),
+            ],
+            1,
+        ):
+            response = await preview._action(
+                page.id, action_body(page, "browse_messages", sequence, query=query)
+            )
+            assert not response["rejected"]
+            hidden = query in {"classifiedneedle", "tailneedle", "embedneedle", "rawneedle"}
+            _assert_navigation(response["result"], [] if hidden else [message], False, False)
+
+
+@pytest.mark.asyncio
+async def test_text_navigation_rechecks_sparse_matches_and_insertions_between_pages(env, channel, alice):
+    native = env.bot.get_channel(channel.id)
+    messages = [
+        await native.send(f"{'needle' if number % 2 == 0 else 'unrelated'} {number}") for number in range(101)
+    ]
+    matches = messages[::2]
+    async with env.preview(channel, viewers=[alice]) as preview:
+        page = preview._open_page(alice.id)
+        first = await preview._action(page.id, action_body(page, "browse_messages", 1, query="needle"))
+        _assert_navigation(first["result"], matches[:50], False, True)
+        cursor = first["result"]["navigation"]["nextCursor"]
+        await matches[-1].edit(content="no longer a match")
+        inserted = await native.send("new needle")
+        next_page = await preview._action(
+            page.id, action_body(page, "browse_messages", 2, query="needle", cursor=cursor)
+        )
+        _assert_navigation(next_page["result"], [inserted], True, False)
+        previous = next_page["result"]["navigation"]["previousCursor"]
+        await messages[-2].edit(content="newly matching needle")
+        back = await preview._action(
+            page.id, action_body(page, "browse_messages", 3, query="needle", cursor=previous)
+        )
+        _assert_navigation(back["result"], [*matches[1:50], messages[-2]], True, True)
