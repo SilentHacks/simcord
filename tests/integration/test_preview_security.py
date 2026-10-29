@@ -1,4 +1,5 @@
 import io
+import json
 from urllib.parse import unquote
 
 import pytest
@@ -455,6 +456,27 @@ def test_preview_markdown_field_policies_resolve_references_only_in_bodies():
     assert not {"mention", "command", "link_open"} & {token.get("type") for token in title}
     assert "link_open" in {token.get("type") for token in description}
     assert not {"mention", "command"} & {token.get("type") for token in description}
+
+
+def test_preview_reused_markdown_parser_uses_fresh_context_and_tokens():
+    parsers = {}
+    source = "<@42> </launch:99> <:party:77> ||secret|| [safe](https://example.test)"
+    context = {
+        "users": {"42": "Alice"},
+        "commands": {"99": "launch"},
+        "emojis": {"77": {"id": "77", "name": "party", "animated": False}},
+    }
+    original = markdown_tokens(source, context=context, parsers=parsers)
+    frozen = json.dumps(original)
+    hidden = markdown_tokens(source, context={}, parsers=parsers)
+    assert not {"mention", "command", "emoji"} & {token.get("type") for token in _walk_tokens(hidden)}
+    renamed = markdown_tokens(source, context={"users": {"42": "Renamed"}}, parsers=parsers)
+    assert any(token.get("label") == "@Renamed" for token in _walk_tokens(renamed))
+    assert markdown_summary(hidden).startswith("<@42> </launch:99> <:party:77> [spoiler]")
+    renamed.clear()
+    assert json.dumps(original) == frozen
+    title = markdown_tokens(source, "embed_title", context=context, parsers=parsers)
+    assert not {"mention", "command", "link_open"} & {token.get("type") for token in _walk_tokens(title)}
 
 
 def test_preview_markdown_code_html_and_unsafe_links_remain_inert():

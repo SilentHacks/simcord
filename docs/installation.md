@@ -12,8 +12,9 @@ description: "Install SimCord, the discord.py testing framework, with optional p
 | Python | >=3.11 (tested on 3.11–3.14) |
 | discord.py | >=2.7.1,<3 |
 
-SimCord has no runtime dependencies beyond discord.py itself for the base simulation. It deliberately
-never opens a Discord socket or needs a token.
+The base simulation depends on discord.py and Sorted Containers (pure Python).
+Ordered message selection uses the latter without a database or native extension.
+SimCord never opens a Discord socket or needs a token.
 
 ## Install with the pytest plugin
 

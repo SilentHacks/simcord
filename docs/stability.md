@@ -118,6 +118,10 @@ Everything else may change in any release, including a patch:
 - **`Backend`** and its methods, state dictionaries and payload shapes. It is
   importable for advanced assertions, but is not semver-covered — treat reads as
   best-effort and expect churn.
+  Indexed message membership, owner fields and resource deadlines must be changed
+  through Backend mutation methods, not by directly editing stored models or
+  dictionaries. Raw writes bypass derived indexes and are unsupported. Read-only
+  inspection remains useful; public builders and SDK operations maintain the indexes.
 - The **route table**, route handlers and the serializers in
   `simcord.backend.serializers`.
 - The **gateway event payloads** simcord injects, and the `simcord.parity`

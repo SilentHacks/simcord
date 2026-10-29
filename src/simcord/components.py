@@ -597,7 +597,7 @@ def validate_embeds(embeds: Any) -> None:
         raise ComponentValidationError("embeds: total size of embeds exceeds 6000 characters")
 
 
-def validate_message_state(
+def validate_message_fields(
     components: Any,
     *,
     flags: int,
@@ -608,7 +608,7 @@ def validate_message_state(
     previous_flags: int = 0,
     attachments: Any = None,
     require_nonempty: bool = False,
-) -> list[dict[str, Any]]:
+) -> None:
     if content is not None and (not isinstance(content, str) or len(content) > 2000):
         raise _fail("", "content must be a string of 2000 or fewer characters")
     validate_embeds(embeds)
@@ -623,6 +623,32 @@ def validate_message_state(
         (content or "").strip() or embeds or components or attachments or stickers or poll is not None
     ):
         raise ComponentValidationError("Cannot send an empty message")
+
+
+def validate_message_state(
+    components: Any,
+    *,
+    flags: int,
+    content: str | None,
+    embeds: Any,
+    poll: Any = None,
+    stickers: Any = None,
+    previous_flags: int = 0,
+    attachments: Any = None,
+    require_nonempty: bool = False,
+) -> list[dict[str, Any]]:
+    """Validate effective state and return one independently owned normalized tree."""
+    validate_message_fields(
+        components,
+        flags=flags,
+        content=content,
+        embeds=embeds,
+        poll=poll,
+        stickers=stickers,
+        previous_flags=previous_flags,
+        attachments=attachments,
+        require_nonempty=require_nonempty,
+    )
     return validate_components(components, flags=int(flags))
 
 
@@ -643,11 +669,31 @@ def _replace_media(
     return attachment
 
 
+def check_attachment_references(components: list[dict[str, Any]], attachments: list[dict[str, Any]]) -> None:
+    """Validate attachment bindings without copying or modifying the tree."""
+    names = {str(item.get("filename")) for item in attachments}
+    for component in walk_components(components):
+        kind = component.get("type")
+        media = (
+            [(component["media"], "accessory.media")]
+            if kind == 11
+            else [(item["media"], "items.media") for item in component.get("items") or []]
+            if kind == 12
+            else [(component["file"], "file")]
+            if kind == 13
+            else []
+        )
+        for item, path in media:
+            url = item.get("url")
+            if isinstance(url, str) and url.startswith("attachment://") and url[13:] not in names:
+                raise _fail(path, f"attachment reference {url!r} has no uploaded file")
+
+
 def resolve_attachment_references(
-    components: list[dict[str, Any]], attachments: list[dict[str, Any]]
+    components: list[dict[str, Any]], attachments: list[dict[str, Any]], *, owned: bool = False
 ) -> list[dict[str, Any]]:
     """Replace ``attachment://name`` media URLs with deterministic CDN data."""
-    result = deepcopy(components)
+    result = components if owned else deepcopy(components)
     by_name = {str(item.get("filename")): item for item in attachments}
     for component in walk_components(result):
         kind = component.get("type")

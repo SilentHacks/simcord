@@ -196,3 +196,27 @@ async def test_channel_history_window_survives_resize_and_reanchors_after_layout
         assert channel_snapshot["targetId"] == str(history_target.id)
         assert str(history_target.id) in channel_snapshot["timeline"]
         assert channel_snapshot["history"]["windowEndId"] != older_snapshot["history"]["windowEndId"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_selects_independent_navigation_and_centered_history(env, channel, alice):
+    native = env.bot.get_channel(channel.id)
+    messages = [await native.send(f"plain history {number}") for number in range(121)]
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        snapshot = await preview.snapshot()
+        assert [row["id"] for row in snapshot["messageIndex"]] == [str(item.id) for item in messages[:50]]
+        assert snapshot["timeline"] == [str(item.id) for item in messages[-50:]]
+        assert snapshot["navigation"]["hasNext"] and not snapshot["navigation"]["hasPrevious"]
+        await preview.show(messages[60])
+        centered = await preview.snapshot()
+        assert centered["timeline"] == [str(item.id) for item in messages[36:86]]
+        assert centered["history"]["hasBefore"] and centered["history"]["hasAfter"]
+        await messages[85].delete()
+        reanchored = await preview.snapshot()
+        assert reanchored["timeline"] == [str(item.id) for item in messages[35:85]]
+        assert reanchored["history"]["windowEndId"] == str(messages[84].id)
+        await preview.show(messages[-1])
+        backfilled = await preview.snapshot()
+        expected = [item for item in messages if item.id != messages[85].id][-50:]
+        assert backfilled["timeline"] == [str(item.id) for item in expected]
+        assert not backfilled["history"]["hasAfter"]

@@ -15,11 +15,15 @@ from ..backend.models import (
     Poll,
     PollAnswer,
 )
+from ..backend.ops.messages import _PreparedEdit
 from ..components import (
+    COMPONENTS_V2_FLAG,
     ComponentValidationError,
+    check_attachment_references,
     merge_edit_flags,
     resolve_attachment_references,
-    validate_message_state,
+    validate_components,
+    validate_message_fields,
 )
 from ..enums import AppCommandType, MessageType
 from .router import RequestContext
@@ -282,20 +286,7 @@ def prepare_bot_message(
         embeds = []
     poll = poll_from_wire(backend, body["poll"]) if body.get("poll") else None
     uploads = _preview_uploads(ctx)
-    try:
-        components = validate_message_state(
-            body.get("components") if body.get("components") is not None else [],
-            flags=flags,
-            content=body.get("content"),
-            embeds=embeds,
-            poll=poll,
-            stickers=sticker_items,
-            attachments=uploads,
-            require_nonempty=not pending and not (reference is not None and reference["type"] == 1),
-        )
-        resolve_attachment_references(components, uploads)
-    except (ComponentValidationError, TypeError, ValueError) as exc:
-        raise errors.invalid_form_body(str(exc)) from exc
+    components = body.get("components") if body.get("components") is not None else []
     fields = {
         "author_id": author_id if author_id is not None else backend.bot_user.id,
         "content": body.get("content"),
@@ -314,6 +305,10 @@ def prepare_bot_message(
         "message_type": message_type,
     }
     message = backend.prepare_message(channel_id, attachments=uploads, **fields)
+    try:
+        check_attachment_references(message.components, uploads)
+    except (ComponentValidationError, TypeError, ValueError) as exc:
+        raise errors.invalid_form_body(str(exc)) from exc
     return message, [file.fp.read() for file in ctx.files]
 
 
@@ -327,14 +322,19 @@ def commit_bot_message(
     message, upload_data = prepared
     if message.channel_id != channel_id or len(ctx.files) != len(upload_data):
         raise errors.invalid_form_body("Prepared message does not match destination or uploads")
-    attachments = [
-        ctx.backend.cdn.store_attachment(
-            ctx.backend.snowflake(), channel_id, file.filename, data, file.description
+    staged = [
+        (
+            ctx.backend.cdn.prepare_attachment(
+                ctx.backend.snowflake(), channel_id, file.filename, data, file.description
+            ),
+            data,
         )
         for file, data in zip(ctx.files, upload_data, strict=True)
     ]
+    attachments = [attachment for attachment, _ in staged]
     message.attachments = attachments
-    message.components = resolve_attachment_references(message.components, attachments)
+    message.components = resolve_attachment_references(message.components, attachments, owned=True)
+    ctx.backend.cdn.install_attachments(staged)
     return ctx.backend.commit_message(
         message, broadcast=not message.is_ephemeral if broadcast is None else broadcast
     )
@@ -355,13 +355,6 @@ def _preview_uploads(ctx: RequestContext) -> list[dict[str, Any]]:
     ]
 
 
-def _store_upload(ctx: RequestContext, channel_id: int, index: int, data: bytes) -> dict[str, Any]:
-    file = ctx.files[index]
-    return ctx.backend.cdn.store_attachment(
-        ctx.backend.snowflake(), channel_id, file.filename, data, file.description
-    )
-
-
 def _validate_edit_state(
     message: Message | None,
     fields: dict[str, Any],
@@ -372,7 +365,7 @@ def _validate_edit_state(
     current_content = message.content if message is not None else None
     current_embeds = message.embeds if message is not None else []
     try:
-        return validate_message_state(
+        validate_message_fields(
             components,
             flags=flags,
             content=fields.get("content", current_content),
@@ -383,6 +376,10 @@ def _validate_edit_state(
             stickers=message.stickers if message is not None else None,
             previous_flags=message.flags if message is not None else 0,
         )
+        same_policy = message is not None and not (flags ^ message.flags) & COMPONENTS_V2_FLAG
+        if "components" not in fields and same_policy:
+            return components
+        return validate_components(components, flags=flags)
     except (ComponentValidationError, TypeError, ValueError) as exc:
         detail = exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
         raise errors.invalid_form_body(str(detail)) from exc
@@ -471,18 +468,28 @@ def message_edit_changes(
         raise errors.invalid_form_body("flags must be an integer") from exc
     effective_components = _validate_edit_state(message, fields, effective_components, flags=flags)
     try:
-        resolve_attachment_references(effective_components, preview_attachments)
+        check_attachment_references(effective_components, preview_attachments)
     except ComponentValidationError as exc:
         raise errors.invalid_form_body(str(exc)) from exc
-    if "components" in fields:
+    if effective_components is not current_components:
         fields["components"] = effective_components
 
     if upload_indices:
         upload_data = {index: ctx.files[index].fp.read() for index in dict.fromkeys(upload_indices)}
-        stored_by_index = {
-            index: _store_upload(ctx, message.channel_id if message is not None else 0, index, data)
+        staged = {
+            index: (
+                ctx.backend.cdn.prepare_attachment(
+                    ctx.backend.snowflake(),
+                    message.channel_id if message is not None else 0,
+                    ctx.files[index].filename,
+                    data,
+                    ctx.files[index].description,
+                ),
+                data,
+            )
             for index, data in upload_data.items()
         }
+        stored_by_index = {index: attachment for index, (attachment, _) in staged.items()}
         fields["attachments"] = [
             stored_by_index[index] if index is not None else attachment
             for index, attachment in zip(selected_indices, fields["attachments"], strict=True)
@@ -490,11 +497,13 @@ def message_edit_changes(
     if "components" in fields:
         try:
             fields["components"] = resolve_attachment_references(
-                fields["components"] or [], fields.get("attachments", current_attachments)
+                fields["components"] or [], fields.get("attachments", current_attachments), owned=True
             )
         except ComponentValidationError as exc:
             raise errors.invalid_form_body(str(exc)) from exc
-    return fields
+    if upload_indices:
+        ctx.backend.cdn.install_attachments(list(staged.values()))
+    return _PreparedEdit(fields)
 
 
 def message_response(

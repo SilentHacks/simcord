@@ -312,7 +312,7 @@ def _record(env: simcord.Env, callback: Any, args: tuple[Any, ...], when: float)
     loop = asyncio.new_event_loop()
     handle = asyncio.TimerHandle(when, callback, args, loop)
     record = _runtime._CallbackRecord(handle, when, "probe")
-    env._work.callbacks.append(record)
+    env._work.register(record, callback, args)
     return record
 
 

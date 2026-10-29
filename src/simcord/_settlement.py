@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -28,6 +29,34 @@ class _SettlementState:
     advancing: bool
     generation: int
     last_dispatch: str | None
+    _listeners: set[Any] | None = field(init=False, default=None)
+    _view_facts: tuple[set[Any], set[Any]] | None = field(init=False, default=None)
+    reasons: dict[Any, str | None] = field(default_factory=dict)
+    visiting: set[Any] = field(default_factory=set)
+    foreign_sleeps: set[Any] | None = None
+
+    @property
+    def listeners(self) -> set[Any]:
+        listeners = self._listeners
+        if listeners is None:
+            listeners = set(_dpy_internals.listener_futures(self.bot))
+            object.__setattr__(self, "_listeners", listeners)
+        return listeners
+
+    def _stored_view_facts(self) -> tuple[set[Any], set[Any]]:
+        facts = self._view_facts
+        if facts is None:
+            facts = _dpy_internals._stored_view_facts(self.bot)
+            object.__setattr__(self, "_view_facts", facts)
+        return facts
+
+    @property
+    def views(self) -> set[Any]:
+        return self._stored_view_facts()[0]
+
+    @property
+    def expiry_tasks(self) -> set[Any]:
+        return self._stored_view_facts()[1]
 
 
 def _run_due_virtual_callbacks(self: _SettlementState, deadline: float) -> None:
@@ -36,20 +65,21 @@ def _run_due_virtual_callbacks(self: _SettlementState, deadline: float) -> None:
     assert self.loop is not None
     ran = 0
     while True:
-        due = next(
-            (
-                record
-                for record in self.work.callbacks
-                if record.when is not None
-                and record.when <= self.virtual_time
-                and record.handle is not None
-                and not record.handle.cancelled()
-            ),
-            None,
-        )
+        while self.work.timers and self.work.timers[0][0] <= self.virtual_time:
+            _, key = heapq.heappop(self.work.timers)
+            record = self.work.callbacks.get(key)
+            if record is not None:
+                if record.handle is None or record.handle.cancelled():
+                    self.work.retire(record)
+                else:
+                    self.work.ready[key] = record
+        due = next((r for r in self.work.ready.values() if r.when is not None), None)
         if due is None:
             return
         assert due.handle is not None
+        if due.handle.cancelled():
+            self.work.retire(due)
+            continue
         try:
             due.handle._run()
         except Exception:
@@ -80,16 +110,12 @@ def _callback_fire_time(self: _SettlementState, record: _CallbackRecord) -> floa
 def _is_virtual_sleep_waiter(self: _SettlementState, waiter: Any, deadline: float) -> bool:
     if waiter is None or waiter.done():
         return False
-    for record in self.work.callbacks:
+    for record in self.work.wakes.get(waiter, {}).values():
         handle = record.handle
-        if record.when is None or handle is None or handle.cancelled():
-            continue
-        if _callback_fire_time(self, record) <= deadline:
+        if handle is None or handle.cancelled() or _callback_fire_time(self, record) <= deadline:
             continue
         callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
-        if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and any(
-            arg is waiter for arg in getattr(handle, "_args", ())
-        ):
+        if getattr(callback, "__name__", "") == "_set_result_unless_cancelled":
             return True
     return False
 
@@ -99,7 +125,9 @@ def _timer_records_waking(
 ) -> list[_CallbackRecord]:
     """Tracked timers whose only effect is resuming this task's current wait."""
     found: list[_CallbackRecord] = []
-    for record in self.work.callbacks:
+    candidates = dict(self.work.wakes.get(waiter, {}))
+    candidates.update(self.work.wakes.get(task, {}))
+    for record in candidates.values():
         handle = record.handle
         if record.when is None or handle is None or handle.cancelled():
             continue
@@ -114,10 +142,10 @@ def _timer_records_waking(
 def _recognized_wait(self: _SettlementState, task: asyncio.Task[Any], waiter: Any) -> bool:
     return (
         task in self.work.external_waits
-        or _dpy_internals.is_listener_future(self.bot, waiter)
-        or _dpy_internals.is_wait_for_listener(self.bot, task)
-        or _dpy_internals.is_view_wait_future(self.bot, waiter)
-        or _dpy_internals.view_expiry_task(self.bot, task, waiter)
+        or (waiter in self.listeners and not waiter.done())
+        or _dpy_internals.is_wait_for_listener(self.bot, task, self.listeners)
+        or (waiter in self.views and not waiter.done())
+        or _dpy_internals.view_expiry_task(self.bot, task, waiter, self.expiry_tasks)
         or _dpy_internals.tasks_loop_sleep(task, waiter)
     )
 
@@ -129,10 +157,11 @@ def _wakes_recognized_wait(self: _SettlementState, record: _CallbackRecord) -> b
         return False
     callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
     args = getattr(handle, "_args", ())
-    for task in _owned_tasks(
-        self,
-    ):
+    targets = set(record.wake_targets)
+    for task in _owned_tasks(self):
         waiter = getattr(task, "_fut_waiter", None)
+        if task not in targets and waiter not in targets:
+            continue
         if _dpy_internals.is_wakeup_callback(callback, args, waiter, task) and _recognized_wait(
             self, task, waiter
         ):
@@ -161,14 +190,15 @@ def _owned_tasks(self: _SettlementState) -> list[asyncio.Task[Any]]:
     return [task for task in self.work.tasks if not task.done()]
 
 
-def _active_callbacks(self: _SettlementState) -> list[_CallbackRecord]:
-    live = [
-        record
-        for record in self.work.callbacks
-        if record.handle is not None and not record.handle.cancelled()
+def _active_callbacks(self: _SettlementState, deadline: float | None = None) -> list[_CallbackRecord]:
+    if deadline is None:
+        self.work.reconcile(self.loop.time() if self.loop is not None else 0.0)
+        return list(self.work.callbacks.values())
+    if self.advancing:
+        return list(self.work.ready.values())
+    return [
+        record for record in self.work.callbacks.values() if not _callback_is_parked(self, record, deadline)
     ]
-    self.work.callbacks = live
-    return live
 
 
 def _callback_is_parked(self: _SettlementState, record: _CallbackRecord, deadline: float) -> bool:
@@ -184,23 +214,37 @@ def _park_reason(
 ) -> str | None:
     if task.done():
         return "completed"
-    seen = set() if seen is None else seen
-    if id(task) in seen:
+    if seen is not None and id(task) in seen:
         return None
-    seen.add(id(task))
+    if task in self.reasons:
+        return self.reasons[task]
+    if task in self.visiting:
+        return None
+    self.visiting.add(task)
+    try:
+        reason = _compute_park_reason(self, task, deadline)
+        self.reasons[task] = reason
+        return reason
+    finally:
+        self.visiting.remove(task)
+
+
+def _compute_park_reason(self: _SettlementState, task: asyncio.Task[Any], deadline: float) -> str | None:
     waiter = getattr(task, "_fut_waiter", None)
     if waiter is None or waiter.done():
         return None
     reason = self.work.external_waits.get(task)
     if reason:
         return reason
-    if _dpy_internals.is_listener_future(self.bot, waiter) or _dpy_internals.is_wait_for_listener(
-        self.bot, task
+    if (waiter in self.listeners and not waiter.done()) or _dpy_internals.is_wait_for_listener(
+        self.bot, task, self.listeners
     ):
         return "discord Client.wait_for listener"
-    if _dpy_internals.is_view_wait_future(self.bot, waiter):
+    if waiter in self.views and not waiter.done():
         return "discord View/Modal completion"
-    if _dpy_internals.view_expiry_task(self.bot, task, waiter) and _timer_records_waking(self, task, waiter):
+    if _dpy_internals.view_expiry_task(self.bot, task, waiter, self.expiry_tasks) and _timer_records_waking(
+        self, task, waiter
+    ):
         return "discord View/Modal expiry timer"
     if _dpy_internals.tasks_loop_sleep(task, waiter) and _timer_records_waking(self, task, waiter):
         return "discord.ext.tasks loop interval"
@@ -212,10 +256,10 @@ def _park_reason(
             if isinstance(dependency, asyncio.Task):
                 if dependency not in self.work.tasks:
                     break
-                reason = _park_reason(self, dependency, deadline, seen)
-            elif _dpy_internals.is_listener_future(self.bot, dependency):
+                reason = _park_reason(self, dependency, deadline)
+            elif dependency in self.listeners and not dependency.done():
                 reason = "discord Client.wait_for listener"
-            elif _dpy_internals.is_view_wait_future(self.bot, dependency):
+            elif dependency in self.views and not dependency.done():
                 reason = "discord View/Modal completion"
             else:
                 break
@@ -225,10 +269,21 @@ def _park_reason(
         else:
             if reasons and all(reason is not None for reason in reasons):
                 return "composed external wait"
-    if _is_virtual_sleep_waiter(self, waiter, deadline) or _dpy_internals.is_sleep_waiter(
-        waiter, self.loop, deadline
-    ):
+    if _is_virtual_sleep_waiter(self, waiter, deadline) or _foreign_sleep_waiter(self, waiter, deadline):
         return "sleep timer beyond settlement deadline"
+
+
+def _foreign_sleep_waiter(self: _SettlementState, waiter: Any, deadline: float) -> bool:
+    if self.foreign_sleeps is None:
+        sleeps: set[Any] = set()
+        for handle in getattr(self.loop, "_scheduled", ()):
+            if handle.cancelled() or handle.when() <= deadline:
+                continue
+            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
+            if getattr(callback, "__name__", "") == "_set_result_unless_cancelled":
+                sleeps.update(arg for arg in getattr(handle, "_args", ()) if isinstance(arg, asyncio.Future))
+        object.__setattr__(self, "foreign_sleeps", sleeps)
+    return waiter in self.foreign_sleeps
 
 
 def _settle_timeout_message(
@@ -287,9 +342,12 @@ def _settle_timeout_message(
 
 
 def _next_virtual_timer(self: _SettlementState) -> float | None:
-    times = [
-        record.when
-        for record in self.work.callbacks
-        if record.when is not None and record.handle is not None and not record.handle.cancelled()
-    ]
-    return min(times) if times else None
+    while self.work.timers:
+        when, key = self.work.timers[0]
+        record = self.work.callbacks.get(key)
+        if record is not None and record.handle is not None and not record.handle.cancelled():
+            return when
+        heapq.heappop(self.work.timers)
+        if record is not None:
+            self.work.retire(record)
+    return None

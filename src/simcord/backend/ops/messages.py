@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from typing import Any
 
 from ...components import (
+    COMPONENTS_V2_FLAG,
     ComponentValidationError,
     component_mentions,
     merge_edit_flags,
+    validate_components,
+    validate_message_fields,
     validate_message_state,
 )
 from ...enums import ChannelType, MessageType
@@ -70,6 +74,10 @@ _SYSTEM_CONTENT = {
 
 def _component_error(exc: ComponentValidationError) -> errors.BackendError:
     return errors.invalid_form_body(str(exc))
+
+
+class _PreparedEdit(dict[str, Any]):
+    """Private owned fields whose component normalization is already complete."""
 
 
 class MessageMixin(BackendBase):
@@ -203,9 +211,9 @@ class MessageMixin(BackendBase):
             ),
             flags=int(flags),
             tts=tts,
-            embeds=list(embed_value),
+            embeds=deepcopy(embed_value),
             components=normalized_components,
-            attachments=list(attachments or []),
+            attachments=deepcopy(attachments or []),
             stickers=list(sticker_value),
             allowed_mentions=mention_policy,
             ping_user_ids=ping_users,
@@ -217,7 +225,7 @@ class MessageMixin(BackendBase):
             snapshots=snapshots,
             reply_author_id=reply_author_id,
             reply_author_interaction=reply_author_interaction,
-            interaction_metadata=interaction_metadata,
+            interaction_metadata=deepcopy(interaction_metadata),
             webhook_id=webhook_id,
             author_name=author_name,
             author_avatar=author_avatar,
@@ -238,7 +246,14 @@ class MessageMixin(BackendBase):
                 author_id=message.author_id,
                 content=message.content,
             )
+        previous = self.messages[channel.id].get(message.id)
+        if previous is not None:
+            self._index_message(previous, remove=True)
         self.messages[channel.id][message.id] = message
+        self._index_message(message)
+        if message.id not in self._message_order:
+            self._message_order[message.id] = self._registration_order()
+        self._schedule_poll(message)
         channel.last_message_id = message.id
         if channel.is_thread:
             channel.message_count += 1
@@ -468,7 +483,7 @@ class MessageMixin(BackendBase):
                 int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
             )
             flags = merge_edit_flags(message.flags, requested_flags)
-            normalized_components = validate_message_state(
+            validate_message_fields(
                 [] if components is None else components,
                 flags=flags,
                 content=content,
@@ -477,6 +492,11 @@ class MessageMixin(BackendBase):
                 stickers=message.stickers,
                 previous_flags=message.flags,
             )
+            normalized_components = [] if components is None else components
+            if not isinstance(fields, _PreparedEdit) and (
+                "components" in fields or (flags ^ message.flags) & COMPONENTS_V2_FLAG
+            ):
+                normalized_components = validate_components(normalized_components, flags=flags)
         except (ComponentValidationError, TypeError, ValueError) as exc:
             raise _component_error(
                 exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
@@ -491,6 +511,7 @@ class MessageMixin(BackendBase):
             record = self.interactions.get(int(message.interaction_metadata["id"]))
             if record is not None and record.message_id == message.id and record.loading:
                 record.complete_deferred()
+        self._index_message(message, remove=True)
         message.content = content_value
         message.embeds = list(embeds or [])
         message.components = normalized_components
@@ -504,6 +525,8 @@ class MessageMixin(BackendBase):
         message.mention_role_ids = mention_roles
         message.mention_everyone = mention_everyone
         message.edited_timestamp = self.now_iso()
+        self._index_message(message)
+        self._schedule_poll(message)
         if not message.is_ephemeral:
             self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
@@ -523,7 +546,10 @@ class MessageMixin(BackendBase):
 
     def delete_message(self, channel_id: int, message_id: int) -> None:
         message = self.get_message(channel_id, message_id)
+        self._index_message(message, remove=True)
+        self._poll_deadlines.set((channel_id, message_id), None, ())
         del self.messages[channel_id][message_id]
+        self._message_order.pop(message_id, None)
         channel = self.get_channel(channel_id)
         payload: dict[str, Any] = {"id": str(message_id), "channel_id": str(channel_id)}
         if channel.guild_id is not None:
@@ -540,7 +566,14 @@ class MessageMixin(BackendBase):
         """
         channel = self.get_channel(channel_id)
         store = self.messages.get(channel_id, {})
-        deleted = [mid for mid in message_ids if store.pop(mid, None) is not None]
+        deleted = []
+        for mid in message_ids:
+            message = store.pop(mid, None)
+            if message is not None:
+                self._index_message(message, remove=True)
+                self._poll_deadlines.set((channel_id, mid), None, ())
+                self._message_order.pop(mid, None)
+                deleted.append(mid)
         payload: dict[str, Any] = {
             "ids": [str(mid) for mid in deleted],
             "channel_id": str(channel_id),
@@ -556,7 +589,9 @@ class MessageMixin(BackendBase):
         message = self.get_message(channel_id, message_id)
         if message.pinned == pinned:
             return
+        self._index_message(message, remove=True)
         message.pinned = pinned
+        self._index_message(message)
         channel = self.get_channel(channel_id)
         payload: dict[str, Any] = {"channel_id": str(channel_id), "last_pin_timestamp": self.now_iso()}
         if channel.guild_id is not None:

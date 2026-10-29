@@ -170,7 +170,9 @@ def is_listener_future(client: discord.Client, waiter: Any) -> bool:
     return any(future is waiter and not future.done() for future in listener_futures(client))
 
 
-def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
+def _listener_wait_for_frame(
+    client: discord.Client, task: asyncio.Task[Any], listeners: set[Any] | None = None
+) -> bool:  # pragma: no cover
     """True when the task's coroutine stack runs ``asyncio.wait_for`` on a listener."""
     wait_for_code = getattr(asyncio.wait_for, "__code__", None)
     if wait_for_code is None:
@@ -181,39 +183,58 @@ def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) ->
         seen.add(id(coroutine))
         frame = getattr(coroutine, "cr_frame", None)
         if frame is not None and frame.f_code is wait_for_code:
-            if is_listener_future(client, frame.f_locals.get("fut")):
+            future = frame.f_locals.get("fut")
+            if (
+                is_listener_future(client, future)
+                if listeners is None
+                else future in listeners and not future.done()
+            ):
                 return True
         coroutine = getattr(coroutine, "cr_await", None)
     return False
 
 
-def is_wait_for_listener(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
+def is_wait_for_listener(
+    client: discord.Client, task: asyncio.Task[Any], listeners: set[Any] | None = None
+) -> bool:  # pragma: no cover
     """Recognize the CPython 3.11 ``wait_for`` wrapper around a listener future."""
     if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
         return False
-    return _listener_wait_for_frame(client, task)
+    return _listener_wait_for_frame(client, task, listeners)
+
+
+def _stored_view_facts(client: discord.Client) -> tuple[set[Any], set[Any]]:
+    store = getattr(get_state(client), "_view_store", None)
+    futures: set[Any] = set()
+    tasks: set[Any] = set()
+    if store is None:
+        return futures, tasks
+    views = {
+        id(view): view
+        for entries in getattr(store, "_views", {}).values()
+        for item in entries.values()
+        if (view := getattr(item, "_view", None)) is not None
+    }
+    views.update((id(view), view) for view in getattr(store, "_modals", {}).values())
+    for view in views.values():
+        values = vars(view)
+        stopped = [
+            value
+            for name, value in values.items()
+            if name.endswith("__stopped") and isinstance(value, asyncio.Future)
+        ]
+        futures.update(stopped)
+        if not any(future.done() for future in stopped):
+            tasks.update(
+                value
+                for name, value in values.items()
+                if name.endswith("__timeout_task") and value is not None
+            )
+    return futures, tasks
 
 
 def _stored_wait_futures(client: discord.Client) -> set[Any]:
-    state = get_state(client)
-    store = getattr(state, "_view_store", None)
-    futures: set[Any] = set()
-    if store is None:
-        return futures
-    views = getattr(store, "_views", {})
-    for entries in views.values():
-        for item in entries.values():
-            view = getattr(item, "_view", None)
-            if view is None:
-                continue
-            for name, value in vars(view).items():
-                if name.endswith("__stopped") and isinstance(value, asyncio.Future):
-                    futures.add(value)
-    for modal in getattr(store, "_modals", {}).values():
-        for name, value in vars(modal).items():
-            if name.endswith("__stopped") and isinstance(value, asyncio.Future):
-                futures.add(value)
-    return futures
+    return _stored_view_facts(client)[0]
 
 
 def is_view_wait_future(client: discord.Client, waiter: Any) -> bool:
@@ -251,7 +272,9 @@ def is_wakeup_callback(callback: Any, args: tuple[Any, ...], waiter: Any, task: 
     )
 
 
-def _view_timeout_task_identity(client: discord.Client, task: asyncio.Task[Any]) -> bool:
+def _view_timeout_task_identity(
+    client: discord.Client, task: asyncio.Task[Any], expiry_tasks: set[Any] | None = None
+) -> bool:
     """True when task is a registered View/Modal's expiry task."""
     coro = task.get_coro()
     impl = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
@@ -262,31 +285,16 @@ def _view_timeout_task_identity(client: discord.Client, task: asyncio.Task[Any])
                 if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
                     return False
             return True
-    store = getattr(get_state(client), "_view_store", None)
-    if store is None:
-        return False
-    candidates = [
-        getattr(item, "_view", None)
-        for entries in getattr(store, "_views", {}).values()
-        for item in entries.values()
-    ]
-    candidates.extend(getattr(store, "_modals", {}).values())
-    for view in candidates:
-        if view is None:
-            continue
-        for name, value in vars(view).items():
-            if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
-                break
-            if name.endswith("__timeout_task") and value is task:
-                return True
-    return False
+    return task in (_stored_view_facts(client)[1] if expiry_tasks is None else expiry_tasks)
 
 
-def view_expiry_task(client: discord.Client, task: asyncio.Task[Any], waiter: Any) -> bool:
+def view_expiry_task(
+    client: discord.Client, task: asyncio.Task[Any], waiter: Any, expiry_tasks: set[Any] | None = None
+) -> bool:
     """True while task is a store-registered View/Modal expiry task suspended on its timer."""
     if waiter is None or waiter.done():
         return False
-    return _view_timeout_task_identity(client, task)
+    return _view_timeout_task_identity(client, task, expiry_tasks)
 
 
 def _tasks_loop_self(task: asyncio.Task[Any]) -> Any:

@@ -97,14 +97,16 @@ class MemberActor:
                 "message_id": str(reply_to.id),
             }
             reference = backend.normalize_message_reference(channel.id, reference)
-        attachment_payloads = backend.store_attachments(channel.id, attachments)
-        message = backend.create_message(
+        uploads = backend.stage_attachments(channel.id, attachments)
+        message = backend.prepare_message(
             channel.id,
             self.id,
             content,
             reference=reference,
-            attachments=attachment_payloads,
+            attachments=[attachment for attachment, _ in uploads],
         )
+        backend.cdn.install_attachments(uploads)
+        message = backend.commit_message(message)
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.send")
         return to_discord_message(self._env, message)

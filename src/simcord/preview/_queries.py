@@ -425,7 +425,6 @@ def _message_position(value: list[str]) -> tuple[int]:
 def _message_navigation(
     preview: Preview,
     page: _Page,
-    visible: list[Message],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not can_access_channel(preview.env, page.channel_id, page.viewer, history=True):
         return [], {
@@ -464,9 +463,54 @@ def _message_navigation(
         }
 
     channel = preview.env.backend.get_channel(page.channel_id)
+    backend = preview.env.backend
+    if not query:
+        state = _read_cursor(page, cursor, "messages:all", query, "message-id", 1)
+        direction = state["direction"] if state is not None else None
+        pivot = _message_position(state["position"])[0] if state is not None else None
+        messages = backend.select_messages(
+            page.channel_id,
+            viewer_id=page.viewer.id,
+            before=pivot if direction == "before" else None,
+            after=pivot if direction == "after" else None,
+            newest_first=direction == "before",
+            limit=QUERY_PAGE_SIZE + 1,
+        )[:QUERY_PAGE_SIZE]
+        if direction == "before":
+            messages.reverse()
+        has_previous = bool(messages) and bool(
+            backend.select_messages(page.channel_id, viewer_id=page.viewer.id, before=messages[0].id, limit=1)
+        )
+        has_next = bool(messages) and bool(
+            backend.select_messages(page.channel_id, viewer_id=page.viewer.id, after=messages[-1].id, limit=1)
+        )
+        return (
+            [
+                _message_summary(
+                    preview, page, message, _message_summary_parts(preview, page, message, channel)
+                )
+                for message in messages
+            ],
+            {
+                "query": query,
+                "filter": "all",
+                "hasPrevious": has_previous,
+                "hasNext": has_next,
+                "previousCursor": _make_cursor(
+                    page, "messages:all", query, "message-id", "before", (messages[0].id,)
+                )
+                if has_previous
+                else None,
+                "nextCursor": _make_cursor(
+                    page, "messages:all", query, "message-id", "after", (messages[-1].id,)
+                )
+                if has_next
+                else None,
+            },
+        )
 
     def source() -> Iterable[dict[str, Any]]:
-        for message in visible:
+        for message in backend.iter_messages(page.channel_id, viewer_id=page.viewer.id):
             parts = _message_summary_parts(preview, page, message, channel)
             if _summary_matches(parts, message, query):
                 yield {"message": message, "parts": parts}

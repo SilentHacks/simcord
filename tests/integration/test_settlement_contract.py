@@ -1376,3 +1376,75 @@ async def test_framework_lifecycle_waits_require_independent_declarations(
         await env.settle()
         assert finalized == ["lifecycle"]
         assert channel.last_message.content == "framework completed"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_native_timer_retires_fallback_and_wakeup_links():
+    async with simcord.run(create_bot()) as env:
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        with env._bot_scope():
+            handle = loop.call_later(3600, asyncio.futures._set_result_unless_cancelled, waiter, None)
+        record = next(record for record in env._work.callbacks.values() if record.handle is handle)
+        fallback = record.real_handle
+        assert isinstance(handle, asyncio.TimerHandle)
+        assert fallback is not None
+        handle.cancel()
+        await env.settle()
+        assert fallback.cancelled()
+        assert record.key not in env._work.callbacks
+        assert waiter not in env._work.wakes
+        await env.advance_time(3600)
+        assert not waiter.done()
+
+
+@pytest.mark.asyncio
+async def test_shared_composition_dependency_is_not_a_cycle():
+    bot = create_bot()
+
+    @bot.listen("on_message")
+    async def armed(message: discord.Message) -> None:
+        if message.content != "arm":
+            return
+        shared = asyncio.create_task(bot.wait_for("message", check=lambda item: item.content == "fire"))
+
+        async def branch() -> str:
+            return (await asyncio.shield(shared)).content
+
+        values = await asyncio.gather(branch(), branch())
+        await message.channel.send("/".join(values))
+
+    async with simcord.run(bot, settle_timeout=0.5) as env:
+        guild = env.create_guild()
+        actor = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        await actor.send(channel, "arm")
+        assert channel.last_message.content == "arm"
+        await actor.send(channel, "fire")
+        assert channel.last_message.content == "fire/fire"
+
+
+@pytest.mark.asyncio
+async def test_callback_chain_and_staggered_timers_settle_without_lost_progress():
+    async with simcord.run(create_bot(), settle_timeout=2) as env:
+        loop = asyncio.get_running_loop()
+        seen: list[tuple[int, Any]] = []
+        start = env.now()
+
+        def follow(index: int) -> None:
+            seen.append((index, env.now()))
+            if index < 100:
+                loop.call_soon(follow, index + 1)
+
+        with env._bot_scope():
+            loop.call_soon(follow, 0)
+        await env.settle(idle=1)
+        assert [index for index, _ in seen] == list(range(101))
+        assert all(instant == start for _, instant in seen)
+        seen.clear()
+        with env._bot_scope():
+            for index in range(1, 101):
+                loop.call_later(index, lambda index=index: seen.append((index, env.now())))
+        await env.advance_time(100)
+        assert [index for index, _ in seen] == list(range(1, 101))
+        assert [(instant - start).total_seconds() for _, instant in seen] == list(range(1, 101))

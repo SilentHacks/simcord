@@ -1,58 +1,71 @@
 ---
 title: "Performance"
-description: "Why SimCord is fast — the in-memory hot path, indicative numbers, and the CI guard that keeps it that way."
+description: "Measure complete simulation operations, CPU, latency and scaling without sacrificing deterministic completion."
 ---
 
 # Performance
 
-SimCord's value proposition is that bot tests run **fast and offline**: no network,
-no real gateway, no sleeps. This page makes that concrete and explains the guard
-that keeps it true.
+SimCord runs offline: REST requests are routed in memory and gateway payloads
+enter real discord.py parsers. No Discord socket, token, network retry or backoff
+is involved. This removes network latency; it does not make every complete bot
+operation a constant-time dictionary lookup.
 
-## Why it is fast
+## Measure the operation the test actually performs
 
-A REST call a bot makes never leaves the process. `discord.py`'s HTTP client is
-replaced by an in-memory transport that calls a synchronous router, which mutates
-a plain-dictionary backend and serialises the reply — no sockets, no event loop
-hop, no retry/backoff. The whole request hot path is `router.dispatch(backend, ...)`.
+An actor operation includes bot callbacks and settlement. A bare REST dispatch
+benchmark excludes that work. Likewise, returning all history must materialize
+all requested messages, while `last_message` should select and materialize only
+the final visible message.
 
-## Indicative numbers
-
-Measured on the benchmark suite (`benchmarks/`, run with `pytest-benchmark`). These
-are order-of-magnitude figures on a developer laptop — your machine will differ,
-but the shape (microseconds per call, well under a millisecond to spin up an `Env`)
-holds:
-
-| Operation | Median |
-| --- | --- |
-| Send a message (`POST .../messages`) | ~40 µs |
-| Edit a message (`PATCH .../messages/{id}`) | ~25 µs |
-| Read 50 messages of history | ~175 µs |
-| Full `async with simcord.run(bot)` setup + teardown | <1 ms |
-
-Reproduce them yourself:
+The reported suite covers synchronous send/edit/history and full empty Env
+setup/teardown. `test_simulation_benchmarks.py` adds complete public scenarios:
+callback bursts beside parked timers, repeated settlement of live Views, and
+staggered virtual callbacks. Those scenario timings **include world setup and
+teardown**; do not compare them with bare dispatch as if the scopes were equal.
 
 ```bash
 uv run --extra bench pytest benchmarks --benchmark-only
+uv run --extra bench pytest benchmarks --benchmark-json=benchmark.json
 ```
 
-`--benchmark-only` reports the numbers above; dropping it also runs the CI
-performance gate (`test_perf_guards.py`, described below), which is what the
-`benchmark` CI job does.
+The second command also runs the existing catastrophe/scaling guards. CI uploads
+the JSON as a trend artifact. Results depend on Python, discord.py, machine,
+fixture sizes, and the bot's work; there is no universal sub-millisecond Env
+startup or actor-operation guarantee.
 
-## How the guard works
+## Compare changes honestly
 
-Wall-clock benchmarks are noisy on shared CI runners, so the build is **not** gated
-on a percentage regression against a committed baseline (that proved too flaky).
-Instead two robust checks run in CI (`benchmarks/test_perf_guards.py`):
+- Freeze the complete reference source and dependency environment. Confirm which
+  source tree each worker imports, especially with editable installations.
+- Use equivalent seeded worlds and completed outputs. Reset mutable fixtures
+  between samples rather than letting messages accumulate unnoticed.
+- Separate cold import, setup, steady-state operations and teardown. Include
+  end-to-end scenarios as well as focused diagnostic probes.
+- Report wall-clock latency and process CPU separately using `perf_counter()`
+  and `process_time()`. SDK-selected monotonic clocks can be virtualized.
+- Repeat reference/candidate runs on the same host; preserve raw samples and
+  report uncertainty. Small differences on noisy shared runners are inconclusive.
+- Profile separately. cProfile's cumulative times overlap and its instrumentation
+  amplifies Python-loop costs; do not add nested times or treat them as unprofiled
+  speedup measurements. Collect allocation profiles separately too.
+- Measure small worlds, writes, deletion/cancellation churn and retained memory,
+  not only large read-side wins. Indexes exchange extra write work and memory for
+  bounded selection and scheduling.
 
-- **A generous absolute budget** — a single send dispatch must stay far under
-  5 ms. In-memory dispatch is microseconds, so this only trips on a *catastrophe*:
-  a real network call sneaking in, or an accidental quadratic blow-up.
-- **A same-run scaling ratio** — sending a message into a 10,000-message channel
-  must not be meaningfully slower than into a 100-message one. Comparing the two
-  *in the same run* cancels out runner speed, so an algorithmic regression (a hot
-  path that grows with world size) is caught without a brittle absolute number.
+## What remains real work
 
-The raw benchmark JSON is uploaded as a CI artifact on every run, so trends are
-visible over time without gating on them.
+Settlement joins runnable bot-owned work and actual executor completion. Timeout
+values are ceilings, not fixed sleeps; reducing them can change which work is
+joined or fail an operation rather than optimize its CPU cost. Declared external
+waits and recognized SDK waits retain their virtual-time behavior.
+
+Full-history reads and semantically exact text search remain proportional to
+eligible input/output. Preview's default navigation should select bounded rows
+before projecting them; text search still honors rendered labels, spoilers,
+Unicode and authorization. Required detached request-log, gateway and returned
+SDK payload copies protect isolation and must not be removed to improve a score.
+
+The synchronous send guards retain a generous absolute budget and compare send
+latency in 100- and 10,000-message channels. They are useful catastrophe guards,
+not proof that timer settlement, projections, memory or every end-to-end operation
+is fast. Behavioral/conformance checks must pass alongside performance evidence.

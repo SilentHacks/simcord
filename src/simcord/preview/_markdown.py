@@ -156,7 +156,7 @@ def _append_token(token: Any) -> dict[str, Any] | None:
     return None
 
 
-def _markdown_parser(policy: Mapping[str, bool | str], context: Mapping[str, Any]) -> Any:
+def _markdown_parser(policy: Mapping[str, bool | str]) -> Any:
     from markdown_it import MarkdownIt
 
     parser = MarkdownIt(
@@ -186,6 +186,7 @@ def _markdown_parser(policy: Mapping[str, bool | str], context: Mapping[str, Any
     def semantic_rule(state: Any, silent: bool) -> bool:
         if state.src[state.pos] not in "<@":
             return False
+        context = state.env.get("context") or {}
         match = _TIMESTAMP.match(state.src, state.pos) if policy["timestamps"] else None
         if match:
             if not silent:
@@ -456,6 +457,7 @@ def markdown_tokens(
     profile: str = "message",
     *,
     context: Mapping[str, Any] | None = None,
+    parsers: dict[tuple[bool | str, ...], Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return field-policy-specific safe tokens; references resolve only in context."""
     if value is None:
@@ -467,7 +469,14 @@ def markdown_tokens(
     if policy["mode"] == "plain":
         return [{"type": "inline", "children": [_text_token(text)]}]
     try:
-        parser = _markdown_parser(policy, context or {})
+        key = tuple(policy.values())
+        if parsers is None and context is not None:
+            parsers = context.get("_parsers")
+        parser = parsers.get(key) if parsers is not None else None
+        if parser is None:
+            parser = _markdown_parser(policy)
+            if parsers is not None:
+                parsers[key] = parser
     except ImportError:
         return [{"type": "inline", "children": [_text_token(text)]}]
     semantic_context = context or {}

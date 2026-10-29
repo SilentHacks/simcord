@@ -1963,6 +1963,7 @@ version = "3.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "discord-py" },
+    { name = "sortedcontainers" },
 ]
 
 [package.optional-dependencies]
@@ -2045,6 +2046,7 @@ requires-dist = [
     { name = "regex", marker = "extra == 'preview'", specifier = ">=2024.11.6" },
     { name = "regex", marker = "extra == 'screenshot'", specifier = ">=2024.11.6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
+    { name = "sortedcontainers", specifier = ">=2.4,<3" },
     { name = "towncrier", marker = "extra == 'dev'", specifier = ">=24" },
 ]
 provides-extras = ["pytest", "preview", "screenshot", "dev", "docs", "bench"]

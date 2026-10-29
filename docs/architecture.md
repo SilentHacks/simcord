@@ -75,6 +75,11 @@ below Env-bound viewer adapters; bot, human, fixture and token authority remain
 distinct. Compound Backend mutations validate all inputs before committing model
 state and gateway events; HTTP routes retain caller, reason and audit context.
 
+Backend-owned ordered identity indexes serve bounded message reads, while
+resource scheduling tracks actionable poll, event and entitlement deadlines
+rather than scanning historical state. Canonical mutations update derived indexes
+before publishing events. Indexes never replace the authoritative models.
+
 ## Optional browser presentation
 
 `Env.preview(...)` adds a local presentation layer above the same backend; it is not another

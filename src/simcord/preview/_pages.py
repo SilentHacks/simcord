@@ -254,17 +254,13 @@ class _PageOps:
     def _initial_target(self, viewer: Any, channel_id: int) -> int | None:
         if not can_access_channel(self.env, channel_id, viewer, history=True):
             return None
-        messages = self.env.backend.messages.get(channel_id, {})
-        visible = [
-            item
-            for item in messages.values()
-            if can_access_message(self.env, channel_id, item, viewer, history=True)
-        ]
-        bot_id = self.env.backend.bot_user.id
-        bot_messages = [item for item in visible if item.author_id == bot_id]
-        return (
-            max(bot_messages or visible, key=lambda item: item.id).id if (bot_messages or visible) else None
-        )
+        newest = None
+        for message in self.env.backend.iter_messages(channel_id, viewer_id=viewer.id, newest_first=True):
+            if newest is None:
+                newest = message.id
+            if message.author_id == self.env.backend.bot_user.id:
+                return message.id
+        return newest
 
     def _viewer(self, viewer_id: Any) -> Any:
         """Resolve a requested viewer from the preview's explicit allowlist."""

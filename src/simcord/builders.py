@@ -240,17 +240,19 @@ class WebhookHandle:
         chosen = [embed] if embed is not None else embeds
         embed_dicts: list[dict[str, Any]] = [dict(e.to_dict()) for e in chosen]
         backend = self._env.backend
-        attachment_payloads = backend.store_attachments(self.channel_id, attachments)
-        message = backend.create_message(
+        uploads = backend.stage_attachments(self.channel_id, attachments)
+        message = backend.prepare_message(
             self.channel_id,
             self._webhook.webhook_user_id,
             content,
             embeds=embed_dicts,
-            attachments=attachment_payloads,
+            attachments=[attachment for attachment, _ in uploads],
             webhook_id=self._webhook.id,
             author_name=username,
             author_avatar=avatar_url,
         )
+        backend.cdn.install_attachments(uploads)
+        message = backend.commit_message(message)
         await self._env._settle_internal(dispatch="WEBHOOK.send")
         return to_discord_message(self._env, message)
 
@@ -656,21 +658,22 @@ class ChannelHandle:
             _require_handle(self._env, viewer, guild_id=self.guild.id if self.guild else None)
             if not can_access_channel(self._env, self.id, viewer, history=True):
                 raise SetupError("That viewer cannot read this channel's history")
-        out = []
         viewer_id = viewer.id if viewer is not None else None
-        for message in sorted(self._env.backend.messages.get(self.id, {}).values(), key=lambda m: m.id):
-            if not message.visible_to(viewer_id):
-                continue
-            out.append(to_discord_message(self._env, message))
-        return out
+        return [
+            to_discord_message(self._env, message)
+            for message in self._env.backend.iter_messages(self.id, viewer_id=viewer_id)
+        ]
 
     @property
     def last_message(self) -> discord.Message | None:
-        history = self.history()
-        return history[-1] if history else None
+        messages = self._env.backend.select_messages(self.id, newest_first=True, limit=1)
+        return to_discord_message(self._env, messages[0]) if messages else None
 
     def pinned_messages(self) -> list[discord.Message]:
-        return [m for m in self.history() if m.pinned]
+        return [
+            to_discord_message(self._env, message)
+            for message in self._env.backend.iter_messages(self.id, pinned=True)
+        ]
 
     def __repr__(self) -> str:
         return f"<ChannelHandle id={self.id} name={self.name!r}>"

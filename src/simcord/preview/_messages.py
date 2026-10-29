@@ -705,6 +705,7 @@ def _markdown_context(
                 commands.setdefault(str(command_id), name)
 
     return {
+        "_parsers": preview._markdown_parsers,
         "users": users,
         "roles": roles,
         "channels": channels,
