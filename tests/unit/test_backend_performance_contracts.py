@@ -309,6 +309,56 @@ def test_shared_poll_state_does_not_leave_a_finalized_deadline_live():
     assert backend.next_poll_deadline() is None
 
 
+@pytest.mark.parametrize("expiry", ["explicit", "late_vote", "http"])
+@pytest.mark.parametrize("subscriber_failure", [False, True])
+def test_explicit_shared_poll_expiry_retires_aliases_before_update(expiry, subscriber_failure):
+    backend, guild, channel = _world()
+    other_channel = backend.create_channel(guild.id, "alias")
+    poll = Poll("Question", [PollAnswer(1, "Yes")], backend.iso_after(1))
+    first = backend.create_message(channel.id, backend.bot_user.id, poll=poll)
+    second = backend.create_message(other_channel.id, backend.bot_user.id, poll=poll)
+    updates = []
+
+    def observe(event, payload):
+        if event == "MESSAGE_UPDATE":
+            updates.append(int(payload["id"]))
+            assert first.poll is second.poll is poll
+            assert poll.finalized
+            assert backend.next_poll_deadline() is None
+            if subscriber_failure:
+                raise RuntimeError("subscriber")
+
+    backend.subscribers.append(observe)
+    if expiry == "late_vote":
+        backend.advance_clock(2)
+
+    def expire():
+        if expiry == "late_vote":
+            backend.set_poll_votes(channel.id, first.id, [1], backend.bot_user.id)
+        elif expiry == "http":
+            response = router.dispatch(backend, "POST", f"/channels/{channel.id}/polls/{first.id}/expire")
+            assert response["poll"]["results"]["is_finalized"]
+        else:
+            assert backend.expire_poll(channel.id, first.id) is first
+
+    if subscriber_failure:
+        with pytest.raises(RuntimeError, match="subscriber"):
+            expire()
+    elif expiry == "late_vote":
+        with pytest.raises(BackendError, match="poll is finalized"):
+            expire()
+    else:
+        expire()
+    assert first.poll is second.poll is poll
+    assert poll.finalized
+    assert not poll.votes
+    assert backend.next_poll_deadline() is None
+    assert backend.expire_poll(other_channel.id, second.id) is second
+    assert backend.expire_poll(channel.id, first.id) is first
+    backend.expire_due_polls()
+    assert updates == [first.id]
+
+
 @pytest.mark.parametrize(
     ("kinds", "error"),
     [(("aware", "naive", "invalid"), TypeError), (("aware", "invalid", "naive"), ValueError)],

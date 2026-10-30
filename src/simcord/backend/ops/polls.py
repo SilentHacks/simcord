@@ -88,11 +88,21 @@ class PollMixin(BackendBase):
 
     def expire_poll(self, channel_id: int, message_id: int) -> Message:
         message = self.get_message(channel_id, message_id)
-        if message.poll is not None and not message.poll.finalized:
-            message.poll.finalized = True
-            self._schedule_poll(message)
-            self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
+        poll = message.poll
+        if poll is not None and not poll.finalized:
+            # ponytail: O(history) on explicit expiry; index aliases only if this becomes hot.
+            for messages in self.messages.values():
+                for alias in messages.values():
+                    if alias.poll is poll:
+                        self._poll_deadlines.set((alias.channel_id, alias.id), None, ())
+            self._finalize_poll(message)
         return message
+
+    def _finalize_poll(self, message: Message) -> None:
+        assert message.poll is not None
+        message.poll.finalized = True
+        self._schedule_poll(message)
+        self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
 
     def next_poll_deadline(self) -> datetime.datetime | None:
         return self._poll_deadlines.next()
@@ -107,4 +117,4 @@ class PollMixin(BackendBase):
                     self._poll_deadlines.set((channel_id, message_id), None, ())
                     continue
                 if datetime.datetime.fromisoformat(message.poll.expiry) <= now:
-                    self.expire_poll(channel_id, message_id)
+                    self._finalize_poll(message)

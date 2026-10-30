@@ -1,0 +1,1 @@
+Retire all live message deadlines before publishing explicit finalization of a shared backend Poll, including when a subscriber raises. Keep automatic Poll expiry index-driven without an additional alias index.
