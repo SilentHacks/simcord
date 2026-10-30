@@ -458,21 +458,6 @@ async def test_callback_fire_time_reports_real_and_virtual_states(env: Any) -> N
     assert _settlement._callback_fire_time(env._settlement_state(), cancelled) == math.inf
 
 
-async def test_is_virtual_sleep_waiter_filters_records(env: Any) -> None:
-    waiter: asyncio.Future[Any] = asyncio.Future()
-    assert not _settlement._is_virtual_sleep_waiter(env._settlement_state(), None, 5.0)
-    done: asyncio.Future[Any] = asyncio.Future()
-    done.set_result(None)
-    assert not _settlement._is_virtual_sleep_waiter(env._settlement_state(), done, 5.0)
-
-    _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
-    assert _settlement._is_virtual_sleep_waiter(env._settlement_state(), waiter, 5.0)
-
-    in_deadline = _record(env, _set_result_unless_cancelled, (asyncio.Future(),), 1.0)
-    in_deadline.real_handle = in_deadline.handle
-    assert not _settlement._is_virtual_sleep_waiter(env._settlement_state(), asyncio.Future(), 5.0)
-
-
 async def test_park_reason_names_recognized_waits(env: Any) -> None:
     task = _parked_task(asyncio.Future())
     assert _settlement._park_reason(env._settlement_state(), task, 5.0) is None

@@ -2,7 +2,10 @@
 
 import asyncio
 import contextvars
+import gc
+import sys
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -11,19 +14,23 @@ import simcord
 from fixtures.sample_bot import create_bot
 
 
-async def test_actor_joins_callback_invoked_before_worker_publishes_handle():
+async def test_actor_joins_callback_invoked_before_worker_publishes_handle(request):
     bot = create_bot()
     loop = asyncio.get_running_loop()
     invoked = asyncio.Event()
     effects = []
     native_done = threading.Event()
+    handles = []
+    if sys.implementation.name == "cpython" and gc.isenabled():
+        gc.disable()
+        request.addfinalizer(gc.enable)
 
     def callback():
         effects.append("callback")
         invoked.set()
 
     def worker():
-        loop.call_soon_threadsafe(callback)
+        handles.append(weakref.ref(loop.call_soon_threadsafe(callback)))
         effects.append("native")
         native_done.set()
 
@@ -51,6 +58,8 @@ async def test_actor_joins_callback_invoked_before_worker_publishes_handle():
         assert native_done.is_set()
         assert channel.last_message.content == "published"
         assert not env.errors
+        if sys.implementation.name == "cpython":
+            assert handles and handles[0]() is None
 
 
 @pytest.mark.parametrize("fail", [False, True])

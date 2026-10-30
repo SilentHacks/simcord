@@ -245,6 +245,7 @@ class _WorkState:
 
     def retire(self, record: _CallbackRecord) -> None:
         with self._callback_lock:
+            record.handle = None
             if record.real_handle is not None:
                 record.real_handle.cancel()
                 record.real_handle = None
@@ -443,8 +444,8 @@ def _track_callback(
         schedule_timer(record, callback, args, schedule_context)
 
     with work._callback_lock:
-        record.handle = handle
         if not called:
+            record.handle = handle
             work.register(record, callback, args)
     return handle
 

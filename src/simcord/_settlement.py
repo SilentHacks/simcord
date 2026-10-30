@@ -33,7 +33,7 @@ class _SettlementState:
     _view_facts: tuple[set[Any], set[Any]] | None = field(init=False, default=None)
     reasons: dict[Any, str | None] = field(default_factory=dict)
     visiting: set[Any] = field(default_factory=set)
-    foreign_sleeps: set[Any] | None = None
+    foreign_sleeps: dict[Any, float] | None = None
 
     @property
     def listeners(self) -> set[Any]:
@@ -109,19 +109,38 @@ def _callback_fire_time(self: _SettlementState, record: _CallbackRecord) -> floa
     return real.when()
 
 
-def _is_virtual_sleep_waiter(self: _SettlementState, waiter: Any, deadline: float) -> bool:
+def _sleep_waiter_beyond_deadline(self: _SettlementState, waiter: Any, deadline: float) -> bool:
     if waiter is None or waiter.done():
         return False
+    sleeps = self.foreign_sleeps
+    if sleeps is None:
+        sleeps = {}
+        for handle in getattr(self.loop, "_scheduled", ()):
+            args = getattr(handle, "_args", ())
+            if not args or handle.cancelled():
+                continue
+            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
+            if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and isinstance(
+                args[0], asyncio.Future
+            ):
+                target = args[0]
+                sleeps[target] = min(sleeps.get(target, math.inf), handle.when())
+        object.__setattr__(self, "foreign_sleeps", sleeps)
+    fire_time = sleeps.get(waiter)
     with self.work._callback_lock:
         records = tuple(self.work.wakes.get(waiter, {}).values())
     for record in records:
         handle = record.handle
-        if handle is None or handle.cancelled() or _callback_fire_time(self, record) <= deadline:
+        if handle is None or handle.cancelled():
+            continue
+        args = getattr(handle, "_args", ())
+        if not args or args[0] is not waiter:
             continue
         callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
         if getattr(callback, "__name__", "") == "_set_result_unless_cancelled":
-            return True
-    return False
+            when = _callback_fire_time(self, record)
+            fire_time = when if fire_time is None else min(fire_time, when)
+    return fire_time is not None and fire_time > deadline
 
 
 def _timer_records_waking(
@@ -285,21 +304,8 @@ def _compute_park_reason(self: _SettlementState, task: asyncio.Task[Any], deadli
         else:
             if reasons and all(reason is not None for reason in reasons):
                 return "composed external wait"
-    if _is_virtual_sleep_waiter(self, waiter, deadline) or _foreign_sleep_waiter(self, waiter, deadline):
+    if _sleep_waiter_beyond_deadline(self, waiter, deadline):
         return "sleep timer beyond settlement deadline"
-
-
-def _foreign_sleep_waiter(self: _SettlementState, waiter: Any, deadline: float) -> bool:
-    if self.foreign_sleeps is None:
-        sleeps: set[Any] = set()
-        for handle in getattr(self.loop, "_scheduled", ()):
-            if handle.cancelled() or handle.when() <= deadline:
-                continue
-            callback = _dpy_internals._original_callback(getattr(handle, "_callback", None))
-            if getattr(callback, "__name__", "") == "_set_result_unless_cancelled":
-                sleeps.update(arg for arg in getattr(handle, "_args", ()) if isinstance(arg, asyncio.Future))
-        object.__setattr__(self, "foreign_sleeps", sleeps)
-    return waiter in self.foreign_sleeps
 
 
 def _settle_timeout_message(

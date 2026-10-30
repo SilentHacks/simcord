@@ -21,6 +21,7 @@ from discord.ext import tasks
 
 import simcord
 from fixtures.sample_bot import create_bot
+from simcord._settlement import _is_parked
 
 
 @pytest.mark.asyncio
@@ -1572,3 +1573,228 @@ async def test_native_cancellation_during_settlement_does_not_keep_work_active()
             loop.call_soon(cancel_child)
         await env.settle(timeout=1, idle=10)
         assert observed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True], ids=["near-first", "far-first"])
+@pytest.mark.parametrize(
+    ("near_owned", "far_owned"),
+    [(False, False), (True, False), (False, True), (True, True)],
+    ids=["native-native", "owned-native", "native-owned", "owned-owned"],
+)
+async def test_competing_sleep_wakes_join_the_earliest_reply(reverse, near_owned, far_owned):
+    bot = create_bot()
+    handles = []
+
+    @bot.listen("on_message")
+    async def reply(message: discord.Message) -> None:
+        if message.content != "competing":
+            return
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        wakes = [(0.03, near_owned), (60, far_owned)]
+        for delay, owned in reversed(wakes) if reverse else wakes:
+            context = contextvars.copy_context() if owned else contextvars.Context()
+            handles.append(
+                context.run(
+                    loop.call_later,
+                    delay,
+                    asyncio.futures._set_result_unless_cancelled,
+                    waiter,
+                    None,
+                    context=context,
+                )
+            )
+        await waiter
+        await message.channel.send("earliest reply")
+
+    async with simcord.run(bot, settle_timeout=1) as env:
+        guild = env.create_guild()
+        actor = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("competing")
+        try:
+            await actor.send(channel, "competing")
+            assert channel.last_message.content == "earliest reply"
+        finally:
+            for handle in handles:
+                handle.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_near", [False, True], ids=["added-next-turn", "cancelled-near"])
+async def test_native_sleep_wake_membership_is_fresh_after_parking(cancel_near):
+    bot = create_bot()
+    waiters = []
+    handles = []
+
+    @bot.listen("on_message")
+    async def reply(message: discord.Message) -> None:
+        if message.content != "park":
+            return
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        context = contextvars.Context()
+        waiters.append(waiter)
+        handles.append(
+            context.run(
+                loop.call_later,
+                60,
+                asyncio.futures._set_result_unless_cancelled,
+                waiter,
+                None,
+                context=context,
+            )
+        )
+        if cancel_near:
+            near = context.run(
+                loop.call_later,
+                0.03,
+                asyncio.futures._set_result_unless_cancelled,
+                waiter,
+                None,
+                context=context,
+            )
+            near.cancel()
+        await waiter
+        await message.channel.send("recovered reply")
+
+    async with simcord.run(bot, settle_timeout=1) as env:
+        guild = env.create_guild()
+        actor = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("membership")
+        try:
+            await actor.send(channel, "park")
+            assert channel.last_message.content == "park"
+            assert not waiters[0].done()
+            context = contextvars.Context()
+            handles.append(
+                context.run(
+                    asyncio.get_running_loop().call_later,
+                    0.03,
+                    asyncio.futures._set_result_unless_cancelled,
+                    waiters[0],
+                    None,
+                    context=context,
+                )
+            )
+            await env.settle()
+            assert channel.last_message.content == "recovered reply"
+        finally:
+            for handle in handles:
+                handle.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owned", [False, True], ids=["native", "owned"])
+async def test_future_valued_sleep_result_does_not_park_an_unrelated_waiter(owned):
+    bot = create_bot()
+    waiters = []
+    handles = []
+
+    @bot.listen("on_message")
+    async def reply(message: discord.Message) -> None:
+        if message.content != "unknown":
+            return
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        waiters.append(waiter)
+        unrelated = loop.create_future()
+        context = contextvars.copy_context() if owned else contextvars.Context()
+        handles.append(
+            context.run(
+                loop.call_later,
+                60,
+                asyncio.futures._set_result_unless_cancelled,
+                unrelated,
+                waiter,
+                context=context,
+            )
+        )
+        await waiter
+        await message.channel.send("unknown recovered")
+
+    async with simcord.run(bot, settle_timeout=0.05) as env:
+        guild = env.create_guild()
+        actor = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("result")
+        try:
+            with pytest.raises(TimeoutError):
+                await actor.send(channel, "unknown")
+            assert channel.last_message.content == "unknown"
+            waiters[0].set_result(None)
+            await env.settle(timeout=1)
+            assert channel.last_message.content == "unknown recovered"
+        finally:
+            for handle in handles:
+                handle.cancel()
+
+
+@pytest.mark.asyncio
+async def test_native_sleep_wake_at_settlement_deadline_is_joined():
+    async with simcord.run(create_bot()) as env:
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        started = asyncio.Event()
+        completed = []
+
+        async def reply():
+            started.set()
+            await waiter
+            completed.append("boundary reply")
+
+        with env._bot_scope():
+            task = asyncio.create_task(reply())
+        deadline = loop.time() + 60
+        near = env._runtime.call_at(
+            deadline,
+            asyncio.futures._set_result_unless_cancelled,
+            waiter,
+            None,
+            context=contextvars.Context(),
+        )
+        far = env._runtime.call_at(
+            deadline + 60,
+            asyncio.futures._set_result_unless_cancelled,
+            waiter,
+            None,
+            context=contextvars.Context(),
+        )
+        try:
+            await started.wait()
+            assert not _is_parked(env._settlement_state(), task, near.when())
+            waiter.set_result(None)
+            await env.settle()
+            assert task.done()
+            assert completed == ["boundary reply"]
+        finally:
+            near.cancel()
+            far.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.implementation.name != "cpython", reason="requires reference counting")
+@pytest.mark.parametrize("timer", [False, True], ids=["ready", "timer"])
+async def test_invoked_callbacks_release_handles_without_cyclic_gc(timer):
+    async with simcord.run(create_bot()) as env:
+        loop = asyncio.get_running_loop()
+        effects = []
+        with env._bot_scope():
+            handle = (
+                loop.call_later(0.01, effects.append, "called")
+                if timer
+                else loop.call_soon(effects.append, "called")
+            )
+        reference = weakref.ref(handle)
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            await env.settle()
+            assert effects == ["called"]
+            # A caller-held Handle keeps its native identity after invocation.
+            assert reference() is handle
+            assert not handle.cancelled()
+            del handle
+            assert reference() is None
+        finally:
+            if was_enabled:
+                gc.enable()
