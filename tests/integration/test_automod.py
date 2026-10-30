@@ -152,3 +152,60 @@ async def test_mention_spam_counts_unique_mentions(env, channel, alice):
     await env.settle()
 
     assert len(channel.history()) == 1
+
+
+async def test_sdk_trigger_inputs_and_responses_are_detached(env, channel, alice):
+    guild = env.bot.get_guild(env.guild.id)
+    keywords = ["original"]
+    kwargs = _rule_kwargs(keywords)
+    rule = await guild.create_automod_rule(**kwargs)
+    keywords[:] = ["submitted"]
+    kwargs["trigger"].keyword_filter.append("trigger")
+    rule.trigger.keyword_filter[:] = ["returned"]
+
+    fetched = await guild.fetch_automod_rule(rule.id)
+    listed = (await guild.fetch_automod_rules())[0]
+    fetched.trigger.keyword_filter[:] = ["fetched"]
+    assert listed.trigger.keyword_filter == ["original"]
+    listed.trigger.keyword_filter[:] = ["listed"]
+    assert (await guild.fetch_automod_rule(rule.id)).trigger.keyword_filter == ["original"]
+
+    await alice.send(channel, "original")
+    assert channel.history() == []
+    await alice.send(channel, "submitted returned fetched listed trigger")
+    assert len(channel.history()) == 1
+
+    replacement = ["replacement"]
+    trigger = discord.AutoModTrigger(type=discord.AutoModRuleTriggerType.keyword, keyword_filter=replacement)
+    edited = await rule.edit(trigger=trigger)
+    replacement[:] = ["edited input"]
+    trigger.keyword_filter.append("edited trigger")
+    edited.trigger.keyword_filter[:] = ["edited response"]
+    assert (await guild.fetch_automod_rule(rule.id)).trigger.keyword_filter == ["replacement"]
+    await alice.send(channel, "replacement")
+    assert len(channel.history()) == 1
+    await alice.send(channel, "original")
+    assert len(channel.history()) == 2
+    await env.settle()
+    assert "AUTO_MODERATION_RULE_UPDATE" in env.transcript()
+
+
+async def test_all_matching_rules_emit_actions_in_filter_order(env, channel, alice):
+    guild = env.bot.get_guild(env.guild.id)
+    kwargs = _rule_kwargs(["later", "earlier"])
+    kwargs["actions"].append(discord.AutoModRuleAction(channel_id=channel.id))
+    first = await guild.create_automod_rule(**kwargs)
+    second = await guild.create_automod_rule(**_rule_kwargs(["earlier"]))
+    await alice.send(channel, "earlier then later")
+    await env.settle()
+    assert channel.history() == []
+    executions = [
+        payload
+        for kind, event, payload in env.backend.transcript
+        if kind == "GATEWAY" and event == "AUTO_MODERATION_ACTION_EXECUTION"
+    ]
+    assert [(p["rule_id"], p["matched_keyword"], p["action"]["type"]) for p in executions] == [
+        (str(first.id), "later", 1),
+        (str(first.id), "later", 2),
+        (str(second.id), "earlier", 1),
+    ]

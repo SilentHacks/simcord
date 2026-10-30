@@ -619,6 +619,7 @@ class MessageMixin(BackendBase):
 
     def create_auto_mod_rule(self, guild_id: int, creator_id: int, body: Mapping[str, Any]) -> AutoModRule:
         guild = self.get_guild(guild_id)
+        body = deepcopy(body)
         rule = AutoModRule(
             id=self.snowflake(),
             guild_id=guild_id,
@@ -626,8 +627,8 @@ class MessageMixin(BackendBase):
             creator_id=creator_id,
             event_type=int(body["event_type"]),
             trigger_type=int(body["trigger_type"]),
-            trigger_metadata=dict(body.get("trigger_metadata") or {}),
-            actions=list(body.get("actions") or []),
+            trigger_metadata=body.get("trigger_metadata") or {},
+            actions=body.get("actions") or [],
             enabled=bool(body.get("enabled", True)),
             exempt_roles=[int(r) for r in body.get("exempt_roles") or []],
             exempt_channels=[int(c) for c in body.get("exempt_channels") or []],
@@ -644,6 +645,7 @@ class MessageMixin(BackendBase):
 
     def edit_auto_mod_rule(self, guild_id: int, rule_id: int, changes: Mapping[str, Any]) -> AutoModRule:
         rule = self.get_auto_mod_rule(guild_id, rule_id)
+        changes = deepcopy(changes)
         for attr, value in changes.items():
             setattr(rule, attr, value)
         self.emit("AUTO_MODERATION_RULE_UPDATE", serializers.auto_mod_rule_payload(self, rule))
@@ -712,13 +714,21 @@ class MessageMixin(BackendBase):
         a suffix match and ``*word*`` a substring match anywhere — mirroring
         Discord's keyword-filter semantics rather than a naive substring search.
         """
-        for keyword in rule.trigger_metadata.get("keyword_filter") or []:
-            bare = keyword.strip("*")
-            if not bare:
-                continue
-            left = "" if keyword.startswith("*") else r"(?<![A-Za-z0-9])"
-            right = "" if keyword.endswith("*") else r"(?![A-Za-z0-9])"
-            if re.search(f"{left}{re.escape(bare)}{right}", content, re.IGNORECASE):
+        keywords = tuple(rule.trigger_metadata.get("keyword_filter") or ())
+        if rule._keyword_preparation is None or rule._keyword_preparation[0] != keywords:
+            rule._keyword_preparation = (keywords, {})
+        patterns = rule._keyword_preparation[1]
+        for keyword in keywords:
+            pattern = patterns.get(keyword)
+            if pattern is None:
+                bare = keyword.strip("*")
+                if not bare:
+                    continue
+                left = "" if keyword.startswith("*") else r"(?<![A-Za-z0-9])"
+                right = "" if keyword.endswith("*") else r"(?![A-Za-z0-9])"
+                pattern = re.compile(f"{left}{re.escape(bare)}{right}", re.IGNORECASE)
+                patterns[keyword] = pattern
+            if pattern.search(content):
                 return keyword
         return None
 

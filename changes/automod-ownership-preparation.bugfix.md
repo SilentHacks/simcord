@@ -1,0 +1,1 @@
+Detach nested AutoMod create/edit inputs and returned rule data so SDK object mutation cannot silently change enforcement. Lazily retain visited keyword patterns on each live rule, replacing preparation when its actual keyword filter changes and avoiding dependence on the shared regex cache.
