@@ -219,3 +219,18 @@ def test_matching_keyword_does_not_prepare_unvisited_tail():
     assert backend._auto_mod_match(rule, "FIRST") == "first"
     with pytest.raises(RuntimeError, match="cannot prepare keyword"):
         backend._auto_mod_match(rule, "clean")
+
+
+def test_deferred_regex_keeps_its_owner_after_equal_keyword_replacement():
+    class DifferentBoundaries(str):
+        def startswith(self, *args, **kwargs):
+            return True
+
+        def endswith(self, *args, **kwargs):
+            return True
+
+    backend, _, rule, _ = _world(["word"])
+    assert backend._auto_mod_match(rule, "clean") is None
+    rule.trigger_metadata["keyword_filter"][:] = [DifferentBoundaries("word")]
+    assert backend._auto_mod_match(rule, "swordé") is None
+    assert backend._auto_mod_match(rule, "WORD!") == "word"

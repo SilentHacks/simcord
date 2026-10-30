@@ -726,22 +726,27 @@ class MessageMixin(BackendBase):
                 bare = keyword.strip("*")
                 if not bare:
                     continue
+                prepared_keyword = keyword
                 literal = bare.lower() if type(keyword) is str and keyword.isascii() else None
                 pattern = None
-                preparations[keyword] = (bare, literal, pattern)
             else:
-                bare, literal, pattern = preparation
+                prepared_keyword, literal, pattern = preparation
             # Only exact ASCII strings have equivalent lowercase and IGNORECASE literals.
             if ascii_content and literal is not None:
                 if lowered_content is None:
                     lowered_content = content.lower()
                 if literal not in lowered_content:
+                    if preparation is None:
+                        preparations[keyword] = (prepared_keyword, literal, None)
                     continue
             if pattern is None:
-                left = "" if keyword.startswith("*") else r"(?<![A-Za-z0-9])"
-                right = "" if keyword.endswith("*") else r"(?![A-Za-z0-9])"
+                # Equal-valued subclasses must not redefine a deferred entry's boundaries.
+                if preparation is not None:
+                    bare = prepared_keyword.strip("*")
+                left = "" if prepared_keyword.startswith("*") else r"(?<![A-Za-z0-9])"
+                right = "" if prepared_keyword.endswith("*") else r"(?![A-Za-z0-9])"
                 pattern = re.compile(f"{left}{re.escape(bare)}{right}", re.IGNORECASE)
-                preparations[keyword] = (bare, literal, pattern)
+                preparations[keyword] = (prepared_keyword, literal, pattern)
             if pattern.search(content):
                 return keyword
         return None
