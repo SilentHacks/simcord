@@ -476,3 +476,59 @@ def test_nonwire_detachment_preserves_copy_failure():
 
     with pytest.raises(RuntimeError, match="custom copy"):
         detach({"plain": {"nested": []}, "custom": Uncopyable()})
+
+
+@pytest.mark.parametrize("entry", ["root", "key", "atomic_value", "nested_container"])
+@pytest.mark.parametrize("equality", ["spoof", "raise"])
+@pytest.mark.parametrize("copy_failure", [False, True])
+def test_detachment_type_eligibility_ignores_metaclass_equality(entry, equality, copy_failure):
+    spoofed_type = list if entry in ("root", "nested_container") else str
+    failure = RuntimeError("custom copy")
+
+    class Meta(type):
+        def __eq__(cls, other):
+            if equality == "raise":
+                raise AssertionError("metaclass equality must not determine eligibility")
+            return other is spoofed_type
+
+        __hash__ = type.__hash__
+
+    class Custom(list, metaclass=Meta):
+        __hash__ = object.__hash__
+
+        def __deepcopy__(self, memo):
+            if copy_failure:
+                raise failure
+            return Custom([deepcopy(self[0], memo), "copied by hook"])
+
+    original = Custom([{"items": ["original"]}])
+    if entry == "root":
+        source = original
+    elif entry == "key":
+        source = {original: {"items": ["value"]}}
+    else:
+        source = {"custom": original}
+
+    if copy_failure:
+        for copier in (deepcopy, detach):
+            with pytest.raises(RuntimeError) as caught:
+                copier(source)
+            assert caught.value is failure
+        return
+
+    expected = deepcopy(source)
+    copied = detach(source)
+    if entry == "root":
+        expected_custom, copied_custom = expected, copied
+    elif entry == "key":
+        expected_custom, copied_custom = next(iter(expected)), next(iter(copied))
+        copied[copied_custom]["items"].append("consumer")
+        assert source[original]["items"] == ["value"]
+    else:
+        expected_custom, copied_custom = expected["custom"], copied["custom"]
+    assert type(copied_custom) is Custom
+    assert copied_custom == expected_custom == [{"items": ["original"]}, "copied by hook"]
+    assert copied_custom is not original
+    copied_custom[0]["items"].append("consumer")
+    assert original == [{"items": ["original"]}]
+    assert expected_custom[0]["items"] == ["original"]
