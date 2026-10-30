@@ -180,6 +180,8 @@ def _virtualize_recognized_waits(self: _SettlementState, pending: list[asyncio.T
     """
     for task in pending:
         waiter = getattr(task, "_fut_waiter", None)
+        if task not in self.work.wakes and waiter not in self.work.wakes:
+            continue
         if not _recognized_wait(self, task, waiter):
             continue
         for record in _timer_records_waking(self, task, waiter):

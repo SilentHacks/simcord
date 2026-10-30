@@ -83,6 +83,12 @@ values are ceilings, not fixed sleeps; reducing them can change which work is
 joined or fail an operation rather than optimize its CPU cost. Declared external
 waits and recognized SDK waits retain their virtual-time behavior.
 
+Wait virtualization consults the existing task/waiter wake index before recognizing
+SDK waits: a task with no indexed wake cannot have a real timer fallback to cancel.
+Normal parking classification still runs. This avoids redundant View/listener
+discovery without changing settlement completion, timeouts or callback fairness;
+task/composition classification across successive settlement turns remains real work.
+
 Full-history reads and semantically exact text search remain proportional to
 eligible input/output. Preview's default navigation should select bounded rows
 before projecting them; text search still honors rendered labels, spoilers,
@@ -93,6 +99,13 @@ Text navigation seeks through the existing numeric message indexes and stops onc
 the requested page and its boundary witnesses are known. Frequent matches can
 avoid most summaries; sparse or absent matches can still require a full eligible
 history scan. Forward/backward cursor and live authorization rules are unchanged.
+
+Preview skips mention/emoji discovery and command-map construction when none of a
+message's relevant texts contains `<`. The conservative check includes embeds,
+forward snapshots and text-display components; possible syntax still takes the
+normal path, including mention inventories inside code and escaped text.
+`@everyone` behavior and live authorization filtering are unchanged. This removes
+context preparation, not exact-search scans, and introduces no persistent cache.
 
 REST/SDK response payloads, retained request/event history and live subscriber
 envelopes have independent nested mutable data. This isolation costs CPU and

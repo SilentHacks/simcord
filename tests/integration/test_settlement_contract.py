@@ -12,6 +12,7 @@ import threading
 import time
 import weakref
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Any
 
 import discord
@@ -432,35 +433,106 @@ async def test_overlapping_actor_rejects_before_second_mutation():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("composition", ["gather", "shield", "wait", "task_group"])
-async def test_composed_wait_for_parks_and_resumes(composition: str):
+@pytest.mark.parametrize(
+    "composition", ["listener", "view", "external", "gather", "shield", "wait", "task_group"]
+)
+@pytest.mark.parametrize("outcome", ["release", "timeout"])
+async def test_recognized_waits_park_and_resume(composition: str, outcome: str):
     bot = create_bot()
+    release = asyncio.Event()
+    view: discord.ui.View | None = None
+    observed: list[tuple[str, float]] = []
+    start = 0.0
+
+    def record(label: str) -> None:
+        observed.append((label, time.monotonic() - start))
 
     @bot.listen("on_message")
-    async def composed_wait(message: discord.Message) -> None:
+    async def recognized_wait(message: discord.Message) -> None:
+        nonlocal start, view
+        if message.content == "release":
+            release.set()
+            if view is not None:
+                view.stop()
+            return
+        if message.content == "progress":
+            asyncio.get_running_loop().call_soon(record, "callback")
+            await asyncio.sleep(0)
+            record("progress")
+            await message.channel.send("progress complete")
+            return
         if message.content != composition:
             return
-        waiting = bot.wait_for("message", check=lambda item: item.content == "release")
-        if composition == "gather":
-            await asyncio.gather(waiting)
-        elif composition == "shield":
-            await asyncio.shield(waiting)
-        elif composition == "wait":
-            task = asyncio.create_task(waiting)
-            await asyncio.wait({task})
+        start = time.monotonic()
+        record("armed")
+        timed_out = False
+
+        async def wait_for_release() -> None:
+            nonlocal timed_out
+            try:
+                await bot.wait_for("message", check=lambda item: item.content == "release", timeout=5)
+            except TimeoutError:
+                timed_out = True
+
+        if composition == "view":
+            view = discord.ui.View(timeout=5)
+            view.add_item(discord.ui.Button(label="Wait", custom_id="wait"))
+            await message.channel.send("view parked", view=view)
+            timed_out = await view.wait()
+        elif composition == "external":
+            try:
+                async with asyncio.timeout(5):
+                    await env.external_wait(release.wait(), reason="test release")
+            except TimeoutError:
+                timed_out = True
         else:
-            async with asyncio.TaskGroup() as group:
-                group.create_task(waiting)
+            waiting = wait_for_release()
+            if composition == "listener":
+                await waiting
+            elif composition == "gather":
+                await asyncio.gather(waiting)
+            elif composition == "shield":
+                await asyncio.shield(waiting)
+            elif composition == "wait":
+                task = asyncio.create_task(waiting)
+                await asyncio.wait({task})
+                task.result()
+            else:
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(waiting)
+        record("timeout" if timed_out else "release")
         await message.channel.send(f"resumed {composition}")
 
     async with simcord.run(bot) as env:
         guild = env.create_guild()
         alice = guild.add_member(env.create_user("alice"))
         channel = guild.create_text_channel("general")
+        clock_start = env.now()
         await alice.send(channel, composition)
-        await alice.send(channel, "release")
+        await alice.send(channel, "progress")
+        assert channel.last_message is not None
+        assert channel.last_message.content == "progress complete"
+        expected = [("armed", 0), ("callback", 0), ("progress", 0)]
+        assert observed == expected
+        await env.advance_time(4)
+        assert observed == expected
+        assert env.now() == clock_start + timedelta(seconds=4)
+        if outcome == "release":
+            await alice.send(channel, "release")
+            expected.append(("release", 4))
+        else:
+            await env.advance_time(1)
+            # asyncio.timeout converts a real loop.call_at deadline, so its
+            # virtual deadline can be just before the requested five seconds.
+            expected.append(("timeout", pytest.approx(5, abs=0.01)))
+        elapsed = 4 if outcome == "release" else 5
+        assert env.now() == clock_start + timedelta(seconds=elapsed)
+        assert observed == expected
         assert channel.last_message is not None
         assert channel.last_message.content == f"resumed {composition}"
+        await env.advance_time(5)
+        assert env.now() == clock_start + timedelta(seconds=elapsed + 5)
+        assert observed == expected
 
 
 @pytest.mark.asyncio
