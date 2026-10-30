@@ -122,9 +122,9 @@ def verify() -> None:
     if not hasattr(discord.ui.Button(label="x", custom_id="y"), "_view"):  # pragma: no cover
         problems.append("Item._view")
     view_probe = discord.ui.View(timeout=5)
-    for suffix in ("__stopped", "__timeout_task"):
-        if not any(name.endswith(suffix) for name in vars(view_probe)):  # pragma: no cover
-            problems.append(f"BaseView.{suffix}")
+    for attr in ("_BaseView__stopped", "_BaseView__timeout_task"):
+        if not hasattr(view_probe, attr):  # pragma: no cover
+            problems.append(f"BaseView.{attr}")
     impl_probe = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
     if (
         impl_probe is None
@@ -217,19 +217,14 @@ def _stored_view_facts(client: discord.Client) -> tuple[set[Any], set[Any]]:
     }
     views.update((id(view), view) for view in getattr(store, "_modals", {}).values())
     for view in views.values():
-        values = vars(view)
-        stopped = [
-            value
-            for name, value in values.items()
-            if name.endswith("__stopped") and isinstance(value, asyncio.Future)
-        ]
-        futures.update(stopped)
-        if not any(future.done() for future in stopped):
-            tasks.update(
-                value
-                for name, value in values.items()
-                if name.endswith("__timeout_task") and value is not None
-            )
+        stopped = getattr(view, "_BaseView__stopped", None)
+        if isinstance(stopped, asyncio.Future):
+            futures.add(stopped)
+            if stopped.done():
+                continue
+        timeout_task = getattr(view, "_BaseView__timeout_task", None)
+        if timeout_task is not None:
+            tasks.add(timeout_task)
     return futures, tasks
 
 
@@ -281,10 +276,7 @@ def _view_timeout_task_identity(
     if impl is not None and getattr(coro, "cr_code", None) is getattr(impl, "__code__", None):
         owner = getattr(getattr(coro, "cr_frame", None), "f_locals", {}).get("self")
         if isinstance(owner, _view.BaseView):
-            for name, value in vars(owner).items():
-                if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
-                    return False
-            return True
+            return not owner.is_finished()
     return task in (_stored_view_facts(client)[1] if expiry_tasks is None else expiry_tasks)
 
 

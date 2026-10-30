@@ -24,10 +24,12 @@ This resets HTTP/transcript records as well as messages. History starts with
 200 messages and requests the newest 50.
 
 `test_simulation_benchmarks.py` includes a small human-command → bot-reply
-journey, callback bursts beside parked timers, repeated settlement of live Views,
-and staggered virtual callbacks. Each fresh-world scenario **includes setup,
-completed outputs and shutdown**. The latter three are stress/scaling evidence,
-not claims about typical usage. Do not compare their scope with bare dispatch.
+journey, local TCP I/O beside six live Views, callback bursts beside parked timers,
+repeated settlement of live Views, and staggered virtual callbacks. The local-I/O
+scenario completes 20 request/reply exchanges before the bot replies.
+Each fresh-world scenario **includes setup, completed outputs and shutdown**.
+The latter three are stress/scaling evidence, not claims about typical usage.
+Do not compare their scope with bare dispatch.
 
 ```bash
 uv run --extra bench pytest benchmarks --benchmark-only
@@ -94,6 +96,13 @@ SDK waits: a task with no indexed wake cannot have a real timer fallback to canc
 Normal parking classification still runs. This avoids redundant View/listener
 discovery without changing settlement completion, timeouts or callback fairness;
 task/composition classification across successive settlement turns remains real work.
+
+Settlement drains owned progress across event-loop turns before repeating SDK
+wait classification. It still checks the settlement deadline during continuous
+progress and requires stable completion; it does not shorten timeouts or return
+before the bot's I/O and callbacks complete. View discovery reads the lifecycle
+fields verified against the supported SDK instead of scanning every attribute
+on every View. There is no persistent wait cache or extra scheduling index.
 
 Callback registration, invocation-before-publication and retirement share one
 short per-Env reentrant lock. Settlement snapshots the relevant records under

@@ -369,6 +369,38 @@ async def test_call_soon_chain_is_joined_before_actor_returns():
 
 
 @pytest.mark.asyncio
+async def test_continuous_callback_progress_still_times_out_and_recovers():
+    bot = create_bot()
+    stop = False
+
+    @bot.listen("on_message")
+    async def callback_chain(message: discord.Message) -> None:
+        if message.content != "continuous":
+            return
+        loop = asyncio.get_running_loop()
+
+        def step() -> None:
+            if not stop:
+                loop.call_soon(step)
+
+        loop.call_soon(step)
+
+    async with simcord.run(bot, settle_timeout=0.01) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        try:
+            with pytest.raises(TimeoutError, match="bot did not settle"):
+                await asyncio.wait_for(alice.send(channel, "continuous"), timeout=2)
+        finally:
+            stop = True
+            await env.settle(timeout=1)
+        await alice.send(channel, "!ping")
+        assert channel.last_message is not None
+        assert channel.last_message.content == "Pong!"
+
+
+@pytest.mark.asyncio
 async def test_timeout_preserves_owned_work_for_later_settle():
     release = asyncio.Event()
     bot = create_bot()

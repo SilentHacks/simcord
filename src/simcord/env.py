@@ -542,6 +542,7 @@ class Env:
             if self._loop.time() - self._work.reconciled_at >= interval:
                 self._work.reconcile(self._loop.time())
             _run_due_virtual_callbacks(self._settlement_state(), deadline)
+            before_yield = self._work.revision
             await asyncio.sleep(0)
             advancing = self._real_advance_task or self._advance_task
             if advancing is not None and advancing is not _current_task():
@@ -551,6 +552,11 @@ class Env:
                 if self._real_advance_task is advancing:
                     self._real_advance_task = None
                 advancing.result()
+                continue
+            # Keep draining actual progress before rescanning parked SDK work.
+            # A busy callback chain must still reach the deadline check below.
+            if self._work.revision != before_yield and self._loop.time() < deadline:
+                stable_empty = 0
                 continue
             revision = self._work.revision
             state = self._settlement_state()

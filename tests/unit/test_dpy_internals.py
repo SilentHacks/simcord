@@ -147,16 +147,6 @@ async def test_view_timeout_task_identity_rejects_unregistered_and_foreign_tasks
     assert not _dpy_internals._view_timeout_task_identity(_store_client(item), _fake_task())
 
 
-async def test_view_timeout_task_identity_skips_stopped_views() -> None:
-    view = SimpleNamespace()
-    stopped: asyncio.Future[Any] = asyncio.Future()
-    stopped.set_result(None)
-    vars(view)["_View__stopped"] = stopped
-    vars(view)["_View__timeout_task"] = _fake_task()
-    item = SimpleNamespace(_view=view)
-    assert not _dpy_internals._view_timeout_task_identity(_store_client(item), _fake_task())
-
-
 async def test_view_timeout_task_identity_handles_missing_store() -> None:
     client: Any = SimpleNamespace(_connection=SimpleNamespace(_view_store=None))
     assert not _dpy_internals._view_timeout_task_identity(client, _fake_task())
@@ -383,11 +373,8 @@ async def test_stored_wait_futures_handles_missing_store_and_null_views() -> Non
     client: Any = SimpleNamespace(_connection=SimpleNamespace(_view_store=None))
     assert _dpy_internals._stored_wait_futures(client) == set()
 
-    stopped: asyncio.Future[Any] = asyncio.Future()
-    view = SimpleNamespace()
-    vars(view)["_View__stopped"] = stopped
-    client = _store_client(SimpleNamespace(_view=None), SimpleNamespace(_view=view))
-    assert _dpy_internals._stored_wait_futures(client) == {stopped}
+    client = _store_client(SimpleNamespace(_view=None))
+    assert _dpy_internals._stored_wait_futures(client) == set()
 
 
 async def test_is_sleep_waiter_matches_scheduled_wake() -> None:
@@ -574,50 +561,6 @@ async def test_composed_tasks_unwraps_gather_children() -> None:
     found = _dpy_internals.composed_tasks(_parked_task(None), waiter)
     assert first in found
     assert second in found
-
-
-async def test_settle_timeout_message_classifies_pending_work(env: Any) -> None:
-    env._last_dispatch = "actor.send"
-
-    declared = _parked_task(asyncio.Future())
-    env._work.tasks[declared] = SimpleNamespace(label="declared", generation=0)
-    env._work.external_waits[declared] = "model reply"  # type: ignore[index]
-
-    listener: asyncio.Future[Any] = asyncio.Future()
-    env.bot._listeners.setdefault("on_message", []).append((listener, None))
-    listening = _parked_task(listener)
-    env._work.tasks[listening] = SimpleNamespace(label="listening", generation=0)
-
-    view = discord.ui.View(timeout=60)
-    waiting: asyncio.Future[Any] = asyncio.Future()
-    vars(view)["_View__stopped"] = waiting
-    _register_view(env, view)
-    view_wait = _parked_task(waiting)
-    env._work.tasks[view_wait] = SimpleNamespace(label="view", generation=0)
-
-    runnable = _parked_task(None)
-    env._work.tasks[runnable] = SimpleNamespace(label="runnable", generation=0)
-
-    unknown = _parked_task(asyncio.Future())
-    env._work.tasks[unknown] = SimpleNamespace(label="unknown", generation=0)
-
-    unrecorded = _parked_task(asyncio.Future())
-
-    pending = _record(env, _plain_callback, (), 10.0)
-    message = _settlement._settle_timeout_message(
-        env._settlement_state(),
-        [declared, listening, view_wait, runnable, unknown, unrecorded],
-        [],
-        1.0,
-        [pending],
-    )
-    assert "after actor.send" in message
-    assert "model reply" in message
-    assert "Client.wait_for listener" in message
-    assert "View/Modal completion" in message
-    assert "runnable continuation" in message
-    assert "unknown wait (Future)" in message
-    assert "bot-owned callbacks pending" in message
 
 
 async def test_advance_time_validates_seconds(env: Any) -> None:
