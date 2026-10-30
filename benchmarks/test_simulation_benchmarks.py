@@ -1,15 +1,44 @@
-"""Reported public-operation workloads, including Env setup/teardown.
+"""Reported public-operation workloads, including fresh Env setup and shutdown.
 
-These complement bare dispatch timings. They report trends rather than assert
-machine-specific microsecond budgets; behavioral regression coverage lives in tests.
+The command round trip is a small complete journey; callback, view and virtual
+timer scenarios are stress/scaling evidence rather than typical usage. Every
+round reconstructs its world and includes operations, assertions and teardown.
+These report trends, not machine-specific microsecond budgets. CPU/allocation
+attribution remains a separate workflow.
 """
 
 import asyncio
 
 import discord
+from discord.ext import commands
 from pytest_benchmark.fixture import BenchmarkFixture
 
 import simcord
+
+
+def test_command_reply_round_trip(benchmark: BenchmarkFixture) -> None:
+    async def scenario() -> None:
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+        @bot.command()
+        async def ping(ctx: commands.Context) -> None:
+            await ctx.reply("Pong!")
+
+        async with simcord.run(bot) as env:
+            guild = env.create_guild()
+            channel = guild.create_text_channel("benchmark")
+            actor = guild.add_member(env.create_user("sender"))
+            await actor.send(channel, "!ping")
+            history = channel.history()
+            assert [message.content for message in history] == ["!ping", "Pong!"]
+            assert history[0].author.id == actor.id
+            assert history[1].author == bot.user
+            assert history[1].reference is not None
+            assert history[1].reference.message_id == history[0].id
+            assert not env.errors
+        assert not env.errors
+
+    benchmark.pedantic(lambda: asyncio.run(scenario()), rounds=10, iterations=1)
 
 
 def test_callback_burst_beside_parked_timers(benchmark: BenchmarkFixture) -> None:
@@ -32,6 +61,7 @@ def test_callback_burst_beside_parked_timers(benchmark: BenchmarkFixture) -> Non
             actor = guild.add_member(env.create_user("sender"))
             await actor.send(channel, "burst")
             assert observed == list(range(1_000))
+        assert not env.errors
 
     benchmark.pedantic(lambda: asyncio.run(scenario()), rounds=5, iterations=1)
 
@@ -55,7 +85,8 @@ def test_idle_view_settlement(benchmark: BenchmarkFixture) -> None:
             await actor.send(channel, "views")
             for _ in range(10):
                 await env.settle()
-            assert len(channel.history()) == 26
+            assert [message.content for message in channel.history()] == ["views"] + ["panel"] * 25
+        assert not env.errors
 
     benchmark.pedantic(lambda: asyncio.run(scenario()), rounds=5, iterations=1)
 
@@ -79,5 +110,6 @@ def test_staggered_virtual_callbacks(benchmark: BenchmarkFixture) -> None:
             await actor.send(channel, "timers")
             await env.advance_time(250_000)
             assert observed == list(range(250))
+        assert not env.errors
 
     benchmark.pedantic(lambda: asyncio.run(scenario()), rounds=5, iterations=1)

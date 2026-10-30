@@ -18,10 +18,16 @@ all requested messages, while `last_message` should select and materialize only
 the final visible message.
 
 The reported suite covers synchronous send/edit/history and full empty Env
-setup/teardown. `test_simulation_benchmarks.py` adds complete public scenarios:
-callback bursts beside parked timers, repeated settlement of live Views, and
-staggered virtual callbacks. Those scenario timings **include world setup and
-teardown**; do not compare them with bare dispatch as if the scopes were equal.
+setup/teardown. Send, edit and history dispatch samples use a newly reconstructed
+world for every measured round (`iterations=1`); fixture setup is excluded.
+This resets HTTP/transcript records as well as messages. History starts with
+200 messages and requests the newest 50.
+
+`test_simulation_benchmarks.py` includes a small human-command → bot-reply
+journey, callback bursts beside parked timers, repeated settlement of live Views,
+and staggered virtual callbacks. Each fresh-world scenario **includes setup,
+completed outputs and shutdown**. The latter three are stress/scaling evidence,
+not claims about typical usage. Do not compare their scope with bare dispatch.
 
 ```bash
 uv run --extra bench pytest benchmarks --benchmark-only
@@ -89,6 +95,17 @@ Normal parking classification still runs. This avoids redundant View/listener
 discovery without changing settlement completion, timeouts or callback fairness;
 task/composition classification across successive settlement turns remains real work.
 
+Callback registration, invocation-before-publication and retirement share one
+short per-Env reentrant lock. Settlement snapshots the relevant records under
+that lock and releases it before running callbacks; user code and error reporting
+do not run inside it. This preserves native executor scheduling without a new
+scheduler or a process-wide callback lock.
+
+Automatic Poll expiry remains deadline-indexed. Explicitly expiring a backend
+Poll shared by multiple messages scans live message aliases and retires their
+deadlines before publishing the finalization. This rare explicit path is O(history),
+not an extra index or a claim that normal SDK sends share Poll objects.
+
 Full-history reads and semantically exact text search remain proportional to
 eligible input/output. Preview's default navigation should select bounded rows
 before projecting them; text search still honors rendered labels, spoilers,
@@ -107,6 +124,12 @@ normal path, including mention inventories inside code and escaped text.
 `@everyone` behavior and live authorization filtering are unchanged. This removes
 context preparation, not exact-search scans, and introduces no persistent cache.
 
+Live command-catalog validation uses the same schema fingerprint as publication.
+Only already-published keys are hashed, without rebuilding their wire option
+trees. Visibility enumeration and command-leaf traversal can still inspect the
+full current inventory. Live permission/schema changes remove stale entries;
+newly visible commands still require refresh before publication.
+
 REST/SDK response payloads, retained request/event history and live subscriber
 envelopes have independent nested mutable data. This isolation costs CPU and
 memory; synchronous subscribers still share their live envelope in registration
@@ -121,6 +144,20 @@ standard-library `deepcopy`, retaining its hooks, recursion limits and failures.
 Subscriber-free emission retains one independent snapshot rather than also
 allocating an unused delivery graph. Complete recursive ancestry serialization
 and SDK parsing still have their own limits; there is no arbitrary-depth promise.
+
+AutoMod create/edit inputs and serialized outputs are independently detached,
+including nested metadata and action data. Each live rule lazily retains compiled
+patterns only for keywords reached during ordered matching. A current keyword
+tuple detects explicit and internal in-place changes; preparation is replaced,
+not accumulated across revisions or stored in a global rule cache.
+
+This avoids repeated compilation after unrelated regex-cache churn, but does
+not eliminate matching work: every evaluation creates and compares an O(K)
+keyword signature. A cold clean/late-hit message can still compile the whole
+visited inventory, and retained pattern memory grows with visited keywords until
+the rule changes or is deleted. Cold first-keyword hits do not compile later
+keywords. No-rule and small-rule workloads should be measured alongside large
+inventories; this is not a universal end-to-end speedup.
 
 The synchronous send guards retain a generous absolute budget and compare send
 latency in 100- and 10,000-message channels. They are useful catastrophe guards,

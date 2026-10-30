@@ -69,6 +69,9 @@ with restoration and owns task, callback, executor and external-wait records.
 Executor completion is separate from cancellation of the caller's Future;
 paired hooks observe actual owned standard-library pool submissions and are
 restored after the last Env detaches.
+Each Env synchronizes callback publication and retirement with a small reentrant
+lock and takes settlement snapshots under it; user callbacks and error reporting
+run after release. Executor work continues to use the native scheduling hooks.
 `_modal.py` handles modal validation and serialization through the existing actor
 permission checks and interaction dispatch. Backend/ID access facts are shared
 below Env-bound viewer adapters; bot, human, fixture and token authority remain
@@ -79,6 +82,9 @@ Backend-owned ordered identity indexes serve bounded message reads, while
 resource scheduling tracks actionable poll, event and entitlement deadlines
 rather than scanning historical state. Canonical mutations update derived indexes
 before publishing events. Indexes never replace the authoritative models.
+Explicit finalization of a backend Poll shared by live messages scans those aliases
+to retire every deadline before publication. Automatic expiry stays index-driven;
+the rare explicit scan does not add another alias index.
 
 ## Optional browser presentation
 

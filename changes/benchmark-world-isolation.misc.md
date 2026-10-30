@@ -1,0 +1,1 @@
+Reconstruct send, edit and history dispatch worlds for every measured benchmark round, including their HTTP/transcript state. Add a small complete command/reply scenario to the existing public-operation lane and distinguish its setup/shutdown scope from bare dispatch and stress workloads.
