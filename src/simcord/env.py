@@ -465,11 +465,14 @@ class Env:
             if task.done():
                 assert self._loop is not None
                 self._work.inspect_task(task, record, self._loop, self._record_error, force=True)
-        for record in tuple(self._work.callbacks.values()):
+        with self._work._callback_lock:
+            callbacks = tuple(self._work.callbacks.values())
+        for record in callbacks:
             if record.handle is not None:
                 record.handle.cancel()
             self._work.retire(record)
-        self._work.timers.clear()
+        with self._work._callback_lock:
+            self._work.timers.clear()
         _restore_loop(self)
         _dpy_internals.release_clocks(self)
         self._work.tasks.clear()

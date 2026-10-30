@@ -1,0 +1,1 @@
+Synchronize per-Env callback publication, retirement and settlement snapshots when owned executor threads schedule callbacks. Preserve cancellation, context and exact-once completed effects without holding the lifecycle lock while user callbacks run.
