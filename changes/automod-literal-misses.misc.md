@@ -1,0 +1,1 @@
+AutoMod lazily skips impossible ASCII keyword matches before compiling or searching regexes, using the existing live-rule preparation owner. Keyword priority, Unicode and wildcard semantics, in-place edit detection and detached rule payloads are unchanged. No-rule, early-hit and Unicode workloads are not claimed as universal speedups.

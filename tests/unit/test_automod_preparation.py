@@ -136,6 +136,13 @@ def test_event_delivery_failure_does_not_roll_back_committed_rule(edit):
         (["**spam**"], "antispammer", "**spam**"),
         (["s"], "\N{LATIN SMALL LETTER LONG S}", "s"),
         (["k"], "\N{KELVIN SIGN}", "k"),
+        (["\N{LATIN SMALL LETTER LONG S}"], "S", "\N{LATIN SMALL LETTER LONG S}"),
+        (["\N{KELVIN SIGN}"], "K", "\N{KELVIN SIGN}"),
+        (["i"], "\N{LATIN CAPITAL LETTER I WITH DOT ABOVE}", "i"),
+        (["i"], "\N{LATIN SMALL LETTER DOTLESS I}", "i"),
+        (["spam"], "xSPAMx", None),
+        (["spam"], "xSPAMx then SPAM!", "spam"),
+        (["spam", "spam", "*spam*"], "xSPAMx", "*spam*"),
         (["a*b"], "a*b", "a*b"),
         (["a*b"], "axxb", None),
         (["*a*b*"], "xa*by", "*a*b*"),
@@ -166,3 +173,49 @@ def test_internal_edits_and_separate_live_rules_keep_matching_current():
     assert backend._auto_mod_match(second, "original") is None
     assert backend._auto_mod_match(second, "separate") == "separate"
     assert backend._auto_mod_match(first, "replacement") == "replacement"
+
+
+class _RegexOnlyString(str):
+    def isascii(self):
+        raise AssertionError("subclass must use regex matching")
+
+    def lower(self):
+        raise AssertionError("subclass must use regex matching")
+
+
+@pytest.mark.parametrize("subclass_keyword", [False, True])
+@pytest.mark.parametrize("subclass_content", [False, True])
+def test_keyword_matching_keeps_string_subclass_fallback(subclass_keyword, subclass_content):
+    keyword = _RegexOnlyString("spam") if subclass_keyword else "spam"
+    backend, _, rule, _ = _world([keyword])
+    for content, expected in [("clean", None), ("xSPAMx", None), ("SPAM!", keyword)]:
+        if subclass_content:
+            content = _RegexOnlyString(content)
+        assert backend._auto_mod_match(rule, content) == expected
+
+
+def test_literal_misses_keep_unicode_and_later_hits_current():
+    backend, _, rule, _ = _world(["*s*", "k"])
+    for content, expected in [
+        ("clean", None),
+        ("\N{LATIN SMALL LETTER LONG S}", "*s*"),
+        ("S", "*s*"),
+        ("\N{KELVIN SIGN}", "k"),
+        ("K", "k"),
+        ("clean", None),
+    ]:
+        assert backend._auto_mod_match(rule, content) == expected
+    rule.trigger_metadata["keyword_filter"][:] = ["new"]
+    assert backend._auto_mod_match(rule, "K") is None
+    assert backend._auto_mod_match(rule, "NEW") == "new"
+
+
+def test_matching_keyword_does_not_prepare_unvisited_tail():
+    class UnpreparableKeyword(str):
+        def strip(self, chars=None):
+            raise RuntimeError("cannot prepare keyword")
+
+    backend, _, rule, _ = _world(["first", UnpreparableKeyword("later")])
+    assert backend._auto_mod_match(rule, "FIRST") == "first"
+    with pytest.raises(RuntimeError, match="cannot prepare keyword"):
+        backend._auto_mod_match(rule, "clean")

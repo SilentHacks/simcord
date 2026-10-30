@@ -25,6 +25,6 @@ class AutoModRule:
     enabled: bool = True
     exempt_roles: list[int] = field(default_factory=list)
     exempt_channels: list[int] = field(default_factory=list)
-    _keyword_preparation: tuple[tuple[str, ...], dict[str, re.Pattern[str]]] | None = field(
-        default=None, init=False, repr=False, compare=False
-    )
+    _keyword_preparation: (
+        tuple[tuple[str, ...], dict[str, tuple[str, str | None, re.Pattern[str] | None]]] | None
+    ) = field(default=None, init=False, repr=False, compare=False)

@@ -717,17 +717,31 @@ class MessageMixin(BackendBase):
         keywords = tuple(rule.trigger_metadata.get("keyword_filter") or ())
         if rule._keyword_preparation is None or rule._keyword_preparation[0] != keywords:
             rule._keyword_preparation = (keywords, {})
-        patterns = rule._keyword_preparation[1]
+        preparations = rule._keyword_preparation[1]
+        ascii_content = type(content) is str and content.isascii()
+        lowered_content: str | None = None
         for keyword in keywords:
-            pattern = patterns.get(keyword)
-            if pattern is None:
+            preparation = preparations.get(keyword)
+            if preparation is None:
                 bare = keyword.strip("*")
                 if not bare:
                     continue
+                literal = bare.lower() if type(keyword) is str and keyword.isascii() else None
+                pattern = None
+                preparations[keyword] = (bare, literal, pattern)
+            else:
+                bare, literal, pattern = preparation
+            # Only exact ASCII strings have equivalent lowercase and IGNORECASE literals.
+            if ascii_content and literal is not None:
+                if lowered_content is None:
+                    lowered_content = content.lower()
+                if literal not in lowered_content:
+                    continue
+            if pattern is None:
                 left = "" if keyword.startswith("*") else r"(?<![A-Za-z0-9])"
                 right = "" if keyword.endswith("*") else r"(?![A-Za-z0-9])"
                 pattern = re.compile(f"{left}{re.escape(bare)}{right}", re.IGNORECASE)
-                patterns[keyword] = pattern
+                preparations[keyword] = (bare, literal, pattern)
             if pattern.search(content):
                 return keyword
         return None

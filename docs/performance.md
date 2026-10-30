@@ -97,6 +97,12 @@ Normal parking classification still runs. This avoids redundant View/listener
 discovery without changing settlement completion, timeouts or callback fairness;
 task/composition classification across successive settlement turns remains real work.
 
+Sleep parking uses the earliest live recognized wake of the awaited Future across
+tracked and native timers. A later timer cannot hide an earlier eligible wake,
+and a Future passed as a timer's result is not mistaken for its target. Native
+timer scans skip empty argument lists before callback inspection; these facts
+remain local to one classification turn.
+
 Settlement drains owned progress across event-loop turns before repeating SDK
 wait classification. It still checks the settlement deadline during continuous
 progress and requires stable completion; it does not shorten timeouts or return
@@ -107,8 +113,11 @@ on every View. There is no persistent wait cache or extra scheduling index.
 Callback registration, invocation-before-publication and retirement share one
 short per-Env reentrant lock. Settlement snapshots the relevant records under
 that lock and releases it before running callbacks; user code and error reporting
-do not run inside it. This preserves native executor scheduling without a new
-scheduler or a process-wide callback lock.
+do not run inside it. Retirement releases the record's Handle reference, and a
+callback invoked before its worker publishes the Handle cannot be registered
+afterward. Returned native Handles, cancellation, Context objects and error
+capture keep their normal behavior. No extra scheduler or process-wide callback
+lock is introduced.
 
 Automatic Poll expiry remains deadline-indexed. Explicitly expiring a backend
 Poll shared by multiple messages scans live message aliases and retires their
@@ -146,27 +155,33 @@ order. Input detachment finishes before edit/upload side effects. A later event
 snapshot or subscriber failure can occur after state commits: inspect the state
 and settle/refresh rather than replaying the action.
 
-Plain wire dict/list graphs are detached iteratively, preserving aliases and
-cycles without lowering the functioning reply-ancestry depth through recursive
+Exact built-in wire dict/list graphs are detached iteratively, preserving aliases
+and cycles without lowering the functioning reply-ancestry depth through recursive
 copying. A graph containing custom/non-wire values falls back as a whole to
 standard-library `deepcopy`, retaining its hooks, recursion limits and failures.
+Fast-path type checks use identity, so custom metaclass equality cannot opt a
+mutable custom value into sharing.
 Subscriber-free emission retains one independent snapshot rather than also
 allocating an unused delivery graph. Complete recursive ancestry serialization
 and SDK parsing still have their own limits; there is no arbitrary-depth promise.
 
 AutoMod create/edit inputs and serialized outputs are independently detached,
-including nested metadata and action data. Each live rule lazily retains compiled
-patterns only for keywords reached during ordered matching. A current keyword
-tuple detects explicit and internal in-place changes; preparation is replaced,
-not accumulated across revisions or stored in a global rule cache.
+including nested metadata and action data. Each live rule lazily retains literal
+and regex preparation only for keywords reached during ordered matching. A
+current keyword tuple detects explicit and internal in-place changes; preparation
+is replaced, not accumulated across revisions or stored in a global rule cache.
+
+For exact ASCII strings and ASCII keywords, an absent lowercase literal skips
+unnecessary regex compilation and search. Possible hits, Unicode and string
+subclasses still use the existing regex semantics and keyword priority.
 
 This avoids repeated compilation after unrelated regex-cache churn, but does
 not eliminate matching work: every evaluation creates and compares an O(K)
-keyword signature. A cold clean/late-hit message can still compile the whole
-visited inventory, and retained pattern memory grows with visited keywords until
-the rule changes or is deleted. Cold first-keyword hits do not compile later
-keywords. No-rule and small-rule workloads should be measured alongside large
-inventories; this is not a universal end-to-end speedup.
+keyword signature. Unicode messages can still compile and scan the visited
+inventory. Retained preparation grows with visited keywords until the rule
+changes or is deleted; mixed-language traffic can retain both literals and
+patterns. Cold first-keyword hits do not prepare later keywords. No-rule,
+small-rule and Unicode workloads remain controls, not universal speedup claims.
 
 The synchronous send guards retain a generous absolute budget and compare send
 latency in 100- and 10,000-message channels. They are useful catastrophe guards,
