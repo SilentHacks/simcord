@@ -246,6 +246,145 @@ def test_reentrant_event_edit_reaches_later_resource_in_same_traversal():
     assert backend.next_scheduled_event_deadline() is None
 
 
+def test_reentrant_event_creation_in_current_guild_waits_for_next_pass():
+    backend, guild, _ = _world()
+    first = backend.create_scheduled_event(
+        guild.id, name="first", entity_type=3, scheduled_start_time=backend.now_iso()
+    )
+    children = []
+
+    def create_child(event, payload):
+        if event == "GUILD_SCHEDULED_EVENT_UPDATE":
+            # Bound a broken same-pass chain instead of hanging the test.
+            assert len(children) < 2
+            children.append(
+                backend.create_scheduled_event(
+                    guild.id, name="child", entity_type=3, scheduled_start_time=backend.now_iso()
+                )
+            )
+
+    backend.subscribers.append(create_child)
+    backend.activate_due_scheduled_events()
+    backend.subscribers.remove(create_child)
+    assert first.status == 2
+    assert len(children) == 1 and children[0].status == 1
+    assert backend.next_scheduled_event_deadline().isoformat() == backend.now_iso()
+    backend.activate_due_scheduled_events()
+    assert children[0].status == 2
+
+
+def test_reentrant_event_creation_enters_later_existing_guild_but_not_new_guild():
+    backend, guild, _ = _world()
+    later_guild = backend.create_guild("later")
+    first = backend.create_scheduled_event(
+        guild.id, name="first", entity_type=3, scheduled_start_time=backend.now_iso()
+    )
+    created = []
+
+    def create_events(event, payload):
+        if event == "GUILD_SCHEDULED_EVENT_UPDATE" and int(payload["id"]) == first.id:
+            new_guild = backend.create_guild("new")
+            for target in (later_guild, new_guild):
+                created.append(
+                    backend.create_scheduled_event(
+                        target.id, name="added", entity_type=3, scheduled_start_time=backend.now_iso()
+                    )
+                )
+
+    backend.subscribers.append(create_events)
+    backend.activate_due_scheduled_events()
+    backend.subscribers.remove(create_events)
+    assert [event.status for event in created] == [2, 1]
+    backend.activate_due_scheduled_events()
+    assert [event.status for event in created] == [2, 2]
+
+
+def test_reentrant_event_edit_of_visited_resource_waits_for_next_pass():
+    backend, guild, _ = _world()
+    first, later = [
+        backend.create_scheduled_event(
+            guild.id, name=name, entity_type=3, scheduled_start_time=backend.now_iso()
+        )
+        for name in ("first", "later")
+    ]
+
+    def finish_first(event, payload):
+        if event == "GUILD_SCHEDULED_EVENT_UPDATE" and int(payload["id"]) == later.id:
+            backend.edit_scheduled_event(guild.id, first.id, {"scheduled_end_time": backend.now_iso()})
+
+    backend.subscribers.append(finish_first)
+    backend.activate_due_scheduled_events()
+    backend.subscribers.remove(finish_first)
+    assert first.status == later.status == 2
+    backend.activate_due_scheduled_events()
+    assert first.status == 3 and later.status == 2
+
+
+def test_event_subscriber_failure_retries_end_and_unprocessed_insertions():
+    backend, guild, _ = _world()
+    first = backend.create_scheduled_event(
+        guild.id,
+        name="first",
+        entity_type=3,
+        scheduled_start_time=backend.now_iso(),
+        scheduled_end_time=backend.now_iso(),
+    )
+    later = backend.create_scheduled_event(
+        guild.id, name="later", entity_type=3, scheduled_start_time=backend.now_iso()
+    )
+    children = []
+
+    def fail(event, payload):
+        if event == "GUILD_SCHEDULED_EVENT_UPDATE" and int(payload["id"]) == first.id:
+            children.append(
+                backend.create_scheduled_event(
+                    guild.id, name="child", entity_type=3, scheduled_start_time=backend.now_iso()
+                )
+            )
+            raise RuntimeError("subscriber")
+
+    backend.subscribers.append(fail)
+    with pytest.raises(RuntimeError, match="subscriber"):
+        backend.activate_due_scheduled_events()
+    backend.subscribers.remove(fail)
+    assert first.status == 2 and later.status == children[0].status == 1
+    backend.activate_due_scheduled_events()
+    assert first.status == 3 and later.status == children[0].status == 2
+    assert backend.next_scheduled_event_deadline() is None
+
+
+def test_nested_event_passes_have_independent_membership_cutoffs():
+    backend, guild, _ = _world()
+    first = backend.create_scheduled_event(
+        guild.id,
+        name="first",
+        entity_type=3,
+        scheduled_start_time=backend.now_iso(),
+        scheduled_end_time=backend.now_iso(),
+    )
+    children = []
+
+    def create_and_reenter(event, payload):
+        if event != "GUILD_SCHEDULED_EVENT_UPDATE" or payload["status"] != 2:
+            return
+        assert len(children) < 2
+        children.append(
+            backend.create_scheduled_event(
+                guild.id, name="child", entity_type=3, scheduled_start_time=backend.now_iso()
+            )
+        )
+        if int(payload["id"]) == first.id:
+            backend.activate_due_scheduled_events()
+
+    backend.subscribers.append(create_and_reenter)
+    backend.activate_due_scheduled_events()
+    backend.subscribers.remove(create_and_reenter)
+    assert first.status == 3
+    assert [event.status for event in children] == [2, 1]
+    backend.activate_due_scheduled_events()
+    assert children[1].status == 2
+
+
 def test_naive_poll_comparison_errors_remain_delayed():
     backend, _, channel = _world()
     naive = backend.clock.now().replace(tzinfo=None)

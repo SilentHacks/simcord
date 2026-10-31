@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import heapq
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,6 +15,7 @@ Error = tuple[type[Exception], tuple[Any, ...]]
 @dataclass(eq=False, slots=True)
 class _DueBatch:
     now: datetime.datetime
+    eligible: Callable[[tuple[int, ...]], bool] | None = None
     pending: list[tuple[tuple[int, ...], int, Any]] = field(default_factory=list)
     cursor: tuple[int, ...] = ()
 
@@ -124,8 +125,13 @@ class Deadlines:
         return selected
 
     @contextmanager
-    def due(self, now: datetime.datetime) -> Iterator[Iterator[Any]]:
-        batch = _DueBatch(now)
+    def due(
+        self,
+        now: datetime.datetime,
+        *,
+        eligible: Callable[[tuple[int, ...]], bool] | None = None,
+    ) -> Iterator[Iterator[Any]]:
+        batch = _DueBatch(now, eligible)
         for key in self._due_keys(now):
             revision, _, order = self._live[key]
             heapq.heappush(batch.pending, (order, revision, key))
@@ -140,6 +146,8 @@ class Deadlines:
             order, revision, key = heapq.heappop(batch.pending)
             live = self._live.get(key)
             if live is not None and live[0] == revision and order > batch.cursor:
+                if batch.eligible is not None and not batch.eligible(order):
+                    continue
                 batch.cursor = order
                 yield key
 

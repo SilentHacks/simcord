@@ -97,7 +97,17 @@ class ScheduledEventMixin(BackendBase):
         like real time. Manual status edits via ``PATCH`` still work too.
         """
         now = datetime.datetime.fromisoformat(self.now_iso())
-        with self._event_deadlines.due(now) as due:
+        guild_cutoff = self._order_serial
+        event_cutoffs: dict[int, int] = {}
+
+        def eligible(order: tuple[int, ...]) -> bool:
+            guild_order, event_order = order
+            # Snapshot guild membership now, but event membership upon entering each guild.
+            return guild_order <= guild_cutoff and event_order <= event_cutoffs.setdefault(
+                guild_order, self._order_serial
+            )
+
+        with self._event_deadlines.due(now, eligible=eligible) as due:
             for guild_id, event_id in due:
                 guild = self.guilds.get(guild_id)
                 event = guild.scheduled_events.get(event_id) if guild is not None else None
