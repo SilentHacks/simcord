@@ -248,7 +248,7 @@ def test_postcommit_copy_failure_does_not_replay_or_rollback(monkeypatch, bounda
 
 
 @pytest.mark.parametrize("http", [False, True])
-def test_ingress_copy_failure_precedes_deferred_index_and_cdn_changes(monkeypatch, http):
+def test_ingress_copy_failure_precedes_deferred_index_and_cdn_changes(http):
     backend, guild, channel = _world()
     record = Interaction(123, "token", 2, channel.id, guild.id, backend.bot_user.id)
     message = backend.create_message(
@@ -260,15 +260,12 @@ def test_ingress_copy_failure_precedes_deferred_index_and_cdn_changes(monkeypatc
     record.defer(message.id, ephemeral=False)
     backend.interactions[record.id] = record
     before = deepcopy(message)
-    embeds = [{"footer": {"text": "original"}}]
-    original = deepcopy
 
-    def fail_embeds(value):
-        if value is embeds:
+    class Uncopyable(str):
+        def __deepcopy__(self, memo):
             raise RuntimeError("ingress")
-        return original(value)
 
-    monkeypatch.setattr(_helpers if http else messages, "deepcopy", fail_embeds)
+    embeds = [{"footer": {"text": Uncopyable("original")}}]
     with pytest.raises(RuntimeError, match="ingress"):
         if http:
             router.dispatch(
@@ -284,6 +281,70 @@ def test_ingress_copy_failure_precedes_deferred_index_and_cdn_changes(monkeypatc
     assert record.loading
     assert backend.select_messages(channel.id) == [message]
     assert not backend.cdn._blobs
+
+
+@pytest.mark.parametrize("http", [False, True])
+def test_content_edits_preserve_message_poll_and_omitted_components(http):
+    backend, _, channel = _world()
+    poll = Poll("Question", [PollAnswer(1, "Yes")], backend.iso_after(60))
+    message = backend.create_message(
+        channel.id, backend.bot_user.id, "original", components=_components(), poll=poll
+    )
+    components = deepcopy(message.components)
+    if http:
+        router.dispatch(
+            backend, "PATCH", f"/channels/{channel.id}/messages/{message.id}", json={"content": "edited"}
+        )
+    else:
+        assert backend.edit_message(channel.id, message.id, {"content": "edited"}) is message
+    assert backend.get_message(channel.id, message.id) is message
+    assert message.poll is poll
+    assert message.components == components
+    assert message.content == "edited"
+
+
+@pytest.mark.parametrize("failure", ["read", "media"])
+def test_http_edit_upload_failure_leaves_deferred_message_and_cdn_unchanged(failure):
+    backend, guild, channel = _world()
+    record = Interaction(123, "token", 2, channel.id, guild.id, backend.bot_user.id)
+    message = backend.create_message(
+        channel.id,
+        backend.bot_user.id,
+        flags=128,
+        interaction_metadata={"id": "123", "user": {"id": str(record.user_id)}},
+    )
+    record.defer(message.id, ephemeral=False)
+    backend.interactions[record.id] = record
+    before = deepcopy(message)
+    events = [event for event in backend.transcript if event[0] == "GATEWAY"]
+
+    class Unreadable(BytesIO):
+        def read(self, *args, **kwargs):
+            raise RuntimeError("upload read")
+
+    files = [
+        discord.File(BytesIO(b"first"), filename="first.txt"),
+        discord.File(Unreadable(b"second"), filename="second.txt"),
+    ]
+    body = {"attachments": [{"id": 0}, {"id": 1}]}
+    if failure == "media":
+        body.update(
+            flags=1 << 15,
+            components=[{"type": 13, "file": {"url": "attachment://missing.txt"}}],
+        )
+    with pytest.raises(
+        RuntimeError if failure == "read" else BackendError,
+        match="upload read" if failure == "read" else "has no uploaded file",
+    ):
+        router.dispatch(
+            backend, "PATCH", f"/channels/{channel.id}/messages/{message.id}", json=body, files=files
+        )
+    assert backend.get_message(channel.id, message.id) is message
+    assert message == before
+    assert record.loading
+    assert backend.select_messages(channel.id) == [message]
+    assert not backend.cdn._blobs
+    assert [event for event in backend.transcript if event[0] == "GATEWAY"] == events
 
 
 def test_stable_edits_keep_order_pin_visibility():

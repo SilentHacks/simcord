@@ -7,7 +7,7 @@ from typing import Any
 from ...backend import errors, permissions, serializers
 from ...backend.access import channel_accessible
 from ...enums import AuditLogAction, ChannelType
-from .._helpers import bot_message, message_edit_changes, message_response
+from .._helpers import bot_message, edit_bot_message, message_response
 from ..router import RequestContext, route
 
 
@@ -86,7 +86,7 @@ def edit_message(ctx: RequestContext) -> Any:
     # someone else's message is exactly the kind of bug this framework surfaces.
     if message.author_id != backend.bot_user.id:
         raise errors.cannot_edit_other_user()
-    message = backend.edit_message(channel_id, message.id, message_edit_changes(ctx, message))
+    message = edit_bot_message(ctx, message)
     return message_response(ctx, message)
 
 

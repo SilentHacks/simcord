@@ -5,11 +5,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from ...components import (
     COMPONENTS_V2_FLAG,
     ComponentValidationError,
+    check_attachment_references,
     component_mentions,
     merge_edit_flags,
     validate_components,
@@ -22,6 +24,7 @@ from ..models import (
     AllowedMentions,
     AutoModRule,
     Channel,
+    Interaction,
     Message,
     MessageSticker,
     Poll,
@@ -76,8 +79,11 @@ def _component_error(exc: ComponentValidationError) -> errors.BackendError:
     return errors.invalid_form_body(str(exc))
 
 
-class _PreparedEdit(dict[str, Any]):
-    """Private owned fields whose component normalization is already complete."""
+@dataclass(slots=True)
+class _PreparedMessageEdit:
+    target: Message
+    fields: dict[str, Any]
+    deferred: Interaction | None
 
 
 class MessageMixin(BackendBase):
@@ -470,6 +476,17 @@ class MessageMixin(BackendBase):
         self.emit("MESSAGE_CREATE", payload)
 
     def edit_message(self, channel_id: int, message_id: int, fields: dict[str, Any]) -> Message:
+        return self.commit_message_edit(self.prepare_message_edit(channel_id, message_id, fields))
+
+    def prepare_message_edit(
+        self,
+        channel_id: int,
+        message_id: int,
+        fields: dict[str, Any],
+        *,
+        attachment_bindings: list[dict[str, Any]] | None = None,
+    ) -> _PreparedMessageEdit:
+        """Validate and own incoming edits without changing canonical state."""
         message = self.get_message(channel_id, message_id)
         channel = self.get_channel(channel_id)
         content = fields["content"] if "content" in fields else message.content
@@ -482,6 +499,9 @@ class MessageMixin(BackendBase):
             requested_flags = (
                 int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
             )
+        except (TypeError, ValueError) as exc:
+            raise errors.invalid_form_body("flags must be an integer") from exc
+        try:
             flags = merge_edit_flags(message.flags, requested_flags)
             validate_message_fields(
                 [] if components is None else components,
@@ -493,10 +513,10 @@ class MessageMixin(BackendBase):
                 previous_flags=message.flags,
             )
             normalized_components = [] if components is None else components
-            if not isinstance(fields, _PreparedEdit) and (
-                "components" in fields or (flags ^ message.flags) & COMPONENTS_V2_FLAG
-            ):
+            if "components" in fields or (flags ^ message.flags) & COMPONENTS_V2_FLAG:
                 normalized_components = validate_components(normalized_components, flags=flags)
+            if attachment_bindings is not None:
+                check_attachment_references(normalized_components, attachment_bindings)
         except (ComponentValidationError, TypeError, ValueError) as exc:
             raise _component_error(
                 exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
@@ -506,32 +526,48 @@ class MessageMixin(BackendBase):
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
             channel, message.author_id, mention_content, policy, message.reply_author_id
         )
-        # HTTP preparation already owns these fields; direct backend edits must
-        # finish detachment before deferred completion or any canonical writes.
-        if not isinstance(fields, _PreparedEdit):
-            if "embeds" in fields:
-                embeds = deepcopy(embeds)
-            if "attachments" in fields:
-                attachments = deepcopy(attachments)
-        old_id = message.id
-        old_keys = self._message_index_keys(message)
+        if "embeds" in fields:
+            embeds = deepcopy(embeds)
+        if "attachments" in fields:
+            attachments = deepcopy(attachments)
+        deferred = None
         if message.flags & (1 << 7) and message.interaction_metadata is not None:
             flags &= ~(1 << 7)
-            record = self.interactions.get(int(message.interaction_metadata["id"]))
-            if record is not None and record.message_id == message.id and record.loading:
-                record.complete_deferred()
-        message.content = content_value
-        message.embeds = embeds or []
-        message.components = normalized_components
-        message.attachments = attachments or []
-        message.poll = poll
-        message.flags = flags
-        message.allowed_mentions = policy
-        message.ping_user_ids = ping_users
-        message.ping_role_ids = ping_roles
-        message.mention_user_ids = mention_users
-        message.mention_role_ids = mention_roles
-        message.mention_everyone = mention_everyone
+            deferred = self.interactions.get(int(message.interaction_metadata["id"]))
+        return _PreparedMessageEdit(
+            message,
+            {
+                "content": content_value,
+                "embeds": embeds if embeds is not None else [],
+                "components": normalized_components,
+                "attachments": attachments if attachments is not None else [],
+                "poll": poll,
+                "flags": flags,
+                "allowed_mentions": policy,
+                "ping_user_ids": ping_users,
+                "ping_role_ids": ping_roles,
+                "mention_user_ids": mention_users,
+                "mention_role_ids": mention_roles,
+                "mention_everyone": mention_everyone,
+            },
+            deferred,
+        )
+
+    def commit_message_edit(self, prepared: _PreparedMessageEdit) -> Message:
+        """Apply a prepared edit to the existing message, then publish it."""
+        message = prepared.target
+        old_id = message.id
+        old_keys = self._message_index_keys(message)
+        record = prepared.deferred
+        if (
+            message.flags & (1 << 7)
+            and record is not None
+            and record.message_id == message.id
+            and record.loading
+        ):
+            record.complete_deferred()
+        for name, value in prepared.fields.items():
+            setattr(message, name, value)
         message.edited_timestamp = self.now_iso()
         if (message.id, self._message_index_keys(message)) != (old_id, old_keys):
             self._remove_message_index(old_id, old_keys)

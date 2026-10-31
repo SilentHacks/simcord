@@ -12,7 +12,7 @@ from ...backend import errors
 from ...backend.models import EPHEMERAL_FLAG, Interaction
 from ...components import ComponentValidationError, validate_modal, walk_components
 from ...enums import CallbackType
-from .._helpers import bot_message, message_edit_changes, message_response
+from .._helpers import bot_message, edit_bot_message, message_response
 from ..router import RequestContext, route
 
 
@@ -62,11 +62,7 @@ def interaction_callback(ctx: RequestContext) -> Any:
         if record.source_message_id is None:
             raise errors.invalid_form_body("UPDATE_MESSAGE requires a source message")
         existing = backend.get_message(record.channel_id, record.source_message_id)
-        message = backend.edit_message(
-            record.channel_id,
-            record.source_message_id,
-            message_edit_changes(ctx, existing, body=data),
-        )
+        message = edit_bot_message(ctx, existing, body=data)
         record.update_source(record.source_message_id)
     elif callback_type == CallbackType.MODAL:
         try:
@@ -133,9 +129,7 @@ def execute_webhook(ctx: RequestContext) -> Any:
             body = dict(ctx.body())
             body.pop("username", None)
             body.pop("avatar_url", None)
-            message = backend.edit_message(
-                message.channel_id, message.id, message_edit_changes(ctx, message, body=body)
-            )
+            message = edit_bot_message(ctx, message, body=body)
             return message_response(ctx, message, exempt_root=True)
         message = bot_message(ctx, record.channel_id, interaction=record, webhook_execute=True)
         record.followup_ids.append(message.id)
@@ -202,11 +196,7 @@ def edit_original_response(ctx: RequestContext) -> Any:
     # A deleted original retains its identity; it must never be recreated.
     if record.message_id is None:
         raise errors.unknown_message()
-    message = backend.edit_message(
-        record.channel_id,
-        record.message_id,
-        message_edit_changes(ctx, backend.get_message(record.channel_id, record.message_id)),
-    )
+    message = edit_bot_message(ctx, backend.get_message(record.channel_id, record.message_id))
     return message_response(ctx, message, exempt_root=True)
 
 
@@ -229,15 +219,11 @@ def get_followup(ctx: RequestContext) -> Any:
 def edit_followup(ctx: RequestContext) -> Any:
     if ctx.args["token"] in ctx.backend.interaction_tokens:
         message = _interaction_message(ctx)
-        message = ctx.backend.edit_message(message.channel_id, message.id, message_edit_changes(ctx, message))
+        message = edit_bot_message(ctx, message)
         return message_response(ctx, message, exempt_root=True)
     message = _incoming_message(ctx)
     body, with_components = _incoming_webhook_body(ctx)
-    message = ctx.backend.edit_message(
-        message.channel_id,
-        message.id,
-        message_edit_changes(ctx, message, body=body),
-    )
+    message = edit_bot_message(ctx, message, body=body)
     response = message_response(ctx, message, exempt_root=True)
     if not with_components:
         response.pop("components", None)
