@@ -136,7 +136,7 @@ def correctness_overlay(original, candidate, destination):
         target.write_text("".join(lines))
     target = destination / "simcord/backend/ops/messages.py"
     lines = target.read_text().splitlines(keepends=True)
-    method = definition(ast.parse("".join(lines)), "edit_message", "MessageMixin")
+    method = definition(ast.parse("".join(lines)), "commit_message_edit", "MessageMixin")
     old_id = next(
         node
         for node in method.body
