@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import islice
 from typing import Any
 
 from ...backend import errors, serializers
@@ -54,19 +55,20 @@ def list_entitlements(ctx: RequestContext) -> Any:
     exclude_ended = _boolean(params.get("exclude_ended", False), "exclude_ended")
     exclude_deleted = _boolean(params.get("exclude_deleted", True), "exclude_deleted")
     now = ctx.backend.clock.now()
-    rows = [
+    rows = (
         entitlement
-        for entitlement in ctx.backend.entitlements.values()
-        if ("user_id" not in ids or entitlement.user_id == ids["user_id"])
-        and ("guild_id" not in ids or entitlement.guild_id == ids["guild_id"])
-        and (sku_ids is None or entitlement.sku_id in sku_ids)
-        and ("before" not in ids or entitlement.id < ids["before"])
-        and ("after" not in ids or entitlement.id > ids["after"])
+        for entitlement in ctx.backend.iter_entitlements(
+            user_id=ids.get("user_id"),
+            guild_id=ids.get("guild_id"),
+            before=ids.get("before"),
+            after=ids.get("after"),
+            newest_first="after" not in ids,
+        )
+        if (sku_ids is None or entitlement.sku_id in sku_ids)
         and (not exclude_deleted or not entitlement.deleted)
         and (not exclude_ended or entitlement.ends_at is None or entitlement.ends_at > now)
-    ]
-    rows.sort(key=lambda entitlement: entitlement.id, reverse="after" not in ids)
-    rows = rows[:limit]
+    )
+    rows = islice(rows, limit)
     return [serializers.entitlement_payload(entitlement) for entitlement in rows]
 
 

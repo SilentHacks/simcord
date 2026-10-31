@@ -69,11 +69,32 @@ with restoration and owns task, callback, executor and external-wait records.
 Executor completion is separate from cancellation of the caller's Future;
 paired hooks observe actual owned standard-library pool submissions and are
 restored after the last Env detaches.
+Each Env synchronizes callback publication and retirement with a small reentrant
+lock and takes settlement snapshots under it; user callbacks and error reporting
+run after release. Executor work continues to use the native scheduling hooks.
+`_WorkState` alone mutates callback indexes and selects each live native Handle;
+settlement executes outside the lock and reselects after every callback.
 `_modal.py` handles modal validation and serialization through the existing actor
 permission checks and interaction dispatch. Backend/ID access facts are shared
 below Env-bound viewer adapters; bot, human, fixture and token authority remain
 distinct. Compound Backend mutations validate all inputs before committing model
 state and gateway events; HTTP routes retain caller, reason and audit context.
+Message edits use the Backend's prepare/commit boundary too: HTTP parses and
+stages uploads, preparation owns effective validation and changed payloads, and
+commit updates the existing Message. Attachment binding finishes before CDN
+installation; postcommit delivery failures do not roll state back.
+
+Backend-owned ordered identity indexes serve bounded message reads, while
+resource scheduling tracks actionable poll, event and entitlement deadlines
+rather than scanning historical state. Canonical mutations update derived indexes
+before publishing events. Indexes never replace the authoritative models.
+Explicit finalization of a backend Poll shared by live messages scans those aliases
+to retire every deadline before publication. Automatic expiry stays index-driven;
+the rare explicit scan does not add another alias index.
+Scheduled-event passes freeze guild admission at entry and event admission upon
+entering each eligible guild, using registration order rather than deadline
+revision. Existing later events made due remain eligible; newly inserted events
+in the current guild wait for the next pass.
 
 ## Optional browser presentation
 

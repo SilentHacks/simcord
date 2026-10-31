@@ -4,6 +4,34 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.2.2 (2026-10-31)
+
+### Bug fixes
+
+- Detach nested AutoMod create/edit inputs and returned rule data so SDK object mutation cannot silently change enforcement. Lazily retain visited keyword patterns on each live rule, replacing preparation when its actual keyword filter changes and avoiding dependence on the shared regex cache.
+- Synchronize per-Env callback publication, retirement and settlement snapshots when owned executor threads schedule callbacks. Preserve cancellation, context and exact-once completed effects without holding the lifecycle lock while user callbacks run.
+- Settlement now considers the earliest live recognized wake across tracked and native timers, so a later timer cannot make an actor operation return before an earlier wake completes. Future-valued timer results are not mistaken for wake targets. Retired callbacks release their Handle links without changing native cancellation, Context or error behavior.
+- Payload detachment uses exact type identity for its wire fast path. Custom metaclass equality can no longer bypass independent copying or the original whole-graph deepcopy hooks and failures.
+- Retire all live message deadlines before publishing explicit finalization of a shared backend Poll, including when a subscriber raises. Keep automatic Poll expiry index-driven without an additional alias index.
+- Preserve scheduled-event pass membership during synchronous subscriber creation without losing later-event rescheduling. Accept unhashable AutoMod string keywords and keep text-identical keyword definitions distinct with lazy positional preparation. Centralize edit preparation and callback-index lifecycle ownership while preserving upload atomicity, deferred-response identity, cancellation and native callback behavior; remove the superseded sleep recognizer.
+  Keep the standalone attribution overlay aligned with the canonical edit commit so documented comparison runs remain executable.
+
+### Miscellaneous
+
+- AutoMod lazily skips impossible ASCII keyword matches before compiling or searching regexes, using the existing live-rule preparation owner. Keyword priority, Unicode and wildcard semantics, in-place edit detection and detached rule payloads are unchanged. No-rule, early-hit and Unicode workloads are not claimed as universal speedups.
+  Deferred preparation retains the original keyword's regex definition, including across equal-valued string-subclass replacements.
+- Reconstruct send, edit and history dispatch worlds for every measured benchmark round, including their HTTP/transcript state. Add a small complete command/reply scenario to the existing public-operation lane and distinguish its setup/shutdown scope from bare dispatch and stress workloads.
+- Reuse the publication schema fingerprint when validating live command catalogs, hashing only published keys without reconstructing wire option trees. Preserve live permissions, stale-entry removal, bounded publication and refresh behavior.
+- Reduce settlement CPU for bots with live Views and native I/O: drain owned progress before rescanning SDK waits, and read verified View lifecycle fields directly rather than scanning their attributes. Preserve completed effects, executor ownership, virtual time and settlement deadlines. Add a fresh-world local-I/O/live-View scenario to the existing reported benchmark lane without adding caches or scheduling indexes.
+- Avoid redundant wait recognition when neither an owned task nor its waiter has an indexed timer wake. Skip Preview mention/emoji discovery and command-map construction when all relevant message texts lack their opening syntax, preserving everyone mentions, channel mention inventories, rendered search and live authorization. No new cache, scheduler, ownership representation or tuning option; sparse search, repeated composition classification and expanded reply-history retention retain their existing scaling limits.
+- Detach nested REST/SDK message responses, edit inputs and retained HTTP/gateway history from canonical state and live subscriber envelopes. Complete fallible ingress detachment before upload, deferred-response and index side effects; retain shared-Poll and ordered subscriber/partial-commit behavior. These correctness fixes add copying CPU and retained-memory costs. Avoid task scans for callbacks without wake targets, eager ordered-bucket allocation, unchanged message index membership updates and per-ID removal of discarded channel buckets. Exact rendered Preview text search now seeks bounded pages with correct surviving-pivot witnesses and empty-page semantics; sparse/absent queries remain linear. No new dependency, cache, retention policy or public protocol change.
+
+  Preserve previously functioning deep reply ancestry using stack-safe wire-payload detachment at event, response and SDK parsing boundaries. Keep independent mutable snapshots and custom-data deepcopy behavior; avoid an unused live envelope when no subscribers exist. Add reproducible interleaved original/correctness-reference/optimized comparisons rather than attributing all measured overhead to necessary isolation.
+- Reduce simulator CPU overhead in callback tracking, wait classification, virtual-time scheduling, component preparation, bounded history/entitlement queries, and Preview projection. Wake settlement on tracked progress rather than imposing a callback-only polling delay. Preserve detached request/result payloads and authorization; mutate indexed backend state through Backend methods, not raw internal fields. Ordered selection adds the pure-Python Sorted Containers runtime dependency. Rejected actor/webhook message validation no longer leaves partially installed upload assets.
+
+  Retire callbacks canceled during settlement and inactive due poll schedules without waiting for a safety sweep. Preserve traversal-order errors when malformed deadlines and mixed timezone awareness coexist.
+
+
 ## 3.2.1 (2026-10-24)
 
 ### Bug fixes

@@ -88,29 +88,33 @@ class PollMixin(BackendBase):
 
     def expire_poll(self, channel_id: int, message_id: int) -> Message:
         message = self.get_message(channel_id, message_id)
-        if message.poll is not None and not message.poll.finalized:
-            message.poll.finalized = True
-            self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
+        poll = message.poll
+        if poll is not None and not poll.finalized:
+            # ponytail: O(history) on explicit expiry; index aliases only if this becomes hot.
+            for messages in self.messages.values():
+                for alias in messages.values():
+                    if alias.poll is poll:
+                        self._poll_deadlines.set((alias.channel_id, alias.id), None, ())
+            self._finalize_poll(message)
         return message
 
+    def _finalize_poll(self, message: Message) -> None:
+        assert message.poll is not None
+        message.poll.finalized = True
+        self._schedule_poll(message)
+        self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
+
     def next_poll_deadline(self) -> datetime.datetime | None:
-        return min(
-            (
-                datetime.datetime.fromisoformat(message.poll.expiry)
-                for messages in self.messages.values()
-                for message in messages.values()
-                if message.poll is not None and not message.poll.finalized
-            ),
-            default=None,
-        )
+        return self._poll_deadlines.next()
 
     def expire_due_polls(self) -> None:
         """Finalize any polls whose expiry has passed (driven by the virtual clock)."""
         now = datetime.datetime.fromisoformat(self.now_iso())
-        for channel_messages in self.messages.values():
-            for message in channel_messages.values():
-                poll = message.poll
-                if poll is None or poll.finalized:
+        with self._poll_deadlines.due(now) as due:
+            for channel_id, message_id in due:
+                message = self.messages.get(channel_id, {}).get(message_id)
+                if message is None or message.poll is None or message.poll.finalized:
+                    self._poll_deadlines.set((channel_id, message_id), None, ())
                     continue
-                if datetime.datetime.fromisoformat(poll.expiry) <= now:
-                    self.expire_poll(message.channel_id, message.id)
+                if datetime.datetime.fromisoformat(message.poll.expiry) <= now:
+                    self._finalize_poll(message)

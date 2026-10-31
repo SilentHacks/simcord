@@ -13,7 +13,6 @@ keys such as ``key``, ``url``, ``digest``, and ``source`` are stripped here.
 from __future__ import annotations
 
 import hashlib
-from bisect import bisect_right
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -47,32 +46,52 @@ _PROTOCOL_VERSION = 3
 
 
 def _history_window(
-    page: _Page, visible: list[Message]
+    preview: Preview, page: _Page, allowed: bool
 ) -> tuple[Message | None, list[Message], dict[str, Any]]:
-    ids = [item.id for item in visible]
-    target_index = next((index for index, item in enumerate(visible) if item.id == page.target_id), None)
-    target = visible[target_index] if target_index is not None else None
-    if page.layout == "channel":
-        if target_index is not None and page.window_end_id == page.target_id:
-            start = max(0, target_index - 24)
-            end = min(len(visible), start + HISTORY_WINDOW_SIZE)
-            start = max(0, end - HISTORY_WINDOW_SIZE)
-            page.window_end_id = ids[end - 1] if end and end < len(visible) else None
+    backend = preview.env.backend
+    target = None
+    if allowed and page.target_id is not None:
+        try:
+            candidate = backend.get_message(page.channel_id, page.target_id)
+        except BackendError:
+            pass
         else:
-            end = len(visible) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
-            start = max(0, end - HISTORY_WINDOW_SIZE)
-        if page.window_end_id is not None and page.window_end_id not in ids:
-            page.window_end_id = ids[end - 1] if end else None
-        window = visible[start:end]
-        history = {
-            "hasBefore": start > 0,
-            "hasAfter": end < len(visible),
-            "windowStartId": str(window[0].id) if window else None,
-            "windowEndId": str(window[-1].id) if window else None,
-        }
+            if candidate.visible_to(page.viewer.id):
+                target = candidate
+    history = {"hasBefore": False, "hasAfter": False, "windowStartId": None, "windowEndId": None}
+    if not allowed or page.layout != "channel":
+        return target, [target] if target is not None else [], history
+
+    def select(**kwargs: Any) -> list[Message]:
+        return backend.select_messages(page.channel_id, viewer_id=page.viewer.id, **kwargs)
+
+    if target is not None and page.window_end_id == page.target_id:
+        older = select(before=target.id, newest_first=True, limit=24)
+        window = list(reversed(older)) + select(after=target.id - 1, limit=HISTORY_WINDOW_SIZE - len(older))
+        if len(window) < HISTORY_WINDOW_SIZE:
+            window = list(
+                reversed(select(before=window[-1].id + 1, newest_first=True, limit=HISTORY_WINDOW_SIZE))
+            )
+        page.window_end_id = window[-1].id if select(after=window[-1].id, limit=1) else None
     else:
-        window = [target] if target is not None else []
-        history = {"hasBefore": False, "hasAfter": False, "windowStartId": None, "windowEndId": None}
+        window = list(
+            reversed(
+                select(
+                    before=page.window_end_id + 1 if page.window_end_id is not None else None,
+                    newest_first=True,
+                    limit=HISTORY_WINDOW_SIZE,
+                )
+            )
+        )
+        if page.window_end_id is not None and not any(item.id == page.window_end_id for item in window):
+            page.window_end_id = window[-1].id if window else None
+    if window:
+        history = {
+            "hasBefore": bool(select(before=window[0].id, limit=1)),
+            "hasAfter": bool(select(after=window[-1].id, limit=1)),
+            "windowStartId": str(window[0].id),
+            "windowEndId": str(window[-1].id),
+        }
     return target, window, history
 
 
@@ -227,16 +246,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
     page.referenced_users.clear()
     page.message_references.clear()
     page.disabled_candidates.clear()
-    visible: list[Message] = []
-    if channel is not None and allowed:
-        # Rebuild fixture-sized history; an index would need its own
-        # invalidation and authorization model.
-        visible = [
-            item
-            for item in sorted(env.backend.messages.get(channel.id, {}).values(), key=lambda item: item.id)
-            if can_access_message(env, channel.id, item, page.viewer, history=True)
-        ]
-    target, window, history = _history_window(page, visible)
+    target, window, history = _history_window(preview, page, allowed)
     target_id = str(target.id) if target is not None else None
     projected: dict[str, dict[str, Any]] = {}
     candidate_components: list[dict[str, Any]] = []
@@ -247,7 +257,7 @@ def build_snapshot(preview: Preview, page: _Page) -> dict[str, Any]:
         projected[str(item.id)] = value
         candidate_components.extend(value.get("components", []))
         previous = item
-    message_index, navigation = _message_navigation(preview, page, visible)
+    message_index, navigation = _message_navigation(preview, page)
 
     modal = _modal_projection(preview, page, channel, allowed)
     if modal is not None:

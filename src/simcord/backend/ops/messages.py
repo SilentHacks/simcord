@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from ...components import (
+    COMPONENTS_V2_FLAG,
     ComponentValidationError,
+    check_attachment_references,
     component_mentions,
     merge_edit_flags,
+    validate_components,
+    validate_message_fields,
     validate_message_state,
 )
 from ...enums import ChannelType, MessageType
@@ -18,6 +24,7 @@ from ..models import (
     AllowedMentions,
     AutoModRule,
     Channel,
+    Interaction,
     Message,
     MessageSticker,
     Poll,
@@ -70,6 +77,13 @@ _SYSTEM_CONTENT = {
 
 def _component_error(exc: ComponentValidationError) -> errors.BackendError:
     return errors.invalid_form_body(str(exc))
+
+
+@dataclass(slots=True)
+class _PreparedMessageEdit:
+    target: Message
+    fields: dict[str, Any]
+    deferred: Interaction | None
 
 
 class MessageMixin(BackendBase):
@@ -203,9 +217,9 @@ class MessageMixin(BackendBase):
             ),
             flags=int(flags),
             tts=tts,
-            embeds=list(embed_value),
+            embeds=deepcopy(embed_value),
             components=normalized_components,
-            attachments=list(attachments or []),
+            attachments=deepcopy(attachments or []),
             stickers=list(sticker_value),
             allowed_mentions=mention_policy,
             ping_user_ids=ping_users,
@@ -217,7 +231,7 @@ class MessageMixin(BackendBase):
             snapshots=snapshots,
             reply_author_id=reply_author_id,
             reply_author_interaction=reply_author_interaction,
-            interaction_metadata=interaction_metadata,
+            interaction_metadata=deepcopy(interaction_metadata),
             webhook_id=webhook_id,
             author_name=author_name,
             author_avatar=author_avatar,
@@ -238,7 +252,14 @@ class MessageMixin(BackendBase):
                 author_id=message.author_id,
                 content=message.content,
             )
+        previous = self.messages[channel.id].get(message.id)
+        if previous is not None:
+            self._index_message(previous, remove=True)
         self.messages[channel.id][message.id] = message
+        self._index_message(message)
+        if message.id not in self._message_order:
+            self._message_order[message.id] = self._registration_order()
+        self._schedule_poll(message)
         channel.last_message_id = message.id
         if channel.is_thread:
             channel.message_count += 1
@@ -455,6 +476,17 @@ class MessageMixin(BackendBase):
         self.emit("MESSAGE_CREATE", payload)
 
     def edit_message(self, channel_id: int, message_id: int, fields: dict[str, Any]) -> Message:
+        return self.commit_message_edit(self.prepare_message_edit(channel_id, message_id, fields))
+
+    def prepare_message_edit(
+        self,
+        channel_id: int,
+        message_id: int,
+        fields: dict[str, Any],
+        *,
+        attachment_bindings: list[dict[str, Any]] | None = None,
+    ) -> _PreparedMessageEdit:
+        """Validate and own incoming edits without changing canonical state."""
         message = self.get_message(channel_id, message_id)
         channel = self.get_channel(channel_id)
         content = fields["content"] if "content" in fields else message.content
@@ -467,8 +499,11 @@ class MessageMixin(BackendBase):
             requested_flags = (
                 int(fields["flags"]) if "flags" in fields and fields["flags"] is not None else message.flags
             )
+        except (TypeError, ValueError) as exc:
+            raise errors.invalid_form_body("flags must be an integer") from exc
+        try:
             flags = merge_edit_flags(message.flags, requested_flags)
-            normalized_components = validate_message_state(
+            validate_message_fields(
                 [] if components is None else components,
                 flags=flags,
                 content=content,
@@ -477,6 +512,11 @@ class MessageMixin(BackendBase):
                 stickers=message.stickers,
                 previous_flags=message.flags,
             )
+            normalized_components = [] if components is None else components
+            if "components" in fields or (flags ^ message.flags) & COMPONENTS_V2_FLAG:
+                normalized_components = validate_components(normalized_components, flags=flags)
+            if attachment_bindings is not None:
+                check_attachment_references(normalized_components, attachment_bindings)
         except (ComponentValidationError, TypeError, ValueError) as exc:
             raise _component_error(
                 exc if isinstance(exc, ComponentValidationError) else ComponentValidationError(str(exc))
@@ -486,24 +526,53 @@ class MessageMixin(BackendBase):
         mention_users, mention_roles, ping_users, ping_roles, mention_everyone = self._mention_state(
             channel, message.author_id, mention_content, policy, message.reply_author_id
         )
+        if "embeds" in fields:
+            embeds = deepcopy(embeds)
+        if "attachments" in fields:
+            attachments = deepcopy(attachments)
+        deferred = None
         if message.flags & (1 << 7) and message.interaction_metadata is not None:
             flags &= ~(1 << 7)
-            record = self.interactions.get(int(message.interaction_metadata["id"]))
-            if record is not None and record.message_id == message.id and record.loading:
-                record.complete_deferred()
-        message.content = content_value
-        message.embeds = list(embeds or [])
-        message.components = normalized_components
-        message.attachments = list(attachments or [])
-        message.poll = poll
-        message.flags = flags
-        message.allowed_mentions = policy
-        message.ping_user_ids = ping_users
-        message.ping_role_ids = ping_roles
-        message.mention_user_ids = mention_users
-        message.mention_role_ids = mention_roles
-        message.mention_everyone = mention_everyone
+            deferred = self.interactions.get(int(message.interaction_metadata["id"]))
+        return _PreparedMessageEdit(
+            message,
+            {
+                "content": content_value,
+                "embeds": embeds if embeds is not None else [],
+                "components": normalized_components,
+                "attachments": attachments if attachments is not None else [],
+                "poll": poll,
+                "flags": flags,
+                "allowed_mentions": policy,
+                "ping_user_ids": ping_users,
+                "ping_role_ids": ping_roles,
+                "mention_user_ids": mention_users,
+                "mention_role_ids": mention_roles,
+                "mention_everyone": mention_everyone,
+            },
+            deferred,
+        )
+
+    def commit_message_edit(self, prepared: _PreparedMessageEdit) -> Message:
+        """Apply a prepared edit to the existing message, then publish it."""
+        message = prepared.target
+        old_id = message.id
+        old_keys = self._message_index_keys(message)
+        record = prepared.deferred
+        if (
+            message.flags & (1 << 7)
+            and record is not None
+            and record.message_id == message.id
+            and record.loading
+        ):
+            record.complete_deferred()
+        for name, value in prepared.fields.items():
+            setattr(message, name, value)
         message.edited_timestamp = self.now_iso()
+        if (message.id, self._message_index_keys(message)) != (old_id, old_keys):
+            self._remove_message_index(old_id, old_keys)
+            self._index_message(message)
+        self._schedule_poll(message)
         if not message.is_ephemeral:
             self.emit("MESSAGE_UPDATE", dict(serializers.message_payload(self, message)))
         return message
@@ -523,7 +592,10 @@ class MessageMixin(BackendBase):
 
     def delete_message(self, channel_id: int, message_id: int) -> None:
         message = self.get_message(channel_id, message_id)
+        self._index_message(message, remove=True)
+        self._poll_deadlines.set((channel_id, message_id), None, ())
         del self.messages[channel_id][message_id]
+        self._message_order.pop(message_id, None)
         channel = self.get_channel(channel_id)
         payload: dict[str, Any] = {"id": str(message_id), "channel_id": str(channel_id)}
         if channel.guild_id is not None:
@@ -540,7 +612,14 @@ class MessageMixin(BackendBase):
         """
         channel = self.get_channel(channel_id)
         store = self.messages.get(channel_id, {})
-        deleted = [mid for mid in message_ids if store.pop(mid, None) is not None]
+        deleted = []
+        for mid in message_ids:
+            message = store.pop(mid, None)
+            if message is not None:
+                self._index_message(message, remove=True)
+                self._poll_deadlines.set((channel_id, mid), None, ())
+                self._message_order.pop(mid, None)
+                deleted.append(mid)
         payload: dict[str, Any] = {
             "ids": [str(mid) for mid in deleted],
             "channel_id": str(channel_id),
@@ -556,7 +635,9 @@ class MessageMixin(BackendBase):
         message = self.get_message(channel_id, message_id)
         if message.pinned == pinned:
             return
+        self._index_message(message, remove=True)
         message.pinned = pinned
+        self._index_message(message)
         channel = self.get_channel(channel_id)
         payload: dict[str, Any] = {"channel_id": str(channel_id), "last_pin_timestamp": self.now_iso()}
         if channel.guild_id is not None:
@@ -574,6 +655,7 @@ class MessageMixin(BackendBase):
 
     def create_auto_mod_rule(self, guild_id: int, creator_id: int, body: Mapping[str, Any]) -> AutoModRule:
         guild = self.get_guild(guild_id)
+        body = deepcopy(body)
         rule = AutoModRule(
             id=self.snowflake(),
             guild_id=guild_id,
@@ -581,8 +663,8 @@ class MessageMixin(BackendBase):
             creator_id=creator_id,
             event_type=int(body["event_type"]),
             trigger_type=int(body["trigger_type"]),
-            trigger_metadata=dict(body.get("trigger_metadata") or {}),
-            actions=list(body.get("actions") or []),
+            trigger_metadata=body.get("trigger_metadata") or {},
+            actions=body.get("actions") or [],
             enabled=bool(body.get("enabled", True)),
             exempt_roles=[int(r) for r in body.get("exempt_roles") or []],
             exempt_channels=[int(c) for c in body.get("exempt_channels") or []],
@@ -599,6 +681,7 @@ class MessageMixin(BackendBase):
 
     def edit_auto_mod_rule(self, guild_id: int, rule_id: int, changes: Mapping[str, Any]) -> AutoModRule:
         rule = self.get_auto_mod_rule(guild_id, rule_id)
+        changes = deepcopy(changes)
         for attr, value in changes.items():
             setattr(rule, attr, value)
         self.emit("AUTO_MODERATION_RULE_UPDATE", serializers.auto_mod_rule_payload(self, rule))
@@ -667,13 +750,40 @@ class MessageMixin(BackendBase):
         a suffix match and ``*word*`` a substring match anywhere — mirroring
         Discord's keyword-filter semantics rather than a naive substring search.
         """
-        for keyword in rule.trigger_metadata.get("keyword_filter") or []:
-            bare = keyword.strip("*")
-            if not bare:
-                continue
-            left = "" if keyword.startswith("*") else r"(?<![A-Za-z0-9])"
-            right = "" if keyword.endswith("*") else r"(?![A-Za-z0-9])"
-            if re.search(f"{left}{re.escape(bare)}{right}", content, re.IGNORECASE):
+        keywords = tuple(rule.trigger_metadata.get("keyword_filter") or ())
+        if rule._keyword_preparation is None or rule._keyword_preparation[0] != keywords:
+            rule._keyword_preparation = (keywords, {})
+        preparations = rule._keyword_preparation[1]
+        ascii_content = type(content) is str and content.isascii()
+        lowered_content: str | None = None
+        for position, keyword in enumerate(keywords):
+            preparation = preparations.get(position)
+            if preparation is None:
+                bare = keyword.strip("*")
+                if not bare:
+                    continue
+                prepared_keyword = keyword
+                literal = bare.lower() if type(keyword) is str and keyword.isascii() else None
+                pattern = None
+            else:
+                prepared_keyword, literal, pattern = preparation
+            # Only exact ASCII strings have equivalent lowercase and IGNORECASE literals.
+            if ascii_content and literal is not None:
+                if lowered_content is None:
+                    lowered_content = content.lower()
+                if literal not in lowered_content:
+                    if preparation is None:
+                        preparations[position] = (prepared_keyword, literal, None)
+                    continue
+            if pattern is None:
+                # Equal-valued subclasses must not redefine a deferred entry's boundaries.
+                if preparation is not None:
+                    bare = prepared_keyword.strip("*")
+                left = "" if prepared_keyword.startswith("*") else r"(?<![A-Za-z0-9])"
+                right = "" if prepared_keyword.endswith("*") else r"(?![A-Za-z0-9])"
+                pattern = re.compile(f"{left}{re.escape(bare)}{right}", re.IGNORECASE)
+                preparations[position] = (prepared_keyword, literal, pattern)
+            if pattern.search(content):
                 return keyword
         return None
 

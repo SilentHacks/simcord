@@ -643,16 +643,18 @@ def sticker_payload(backend: BackendBase, sticker: Sticker) -> dict[str, Any]:
 
 
 def auto_mod_rule_payload(backend: BackendBase, rule: AutoModRule) -> dict[str, Any]:
-    return {
-        "id": str(rule.id),
-        "guild_id": str(rule.guild_id),
-        "name": rule.name,
-        "creator_id": str(rule.creator_id),
-        "event_type": rule.event_type,
-        "trigger_type": rule.trigger_type,
-        "trigger_metadata": dict(rule.trigger_metadata),
-        "actions": list(rule.actions),
-        "enabled": rule.enabled,
-        "exempt_roles": [str(r) for r in rule.exempt_roles],
-        "exempt_channels": [str(c) for c in rule.exempt_channels],
-    }
+    return deepcopy(
+        {
+            "id": str(rule.id),
+            "guild_id": str(rule.guild_id),
+            "name": rule.name,
+            "creator_id": str(rule.creator_id),
+            "event_type": rule.event_type,
+            "trigger_type": rule.trigger_type,
+            "trigger_metadata": rule.trigger_metadata,
+            "actions": rule.actions,
+            "enabled": rule.enabled,
+            "exempt_roles": [str(r) for r in rule.exempt_roles],
+            "exempt_channels": [str(c) for c in rule.exempt_channels],
+        }
+    )

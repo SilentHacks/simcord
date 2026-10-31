@@ -63,6 +63,7 @@ class GuildMixin(BackendBase):
             id=guild_id, name="@everyone", permissions=DEFAULT_EVERYONE_PERMISSIONS, position=0
         )
         self.guilds[guild_id] = guild
+        self._guild_order[guild_id] = self._registration_order()
         # The owner is always a member of their own guild on real Discord; without
         # the membership discord.py's ``Guild.owner`` (resolved via get_member)
         # would be None and the owner would be absent from ``guild.members``.
@@ -99,10 +100,14 @@ class GuildMixin(BackendBase):
         bot's cache evicts the guild, exactly as when it is kicked or leaves.
         """
         guild = self.get_guild(guild_id)
+        for event in guild.scheduled_events.values():
+            self._event_deadlines.set((guild.id, event.id), None, ())
+            self._event_order.pop(event.id, None)
         for channel_id in list(guild.channel_ids) + list(guild.thread_ids):
             self.channels.pop(channel_id, None)
-            self.messages.pop(channel_id, None)
+            self._drop_channel_messages(channel_id)
         del self.guilds[guild_id]
+        self._guild_order.pop(guild_id, None)
         self.emit("GUILD_DELETE", {"id": str(guild_id)})
 
     # --------------------------------------------------------------- members

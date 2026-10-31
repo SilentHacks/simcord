@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import fields as dataclass_fields
 from typing import TYPE_CHECKING, Any, cast
 
-from ...components import ComponentValidationError, resolve_attachment_references
+from ...components import ComponentValidationError, check_attachment_references, resolve_attachment_references
 from ...enums import ChannelType, MessageType
 from .. import errors, serializers
 from ..models import Channel, Message, Overwrite, StageInstance, ThreadMetadata
@@ -38,6 +38,7 @@ class ChannelMixin(BackendBase):
             **fields,
         )
         self.channels[channel.id] = channel
+        self._channel_order[channel.id] = self._registration_order()
         self.messages[channel.id] = {}
         if guild_id is not None:
             guild = self.get_guild(guild_id)
@@ -58,7 +59,7 @@ class ChannelMixin(BackendBase):
             self.delete_stage_instance(channel_id)
         payload = serializers.channel_payload(self, channel)
         del self.channels[channel_id]
-        self.messages.pop(channel_id, None)
+        self._drop_channel_messages(channel_id)
         if channel.guild_id is not None:
             guild = self.get_guild(channel.guild_id)
             if channel.id in guild.channel_ids:
@@ -235,6 +236,7 @@ class ChannelMixin(BackendBase):
         )
         thread.thread_members[owner_id] = now
         self.channels[thread.id] = thread
+        self._channel_order[thread.id] = self._registration_order()
         self.messages.setdefault(thread.id, {})
         guild.thread_ids.append(thread.id)
         if broadcast:
@@ -290,25 +292,29 @@ class ChannelMixin(BackendBase):
         ):
             raise errors.invalid_form_body("Invalid forum uploads")
         try:
-            resolve_attachment_references(starter.components, starter.attachments)
+            check_attachment_references(starter.components, starter.attachments)
         except (ComponentValidationError, TypeError, ValueError) as exc:
             raise errors.invalid_form_body(str(exc)) from exc
 
+        thread_id = self.snowflake()
+        staged = [
+            (self.cdn.prepare_attachment(self.snowflake(), thread_id, filename, data, description), data)
+            for filename, data, description in upload_list
+        ]
+        attachments = [attachment for attachment, _ in staged]
+        starter.components = resolve_attachment_references(starter.components, attachments, owned=True)
         thread = self.create_thread(
             forum_id,
             name,
             starter.author_id,
             auto_archive_duration=auto_archive_duration,
             applied_tags=tags,
+            message_id=thread_id,
             broadcast=False,
         )
-        attachments = [
-            self.cdn.store_attachment(self.snowflake(), thread.id, filename, data, description)
-            for filename, data, description in upload_list
-        ]
         starter.channel_id = thread.id
         starter.attachments = attachments
-        starter.components = resolve_attachment_references(starter.components, attachments)
+        self.cdn.install_attachments(staged)
         backend.commit_message(starter, broadcast=False)
         forum.last_message_id = thread.id
         self.announce_thread_create(thread)

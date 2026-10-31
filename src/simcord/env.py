@@ -28,9 +28,7 @@ from ._runtime import (
 )
 from ._settlement import (
     _active_callbacks,
-    _callback_is_parked,
     _is_parked,
-    _next_virtual_timer,
     _owned_tasks,
     _run_due_virtual_callbacks,
     _settle_timeout_message,
@@ -212,6 +210,7 @@ class Env:
             active = self._operation_label or "another operation"
             raise SetupError(f"operation overlaps active {active}")
         if self._operation_task is None:
+            self._work.reconcile(self._loop.time() if self._loop is not None else 0.0)
             self._operation_task = current
             self._operation_label = label
         self._operation_depth += 1
@@ -465,12 +464,7 @@ class Env:
             if task.done():
                 assert self._loop is not None
                 self._work.inspect_task(task, record, self._loop, self._record_error, force=True)
-        for record in self._work.callbacks:
-            if record.handle is not None:
-                record.handle.cancel()
-            if record.real_handle is not None:
-                record.real_handle.cancel()
-        self._work.callbacks.clear()
+        self._work.cancel_callbacks()
         _restore_loop(self)
         _dpy_internals.release_clocks(self)
         self._work.tasks.clear()
@@ -537,7 +531,10 @@ class Env:
         deadline = self._loop.time() + effective if _deadline is None else _deadline
         stable_empty = 0
         while True:
+            if self._loop.time() - self._work.reconciled_at >= interval:
+                self._work.reconcile(self._loop.time())
             _run_due_virtual_callbacks(self._settlement_state(), deadline)
+            before_yield = self._work.revision
             await asyncio.sleep(0)
             advancing = self._real_advance_task or self._advance_task
             if advancing is not None and advancing is not _current_task():
@@ -548,76 +545,54 @@ class Env:
                     self._real_advance_task = None
                 advancing.result()
                 continue
-            pending = [task for task in _owned_tasks(self._settlement_state()) if not task.done()]
-            callbacks = _active_callbacks(self._settlement_state())
-            native_pending = tuple(self._work.executors)
-            if not pending and not callbacks and not native_pending:
+            # Keep draining actual progress before rescanning parked SDK work.
+            # A busy callback chain must still reach the deadline check below.
+            if self._work.revision != before_yield and self._loop.time() < deadline:
+                stable_empty = 0
+                continue
+            revision = self._work.revision
+            state = self._settlement_state()
+            pending = _owned_tasks(state)
+            _virtualize_recognized_waits(state, pending)
+            # Deadline facts are read only after virtualization canceled fallbacks.
+            parked = [task for task in pending if _is_parked(state, task, deadline)]
+            active_callbacks = _active_callbacks(state, deadline)
+            if not self._work.executors and not active_callbacks and len(parked) == len(pending):
                 stable_empty += 1
                 if stable_empty >= 2:
                     return
                 continue
             stable_empty = 0
-            _virtualize_recognized_waits(self._settlement_state(), pending)
-            parked = [task for task in pending if _is_parked(self._settlement_state(), task, deadline)]
-            active_callbacks = [
-                record
-                for record in callbacks
-                if not _callback_is_parked(self._settlement_state(), record, deadline)
-            ]
-            if not native_pending and not active_callbacks and len(parked) == len(pending):
-                # Recheck after another loop turn so a resumed continuation or
-                # callback scheduled by a just-finished task cannot escape.
-                await asyncio.sleep(0)
-                again = [task for task in _owned_tasks(self._settlement_state()) if not task.done()]
-                _virtualize_recognized_waits(self._settlement_state(), again)
-                again_callbacks = [
-                    record
-                    for record in _active_callbacks(self._settlement_state())
-                    if not _callback_is_parked(self._settlement_state(), record, deadline)
-                ]
-                if (
-                    not self._work.executors
-                    and not again_callbacks
-                    and all(_is_parked(self._settlement_state(), task, deadline) for task in again)
-                ):
-                    return
-                continue
             remaining = deadline - self._loop.time()
             if remaining <= 0:
-                stuck = [task for task in pending if task not in parked]
                 raise TimeoutError(
                     _settle_timeout_message(
-                        self._settlement_state(), stuck, pending, effective, active_callbacks
+                        state,
+                        [task for task in pending if task not in parked],
+                        pending,
+                        effective,
+                        active_callbacks,
                     )
                 )
-            wait_for = min(interval, remaining)
-            if pending or native_pending:
+            if any(
+                record.when is not None and record.when <= self._virtual_time for record in active_callbacks
+            ):
+                continue
+            progress = self._loop.create_future()
+            self._work.progress = progress
+            try:
+                # Arm before checking the revision: scheduling/completion between
+                # classification and arming cannot become a lost notification.
+                if self._work.revision != revision:
+                    continue
                 await asyncio.wait(
-                    (*pending, *native_pending), timeout=wait_for, return_when=asyncio.FIRST_COMPLETED
+                    (progress, *self._work.executors),
+                    timeout=min(interval, remaining),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            else:
-                await asyncio.sleep(wait_for)
-            # A busy task can make progress forever. The deadline is absolute,
-            # so progress never extends it.
-            if self._loop.time() >= deadline:
-                pending = [task for task in _owned_tasks(self._settlement_state()) if not task.done()]
-                _virtualize_recognized_waits(self._settlement_state(), pending)
-                parked = [task for task in pending if _is_parked(self._settlement_state(), task, deadline)]
-                active_callbacks = [
-                    record
-                    for record in _active_callbacks(self._settlement_state())
-                    if not _callback_is_parked(self._settlement_state(), record, deadline)
-                ]
-                if self._work.executors or active_callbacks or len(parked) != len(pending):
-                    raise TimeoutError(
-                        _settle_timeout_message(
-                            self._settlement_state(),
-                            [task for task in pending if task not in parked],
-                            pending,
-                            effective,
-                            active_callbacks,
-                        )
-                    )
+            finally:
+                self._work.progress = None
+                progress.cancel()
 
     def _next_resource_deadline(self) -> float | None:
         deadlines = (
@@ -662,7 +637,7 @@ class Env:
                 candidates = [target]
                 for instant in (
                     self._next_resource_deadline(),
-                    _next_virtual_timer(self._settlement_state()),
+                    self._work.next_timer(),
                 ):
                     if instant is not None:
                         candidates.append(max(self._virtual_time, instant))

@@ -288,6 +288,7 @@ async def test_pending_original_identity_visibility_and_completion(
     result = await alice.slash(channel, "pending")
     interaction = admitted[0]
     original = await interaction.original_response()
+    canonical_original = env.backend.get_message(channel.id, original.id)
     assert result.response.id == original.id
     assert result.response.flags.loading
     assert result.deferred
@@ -316,6 +317,7 @@ async def test_pending_original_identity_visibility_and_completion(
     else:
         completed = await interaction.followup.edit_message(original.id, content="completed")
     assert completed.id == original.id
+    assert env.backend.get_message(channel.id, original.id) is canonical_original
     assert completed.flags.ephemeral is ephemeral
     assert not completed.flags.loading
     assert result.response.id == original.id

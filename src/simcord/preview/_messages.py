@@ -646,6 +646,8 @@ def _markdown_context(
 ) -> dict[str, Any]:
     backend = preview.env.backend
     texts = _message_texts(message, content)
+    if not any("<" in text for text in texts):
+        texts = []
     users: dict[str, str] = {}
     for text in texts:
         for match in re.finditer(r"<@!?([0-9]{1,20})>", text):
@@ -693,7 +695,7 @@ def _markdown_context(
                 }
 
     commands: dict[str, str] = {}
-    for scope in (channel.guild_id, None):
+    for scope in (channel.guild_id, None) if texts else ():
         for command in backend.commands.get(scope, {}).values():
             command_id = command.get("id")
             name = command.get("name")
@@ -705,6 +707,7 @@ def _markdown_context(
                 commands.setdefault(str(command_id), name)
 
     return {
+        "_parsers": preview._markdown_parsers,
         "users": users,
         "roles": roles,
         "channels": channels,

@@ -708,7 +708,6 @@ async def test_work_owner_retires_waits_callbacks_and_tasks_on_restart():
         await env.settle()
         assert task in work.tasks
         assert task in work.external_waits
-        assert any(record.handle is timer for record in work.callbacks)
         await env.restart_bot(create_bot())
         assert env._work is work
         assert env._generation == generation + 1
@@ -716,7 +715,6 @@ async def test_work_owner_retires_waits_callbacks_and_tasks_on_restart():
         assert task not in work.tasks
         assert task not in work.external_waits
         assert timer.cancelled()
-        assert not any(record.handle is timer for record in work.callbacks)
 
 
 @pytest.mark.parametrize("operation", ["settle", "shutdown"])

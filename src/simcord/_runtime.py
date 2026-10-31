@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import heapq
 import inspect
 import weakref
 from _thread import LockType
@@ -13,7 +14,7 @@ from concurrent.futures import Future as NativeFuture
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial, wraps
-from threading import Lock
+from threading import Lock, RLock
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import discord
@@ -68,6 +69,8 @@ class _CallbackRecord:
     when: float | None
     label: str
     real_handle: asyncio.TimerHandle | None = None
+    key: int = 0
+    wake_targets: tuple[Any, ...] = ()
 
 
 @dataclass(slots=True, weakref_slot=True)
@@ -190,9 +193,152 @@ class _WorkState:
     """Generation-spanning work ownership; Env retains lifecycle and world state."""
 
     tasks: dict[asyncio.Task[Any], _TaskRecord] = field(default_factory=dict)
-    callbacks: list[_CallbackRecord] = field(default_factory=list)
+    callbacks: dict[int, _CallbackRecord] = field(default_factory=dict)
+    ready: dict[int, _CallbackRecord] = field(default_factory=dict)
+    _callback_lock: RLock = field(default_factory=RLock, repr=False, compare=False)
+    timers: list[tuple[float, int]] = field(default_factory=list)
+    wakes: dict[Any, dict[int, _CallbackRecord]] = field(default_factory=dict)
+    sequence: int = 0
+    revision: int = 0
+    progress: asyncio.Future[None] | None = None
+    notify_scheduled: bool = False
+    call_soon: Any = None
+    reconciled_at: float = -float("inf")
     executors: dict[asyncio.Future[None], _ExecutorRecord] = field(default_factory=dict)
     external_waits: dict[asyncio.Task[Any], str] = field(default_factory=dict)
+
+    def changed(self) -> None:
+        with self._callback_lock:
+            self.revision += 1
+            if self.progress is not None and not self.notify_scheduled:
+                self.notify_scheduled = True
+                self.call_soon(self._notify, context=contextvars.Context())
+
+    def _notify(self) -> None:
+        with self._callback_lock:
+            self.notify_scheduled = False
+            progress = self.progress
+        if progress is not None and not progress.done():
+            progress.set_result(None)
+
+    def register(self, record: _CallbackRecord, callback: Any, args: tuple[Any, ...]) -> None:
+        with self._callback_lock:
+            self.sequence += 1
+            record.key = self.sequence
+            self.callbacks[record.key] = record
+            if record.when is None:
+                self.ready[record.key] = record
+            else:
+                heapq.heappush(self.timers, (record.when, record.key))
+                targets = [arg for arg in args if isinstance(arg, asyncio.Future)]
+                owner = getattr(callback, "__self__", None)
+                if isinstance(owner, asyncio.Future):
+                    targets.append(owner)
+                elif getattr(callback, "__name__", "") == "_on_timeout":
+                    task = getattr(owner, "_task", None)
+                    if task is not None:
+                        targets.append(task)
+                record.wake_targets = tuple(dict.fromkeys(targets))
+                for target in record.wake_targets:
+                    self.wakes.setdefault(target, {})[record.key] = record
+            self.changed()
+
+    def retire(self, record: _CallbackRecord) -> None:
+        with self._callback_lock:
+            record.handle = None
+            if record.real_handle is not None:
+                record.real_handle.cancel()
+                record.real_handle = None
+            if self.callbacks.pop(record.key, None) is None:
+                return
+            self.ready.pop(record.key, None)
+            for target in record.wake_targets:
+                records = self.wakes.get(target)
+                if records is not None:
+                    records.pop(record.key, None)
+                    if not records:
+                        self.wakes.pop(target, None)
+            record.wake_targets = ()
+            self.changed()
+            if len(self.timers) > 2 * len(self.callbacks) + 64:
+                self.timers = [
+                    (r.when, r.key)
+                    for r in self.callbacks.values()
+                    if r.when is not None and r.key not in self.ready
+                ]
+                heapq.heapify(self.timers)
+
+    def next_due_callback(self, virtual_time: float) -> asyncio.Handle | None:
+        with self._callback_lock:
+            while self.timers and self.timers[0][0] <= virtual_time:
+                _, key = heapq.heappop(self.timers)
+                record = self.callbacks.get(key)
+                if record is not None:
+                    if record.handle is None or record.handle.cancelled():
+                        self.retire(record)
+                    else:
+                        self.ready[key] = record
+            while self.ready:
+                stale = None
+                for record in self.ready.values():
+                    handle = record.handle
+                    if handle is None or handle.cancelled():
+                        stale = record
+                        break
+                    if record.when is not None:
+                        return handle
+                if stale is None:
+                    return None
+                self.retire(stale)
+            return None
+
+    def next_timer(self) -> float | None:
+        with self._callback_lock:
+            while self.timers:
+                when, key = self.timers[0]
+                record = self.callbacks.get(key)
+                if record is not None and record.handle is not None and not record.handle.cancelled():
+                    return when
+                heapq.heappop(self.timers)
+                if record is not None:
+                    self.retire(record)
+            return None
+
+    def cancel_callbacks(self) -> None:
+        with self._callback_lock:
+            for record in tuple(self.callbacks.values()):
+                if record.handle is not None:
+                    record.handle.cancel()
+                self.retire(record)
+            self.callbacks.clear()
+            self.ready.clear()
+            self.timers.clear()
+            self.wakes.clear()
+
+    def callback_records(self, *, ready_only: bool = False) -> tuple[_CallbackRecord, ...]:
+        with self._callback_lock:
+            return tuple((self.ready if ready_only else self.callbacks).values())
+
+    def wake_records(self, *targets: Any) -> tuple[_CallbackRecord, ...]:
+        with self._callback_lock:
+            records = {}
+            for target in targets:
+                records.update(self.wakes.get(target, {}))
+            return tuple(records.values())
+
+    def has_wake(self, *targets: Any) -> bool:
+        with self._callback_lock:
+            return any(target in self.wakes for target in targets)
+
+    def reconcile(self, now: float) -> None:
+        # Native Handle.cancel cannot notify us. Operations and bounded idle
+        # safety ticks reconcile it, never every intermediate virtual instant.
+        with self._callback_lock:
+            self.reconciled_at = now
+            records = tuple(self.callbacks.values())
+        for record in records:
+            if record.handle is None or record.handle.cancelled():
+                self.retire(record)
 
     def inspect_task(
         self,
@@ -238,6 +384,7 @@ class _WorkState:
         self.tasks[task] = _TaskRecord(generation, label, weakref.ref(owner) if owner is not None else None)
 
         def done(completed: asyncio.Task[Any]) -> None:
+            self.changed()
             loop.call_soon(self.inspect_task, completed, self.tasks.get(completed), loop, record_error)
 
         task.add_done_callback(done)
@@ -342,14 +489,9 @@ def _track_callback(
 
     def invoke(*call_args: Any) -> None:
         nonlocal called
-        called = True
-        if record.real_handle is not None:
-            record.real_handle.cancel()
-        if record.handle is not None:
-            try:
-                work.callbacks.remove(record)
-            except ValueError:
-                pass
+        with work._callback_lock:
+            called = True
+            work.retire(record)
         try:
             callback(*call_args)
         except BaseException as error:
@@ -363,9 +505,10 @@ def _track_callback(
         handle = asyncio.TimerHandle(when, invoke, args, loop, context=schedule_context)
         schedule_timer(record, callback, args, schedule_context)
 
-    record.handle = handle
-    if not called:
-        work.callbacks.append(record)
+    with work._callback_lock:
+        if not called:
+            record.handle = handle
+            work.register(record, callback, args)
     return handle
 
 
@@ -392,6 +535,7 @@ async def _attach_bot(self: Env, bot: discord.Client) -> None:
     orig_call_at = runtime.call_at
     orig_call_soon_threadsafe = runtime.call_soon_threadsafe
     orig_run_in_executor = runtime.run_in_executor
+    self._work.call_soon = orig_call_soon_threadsafe
     native_executor_hook = (
         getattr(orig_run_in_executor, "__func__", None) is asyncio.BaseEventLoop.run_in_executor
     )

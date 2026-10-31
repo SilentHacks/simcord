@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,3 +25,6 @@ class AutoModRule:
     enabled: bool = True
     exempt_roles: list[int] = field(default_factory=list)
     exempt_channels: list[int] = field(default_factory=list)
+    _keyword_preparation: (
+        tuple[tuple[str, ...], dict[int, tuple[str, str | None, re.Pattern[str] | None]]] | None
+    ) = field(default=None, init=False, repr=False, compare=False)

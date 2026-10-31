@@ -20,8 +20,14 @@ class CdnStore:
     def store_attachment(
         self, attachment_id: int, channel_id: int, filename: str, data: bytes, description: str | None
     ) -> dict[str, Any]:
+        attachment = self.prepare_attachment(attachment_id, channel_id, filename, data, description)
+        self.install_attachments([(attachment, data)])
+        return attachment
+
+    def prepare_attachment(
+        self, attachment_id: int, channel_id: int, filename: str, data: bytes, description: str | None
+    ) -> dict[str, Any]:
         url = f"{CDN_BASE}/attachments/{channel_id}/{attachment_id}/{filename}"
-        self._blobs[url] = data
         return {
             "id": str(attachment_id),
             "filename": filename,
@@ -31,6 +37,10 @@ class CdnStore:
             "proxy_url": url,
             "content_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
         }
+
+    def install_attachments(self, uploads: list[tuple[dict[str, Any], bytes]]) -> None:
+        for attachment, data in uploads:
+            self._blobs[attachment["url"]] = data
 
     def store_sticker(self, sticker_id: int, format_type: int, data: bytes) -> str:
         url = sticker_url(sticker_id, format_type)

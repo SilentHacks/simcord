@@ -30,7 +30,12 @@ def _viewer_id(viewer: Any) -> int:
 
 
 def channel_accessible(
-    backend: BackendBase, channel_id: int, viewer_id: int, *, history: bool = False
+    backend: BackendBase,
+    channel_id: int,
+    viewer_id: int,
+    *,
+    history: bool = False,
+    permissions_value: int | None = None,
 ) -> bool:
     """Current channel access facts, independent of Env-bound handle adapters."""
     channel = backend.channels.get(channel_id)
@@ -44,7 +49,11 @@ def channel_accessible(
     if guild is None or viewer_id not in guild.members:
         return False
     try:
-        permissions = backend.compute_permissions(channel.guild_id, viewer_id, channel.id)
+        permissions = (
+            backend.compute_permissions(channel.guild_id, viewer_id, channel.id)
+            if permissions_value is None
+            else permissions_value
+        )
     except BackendError:  # pragma: no cover - validated guild/channel pair
         return False
     if not permissions & discord.Permissions.view_channel.flag:
