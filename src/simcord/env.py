@@ -29,7 +29,6 @@ from ._runtime import (
 from ._settlement import (
     _active_callbacks,
     _is_parked,
-    _next_virtual_timer,
     _owned_tasks,
     _run_due_virtual_callbacks,
     _settle_timeout_message,
@@ -465,14 +464,7 @@ class Env:
             if task.done():
                 assert self._loop is not None
                 self._work.inspect_task(task, record, self._loop, self._record_error, force=True)
-        with self._work._callback_lock:
-            callbacks = tuple(self._work.callbacks.values())
-        for record in callbacks:
-            if record.handle is not None:
-                record.handle.cancel()
-            self._work.retire(record)
-        with self._work._callback_lock:
-            self._work.timers.clear()
+        self._work.cancel_callbacks()
         _restore_loop(self)
         _dpy_internals.release_clocks(self)
         self._work.tasks.clear()
@@ -645,7 +637,7 @@ class Env:
                 candidates = [target]
                 for instant in (
                     self._next_resource_deadline(),
-                    _next_virtual_timer(self._settlement_state()),
+                    self._work.next_timer(),
                 ):
                     if instant is not None:
                         candidates.append(max(self._virtual_time, instant))

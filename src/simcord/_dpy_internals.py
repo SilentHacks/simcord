@@ -338,20 +338,6 @@ def _original_callback(callback: Any) -> Any:
         callback = original
 
 
-def is_sleep_waiter(waiter: Any, loop: Any, deadline: float) -> bool:
-    if waiter is None or waiter.done():
-        return False
-    for handle in getattr(loop, "_scheduled", ()):
-        if handle.cancelled() or handle.when() <= deadline:
-            continue
-        callback = _original_callback(getattr(handle, "_callback", None))
-        if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and any(
-            arg is waiter for arg in getattr(handle, "_args", ())
-        ):
-            return True
-    return False
-
-
 def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[Any]:
     """Return every unresolved dependency of a supported asyncio composition."""
     found: list[Any] = []

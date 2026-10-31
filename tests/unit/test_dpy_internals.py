@@ -377,22 +377,6 @@ async def test_stored_wait_futures_handles_missing_store_and_null_views() -> Non
     assert _dpy_internals._stored_wait_futures(client) == set()
 
 
-async def test_is_sleep_waiter_matches_scheduled_wake() -> None:
-    waiter: asyncio.Future[Any] = asyncio.Future()
-    handle = SimpleNamespace(
-        cancelled=lambda: False,
-        when=lambda: 100.0,
-        _callback=_set_result_unless_cancelled,
-        _args=(waiter,),
-    )
-    loop = SimpleNamespace(_scheduled=[handle])
-    assert _dpy_internals.is_sleep_waiter(waiter, loop, 50.0)
-    assert not _dpy_internals.is_sleep_waiter(None, loop, 50.0)
-    done: asyncio.Future[Any] = asyncio.Future()
-    done.set_result(None)
-    assert not _dpy_internals.is_sleep_waiter(done, loop, 50.0)
-
-
 async def test_state_helpers_and_install_http() -> None:
     state = SimpleNamespace(parsers={"message_create": object()})
     client: Any = SimpleNamespace(_connection=state, tree=SimpleNamespace())

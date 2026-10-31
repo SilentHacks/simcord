@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import heapq
 import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -65,25 +64,13 @@ def _run_due_virtual_callbacks(self: _SettlementState, deadline: float) -> None:
     assert self.loop is not None
     ran = 0
     while True:
-        with self.work._callback_lock:
-            while self.work.timers and self.work.timers[0][0] <= self.virtual_time:
-                _, key = heapq.heappop(self.work.timers)
-                record = self.work.callbacks.get(key)
-                if record is not None:
-                    if record.handle is None or record.handle.cancelled():
-                        self.work.retire(record)
-                    else:
-                        self.work.ready[key] = record
-            ready = tuple(self.work.ready.values())
-        due = next((r for r in ready if r.when is not None), None)
-        if due is None:
+        handle = self.work.next_due_callback(self.virtual_time)
+        if handle is None:
             return
-        assert due.handle is not None
-        if due.handle.cancelled():
-            self.work.retire(due)
+        if handle.cancelled():
             continue
         try:
-            due.handle._run()
+            handle._run()
         except Exception:
             # The real loop routes callback failures to its exception
             # handler; advancing virtual timers must keep that behavior.
@@ -127,9 +114,7 @@ def _sleep_waiter_beyond_deadline(self: _SettlementState, waiter: Any, deadline:
                 sleeps[target] = min(sleeps.get(target, math.inf), handle.when())
         object.__setattr__(self, "foreign_sleeps", sleeps)
     fire_time = sleeps.get(waiter)
-    with self.work._callback_lock:
-        records = tuple(self.work.wakes.get(waiter, {}).values())
-    for record in records:
+    for record in self.work.wake_records(waiter):
         handle = record.handle
         if handle is None or handle.cancelled():
             continue
@@ -148,10 +133,7 @@ def _timer_records_waking(
 ) -> list[_CallbackRecord]:
     """Tracked timers whose only effect is resuming this task's current wait."""
     found: list[_CallbackRecord] = []
-    with self.work._callback_lock:
-        candidates = dict(self.work.wakes.get(waiter, {}))
-        candidates.update(self.work.wakes.get(task, {}))
-    for record in candidates.values():
+    for record in self.work.wake_records(waiter, task):
         handle = record.handle
         if record.when is None or handle is None or handle.cancelled():
             continue
@@ -204,9 +186,7 @@ def _virtualize_recognized_waits(self: _SettlementState, pending: list[asyncio.T
     """
     for task in pending:
         waiter = getattr(task, "_fut_waiter", None)
-        with self.work._callback_lock:
-            has_timer = task in self.work.wakes or waiter in self.work.wakes
-        if not has_timer:
+        if not self.work.has_wake(task, waiter):
             continue
         if not _recognized_wait(self, task, waiter):
             continue
@@ -223,10 +203,8 @@ def _owned_tasks(self: _SettlementState) -> list[asyncio.Task[Any]]:
 def _active_callbacks(self: _SettlementState, deadline: float | None = None) -> list[_CallbackRecord]:
     if deadline is None:
         self.work.reconcile(self.loop.time() if self.loop is not None else 0.0)
-        with self.work._callback_lock:
-            return list(self.work.callbacks.values())
-    with self.work._callback_lock:
-        candidates = tuple((self.work.ready if self.advancing else self.work.callbacks).values())
+        return list(self.work.callback_records())
+    candidates = self.work.callback_records(ready_only=self.advancing)
     active = []
     for record in candidates:
         if record.handle is None or record.handle.cancelled():
@@ -361,16 +339,3 @@ def _settle_timeout_message(
     if len(all_pending) > len(stuck):
         lines.append(f"  {len(all_pending) - len(stuck)} recognized waits remain parked")
     return "\n".join(lines)
-
-
-def _next_virtual_timer(self: _SettlementState) -> float | None:
-    with self.work._callback_lock:
-        while self.work.timers:
-            when, key = self.work.timers[0]
-            record = self.work.callbacks.get(key)
-            if record is not None and record.handle is not None and not record.handle.cancelled():
-                return when
-            heapq.heappop(self.work.timers)
-            if record is not None:
-                self.work.retire(record)
-        return None

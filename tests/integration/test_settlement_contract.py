@@ -1508,6 +1508,48 @@ async def test_cancelled_native_timer_retires_fallback_and_wakeup_links():
 
 
 @pytest.mark.asyncio
+async def test_due_callback_cancels_peer_and_schedules_immediate_work():
+    async with simcord.run(create_bot()) as env:
+        loop = asyncio.get_running_loop()
+        effects = []
+
+        def first():
+            effects.append("first")
+            cancelled.cancel()
+            loop.call_soon(effects.append, "immediate")
+
+        with env._bot_scope():
+            loop.call_later(3600, first)
+            cancelled = loop.call_later(3600, effects.append, "cancelled")
+            loop.call_later(3600, effects.append, "last")
+        await env.advance_time(3600)
+        assert effects == ["first", "last", "immediate"]
+        await env.settle()
+        assert effects == ["first", "last", "immediate"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_virtual_timer_and_real_fallback_ownership():
+    async with simcord.run(create_bot()) as env:
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        with env._bot_scope():
+            handle = loop.call_later(3600, asyncio.futures._set_result_unless_cancelled, waiter, None)
+        record = next(record for record in env._work.callbacks.values() if record.handle is handle)
+        fallback = record.real_handle
+        assert fallback is not None
+    assert handle.cancelled()
+    assert fallback.cancelled()
+    assert record.handle is None
+    assert record.real_handle is None
+    assert not waiter.done()
+    assert not env._work.callbacks
+    assert not env._work.ready
+    assert not env._work.timers
+    assert not env._work.wakes
+
+
+@pytest.mark.asyncio
 async def test_shared_composition_dependency_is_not_a_cycle():
     bot = create_bot()
 

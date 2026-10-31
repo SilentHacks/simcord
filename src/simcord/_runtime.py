@@ -268,6 +268,68 @@ class _WorkState:
                 ]
                 heapq.heapify(self.timers)
 
+    def next_due_callback(self, virtual_time: float) -> asyncio.Handle | None:
+        with self._callback_lock:
+            while self.timers and self.timers[0][0] <= virtual_time:
+                _, key = heapq.heappop(self.timers)
+                record = self.callbacks.get(key)
+                if record is not None:
+                    if record.handle is None or record.handle.cancelled():
+                        self.retire(record)
+                    else:
+                        self.ready[key] = record
+            while self.ready:
+                stale = None
+                for record in self.ready.values():
+                    handle = record.handle
+                    if handle is None or handle.cancelled():
+                        stale = record
+                        break
+                    if record.when is not None:
+                        return handle
+                if stale is None:
+                    return None
+                self.retire(stale)
+            return None
+
+    def next_timer(self) -> float | None:
+        with self._callback_lock:
+            while self.timers:
+                when, key = self.timers[0]
+                record = self.callbacks.get(key)
+                if record is not None and record.handle is not None and not record.handle.cancelled():
+                    return when
+                heapq.heappop(self.timers)
+                if record is not None:
+                    self.retire(record)
+            return None
+
+    def cancel_callbacks(self) -> None:
+        with self._callback_lock:
+            for record in tuple(self.callbacks.values()):
+                if record.handle is not None:
+                    record.handle.cancel()
+                self.retire(record)
+            self.callbacks.clear()
+            self.ready.clear()
+            self.timers.clear()
+            self.wakes.clear()
+
+    def callback_records(self, *, ready_only: bool = False) -> tuple[_CallbackRecord, ...]:
+        with self._callback_lock:
+            return tuple((self.ready if ready_only else self.callbacks).values())
+
+    def wake_records(self, *targets: Any) -> tuple[_CallbackRecord, ...]:
+        with self._callback_lock:
+            records = {}
+            for target in targets:
+                records.update(self.wakes.get(target, {}))
+            return tuple(records.values())
+
+    def has_wake(self, *targets: Any) -> bool:
+        with self._callback_lock:
+            return any(target in self.wakes for target in targets)
+
     def reconcile(self, now: float) -> None:
         # Native Handle.cancel cannot notify us. Operations and bounded idle
         # safety ticks reconcile it, never every intermediate virtual instant.
