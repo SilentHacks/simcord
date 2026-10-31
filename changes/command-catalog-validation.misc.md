@@ -1,1 +1,0 @@
-Reuse the publication schema fingerprint when validating live command catalogs, hashing only published keys without reconstructing wire option trees. Preserve live permissions, stale-entry removal, bounded publication and refresh behavior.

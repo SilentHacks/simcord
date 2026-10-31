@@ -1,1 +1,0 @@
-Settlement now considers the earliest live recognized wake across tracked and native timers, so a later timer cannot make an actor operation return before an earlier wake completes. Future-valued timer results are not mistaken for wake targets. Retired callbacks release their Handle links without changing native cancellation, Context or error behavior.
