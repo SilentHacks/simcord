@@ -118,11 +118,18 @@ callback invoked before its worker publishes the Handle cannot be registered
 afterward. Returned native Handles, cancellation, Context objects and error
 capture keep their normal behavior. No extra scheduler or process-wide callback
 lock is introduced.
+The existing work owner promotes timers and selects one live Handle at a time;
+it does not retire an executable batch in advance. Cancellation and newly
+scheduled work are therefore observed between invocations.
 
 Automatic Poll expiry remains deadline-indexed. Explicitly expiring a backend
 Poll shared by multiple messages scans live message aliases and retires their
 deadlines before publishing the finalization. This rare explicit path is O(history),
 not an extra index or a claim that normal SDK sends share Poll objects.
+Scheduled-event admission uses batch-local registration cutoffs, not snapshots
+of all event history. Guild membership is fixed at pass entry; each guild's
+event membership is fixed when it is entered. Poll and entitlement traversal
+policies remain separate.
 
 Full-history reads and semantically exact text search remain proportional to
 eligible input/output. Preview's default navigation should select bounded rows
@@ -154,6 +161,11 @@ memory; synchronous subscribers still share their live envelope in registration
 order. Input detachment finishes before edit/upload side effects. A later event
 snapshot or subscriber failure can occur after state commits: inspect the state
 and settle/refresh rather than replaying the action.
+Backend edit preparation is shared by direct and HTTP edits. HTTP supplies
+prospective attachment bindings so reference errors retain their precedence
+before copying and upload installation; this does not impose HTTP binding
+rules on direct backend edits. The small synchronous prepared value is not a
+reusable transaction or a copy of the complete Message.
 
 Exact built-in wire dict/list graphs are detached iteratively, preserving aliases
 and cycles without lowering the functioning reply-ancestry depth through recursive
@@ -170,6 +182,10 @@ including nested metadata and action data. Each live rule lazily retains literal
 and regex preparation only for keywords reached during ordered matching. A
 current keyword tuple detects explicit and internal in-place changes; preparation
 is replaced, not accumulated across revisions or stored in a global rule cache.
+Preparation keys are positions within that tuple, not keyword hashes or
+canonicalized text. This accepts unhashable string subclasses and keeps
+text-identical keywords with distinct matching behavior separate. Duplicate
+positions can retain separate preparation entries.
 
 For exact ASCII strings and ASCII keywords, an absent lowercase literal skips
 unnecessary regex compilation and search. Possible hits, Unicode and string
