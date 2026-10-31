@@ -720,8 +720,8 @@ class MessageMixin(BackendBase):
         preparations = rule._keyword_preparation[1]
         ascii_content = type(content) is str and content.isascii()
         lowered_content: str | None = None
-        for keyword in keywords:
-            preparation = preparations.get(keyword)
+        for position, keyword in enumerate(keywords):
+            preparation = preparations.get(position)
             if preparation is None:
                 bare = keyword.strip("*")
                 if not bare:
@@ -737,7 +737,7 @@ class MessageMixin(BackendBase):
                     lowered_content = content.lower()
                 if literal not in lowered_content:
                     if preparation is None:
-                        preparations[keyword] = (prepared_keyword, literal, None)
+                        preparations[position] = (prepared_keyword, literal, None)
                     continue
             if pattern is None:
                 # Equal-valued subclasses must not redefine a deferred entry's boundaries.
@@ -746,7 +746,7 @@ class MessageMixin(BackendBase):
                 left = "" if prepared_keyword.startswith("*") else r"(?<![A-Za-z0-9])"
                 right = "" if prepared_keyword.endswith("*") else r"(?![A-Za-z0-9])"
                 pattern = re.compile(f"{left}{re.escape(bare)}{right}", re.IGNORECASE)
-                preparations[keyword] = (prepared_keyword, literal, pattern)
+                preparations[position] = (prepared_keyword, literal, pattern)
             if pattern.search(content):
                 return keyword
         return None

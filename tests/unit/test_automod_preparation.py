@@ -194,6 +194,33 @@ def test_keyword_matching_keeps_string_subclass_fallback(subclass_keyword, subcl
         assert backend._auto_mod_match(rule, content) == expected
 
 
+@pytest.mark.parametrize("identity_equality", [False, True])
+def test_text_identical_subclasses_keep_their_own_preparation(identity_equality):
+    class StrictKeyword(str):
+        def __str__(self):
+            raise AssertionError("keyword must not be normalized")
+
+        if identity_equality:
+
+            def __eq__(self, other):
+                return self is other
+
+            __hash__ = object.__hash__
+
+    class LooseKeyword(StrictKeyword):
+        def startswith(self, *args, **kwargs):
+            return True
+
+        def endswith(self, *args, **kwargs):
+            return True
+
+    backend, _, rule, _ = _world([StrictKeyword("word"), LooseKeyword("word")])
+    strict, loose = rule.trigger_metadata["keyword_filter"]
+    for _ in range(2):
+        assert backend._auto_mod_match(rule, "swordé") is loose
+        assert backend._auto_mod_match(rule, "WORD!") is strict
+
+
 def test_literal_misses_keep_unicode_and_later_hits_current():
     backend, _, rule, _ = _world(["*s*", "k"])
     for content, expected in [
@@ -231,6 +258,7 @@ def test_deferred_regex_keeps_its_owner_after_equal_keyword_replacement():
 
     backend, _, rule, _ = _world(["word"])
     assert backend._auto_mod_match(rule, "clean") is None
-    rule.trigger_metadata["keyword_filter"][:] = [DifferentBoundaries("word")]
+    replacement = DifferentBoundaries("word")
+    rule.trigger_metadata["keyword_filter"][:] = [replacement]
     assert backend._auto_mod_match(rule, "swordé") is None
-    assert backend._auto_mod_match(rule, "WORD!") == "word"
+    assert backend._auto_mod_match(rule, "WORD!") is replacement

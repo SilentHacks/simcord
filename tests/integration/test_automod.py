@@ -71,6 +71,23 @@ async def test_keyword_rule_blocks_message(env, channel, alice):
     assert "AUTO_MODERATION_ACTION_EXECUTION" in env.transcript()
 
 
+async def test_unhashable_keyword_rule_blocks_message(env, channel, alice):
+    class UnhashableKeyword(str):
+        __hash__ = None
+
+    guild = env.bot.get_guild(env.guild.id)
+    await guild.create_automod_rule(**_rule_kwargs([UnhashableKeyword("badword")]))
+    await env.settle()
+
+    await alice.send(channel, "a clean message")
+    await alice.send(channel, "this contains a BADWORD!")
+    await env.settle()
+
+    assert len(channel.history()) == 1
+    assert channel.history()[0].content == "a clean message"
+    assert "AUTO_MODERATION_ACTION_EXECUTION" in env.transcript()
+
+
 async def test_clean_message_passes(env, channel, alice):
     guild = env.bot.get_guild(env.guild.id)
     await guild.create_automod_rule(**_keyword_rule_kwargs())
