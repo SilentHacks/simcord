@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 import discord
 
 from . import _dpy_internals
+from ._clock import Clock
 from ._runtime import (
     _BOT_SCOPE,
     _CLOCK_SCOPE,
@@ -66,6 +67,7 @@ class Env:
         approved_intents: discord.Intents | None = None,
         shard_count: int | None = None,
         settle_timeout: float = 5.0,
+        start_time: datetime | None = None,
     ) -> None:
         self.bot = bot
         self.strict_sync = strict_sync
@@ -73,7 +75,7 @@ class Env:
         self.approved_intents = approved_intents
         self.requested_shard_count = shard_count
         self.settle_timeout = self._validate_timeout(settle_timeout, "settle_timeout")
-        self.backend = Backend()
+        self.backend = Backend(clock=Clock(start_time))
         self._errors: list[BaseException] = []
         self._error_ids: set[int] = set()
         self._errors_acknowledged = 0
@@ -90,6 +92,7 @@ class Env:
         self._advancing = False
         self._advance_task: asyncio.Task[Any] | None = None
         self._real_advance_task: asyncio.Task[None] | None = None
+        self._real_due_target: float | None = None
         self._pre_shutdown_hooks: list[Callable[[], Any]] = []
         self._pre_shutdown_task: asyncio.Task[Any] | None = None
         self._pre_shutdown_complete = False
@@ -340,22 +343,31 @@ class Env:
                     # virtual clock alone.
                     record.real_handle = None
                     return
-                # A future fallback can fire while another advance is settling.
-                # Re-arm it: that advance may stop before this timer's instant.
+                # Keep recovery live if strict settlement fails before this
+                # timer's instant. Reaching it retires this fallback normally.
+                if when > self._virtual_time:
+                    assert real_call_at is not None and real_monotonic is not None
+                    record.real_handle = real_call_at(
+                        real_monotonic() + max(when - self._virtual_time, 0.000001),
+                        run_real,
+                        context=schedule_context,
+                    )
                 previous = self._real_advance_task
+                if (
+                    previous is not None
+                    and not previous.done()
+                    and (self._real_due_target is None or when > self._real_due_target)
+                ):
+                    # Repeated fallback wakes at the same horizon are not new
+                    # progress: notifying again could starve zero-delay timers.
+                    self._real_due_target = when
+                    self._work.changed()
                 if self._advancing or (
                     previous is not None
                     and (
                         not previous.done() or (not previous.cancelled() and previous.exception() is not None)
                     )
                 ):
-                    if when > self._virtual_time:
-                        assert real_call_at is not None and real_monotonic is not None
-                        record.real_handle = real_call_at(
-                            real_monotonic() + max(when - self._virtual_time, 0.000001),
-                            run_real,
-                            context=schedule_context,
-                        )
                     return
 
                 async def advance_real() -> None:
@@ -365,14 +377,16 @@ class Env:
                             max(self._virtual_time, when), self._loop.time() + self.settle_timeout
                         )
                     except TimeoutError:
-                        # This is a settlement failure, not a bot exception.
-                        # The retained task delivers it to the waiting/next operation.
+                        # Retain settlement failure until a public operation receives it.
                         raise
                     except Exception as error:
                         if self._operation_task is None:
                             self._record_error(error)
                         raise
+                    finally:
+                        self._real_due_target = None
 
+                self._real_due_target = max(self._virtual_time, when)
                 assert self._runtime is not None
                 task = self._real_advance_task = self._runtime.create_task(
                     advance_real(), context=contextvars.Context()
@@ -386,9 +400,15 @@ class Env:
         assert real_call_at is not None and real_monotonic is not None
         remaining = max(when - self._virtual_time, 0.0)
         current = _current_task()
-        virtual_birth = current is not None and (
-            (current in self._work.external_waits and _dpy_internals.is_wakeup_shaped(callback))
-            or _dpy_internals.is_intentional_wait_wakeup(self.bot, callback, args, current)
+        owned = self._work.tasks.get(current) if current is not None else None
+        virtual_birth = (
+            current is not None
+            and owned is not None
+            and owned.generation == self._generation
+            and (
+                (current in self._work.external_waits and _dpy_internals.is_wakeup_shaped(callback))
+                or _dpy_internals.is_intentional_wait_wakeup(self.bot, callback, args, current)
+            )
         )
         if not virtual_birth:
             # Wake-up timers behind a recognized wait are virtual from
@@ -417,6 +437,7 @@ class Env:
             self._real_advance_task.cancel()
             await asyncio.gather(self._real_advance_task, return_exceptions=True)
             self._real_advance_task = None
+        self._real_due_target = None
         while True:
             to_cancel = [task for task in self._work.tasks if task is not current and not task.done()]
             for executor_record in self._work.executors.values():
@@ -516,6 +537,20 @@ class Env:
         finally:
             self._end_operation()
 
+    def _settle_error(self, effective: float, deadline: float) -> TimeoutError:
+        state = self._settlement_state()
+        pending = _owned_tasks(state)
+        _virtualize_recognized_waits(state, pending)
+        return TimeoutError(
+            _settle_timeout_message(
+                state,
+                [task for task in pending if not _is_parked(state, task, deadline)],
+                pending,
+                effective,
+                _active_callbacks(state, deadline),
+            )
+        )
+
     async def _settle_internal(
         self,
         *,
@@ -540,7 +575,9 @@ class Env:
             if advancing is not None and advancing is not _current_task():
                 done, _ = await asyncio.wait((advancing,), timeout=max(0.0, deadline - self._loop.time()))
                 if not done:
-                    raise TimeoutError("bot did not settle while advancing time")
+                    error = self._settle_error(effective, deadline)
+                    error.add_note("Timed out joining time advancement; outstanding work remains tracked.")
+                    raise error
                 if self._real_advance_task is advancing:
                     self._real_advance_task = None
                 advancing.result()
@@ -557,6 +594,28 @@ class Env:
             # Deadline facts are read only after virtualization canceled fallbacks.
             parked = [task for task in pending if _is_parked(state, task, deadline)]
             active_callbacks = _active_callbacks(state, deadline)
+            # Only automatic advancement may cross blocked input, and only as
+            # far as a real fallback has announced. Drain the current instant
+            # before stepping so resource/timer continuations keep their order.
+            horizon = self._real_due_target
+            if (
+                _current_task() is self._real_advance_task
+                and horizon is not None
+                and horizon > self._virtual_time
+                and self._loop.time() < deadline
+                and not active_callbacks
+                and all(
+                    (waiter := getattr(task, "_fut_waiter", None)) is not None and not waiter.done()
+                    for task in pending
+                )
+            ):
+                candidates = [horizon]
+                for instant in (self._next_resource_deadline(), self._work.next_timer()):
+                    if instant is not None:
+                        candidates.append(max(self._virtual_time, instant))
+                self._move_clock(min(candidates))
+                stable_empty = 0
+                continue
             if not self._work.executors and not active_callbacks and len(parked) == len(pending):
                 stable_empty += 1
                 if stable_empty >= 2:
@@ -565,15 +624,7 @@ class Env:
             stable_empty = 0
             remaining = deadline - self._loop.time()
             if remaining <= 0:
-                raise TimeoutError(
-                    _settle_timeout_message(
-                        state,
-                        [task for task in pending if task not in parked],
-                        pending,
-                        effective,
-                        active_callbacks,
-                    )
-                )
+                raise self._settle_error(effective, deadline)
             if any(
                 record.when is not None and record.when <= self._virtual_time for record in active_callbacks
             ):
@@ -633,7 +684,7 @@ class Env:
             await self._settle_internal(_deadline=deadline)
             while self._virtual_time < target:
                 if self._loop is not None and self._loop.time() >= deadline:
-                    raise TimeoutError("bot did not settle while advancing time")
+                    raise self._settle_error(self.settle_timeout, deadline)
                 candidates = [target]
                 for instant in (
                     self._next_resource_deadline(),

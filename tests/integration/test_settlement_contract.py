@@ -1840,3 +1840,53 @@ async def test_invoked_callbacks_release_handles_without_cyclic_gc(timer):
         finally:
             if was_enabled:
                 gc.enable()
+
+
+@pytest.mark.parametrize("timeout_api", ["wait_for", "timeout"])
+async def test_native_timeout_does_not_retire_surviving_executor(timeout_api):
+    bot = create_bot()
+    release = threading.Event()
+    started = threading.Event()
+    cancelled = asyncio.Event()
+
+    def worker():
+        started.set()
+        release.wait(2)
+
+    async def service():
+        try:
+            await asyncio.to_thread(worker)
+        finally:
+            cancelled.set()
+
+    @bot.listen("on_message")
+    async def run_service(message):
+        if message.content != "executor timeout":
+            return
+        try:
+            if timeout_api == "wait_for":
+                await asyncio.wait_for(service(), 0.03)
+            else:
+                async with asyncio.timeout(0.03):
+                    await service()
+        except TimeoutError:
+            await message.channel.send("caller cancelled, executor retained")
+
+    async with simcord.run(bot, settle_timeout=0.5) as env:
+        guild = env.create_guild()
+        channel = guild.create_text_channel("executor")
+        actor = guild.add_member(env.create_user("alice"))
+        operation = asyncio.create_task(actor.send(channel, "executor timeout"))
+        try:
+            await asyncio.wait_for(cancelled.wait(), 1)
+            assert started.is_set()
+            assert env._work.executors
+            assert not operation.done()
+            release.set()
+            await operation
+            assert not env._work.executors
+            assert channel.last_message.content == "caller cancelled, executor retained"
+        finally:
+            release.set()
+            if not operation.done():
+                await operation

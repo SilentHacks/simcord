@@ -1,5 +1,6 @@
 import asyncio
 import time
+from datetime import timedelta
 
 import discord
 import pytest
@@ -249,3 +250,99 @@ async def test_real_fallback_timeout_survives_later_timer_until_settle_receives_
     finally:
         release.set()
         await env.shutdown()
+
+
+@pytest.mark.parametrize("timeout_api", ["wait_for", "timeout"])
+@pytest.mark.parametrize("earlier", ["none", "timer", "resource", "tied"])
+async def test_real_due_native_timeout_crosses_blocked_input(timeout_api, earlier):
+    bot = create_bot()
+    seen = []
+    background = []
+    cancelled = asyncio.Event()
+
+    @bot.listen("on_entitlement_update")
+    async def resource_updated(entitlement):
+        await asyncio.sleep(0)
+        seen.append("resource")
+
+    async def service():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            seen.append("cancelled")
+            cancelled.set()
+
+    async def finite_timer():
+        await asyncio.sleep(0.005)
+        seen.append("finite")
+
+    def earlier_timer():
+        if earlier == "tied":
+            assert grant.snapshot().ends_at is not None
+        seen.append("timer")
+
+    @bot.listen("on_message")
+    async def run_service(message):
+        if message.content != "service":
+            return
+        loop = asyncio.get_running_loop()
+        if earlier in {"timer", "tied"}:
+            background.append(asyncio.create_task(finite_timer()))
+            loop.call_later(0.01, earlier_timer)
+        try:
+            if timeout_api == "wait_for":
+                await asyncio.wait_for(service(), 0.03)
+            else:
+                async with asyncio.timeout(0.03):
+                    await service()
+        except TimeoutError:
+            seen.append("timeout")
+            await message.channel.send("service timed out")
+
+    async with simcord.run(bot, settle_timeout=0.5) as env:
+        guild = env.create_guild()
+        actor = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("service")
+        if earlier in {"resource", "tied"}:
+            sku = env.create_sku("Deadline")
+            grant = env.seed_entitlement(
+                sku, guild=guild, scheduled_end_at=env.now() + timedelta(seconds=0.01)
+            )
+        await actor.send(channel, "service")
+        assert cancelled.is_set()
+        assert channel.last_message.content == "service timed out"
+        assert seen[-2:] == ["cancelled", "timeout"]
+        if earlier in {"timer", "tied"}:
+            assert seen.index("finite") < seen.index("timer") < seen.index("timeout")
+        if earlier in {"resource", "tied"}:
+            assert seen.index("resource") < seen.index("timeout")
+
+
+async def test_later_real_due_timeout_unblocks_work_started_at_earlier_timer():
+    bot = create_bot()
+    seen = []
+
+    @bot.listen("on_message")
+    async def schedule(message):
+        if message.content != "later cancellation":
+            return
+
+        async def delayed_service():
+            try:
+                await asyncio.wait_for(asyncio.Event().wait(), 0.02)
+            except TimeoutError:
+                await asyncio.sleep(0)
+                seen.append("cancelled later")
+                await message.channel.send("later timeout completed")
+
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.005, lambda: asyncio.create_task(delayed_service()))
+
+    async with simcord.run(bot, settle_timeout=0.5) as env:
+        guild = env.create_guild()
+        actor = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("service")
+        await actor.send(channel, "later cancellation")
+        assert seen == ["cancelled later"]
+        assert channel.last_message.content == "later timeout completed"

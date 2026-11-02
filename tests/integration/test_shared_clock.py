@@ -13,6 +13,122 @@ from fixtures.sample_bot import create_bot
 from simcord.backend import Backend
 
 
+async def test_initial_origin_applies_before_fixtures_and_startup_and_survives_restart():
+    origin = datetime.datetime(
+        2030,
+        4,
+        5,
+        14,
+        30,
+        12,
+        123456,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=2)),
+    )
+    expected = origin.astimezone(datetime.UTC)
+    observed = []
+
+    class StartupReader(discord.Client):
+        async def setup_hook(self):
+            observed.append((application_now(), discord.utils.utcnow()))
+
+    env = simcord.Env(StartupReader(intents=discord.Intents.none()), start_time=origin)
+    application_now = env.now
+    assert env.now() == expected
+    assert env.now().tzinfo is datetime.UTC
+    guild = env.create_guild()
+    assert env.backend.now_iso() == expected.isoformat()
+    assert discord.utils.snowflake_time(guild.id) == expected.replace(microsecond=123000)
+    assert discord.utils.snowflake_time(env.backend.application_id) == expected.replace(microsecond=123000)
+    await env.start()
+    try:
+        assert observed == [(expected, expected)]
+        with env.time_context():
+            assert discord.utils.utcnow() == expected
+        await env.advance_time(10.25)
+        later = expected + datetime.timedelta(seconds=10.25)
+        await env.restart_bot(StartupReader(intents=discord.Intents.none()))
+        assert env.now() == later
+        assert observed == [(expected, expected), (later, later)]
+        assert env.backend.now_iso() == later.isoformat()
+    finally:
+        await env.shutdown()
+
+
+def test_default_origin_preserves_initial_ids():
+    env = simcord.Env(create_bot())
+    assert env.now() == datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+    milliseconds = 347155200000
+    assert env.backend.application_id == milliseconds << 22
+    assert env.backend.bot_user.id == (milliseconds << 22) + 1
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "2030-01-01",
+        0,
+        datetime.date(2030, 1, 1),
+        datetime.datetime(2030, 1, 1),
+        datetime.datetime(2014, 12, 31, 23, 59, 59, 999999, tzinfo=datetime.UTC),
+        datetime.datetime(2154, 5, 15, 7, 35, 11, 104000, tzinfo=datetime.UTC),
+        datetime.datetime.min.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=1))),
+        datetime.datetime.max.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=-1))),
+    ],
+)
+async def test_invalid_origin_rejects_before_backend_allocation_or_hooks(origin, monkeypatch):
+    loop = asyncio.get_running_loop()
+    originals = (loop.create_task, loop.call_later, time.monotonic, discord.utils.datetime)
+    allocated = []
+    original = Backend.snowflake
+
+    def allocate(backend):
+        allocated.append(True)
+        return original(backend)
+
+    monkeypatch.setattr(Backend, "snowflake", allocate)
+    with pytest.raises(simcord.SetupError, match="start_time"):
+        simcord.Env(create_bot(), start_time=origin)
+    assert not allocated
+    assert (loop.create_task, loop.call_later, time.monotonic, discord.utils.datetime) == originals
+
+
+@pytest.mark.parametrize(
+    ("origin", "milliseconds"),
+    [
+        (datetime.datetime(2015, 1, 1, tzinfo=datetime.UTC), 0),
+        (datetime.datetime(2015, 1, 1, 0, 0, 0, 1000, tzinfo=datetime.UTC), 1),
+        (
+            datetime.datetime(2154, 5, 15, 7, 35, 11, 103999, tzinfo=datetime.UTC),
+            (1 << 42) - 1,
+        ),
+    ],
+)
+def test_origin_snowflake_bounds_use_exact_milliseconds(origin, milliseconds):
+    env = simcord.Env(create_bot(), start_time=origin)
+    assert env.now() == origin
+    assert env.backend.application_id >> 22 == milliseconds
+    assert 0 < env.backend.application_id < 1 << 64
+    guild = env.create_guild()
+    assert guild.id >> 22 == milliseconds
+    assert env.now() == origin
+
+
+def test_epoch_shard_allocation_never_reserves_nonpositive_ids():
+    origin = datetime.datetime(2015, 1, 1, tzinfo=datetime.UTC)
+    env = simcord.Env(create_bot(), start_time=origin)
+    assert env.backend.application_id == 1
+    assert env.backend.bot_user.id == 2
+    reserved = env.backend._reserved_ids.copy()
+    with pytest.raises(simcord.SetupError, match="snowflake timestamp"):
+        env.backend.create_guild("before epoch", shard_id=1, shard_count=2)
+    assert env.backend._reserved_ids == reserved
+    assert not env.backend.guilds
+    guild = env.backend.create_guild("at epoch", shard_id=0, shard_count=2)
+    assert 0 < guild.id < 1 << 64
+    assert discord.utils.snowflake_time(guild.id) == origin
+    assert env.now() == origin
+
+
 def test_allocator_does_not_advance_utc_and_reserves_explicit_ids():
     backend = Backend()
     before = backend.clock.now()
@@ -42,8 +158,10 @@ def test_allocator_exhaustion_does_not_advance_utc():
 
 
 async def test_callbacks_observe_intermediate_instants_and_sdk_utc():
-    async with simcord.run(create_bot()) as env:
+    origin = datetime.datetime(2032, 2, 3, 4, 5, 6, tzinfo=datetime.UTC)
+    async with simcord.run(create_bot(), start_time=origin) as env:
         start = env.now()
+        assert start == origin
         observed = []
 
         async def owned_worker():
@@ -147,9 +265,16 @@ async def test_restart_does_not_resurrect_departed_guilds():
         assert env.bot.get_guild(retained.id) is not None
 
 
-async def test_prestart_shard_layout_and_historical_identifier():
+@pytest.mark.parametrize(
+    "origin",
+    [
+        None,
+        datetime.datetime(2034, 5, 6, 7, 8, 9, tzinfo=datetime.UTC),
+    ],
+)
+async def test_prestart_shard_layout_and_historical_identifier(origin):
     bot = discord.AutoShardedClient(intents=discord.Intents(guilds=True), shard_count=2)
-    env = simcord.Env(bot)
+    env = simcord.Env(bot, start_time=origin)
     before = env.now()
     guild = env.create_guild("shard one", shard_id=1)
     assert (guild.id >> 22) % 2 == 1

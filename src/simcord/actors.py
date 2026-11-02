@@ -67,6 +67,8 @@ class MemberActor:
         return cached.get_member(self.id) if cached else None
 
     def _check(self, channel: ChannelHandle, *permissions: str) -> None:
+        _require_handle(self._env, channel)
+        _check_user_dm_channel(self, channel.id)
         _require_handle(self._env, channel, guild_id=self.guild.id)
         self._env.backend.require_permissions(self.guild.id, self.id, channel.id, *permissions)
 
@@ -626,18 +628,29 @@ _ENTITY_SELECT_HANDLES: dict[ComponentType, tuple[type, ...]] = {
 
 def _check_actor_channel(actor: Any, channel: ChannelHandle) -> None:
     guild = getattr(actor, "guild", None)
-    _require_handle(actor._env, channel, guild_id=guild.id if guild is not None else None)
+    _require_handle(actor._env, channel)
     _check_user_dm_channel(actor, channel.id)
+    _require_handle(actor._env, channel, guild_id=guild.id if guild is not None else None)
     if not can_access_channel(actor._env, channel.id, actor):
         raise SetupError("That channel is not accessible to this user")
 
 
 def _check_user_dm_channel(actor: Any, channel_id: int) -> None:
-    if isinstance(actor, UserHandle) and actor._env.backend.dm_channels.get(actor.id) != channel_id:
+    if isinstance(actor, MemberActor) and actor._env.backend.dm_channels.get(actor.id) == channel_id:
         raise SetupError(
-            "UserHandle interaction operations are restricted to this user's DM channel — "
-            "a real user could not interact with guild messages"
+            "MemberActor is scoped to its guild, not this user's bot DM — "
+            "use member.user.send_dm(...) for messages or member.user for "
+            "slash, autocomplete, click, select, and submit_modal. "
+            "member.send_dm(...) remains supported"
         )
+    if isinstance(actor, UserHandle) and actor._env.backend.dm_channels.get(actor.id) != channel_id:
+        channel = actor._env.backend.channels.get(channel_id)
+        if channel is not None and channel.guild_id is not None:
+            raise SetupError(
+                "UserHandle operations are DM-scoped — use a MemberActor belonging to "
+                "the target guild for guild messages and interactions"
+            )
+        raise SetupError("UserHandle operations are restricted to this user's DM channel")
 
 
 def _visible_message(actor: Any, message: MessageLike) -> Any:

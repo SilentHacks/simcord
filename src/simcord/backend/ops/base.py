@@ -40,7 +40,8 @@ from ..models import (
 )
 
 # Snowflakes embed milliseconds since Discord's epoch; allocation never moves UTC.
-_DISCORD_EPOCH_MS = 1420070400000
+_DISCORD_EPOCH = datetime.datetime(2015, 1, 1, tzinfo=datetime.UTC)
+_MILLISECOND = datetime.timedelta(milliseconds=1)
 
 EventListener = Callable[[str, Mapping[str, Any]], None]
 
@@ -106,7 +107,9 @@ class BackendBase:
         return value
 
     def _allocate_at(self, milliseconds: int) -> int:
-        sequence = self._sequences.get(milliseconds, 0)
+        if not 0 <= milliseconds < 1 << 42:
+            raise errors.SetupError("generated snowflake timestamp is outside the 64-bit range")
+        sequence = self._sequences.get(milliseconds, 1 if milliseconds == 0 else 0)
         while sequence < 1 << 22:
             value = (milliseconds << 22) | sequence
             sequence += 1
@@ -118,12 +121,12 @@ class BackendBase:
 
     def snowflake(self) -> int:
         """Allocate at current UTC, using all 22 low bits without advancing time."""
-        milliseconds = int(self.clock.now().timestamp() * 1000) - _DISCORD_EPOCH_MS
+        milliseconds = (self.clock.now() - _DISCORD_EPOCH) // _MILLISECOND
         return self._allocate_at(milliseconds)
 
     def snowflake_for_shard(self, shard_id: int, shard_count: int) -> int:
         """Allocate at the latest historical millisecond belonging to this shard."""
-        milliseconds = int(self.clock.now().timestamp() * 1000) - _DISCORD_EPOCH_MS
+        milliseconds = (self.clock.now() - _DISCORD_EPOCH) // _MILLISECOND
         milliseconds -= (milliseconds - shard_id) % shard_count
         return self._allocate_at(milliseconds)
 

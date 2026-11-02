@@ -17,6 +17,7 @@ from types import ModuleType
 from typing import Any
 
 import discord
+from discord.context_managers import Typing
 from discord.ext import tasks as _ext_tasks
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
@@ -84,6 +85,7 @@ def verify() -> None:
         (_view.BaseView, "_BaseView__timeout_task_impl"),
         (_ext_tasks.Loop, "_loop"),
         (_ext_tasks.SleepHandle, "_wrapped_set_result"),
+        (Typing, "do_typing"),
         (asyncio.timeouts.Timeout, "_on_timeout"),
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
@@ -132,6 +134,11 @@ def verify() -> None:
         or "self" not in impl_probe.__code__.co_varnames
     ):  # pragma: no cover
         problems.append("BaseView._BaseView__timeout_task_impl coroutine")
+    typing_impl = getattr(Typing, "do_typing", None)
+    if (
+        not inspect.iscoroutinefunction(typing_impl) or "self" not in typing_impl.__code__.co_varnames
+    ):  # pragma: no cover
+        problems.append("Typing.do_typing coroutine")
     if not hasattr(asyncio.timeouts.Timeout(0.0), "_task"):  # pragma: no cover
         problems.append("Timeout._task")
 
@@ -311,20 +318,50 @@ def tasks_loop_sleep(task: asyncio.Task[Any], waiter: Any) -> bool:
     return getattr(handle, "future", None) is waiter
 
 
+def typing_interval(task: asyncio.Task[Any], waiter: Any) -> bool:
+    """Recognize only the SDK task's direct sleep, including timer construction."""
+    if not isinstance(waiter, asyncio.Future) or waiter.done():
+        return False
+    coro = task.get_coro()
+    if getattr(coro, "cr_code", None) is not Typing.do_typing.__code__:
+        return False
+    frame = getattr(coro, "cr_frame", None)
+    owner = frame.f_locals.get("self") if frame is not None else None
+    if not isinstance(owner, Typing) or getattr(owner, "task", None) is not task:
+        return False
+    sleep = getattr(coro, "cr_await", None)
+    sleep_frame = getattr(sleep, "cr_frame", None)
+    if getattr(sleep, "cr_code", None) is asyncio.sleep.__code__:
+        return sleep_frame is not None and sleep_frame.f_locals.get("future") is waiter
+    # During call_later the coroutine is executing, not yet suspended.
+    # Inspect the exact direct caller, never an HTTP retry's nested sleep.
+    if task is not asyncio.current_task():
+        return False
+    current = inspect.currentframe()
+    try:
+        while current is not None:
+            if current.f_code is asyncio.sleep.__code__:
+                return current.f_locals.get("future") is waiter and current.f_back is frame
+            current = current.f_back
+        return False
+    finally:
+        del current
+
+
 def is_intentional_wait_wakeup(
     client: discord.Client, callback: Any, args: tuple[Any, ...], task: asyncio.Task[Any]
 ) -> bool:
     """True when a timer scheduled right now exists only to resume a wait on this task.
 
     Covers the shapes identifiable at schedule time, before the task suspends:
-    a registered View/Modal expiry task's sleep, an ext.tasks iteration
-    ``SleepHandle``, and a 3.11 ``wait_for`` listener's ``_release_waiter``.
+    a registered View/Modal expiry task's sleep, a native typing interval,
+    an ext.tasks ``SleepHandle``, and a 3.11 listener's ``_release_waiter``.
     Timer wake-ups not identifiable here are still caught at settle time and
     gated at fire time by the env.
     """
     name = getattr(callback, "__name__", "")
     if name == "_set_result_unless_cancelled":
-        return _view_timeout_task_identity(client, task)
+        return _view_timeout_task_identity(client, task) or (bool(args) and typing_interval(task, args[0]))
     if name == "_wrapped_set_result":
         return is_tasks_loop_task(task)
     return name == "_release_waiter" and any(is_listener_future(client, arg) for arg in args)

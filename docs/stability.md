@@ -67,7 +67,7 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the world builders — `GuildHandle`, `ChannelHandle`, `UserHandle`,
   `RoleHandle` — and the `MemberActor` that drives simulated users;
 - `SKUHandle`, `EntitlementHandle`, the Env SKU/entitlement fixture methods,
-  `Env.now()` and `Env.time_context()`;
+  `Env.now()`, `Env.time_context()` and the `Env`/`run` `start_time` option;
 - the result objects `ResponseMessage` and `InteractionResult`;
 - `Preview`, `PreviewCapture`, and the documented `window.simcordPreview` readiness fields for
   the optional local component preview;
@@ -109,6 +109,12 @@ use virtual time without replacing application/global datetime. See
 [time control](guides/time-control.md). Unverified monetization edge rules are explicit
 [simulator policies](guides/monetization.md#evidence-and-open-parity-checks), not captured
 Discord parity; future calibration may correct these policies.
+
+`start_time=None` preserves the 2026-01-01 UTC origin and default generated IDs.
+An aware custom origin takes effect before fixtures/startup and persists across restarts;
+offsets normalize to UTC and unsupported origins fail with `SetupError` before backend
+allocation or runtime hook installation. It does not virtualize application or SQL wall
+clocks. The private `Clock` implementation is not a public clock-provider API.
 
 
 ## What is intentionally internal

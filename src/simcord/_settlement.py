@@ -153,6 +153,11 @@ def _recognized_wait(self: _SettlementState, task: asyncio.Task[Any], waiter: An
         or (waiter in self.views and not waiter.done())
         or _dpy_internals.view_expiry_task(self.bot, task, waiter, self.expiry_tasks)
         or _dpy_internals.tasks_loop_sleep(task, waiter)
+        or (
+            (record := self.work.tasks.get(task)) is not None
+            and record.generation == self.generation
+            and _dpy_internals.typing_interval(task, waiter)
+        )
     )
 
 
@@ -261,6 +266,14 @@ def _compute_park_reason(self: _SettlementState, task: asyncio.Task[Any], deadli
         return "discord View/Modal expiry timer"
     if _dpy_internals.tasks_loop_sleep(task, waiter) and _timer_records_waking(self, task, waiter):
         return "discord.ext.tasks loop interval"
+    record = self.work.tasks.get(task)
+    if (
+        record is not None
+        and record.generation == self.generation
+        and _dpy_internals.typing_interval(task, waiter)
+        and _timer_records_waking(self, task, waiter)
+    ):
+        return "discord typing interval"
     dependencies = _dpy_internals.composed_tasks(task, waiter)
     unresolved = [dependency for dependency in dependencies if not dependency.done()]
     if unresolved:
