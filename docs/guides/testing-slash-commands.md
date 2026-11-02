@@ -90,12 +90,18 @@ uploaded = await alice.slash(channel, "upload", file=("photo.png", b"image bytes
 
 ## Bot-DM slash commands and visible command lists
 
-`UserHandle.slash(name, **options)` and `UserHandle.autocomplete(name, option, value, **filled)` invoke global commands whose contexts allow `BOT_DM`. Their interactions have `context == 1`:
+`UserHandle.slash(name, **options)` and `UserHandle.autocomplete(name, option, value, **filled)` invoke global commands whose contexts allow `BOT_DM`. Their interactions have `context == 1`, and the SDK callback receives `interaction.guild is None`:
 
 ```python
 user = simcord_env.create_user("alice")
 await user.slash("help")  # The bot's callback receives interaction.context == 1.
 ```
+
+For an existing guild member, use `await member.user.slash("help")` or
+`await member.user.autocomplete("tag", "name", "py")` for DM commands. Since 3.2.1,
+passing `member.user.dm_channel` to `member.slash(...)` or `member.autocomplete(...)`
+is rejected: `MemberActor` is guild-scoped. Keep `member.slash(channel, ...)` and
+`member.autocomplete(channel, ...)` for its guild.
 
 Use `member.available_commands(channel)` or `user.available_commands()` to get a tuple of leaf invocation strings that are visible there and accepted by `slash()` (for example, `"config set"`):
 

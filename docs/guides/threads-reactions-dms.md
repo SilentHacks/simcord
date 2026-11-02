@@ -70,11 +70,32 @@ reply = alice.user.dm_channel.history()      # what the bot DM'd back
 assert reply[-1].content.startswith("Hi")
 ```
 
+`alice` above is a `MemberActor`; `alice.send_dm(...)` remains a supported convenience
+that delegates to `alice.user.send_dm(...)`. Other guild-scoped actor methods do not
+target DMs. Use the `UserHandle` (`alice.user`) for DM messages, commands, components,
+and modals; keep `alice` for operations in its guild.
+
+Since 3.2.1, migrate calls that passed a DM channel to a guild actor:
+
+```python
+# Before 3.2.1: a guild actor was used to target a DM.
+await alice.send(alice.user.dm_channel, "hello bot")
+
+# Now: send through the user's DM-scoped handle.
+await alice.user.send_dm("hello bot")
+# This existing convenience also remains supported:
+await alice.send_dm("hello bot")
+
+# Guild operations still use the guild member.
+await alice.send(channel, "hello guild")
+```
+
 `alice.user.dm_channel` is the user's DM channel with the bot; `.history()` returns the
 conversation as real `discord.Message` objects. A `UserHandle` can also invoke global slash
 commands and autocomplete in that DM when their command contexts allow `BOT_DM`; these
-interactions carry `context == 1`. Use `user.available_commands()` to list the slash invocations
-visible there. See [slash command visibility and DM commands](testing-slash-commands.md#bot-dm-slash-commands-and-visible-command-lists).
+interactions carry `context == 1` and the SDK callback receives `interaction.guild is None`.
+Use `user.available_commands()` to list the slash invocations visible there. See
+[slash command visibility and DM commands](testing-slash-commands.md#bot-dm-slash-commands-and-visible-command-lists).
 
 Guild actors can edit/delete their messages and pin with `set_pinned`. In the user's bot DM,
 `UserHandle` supports their own message edits/deletes, desired reactions, and poll votes:
