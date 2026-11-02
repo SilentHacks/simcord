@@ -4,6 +4,22 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.3.0 (2026-11-02)
+
+### Features
+
+- Add the aware `start_time` option to `Env`, `simcord.run` and pytest markers, applying a validated UTC origin before fixtures and startup while preserving the deterministic default and elapsed time across bot restarts. Application and SQL clocks still require explicit application clock injection.
+
+### Bug fixes
+
+- Recognize discord.py's native typing interval as a virtual-only wait while preserving the initial typing request, every five-second refresh, HTTP work, and normal cancellation and lifecycle cleanup.
+- Deliver already-real-due native asyncio cancellation deadlines through blocked input during automatic clock advancement, preserving chronological resource/timer processing, strict settlement, executor ownership, and undelivered settlement failures.
+
+### Documentation
+
+- Clarify the guild-versus-DM handle scopes enforced since 3.2.1, with actionable setup errors and migration examples: use `member.user.send_dm(...)` for DM messages and `member.user` for DM slash commands, autocomplete, components, and modals. The existing `member.send_dm(...)` convenience remains supported; accepted and rejected actions are unchanged.
+
+
 ## 3.2.2 (2026-10-31)
 
 ### Bug fixes

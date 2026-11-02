@@ -1,1 +1,0 @@
-Clarify the guild-versus-DM handle scopes enforced since 3.2.1, with actionable setup errors and migration examples: use `member.user.send_dm(...)` for DM messages and `member.user` for DM slash commands, autocomplete, components, and modals. The existing `member.send_dm(...)` convenience remains supported; accepted and rejected actions are unchanged.

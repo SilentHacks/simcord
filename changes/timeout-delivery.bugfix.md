@@ -1,1 +1,0 @@
-Deliver already-real-due native asyncio cancellation deadlines through blocked input during automatic clock advancement, preserving chronological resource/timer processing, strict settlement, executor ownership, and undelivered settlement failures.
