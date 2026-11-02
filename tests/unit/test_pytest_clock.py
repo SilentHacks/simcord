@@ -23,6 +23,18 @@ def test_pytest_clock_selection_uses_execution_context_and_aliases(pytester):
         """
         import datetime
         import discord
+        import pytest
+
+        @pytest.mark.simcord(
+            start_time=datetime.datetime(2033, 6, 7, 8, 9, tzinfo=datetime.UTC)
+        )
+        async def test_marker_origin_selects_sdk_clock(world):
+            expected = datetime.datetime(2033, 6, 7, 8, 9, tzinfo=datetime.UTC)
+            assert world.now() == expected
+            assert discord.utils.utcnow() == expected
+            assert discord.utils.snowflake_time(world.backend.application_id) == expected
+            await world.advance_time(0.25)
+            assert discord.utils.utcnow() == expected + datetime.timedelta(seconds=0.25)
 
         async def test_clock(world):
             assert discord.utils.utcnow() == world.now()
@@ -45,4 +57,4 @@ def test_pytest_clock_selection_uses_execution_context_and_aliases(pytester):
         """
     )
     result = pytester.runpytest("-o", "asyncio_mode=auto", "-p", "no:cacheprovider")
-    result.assert_outcomes(passed=3)
+    result.assert_outcomes(passed=4)

@@ -19,6 +19,17 @@ top-level `simcord` package unless a module-qualified path is shown.
 
 ::: simcord.Env
 
+### `Env(start_time=None)`
+
+Sets the immutable initial virtual UTC instant before backend IDs, fixtures and startup.
+`None` preserves 2026-01-01 UTC. Supply an aware `datetime`; offsets normalize to UTC.
+Invalid values raise `SetupError`. Supported UTC instants are at least
+2015-01-01 00:00:00 and strictly before 2154-05-15 07:35:11.104.
+Elapsed time advances normally and survives bot restarts. `simcord.run` and
+`@pytest.mark.simcord` accept the same option. This does not synchronize application or
+SQL wall clocks; bind application time seams to `env.now` before startup when needed.
+See [time control](guides/time-control.md#choosing-the-initial-utc-instant).
+
 ### `Env(settle_timeout=5.0)`
 
 `settle_timeout` is the default maximum time spent joining runnable bot work. A direct

@@ -344,7 +344,7 @@ async def test_wakes_recognized_wait_matches_declared_task(env: Any) -> None:
     waiter: asyncio.Future[Any] = asyncio.Future()
     task = _fake_task(waiter)
     env._work.external_waits[task] = "declared"  # type: ignore[index]
-    env._work.tasks[task] = SimpleNamespace()  # type: ignore[index]
+    env._work.tasks[task] = _runtime._TaskRecord(env._generation, "declared", None)
 
     record = _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
     assert _settlement._wakes_recognized_wait(env._settlement_state(), record)
@@ -353,7 +353,7 @@ async def test_wakes_recognized_wait_matches_declared_task(env: Any) -> None:
 async def test_wakes_recognized_wait_rejects_unrecognized_task(env: Any) -> None:
     waiter: asyncio.Future[Any] = asyncio.Future()
     task = _fake_task(waiter)
-    env._work.tasks[task] = SimpleNamespace()  # type: ignore[index]
+    env._work.tasks[task] = _runtime._TaskRecord(env._generation, "unknown", None)
 
     record = _record(env, _set_result_unless_cancelled, (waiter,), 10.0)
     assert not _settlement._wakes_recognized_wait(env._settlement_state(), record)
@@ -416,7 +416,7 @@ async def test_external_wait_rejects_nested_declaration(env: Any) -> None:
 
     task = asyncio.current_task()
     assert task is not None
-    env._work.tasks[task] = SimpleNamespace()  # type: ignore[index]
+    env._work.tasks[task] = _runtime._TaskRecord(env._generation, "outer", None)
     env._work.external_waits[task] = "outer"  # type: ignore[index]
     try:
         with pytest.raises(simcord.SetupError, match="cannot be nested"):

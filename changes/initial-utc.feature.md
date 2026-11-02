@@ -1,0 +1,1 @@
+Add the aware `start_time` option to `Env`, `simcord.run` and pytest markers, applying a validated UTC origin before fixtures and startup while preserving the deterministic default and elapsed time across bot restarts. Application and SQL clocks still require explicit application clock injection.

@@ -100,6 +100,7 @@ Both `simcord.run(bot, **options)` and the underlying `Env` accept these keyword
 | `approved_intents` | `None` (all approved) | Simulates developer-portal privileged-intent toggles and REST Message Content access, independently of the Gateway request bit. Explicit `Intents.none()` denies approval. |
 | `shard_count` | client setting | Supplies the Get Gateway Bot recommendation when an `AutoShardedClient` does not configure `shard_count` itself. |
 | `settle_timeout` | `5.0` seconds | Default maximum time for joining runnable bot work; a direct settle `timeout=` overrides it. |
+| `start_time` | `None` (2026-01-01 UTC) | Aware initial UTC instant, normalized from any offset before fixtures/startup; see [time control](time-control.md#choosing-the-initial-utc-instant) for supported bounds and application clock wiring. |
 
 `settle_timeout` does not change startup's fixed five-second READY settlement budget.
 Restart drains existing work using `settle_timeout`, then gets a fresh fixed five-second
@@ -180,6 +181,20 @@ async def test_command_logic_in_isolation(simcord_env):
     # this env auto-registers unsynced commands; other tests stay strict
     ...
 ```
+
+The same marker accepts an initial clock origin:
+
+```python
+from datetime import UTC, datetime
+
+@pytest.mark.simcord(start_time=datetime(2030, 4, 5, tzinfo=UTC))
+async def test_future_entitlement(simcord_env):
+    assert simcord_env.now() == datetime(2030, 4, 5, tzinfo=UTC)
+```
+
+For application clock injection needed by `setup_hook`, construct `Env` and bind
+`env.now` before manual startup in your fixture; the
+[time-control example](time-control.md#choosing-the-initial-utc-instant) includes teardown.
 
 In 3.0, error snapshots with prefix acknowledgement and detached mutable result
 payloads are unconditional. Remove the temporary 2.3 `future_behavior` marker/run
