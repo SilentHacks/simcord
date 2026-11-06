@@ -33,6 +33,10 @@ This is one behavior-fidelity update, without legacy-behavior opt-outs.
   Bot reactions no longer require history; pin listings without history are
   empty. Voice/stage text actions require Connect. Update tests that relied on
   the old false accepts or refusals rather than catching these errors in SimCord.
+- Remove old test overrides of `RequestContext.require_channel_permissions`
+  when they duplicate the native thread rules; forwarding its new keyword
+  arguments would retain obsolete permission semantics. Assess unrelated
+  transport workarounds separately rather than removing them as a bundle.
 - Archived/locked thread actions and thread-edit authority follow the
   [recorded rules](guides/permissions.md#bot-rest-behavior). Thread creators
   still need `manage_threads` to delete their own thread.
