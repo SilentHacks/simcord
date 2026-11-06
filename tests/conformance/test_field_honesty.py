@@ -97,8 +97,7 @@ async def test_channel_edit_rejects_unknown_fields_before_mutation(env, channel,
     assert events == []
 
 
-@pytest.mark.parametrize("value", [True, False])
-async def test_text_channel_edit_rejects_explicit_field_atomically(env, channel, monkeypatch, value):
+async def test_text_channel_edit_rejects_explicit_field_atomically(env, channel, monkeypatch):
     dpy_channel = env.bot.get_channel(channel.id)
     backend_channel = env.backend.get_channel(channel.id)
     before = copy.deepcopy(backend_channel)
@@ -111,7 +110,7 @@ async def test_text_channel_edit_rejects_explicit_field_atomically(env, channel,
 
     monkeypatch.setattr(env.backend, "emit", capture)
     with pytest.raises(router.UnsupportedField) as exc:
-        await dpy_channel.edit(name="renamed", nsfw=value)
+        await dpy_channel.edit(name="renamed", nsfw=True)
 
     assert "nsfw" in exc.value.fields
     assert backend_channel == before
@@ -210,8 +209,7 @@ async def test_create_text_channel_supported_fields_apply(env):
     assert backend_channel.rate_limit_per_user == 5
 
 
-@pytest.mark.parametrize("value", [True, False])
-async def test_create_text_channel_rejects_explicit_field_atomically(env, monkeypatch, value):
+async def test_create_text_channel_rejects_explicit_field_atomically(env, monkeypatch):
     guild = env.bot.get_guild(env.guild.id)
     backend_guild = env.backend.get_guild(env.guild.id)
     channel_ids = set(env.backend.channels)
@@ -225,7 +223,7 @@ async def test_create_text_channel_rejects_explicit_field_atomically(env, monkey
 
     monkeypatch.setattr(env.backend, "emit", capture)
     with pytest.raises(router.UnsupportedField) as exc:
-        await guild.create_text_channel("explicit", nsfw=value)
+        await guild.create_text_channel("explicit", nsfw=True)
 
     assert "nsfw" in exc.value.fields
     assert set(env.backend.channels) == channel_ids

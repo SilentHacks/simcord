@@ -109,6 +109,15 @@ and is an explicit known gap, not a claim of matching that pre-rollout response.
 Uncaptured neutral-field details and category/voice visibility edge rules remain
 documented simulator policy.
 
+Visible voice occupants are projected per connection at event admission, including
+events waiting for FIFO parser delivery. Moving into a hidden channel (or losing
+visibility while stationary) clears the SDK voice cache with a departure built
+only from the last authorized snapshot and `channel_id: null`. Hidden-to-hidden
+movement discloses nothing; a reveal restores current authorized occupants.
+This departure wire shape is an intentional privacy/cache-safety inference, not
+a recorded live Discord observation. Canonical backend voice state is unchanged,
+and normal voice intent and shard routing still apply.
+
 ## Bot REST behavior
 
 - Embeds, uploads and polls on ordinary messages require `embed_links`,
@@ -126,6 +135,14 @@ documented simulator policy.
   `send_messages_in_threads`. **Deleting requires `manage_threads`, including
   for the creator**, as confirmed by our own recording. Leaving needs no view
   access.
+- Forum thread pinning and unpinning require `manage_threads`, even for the
+  creator. The pinned flag is returned consistently by edits, fetches, gateway
+  events and active/archived listings. Pinning non-forum threads and changing
+  unsupported thread flag bits are rejected before mutation; existing unrelated
+  bits are preserved.
+- NSFW channels are not modeled: channel creation/edit and thread creation reject
+  enabling NSFW. Omitted or literal `False` metadata is accepted inertly; there is
+  no way to enable NSFW.
 - `AllowedMentions` controls the returned mention arrays. Missing TTS permission,
   unmentionable role pings, ignored ephemeral flags on normal sends and denied
   known external custom emojis are modeled as successful requests with reduced

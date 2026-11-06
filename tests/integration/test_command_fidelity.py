@@ -5,7 +5,7 @@ import pytest
 from discord import app_commands
 
 from simcord.backend.errors import BackendError
-from simcord.http.router import dispatch
+from simcord.http.router import UnsupportedField, dispatch
 
 
 async def test_guild_command_lifecycle_preserves_identity(env):
@@ -138,3 +138,34 @@ async def test_malformed_bulk_commands_cannot_erase_or_partially_replace_registr
         await env.bot.http.request(route, json=payload)
     assert caught.value.status == 400 and caught.value.code == 50035
     assert dispatch(env.backend, "GET", scope) == [previous]
+
+
+@pytest.mark.parametrize("guild_scope", [False, True])
+async def test_nsfw_registration_refused_atomically_with_false_sync_compatible(env, guild_scope):
+    guild_id = env.guild.id if guild_scope else None
+    scope = f"/applications/{env.backend.application_id}"
+    scope += f"/guilds/{guild_id}/commands" if guild_scope else "/commands"
+    existing = env.backend.register_commands(
+        guild_id, [{"name": "preserved", "description": "ordinary", "nsfw": False}]
+    )[0]
+    before = dict(env.backend.commands[guild_id])
+    reserved_ids = set(env.backend._reserved_ids)
+    forbidden = {"name": "forbidden", "description": "unsupported", "nsfw": True}
+    requests = [("PUT", scope, [{"name": "would-replace"}, forbidden])]
+    if guild_scope:
+        requests += [
+            ("POST", scope, forbidden),
+            ("PATCH", f"{scope}/{existing['id']}", {"nsfw": True}),
+        ]
+    for method, path, payload in requests:
+        with pytest.raises(UnsupportedField) as caught:
+            dispatch(env.backend, method, path, json=payload)
+        assert caught.value.fields == ["nsfw"]
+        assert env.backend.commands[guild_id] == before
+        assert env.backend._reserved_ids == reserved_ids
+    with pytest.raises(NotImplementedError, match="NSFW command"):
+        env.backend.register_commands(guild_id, [{"name": "would-replace"}, forbidden])
+    with pytest.raises(NotImplementedError, match="NSFW command"):
+        env.backend.upsert_command(guild_id, {"nsfw": True}, command_id=int(existing["id"]))
+    assert env.backend.commands[guild_id] == before
+    assert env.backend._reserved_ids == reserved_ids

@@ -45,6 +45,7 @@ class FakeGateway:
         self._intents_cache: discord.Intents | None = None
         self._visible_channels: dict[int, set[int]] = {}
         self._visible_threads: dict[int, set[int]] = {}
+        self._visible_voice: dict[int, dict[int, dict[str, Any]]] = {}
         self._pending: deque[tuple[Callable[[dict[str, Any]], None], dict[str, Any]]] = deque()
 
     @property
@@ -58,11 +59,14 @@ class FakeGateway:
 
     def feed(self, event: str, payload: Mapping[str, Any]) -> None:
         self._feed(event, payload)
+        if event == "READY":
+            self._visible_voice.clear()
         guild_id = payload.get("id") if event == "GUILD_UPDATE" else payload.get("guild_id")
         if event == "GUILD_DELETE":
             guild_id = int(payload["id"])
             self._visible_channels.pop(guild_id, None)
             self._visible_threads.pop(guild_id, None)
+            self._visible_voice.pop(guild_id, None)
             return
         if guild_id is None:
             return
@@ -139,6 +143,18 @@ class FakeGateway:
                 )
         if event == "GUILD_CREATE":
             _intents.prune_guild_create(mutable, self.intents, bot_id)
+            self._visible_voice[int(mutable["id"])] = {
+                int(voice["user_id"]): detach({**voice, "guild_id": mutable["id"]})
+                for voice in mutable.get("voice_states", [])
+                if voice.get("channel_id") is not None
+            }
+        elif event == "VOICE_STATE_UPDATE":
+            occupants = self._visible_voice.setdefault(int(mutable["guild_id"]), {})
+            user_id = int(mutable["user_id"])
+            if mutable.get("channel_id") is None:
+                occupants.pop(user_id, None)
+            else:
+                occupants[user_id] = detach(mutable)
         # Snapshot authorization, projection and intent shaping at emission time.
         # Guild.create_* installs its REST result in the SDK cache, so only parser
         # delivery waits until afterward. Keep subsequent parser calls FIFO.
@@ -212,6 +228,19 @@ class FakeGateway:
         guild_id = payload.get("guild_id")
         if guild_id is None:
             return True
+        if event == "VOICE_STATE_UPDATE":
+            channel_id = payload.get("channel_id")
+            if channel_id is not None and self._visible(int(channel_id)):
+                return True
+            previous = self._visible_voice.get(int(guild_id), {}).get(int(payload["user_id"]))
+            if previous is None:
+                return False
+            # Only previously authorized data may accompany a departure. Never
+            # copy the hidden destination's session, flags or member snapshot.
+            payload.clear()
+            payload.update(detach(previous))
+            payload["channel_id"] = None
+            return True
         if event in {"CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"}:
             channel_id = int(payload["id"])
             visible = (
@@ -267,6 +296,13 @@ class FakeGateway:
             data = serializers.thread_list_payload(self._backend, threads)
             data["guild_id"] = str(guild_id)
             self._feed("THREAD_LIST_SYNC", data)
+        occupants = self._visible_voice.get(guild_id, {})
+        for snapshot in list(occupants.values()):
+            if not self._visible(int(snapshot["channel_id"])):
+                self._feed("VOICE_STATE_UPDATE", snapshot)
+        for user_id, state in guild.voice_states.items():
+            if state.channel_id is not None and self._visible(state.channel_id) and user_id not in occupants:
+                self._feed("VOICE_STATE_UPDATE", serializers.voice_state_payload(self._backend, state))
 
     def deliver(self, event: str, payload: Mapping[str, Any]) -> None:
         """Deliver a connection-targeted event (e.g. a chunk response) ungated.
@@ -305,6 +341,7 @@ class FakeWebSocket:
 
     async def close(self, code: int = 1000) -> None:
         self.open = False
+        self._gateway._visible_voice.clear()
 
     async def change_presence(self, *, activity: Any = None, status: Any = None, since: float = 0.0) -> None:
         # Presence is cosmetic for an offline bot under test; accept and drop.

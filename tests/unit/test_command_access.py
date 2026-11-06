@@ -280,3 +280,17 @@ def test_register_commands_rejects_unknown_fields_before_mutating_store() -> Non
 
     assert backend.commands[None] == previous
     assert backend._reserved_ids == reserved_ids
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({}, "unsupported-nsfw"),
+        ({"guild_id": "1"}, "scope"),
+        ({"contexts": [1]}, "context"),
+        ({"default_member_permissions": "0"}, "default-member-permissions"),
+    ],
+)
+def test_nsfw_access_is_excluded_after_known_visibility_denials(fields, reason) -> None:
+    world = make_world()
+    assert result(world, make_command(nsfw=True, **fields)) == Access(False, reason)

@@ -49,8 +49,13 @@ This is one behavior-fidelity update, without legacy-behavior opt-outs.
 - Stored application commands use Discord's normalized response shape, and
   bulk registration validates the complete batch before changing state. The
   26-option and required-after-optional cases are rejected server-side.
-  NSFW metadata is stored, but NSFW visibility and invocation remain explicitly
-  unsupported (`NotImplementedError`); recording metadata does not model age gates.
+  NSFW enabling is deliberately rejected before registration changes state
+  (`UnsupportedField` at REST boundaries, `NotImplementedError` in backend setup).
+  False or omitted metadata remains compatible with ordinary discord.py sync.
+  Pre-existing NSFW commands are omitted from `available_commands()` and Preview
+  without exposing their identity; Preview reports generic incomplete command
+  behavior only after ordinary visibility exclusions. Direct invocation still
+  raises `NotImplementedError`. No age gating or NSFW channel features are modeled.
 - `AllowedMentions` now controls parsed mention metadata and notification effects;
   a literal `<@id>` in content need not appear in `Message.mentions`. Explicitly
   opt intended recipients into your bot's notification policy in ping tests.

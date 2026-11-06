@@ -34,7 +34,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Prefix commands (`ext.commands`) | ✅ | Converters, checks, cooldowns, error handlers |
 | Permissions engine | ✅ | Overwrites, hierarchy, timeouts, owner/admin |
 | Bot channel visibility | ✅ | Hidden gateway channels are obfuscated, REST guild-channel listings are filtered, and role/overwrite changes refresh visibility. Authoritative setup state and interaction wire payloads stay unredacted; unspecified neutral fields remain docs-based simulator policy. |
-| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes. NSFW registration metadata is preserved; visibility and invocation of NSFW-marked commands raise `NotImplementedError` because age gating is not modeled. |
+| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes. NSFW enabling is deliberately rejected atomically; false/omitted metadata remains sync-compatible. Pre-existing NSFW commands are excluded from enumeration and Preview with a generic incomplete diagnostic, without disclosing identity; direct invocation raises `NotImplementedError`. No age-gating model. |
 | App command permissions | ✅ | `AppCommand.fetch_permissions`; seed via `guild.set_command_permissions` |
 | Context menus (user & message) | ✅ | |
 | Autocomplete | ✅ | Focused options must be declared and have autocomplete enabled |
@@ -107,10 +107,13 @@ are:
 - `hidden.guild-list`: REST filtering had not yet been enforced on the capture
   date. SimCord deliberately implements the documented mandatory filtering without
   an opt-out. Capability-32768 gateway captures already confirmed obfuscation.
+- `command.store`: the authentic capture accepted `nsfw=true`; SimCord deliberately
+  forbids enabling NSFW commands and rejects the unchanged request before storage.
+  The exact known-gap signature records this local policy, not Discord parity.
 
 The generated Evidence column below distinguishes actual live observations from
 the official documentation used to derive each hypothesis. Status/code describe
-the live observation; the two exceptions above are not passing parity claims.
+the live observation; the exceptions above are not passing parity claims.
 
 <!-- behavior:begin (generated — do not edit by hand) -->
 

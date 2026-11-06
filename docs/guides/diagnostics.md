@@ -214,6 +214,12 @@ fault responses. REST enforcement, interaction `app_permissions` and cached
 revoke a channel permission while `guild.me.guild_permissions` correctly retains
 the guild-level grant.
 
+Existing worlds are projected once when registered. Canonical builder and REST
+permission mutations project the affected guild/channel before returning models,
+serializing responses or publishing events, including silent construction.
+Permission reads never project, mutate state or emit events. Raw model/dictionary
+permission writes are unsupported; use the builder or backend mutation methods.
+
 Test-driver assertions that no longer hold under revocation are ignored.
 Assertions raised by application code are findings, like other unhandled bot
 exceptions and timeouts, and are reported with the permission and source location;
@@ -239,10 +245,14 @@ The report separates exercised and unsupported cases. Broader-scoped user
 fixtures, reused environments, bot-owned guilds, Administrator bypasses,
 and guild-scoped grants that cannot be removed without changing other members
 are unsupported. Removing Administrator could revoke unrelated permissions, so
-it is never presented as a faithful one-flag sweep. Harness/setup failures are
-reported as unsupported rather than
-invented bot failures. An unsupported case is not evidence that your bot handles
-revocation.
+it is never presented as a faithful one-flag sweep. Sharing a role after its
+guild-scoped grant was suppressed restores that owned bit and stops the rerun
+as unsupported; pytest still tears down its fixtures. Explicit later permission
+edits relinquish ownership of the old suppressed bit; unrelated role/overwrite
+edits are retained. No roles are cloned and no whole-world rollback is used.
+Harness/setup failures are unsupported rather than invented bot failures.
+An unsupported case is not evidence that your bot handles revocation.
+Missing xdist worker reports explicitly mark coverage incomplete.
 
 ## Injecting API failures
 

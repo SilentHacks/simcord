@@ -96,7 +96,7 @@ class BackendBase:
         # JSON-friendly diagnostic records, independent of authorization decisions.
         self.permission_checks: list[dict[str, Any]] = []
         self.degradations: list[dict[str, Any]] = []
-        self.permission_projection: Callable[..., Mapping[str, Any] | None] | None = None
+        self.permission_projection: Callable[..., None] | None = None
         self.application_id: int = self.snowflake()
         self.bot_user: User = self.make_user("TestBot", bot=True)
 
@@ -144,11 +144,12 @@ class BackendBase:
     def advance_clock(self, seconds: float) -> None:
         self.clock.advance(seconds)
 
+    def project_permissions(self, guild_id: int | None, **scope: Any) -> None:
+        """Project a committed permission mutation before exposing its state."""
+        if self.permission_projection is not None and guild_id is not None:
+            self.permission_projection(self, guild_id, **scope)
+
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
-        if self.permission_projection is not None:
-            projected = self.permission_projection(self, event, payload)
-            if projected is not None:
-                payload = projected
         envelope = detach(payload)
         # Without live consumers the first detached graph is already history.
         history = detach(envelope) if self.subscribers else envelope
@@ -344,8 +345,6 @@ class BackendBase:
     # ------------------------------------------------------------ permissions
 
     def compute_permissions(self, guild_id: int, user_id: int, channel_id: int | None = None) -> int:
-        if self.permission_projection is not None:
-            self.permission_projection(self)
         guild = self.get_guild(guild_id)
         channel = None
         if channel_id is not None:

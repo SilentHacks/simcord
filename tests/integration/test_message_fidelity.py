@@ -389,3 +389,98 @@ async def test_reply_history_requirement_is_observed_and_attributed(env, channel
     assert caught.value.code == 160002
     assert env.observed_permissions().read_message_history
     assert env.http_requests[-1].denial["missing"] == ["read_message_history"]
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+@pytest.mark.parametrize("effect", ["tts", "external_emoji", "everyone", "here", "role"])
+async def test_requested_send_effect_permissions_are_observed_without_denial(env, channel, effect, allowed):
+    cached = env.bot.get_channel(channel.id)
+    permission = {
+        "tts": "send_tts_messages",
+        "external_emoji": "external_emojis",
+        "everyone": "mention_everyone",
+        "here": "mention_everyone",
+        "role": "mention_everyone",
+    }[effect]
+    kwargs = {}
+    content = "spoken"
+    if effect == "tts":
+        kwargs["tts"] = True
+    elif effect == "external_emoji":
+        emoji = env.create_guild("external").create_emoji("known")
+        content = f"<:{emoji.name}:{emoji.id}>"
+    elif effect == "role":
+        role = env.guild.create_role("unmentionable", mentionable=False)
+        content = role.mention
+    else:
+        content = f"@{effect}"
+    await cached.set_permissions(env.guild.me, **{permission: allowed})
+    before = len(env.permission_checks)
+    sent = await cached.send(content, **kwargs)
+    assert env.http_requests[-1].denial is None
+    checks = [check for check in env.permission_checks[before:] if permission in check["required"]]
+    assert len(checks) == 1
+    assert checks[0]["allowed"] is allowed
+    assert checks[0]["missing"] == ([] if allowed else [permission])
+    assert getattr(env.observed_permissions(), permission)
+    expected_content = ":known:" if effect == "external_emoji" and not allowed else content
+    assert sent.content == expected_content
+    assert (await cached.fetch_message(sent.id)).content == expected_content
+    stored = env.backend.get_message(channel.id, sent.id)
+    if effect == "tts":
+        assert sent.tts is allowed
+    elif effect in {"everyone", "here"}:
+        assert stored.mention_everyone is allowed
+    elif effect == "role":
+        assert stored.ping_role_ids == ([role.id] if allowed else [])
+    degradation = {
+        "tts": "tts_permission_dropped",
+        "external_emoji": "external_emoji_permission_stripped",
+        "role": "unmentionable_role_ping_dropped",
+    }.get(effect)
+    assert env.degradations == (
+        [{"kind": degradation, "channel_id": channel.id}] if degradation and not allowed else []
+    )
+
+
+@pytest.mark.parametrize(
+    "content_kind", ["plain", "local_emoji", "unknown_emoji", "mentionable_role", "suppressed_mentions"]
+)
+async def test_unrequested_send_effects_do_not_observe_optional_permissions(env, channel, content_kind):
+    cached = env.bot.get_channel(channel.id)
+    content = "plain text"
+    kwargs = {}
+    if content_kind == "local_emoji":
+        emoji = env.guild.create_emoji("local")
+        content = f"<:{emoji.name}:{emoji.id}>"
+    elif content_kind == "unknown_emoji":
+        content = "<:unknown:123456789>"
+    elif content_kind == "mentionable_role":
+        content = env.guild.create_role("mentionable", mentionable=True).mention
+    elif content_kind == "suppressed_mentions":
+        content = "@everyone @here " + env.guild.create_role("unmentionable", mentionable=False).mention
+        kwargs["allowed_mentions"] = discord.AllowedMentions.none()
+    before = len(env.permission_checks)
+    await cached.send(content, **kwargs)
+    optional = {"send_tts_messages", "external_emojis", "mention_everyone"}
+    assert all(optional.isdisjoint(check["required"]) for check in env.permission_checks[before:])
+    assert env.degradations == []
+
+
+async def test_dm_send_effects_do_not_observe_guild_flags(env):
+    emoji = env.guild.create_emoji("known")
+    user = env.create_user("recipient")
+    native = await env.bot.fetch_channel(user.dm_channel.id)
+    before = len(env.permission_checks)
+    sent = await native.send(f"@everyone @here <:{emoji.name}:{emoji.id}>", tts=True)
+    assert sent.tts
+    assert all(not check["required"] for check in env.permission_checks[before:])
+    assert env.observed_permissions().value == 0
+    assert env.http_requests[-1].denial is None
+
+
+async def test_actor_mentions_do_not_add_bot_permission_observations(env, channel, alice):
+    role = env.guild.create_role("unmentionable", mentionable=False)
+    before = len(env.permission_checks)
+    env.backend.create_message(channel.id, alice.id, f"@everyone @here {role.mention}")
+    assert len(env.permission_checks) == before

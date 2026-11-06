@@ -29,13 +29,27 @@ Requires the ``pytest`` extra (``pip install simcord[pytest]``).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import discord
 import pytest
 
 from ._diagnostics import ACTIVE_RUN, PermissionRun
 from .env import Env
+
+SweepStatus = Literal["not_swept", "unsupported", "finding", "clean", "worker_unavailable"]
+
+
+class SweepOutcome(TypedDict):
+    nodeid: str
+    flag: str | None
+    status: SweepStatus
+    detail: str
+
+
+def _outcome(nodeid: str, flag: str | None, status: SweepStatus, detail: str) -> SweepOutcome:
+    return {"nodeid": nodeid, "flag": flag, "status": status, "detail": detail}
+
 
 _DIAGNOSTICS = pytest.StashKey[dict[str, Any]]()
 
@@ -178,14 +192,16 @@ def pytest_runtest_protocol(item, nextitem):
     if not config.getoption("simcord_sweep") or not baseline.envs:
         return True
     if not all(report.passed for report in reports):
-        state["sweeps"].append((item.nodeid, None, "baseline not passed; not swept"))
+        state["sweeps"].append(_outcome(item.nodeid, None, "not_swept", "baseline not passed; not swept"))
         return True
     if not observed:
-        state["sweeps"].append((item.nodeid, None, "no observed flags; not swept"))
+        state["sweeps"].append(_outcome(item.nodeid, None, "not_swept", "no observed flags; not swept"))
         return True
     unsupported = scope_reasons or _unsupported_scopes(item)
     if unsupported:
-        state["sweeps"].append((item.nodeid, None, "unsupported: " + "; ".join(unsupported)))
+        state["sweeps"].append(
+            _outcome(item.nodeid, None, "unsupported", "unsupported: " + "; ".join(unsupported))
+        )
         return True
     for flag, enabled in discord.Permissions(observed):
         if not enabled:
@@ -226,12 +242,14 @@ def pytest_runtest_protocol(item, nextitem):
                     )
                     break
         if run.unsupported:
-            state["sweeps"].append((item.nodeid, flag, "unsupported: " + "; ".join(run.unsupported)))
+            state["sweeps"].append(
+                _outcome(item.nodeid, flag, "unsupported", "unsupported: " + "; ".join(run.unsupported))
+            )
         elif failures:
             for error, source in failures:
-                state["sweeps"].append((item.nodeid, flag, _failure_detail(error, source)))
+                state["sweeps"].append(_outcome(item.nodeid, flag, "finding", _failure_detail(error, source)))
         else:
-            state["sweeps"].append((item.nodeid, flag, "no unhandled bot errors"))
+            state["sweeps"].append(_outcome(item.nodeid, flag, "clean", "no unhandled bot errors"))
     return True
 
 
@@ -240,7 +258,7 @@ def pytest_sessionfinish(session, exitstatus):
     if hasattr(session.config, "workeroutput"):
         session.config.workeroutput["simcord_diagnostics"] = state
     if session.exitstatus == pytest.ExitCode.OK and any(
-        detail.startswith("unhandled ") for _, _, detail in state["sweeps"]
+        outcome["status"] == "finding" for outcome in state["sweeps"]
     ):
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
@@ -253,7 +271,14 @@ def pytest_testnodedown(node, error):
     state = node.config.stash[_DIAGNOSTICS]
     child = getattr(node, "workeroutput", {}).get("simcord_diagnostics")
     if child is None:
-        state["sweeps"].append((node.gateway.id, None, "unsupported: worker diagnostic results unavailable"))
+        state["sweeps"].append(
+            _outcome(
+                node.gateway.id,
+                None,
+                "worker_unavailable",
+                "unsupported: worker diagnostic results unavailable",
+            )
+        )
         return
     state["observed"] |= child["observed"]
     state["sweeps"].extend(child["sweeps"])
@@ -266,23 +291,25 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     if config.getoption("simcord_observed_permissions"):
         names = [name for name, enabled in discord.Permissions(state["observed"]) if enabled]
         terminalreporter.section("simcord observed permissions")
-        incomplete = any(
-            "worker diagnostic results unavailable" in detail for _, _, detail in state["sweeps"]
-        )
+        incomplete = any(outcome["status"] == "worker_unavailable" for outcome in state["sweeps"])
         terminalreporter.write_line(", ".join(names) or ("(no flags received)" if incomplete else "(none)"))
         if incomplete:
             terminalreporter.write_line("Incomplete coverage: worker diagnostic results unavailable.")
     if config.getoption("simcord_sweep"):
         terminalreporter.section("simcord permission sweep")
-        for nodeid, flag, detail in state["sweeps"]:
-            terminalreporter.write_line(f"{nodeid} [{flag or 'baseline'}]: {detail}")
-        findings = sum(detail.startswith("unhandled ") for _, _, detail in state["sweeps"])
-        unsupported = sum(detail.startswith("unsupported:") for _, _, detail in state["sweeps"])
+        for outcome in state["sweeps"]:
+            terminalreporter.write_line(
+                f"{outcome['nodeid']} [{outcome['flag'] or 'baseline'}]: {outcome['detail']}"
+            )
+        findings = sum(outcome["status"] == "finding" for outcome in state["sweeps"])
+        unsupported = sum(
+            outcome["status"] in ("unsupported", "worker_unavailable") for outcome in state["sweeps"]
+        )
         exercised = len(
             {
-                (nodeid, flag)
-                for nodeid, flag, detail in state["sweeps"]
-                if flag is not None and not detail.startswith("unsupported:")
+                (outcome["nodeid"], outcome["flag"])
+                for outcome in state["sweeps"]
+                if outcome["flag"] is not None and outcome["status"] in ("clean", "finding")
             }
         )
         terminalreporter.write_line(

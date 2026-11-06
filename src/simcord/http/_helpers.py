@@ -7,7 +7,7 @@ from typing import Any
 
 from .. import intents
 from .._payload import detach
-from ..backend import errors, permissions, serializers
+from ..backend import errors, serializers
 from ..backend.cdn import sticker_url
 from ..backend.models import (
     AllowedMentions,
@@ -328,9 +328,13 @@ def prepare_bot_message(
             }
         )
     if ordinary_send and isinstance(body.get("content"), str) and channel.guild_id is not None:
-        if not backend.compute_permissions(
-            channel.guild_id, backend.bot_user.id, channel_id
-        ) & permissions.flag("external_emojis"):
+        if any(
+            guild.id != channel.guild_id and int(match[2]) in guild.emojis
+            for match in _CUSTOM_EMOJI.finditer(body["content"])
+            for guild in backend.guilds.values()
+        ) and not backend.has_permission_flags(
+            channel.guild_id, backend.bot_user.id, channel_id, "external_emojis"
+        ):
 
             def strip_external(match: re.Match[str]) -> str:
                 emoji_id = int(match[2])
@@ -361,8 +365,9 @@ def prepare_bot_message(
         if (
             tts
             and channel.guild_id is not None
-            and not backend.compute_permissions(channel.guild_id, backend.bot_user.id, channel_id)
-            & permissions.flag("send_tts_messages")
+            and not backend.has_permission_flags(
+                channel.guild_id, backend.bot_user.id, channel_id, "send_tts_messages"
+            )
         ):
             tts = False
             degradation_kinds.append("tts_permission_dropped")
@@ -452,13 +457,11 @@ def prepare_bot_message(
     if ordinary_send:
         if channel.guild_id is not None:
             guild = backend.get_guild(channel.guild_id)
-            can_mention_all = backend.compute_permissions(
-                channel.guild_id, backend.bot_user.id, channel_id
-            ) & permissions.flag("mention_everyone")
-            if not can_mention_all and any(
+            if any(
                 mention_policy.allows_role(role_id)
                 and (role := guild.roles.get(role_id)) is not None
                 and not role.mentionable
+                and role_id not in message.ping_role_ids
                 for role_id in message.mention_role_ids
             ):
                 degradation_kinds.append("unmentionable_role_ping_dropped")

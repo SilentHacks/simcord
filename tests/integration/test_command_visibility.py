@@ -105,7 +105,7 @@ async def test_context_menu_refuses_invisible_commands(env, channel, alice, reas
 
 
 @pytest.mark.parametrize("scope", ["global", "guild"])
-@pytest.mark.parametrize("field_value", [0, None])
+@pytest.mark.parametrize("field_value", [True, 0, None])
 async def test_unmodeled_command_metadata_rejected_atomically(env, scope, field_value):
     guild_id = None if scope == "global" else env.guild.id
     path = (
@@ -141,8 +141,7 @@ async def test_nsfw_metadata_cannot_silently_allow_unmodeled_command_dispatch(en
     ):
         with pytest.raises(NotImplementedError):
             await invoke()
-    with pytest.raises(NotImplementedError):
-        alice.available_commands(channel)
+    assert "tag" not in alice.available_commands(channel)
     assert set(env.backend.interactions) == interactions_before
 
 

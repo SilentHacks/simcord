@@ -378,12 +378,18 @@ class MessageMixin(BackendBase):
         users = [int(user_id) for user_id in _USER_MENTION.findall(content)]
         roles = [int(role_id) for role_id in _ROLE_MENTION.findall(content)]
         guild = self.guilds.get(channel.guild_id) if channel.guild_id is not None else None
-        permissions_value = (
-            self.compute_permissions(channel.guild_id, author_id, channel.id)
-            if channel.guild_id is not None
-            else 0
+        needs_mention_all = guild is not None and (
+            (policy.everyone and ("@everyone" in content or "@here" in content))
+            or any(
+                policy.allows_role(role_id)
+                and (role := guild.roles.get(role_id)) is not None
+                and not role.mentionable
+                for role_id in roles
+            )
         )
-        can_mention_all = bool(permissions_value & permissions.flag("mention_everyone"))
+        can_mention_all = needs_mention_all and self.has_permission_flags(
+            channel.guild_id, author_id, channel.id, "mention_everyone"
+        )
         ping_users = list(
             dict.fromkeys(
                 user_id for user_id in users if user_id in self.users and policy.allows_user(user_id)

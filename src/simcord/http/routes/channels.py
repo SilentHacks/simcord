@@ -11,7 +11,16 @@ from ...backend.permissions import flag
 from ...enums import AuditLogAction, ChannelType, OverwriteType
 from .._access import require_text_access
 from .._helpers import message_response, prepare_bot_message
-from ..router import RequestContext, route
+from ..router import RequestContext, UnsupportedField, route
+
+
+def _reject_nsfw(ctx: RequestContext) -> None:
+    body = ctx.body()
+    if body.get("nsfw") is False:
+        ctx.json = {key: value for key, value in body.items() if key != "nsfw"}
+        return
+    if "nsfw" in body and body["nsfw"] is not False:
+        raise UnsupportedField(ctx.method, ctx.path, ["nsfw"], note="NSFW channels are not supported.")
 
 
 def validate_channel_fields(body: dict[str, Any], channel_type: int) -> None:
@@ -87,6 +96,19 @@ def edit_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = _require_channel_management(ctx, editing=True)
     body = ctx.body()
+    _reject_nsfw(ctx)
+    if "flags" in body and channel.is_thread:
+        changed = int(body["flags"]) ^ channel.flags
+        if changed & ~2:
+            raise UnsupportedField(
+                ctx.method, ctx.path, ["flags"], note="Only forum thread pinning is supported."
+            )
+        parent = backend.channels.get(channel.parent_id)
+        if parent is None or parent.type != ChannelType.FORUM:
+            raise UnsupportedField(
+                ctx.method, ctx.path, ["flags"], note="Pinning is only supported on forum threads."
+            )
+        ctx.require_channel_permissions(channel.id, "manage_threads")
     validate_channel_fields(body, channel.type)
     # Scalar fields mapped 1:1 onto the Channel model. Voice fields only reach
     # this handler for voice/stage channels (discord.py omits them otherwise).
@@ -108,7 +130,7 @@ def edit_channel(ctx: RequestContext) -> Any:
     ignore = ("permission_overwrites",)
     if channel.is_thread:
         ignore += ("archived", "locked", "auto_archive_duration", "invitable", "applied_tags")
-    changes = ctx.fields(*editable, ignore=ignore)
+    changes = ctx.fields(*editable, ignore=ignore, reject={"nsfw": "NSFW channels are not supported."})
     # Discord treats an empty thread rename as retaining the current name.
     if channel.is_thread and changes.get("name") == "":
         changes.pop("name")
@@ -237,6 +259,7 @@ def typing(ctx: RequestContext) -> Any:
 def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = require_text_access(ctx, ctx.int_arg("channel_id"))
+    _reject_nsfw(ctx)
     validate_channel_fields(ctx.body(), ChannelType.PUBLIC_THREAD)
     if channel.type == ChannelType.FORUM:
         # A forum post is gated on send_messages in its parent.
@@ -248,6 +271,7 @@ def create_thread(ctx: RequestContext) -> Any:
             "auto_archive_duration",
             "rate_limit_per_user",
             ignore=("type",),
+            reject={"nsfw": "NSFW channels are not supported."},
         )
         return _create_forum_post(ctx, channel.id, body)
     # Private-thread joinability is currently unmodelled.
@@ -257,7 +281,14 @@ def create_thread(ctx: RequestContext) -> Any:
         else "create_public_threads"
     )
     ctx.require_channel_permissions(channel.id, permission)
-    body = ctx.fields("name", "type", "auto_archive_duration", "rate_limit_per_user", ignore=("invitable",))
+    body = ctx.fields(
+        "name",
+        "type",
+        "auto_archive_duration",
+        "rate_limit_per_user",
+        ignore=("invitable",),
+        reject={"nsfw": "NSFW channels are not supported."},
+    )
     thread = backend.create_thread(
         channel.id,
         body["name"],
@@ -299,10 +330,16 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
 def create_thread_from_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = require_text_access(ctx, ctx.int_arg("channel_id"))
+    _reject_nsfw(ctx)
     ctx.require_channel_permissions(channel.id, "create_public_threads")
     validate_channel_fields(ctx.body(), ChannelType.PUBLIC_THREAD)
     message = ctx.require_message(channel.id, ctx.int_arg("message_id"), "read_message_history")
-    body = ctx.fields("name", "auto_archive_duration", "rate_limit_per_user")
+    body = ctx.fields(
+        "name",
+        "auto_archive_duration",
+        "rate_limit_per_user",
+        reject={"nsfw": "NSFW channels are not supported."},
+    )
     thread = backend.create_thread(
         channel.id,
         body["name"],

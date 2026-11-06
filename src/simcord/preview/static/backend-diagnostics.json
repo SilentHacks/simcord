@@ -111,6 +111,13 @@
     "This preview asset is unavailable.",
     "Reload the page and check its current authorization."
   ],
+  "commands-incomplete": [
+    "command",
+    "warning",
+    false,
+    "Some commands are unavailable because their behavior is not supported.",
+    "Use commands with supported behavior."
+  ],
   "commands-unsynced": [
     "command",
     "warning",

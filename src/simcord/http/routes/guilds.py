@@ -106,7 +106,7 @@ def create_guild_channel(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     ctx.require_guild_permissions(guild_id, "manage_channels")
     normalized_body = dict(ctx.body())
-    if normalized_body.get("type") == ChannelType.CATEGORY and normalized_body.get("nsfw") is False:
+    if normalized_body.get("nsfw") is False:
         normalized_body.pop("nsfw")
     # Scalar fields mapped 1:1 onto the Channel model; overwrites are applied
     # separately. Anything else discord.py can send on create (video_quality_mode,
@@ -125,6 +125,7 @@ def create_guild_channel(ctx: RequestContext) -> Any:
         "flags",
         "available_tags",
         ignore=("permission_overwrites",),
+        reject={"nsfw": "NSFW channel features are not supported."},
         body=normalized_body,
     )
     validate_channel_fields(body, int(body.get("type", ChannelType.TEXT)))

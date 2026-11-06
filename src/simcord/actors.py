@@ -452,6 +452,8 @@ def _unsynced_fallback(actor: Any, name: str, type: int) -> dict[str, Any]:
 
 
 def _check_command_access(actor: Any, channel_id: int, name: str, root: dict[str, Any]) -> None:
+    if root.get("nsfw"):
+        raise NotImplementedError("NSFW command features are not supported.")
     access = command_access(actor._env.backend, root, user_id=actor.id, channel_id=channel_id)
     if not access.allowed:
         reason = access.reason or "unknown"

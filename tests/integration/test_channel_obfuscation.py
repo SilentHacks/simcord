@@ -229,3 +229,89 @@ async def test_rest_channel_creation_and_following_edits_preserve_gateway_order(
     await created.edit(name="after")
     await env.settle()
     assert env.bot.get_channel(created.id).name == "after"
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_voice_visibility_departures_use_last_admitted_snapshot(env, alice, monkeypatch, queued):
+    visible = env.guild.create_voice_channel("visible")
+    hidden = env.guild.create_voice_channel("hidden")
+    other_hidden = env.guild.create_voice_channel("other-hidden")
+    env.backend.edit_channel(hidden.id, {}, overwrites=deny_view(env.guild.id))
+    env.backend.edit_channel(other_hidden.id, {}, overwrites=deny_view(env.guild.id))
+    await env.settle()
+    wire = []
+    callbacks = []
+    parsers = env.bot._connection.parsers
+    original = parsers["VOICE_STATE_UPDATE"]
+
+    def observe(data):
+        wire.append(dict(data))
+        original(data)
+
+    async def on_voice_state_update(member, before, after):
+        if member.id == alice.id:
+            # discord.py mutates/reuses ``after``; ``before`` is its stable snapshot.
+            callbacks.append(before.channel.id if before.channel else None)
+
+    monkeypatch.setitem(parsers, "VOICE_STATE_UPDATE", observe)
+    env.bot.add_listener(on_voice_state_update)
+    if queued:
+        await env.bot.get_guild(env.guild.id).create_text_channel("queues-parsers")
+    backend = env.backend
+    backend.set_voice_state(env.guild.id, alice.id, visible.id, self_mute=False)
+    admitted = serializers.voice_state_payload(
+        backend, backend.get_guild(env.guild.id).voice_states[alice.id]
+    )
+    backend.set_voice_state(env.guild.id, alice.id, hidden.id, self_mute=True)
+    backend.set_voice_state(env.guild.id, alice.id, other_hidden.id, self_deaf=True)
+    backend.set_voice_state(env.guild.id, alice.id, visible.id, self_mute=False, self_deaf=False)
+    await env.settle()
+    assert [data["channel_id"] for data in wire] == [str(visible.id), None, str(visible.id)]
+    assert wire[1] == {**admitted, "channel_id": None}
+    assert callbacks == [None, visible.id, None]
+    assert env.bot.get_guild(env.guild.id).get_member(alice.id).voice.channel.id == visible.id
+    assert backend.get_guild(env.guild.id).voice_states[alice.id].channel_id == visible.id
+    backend.set_voice_state(env.guild.id, alice.id, hidden.id)
+    await env.settle()
+    assert env.bot.get_guild(env.guild.id).get_member(alice.id).voice is None
+    env.bot.remove_listener(on_voice_state_update)
+
+
+@pytest.mark.parametrize("permission_source", ["overwrite", "role"])
+async def test_stationary_voice_occupants_reconcile_visibility(env, alice, permission_source):
+    voice = env.guild.create_voice_channel("visible")
+    await env.settle()
+    backend = env.backend
+    backend.set_voice_state(env.guild.id, alice.id, voice.id)
+    await env.settle()
+    member = env.bot.get_guild(env.guild.id).get_member(alice.id)
+    assert member.voice.channel.id == voice.id
+    if permission_source == "overwrite":
+        backend.edit_channel(voice.id, {}, overwrites=deny_view(env.guild.id))
+    else:
+        guild = backend.get_guild(env.guild.id)
+        permissions = {role.id: role.permissions for role in guild.roles.values()}
+        for role in list(guild.roles.values()):
+            backend.edit_role(guild.id, role.id, {"permissions": role.permissions & ~VIEW})
+    await env.settle()
+    assert member.voice is None
+    assert backend.get_guild(env.guild.id).voice_states[alice.id].channel_id == voice.id
+    if permission_source == "overwrite":
+        backend.edit_channel(voice.id, {}, overwrites=[])
+    else:
+        for role_id, value in permissions.items():
+            backend.edit_role(env.guild.id, role_id, {"permissions": value})
+    await env.settle()
+    assert member.voice.channel.id == voice.id
+
+
+async def test_guild_create_seeds_projected_voice_departure(env, alice):
+    voice = env.guild.create_voice_channel("visible")
+    await env.settle()
+    backend = env.backend
+    backend.set_voice_state(env.guild.id, alice.id, voice.id)
+    backend.emit("GUILD_CREATE", serializers.guild_create_payload(backend, backend.get_guild(env.guild.id)))
+    await env.settle()
+    backend.edit_channel(voice.id, {}, overwrites=deny_view(env.guild.id))
+    await env.settle()
+    assert env.bot.get_guild(env.guild.id).get_member(alice.id).voice is None

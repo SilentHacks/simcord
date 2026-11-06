@@ -14,8 +14,8 @@ def _command_fields(ctx: RequestContext, payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise errors.invalid_form_body("Command payloads must be objects")
     unsupported = (
-        {"nsfw": "Non-boolean NSFW metadata is not modeled."}
-        if not isinstance(payload.get("nsfw", False), bool)
+        {"nsfw": "NSFW command features are not supported."}
+        if payload.get("nsfw", False) is not False
         else {}
     )
     return ctx.fields(*COMMAND_FIELDS, reject=unsupported, body=dict(payload))

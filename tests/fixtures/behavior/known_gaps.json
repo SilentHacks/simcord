@@ -1,5 +1,50 @@
 {
   "gaps": {
+    "command.store": {
+      "reason": "Deliberate local policy: NSFW command enabling is forbidden, so the authentic recorded nsfw=true registration request is rejected without storing a command. This is not Discord parity or an age-gating model; historical capture and recorder requests remain unchanged.",
+      "actual": {
+        "status": 501,
+        "code": 0,
+        "errors": null,
+        "response": {
+          "code": 0
+        },
+        "effect": {}
+      },
+      "expected": {
+        "status": 201,
+        "code": 0,
+        "errors": null,
+        "response": {
+          "id": "$result",
+          "application_id": "$subject",
+          "version": "$version",
+          "default_member_permissions": "0",
+          "type": 1,
+          "name": "$command-name",
+          "name_localizations": null,
+          "description": "lab-command",
+          "description_localizations": null,
+          "guild_id": "$guild",
+          "nsfw": true
+        },
+        "effect": {
+          "stored_command": {
+            "id": "$result",
+            "application_id": "$subject",
+            "version": "$version",
+            "default_member_permissions": "0",
+            "type": 1,
+            "name": "$command-name",
+            "name_localizations": null,
+            "description": "lab-command",
+            "description_localizations": null,
+            "guild_id": "$guild",
+            "nsfw": true
+          }
+        }
+      }
+    },
     "file.text": {
       "actual": {
         "code": 0,

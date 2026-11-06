@@ -385,3 +385,72 @@ def test_direct_application_errors_are_distinct_from_test_helpers(pytester, oper
             "wrapped-assertion": "AssertionError",
         }[operation]
         result.stdout.fnmatch_lines([f"*unhandled {kind}:*application.py:*"])
+
+
+def test_dynamic_role_sharing_stops_unsupported_rerun_and_tears_down(pytester):
+    pytester.makeconftest(
+        BOT.replace("HANDLER", "pass")
+        + """
+from pathlib import Path
+
+@pytest.fixture
+def lifecycle():
+    yield
+    with Path("teardowns").open("a") as log:
+        log.write("teardown\\n")
+"""
+    )
+    pytester.makepyfile("""
+        from pathlib import Path
+
+        async def test_sharing(simcord_env, lifecycle):
+            backend = simcord_env.backend
+            guild = simcord_env.create_guild()
+            actor = guild.add_member(simcord_env.create_user("actor"))
+            role_id = backend.get_guild(guild.id).members[backend.bot_user.id].role_ids[0]
+            backend.has_permission_flags(guild.id, backend.bot_user.id, None, "manage_guild")
+            backend.add_member_role(guild.id, actor.id, role_id)
+            with Path("continued").open("a") as log:
+                log.write("continued\\n")
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.OK
+    result.stdout.fnmatch_lines(
+        ["*[[]manage_guild]: unsupported:*shares a grant*", "*0 exercised revocation case(s)*"]
+    )
+    assert (pytester.path / "continued").read_text().splitlines() == ["continued"]
+    assert (pytester.path / "teardowns").read_text().splitlines() == ["teardown", "teardown"]
+
+
+def test_outcome_boundaries_use_status_not_detail():
+    import json
+    from types import SimpleNamespace
+
+    from simcord.pytest_plugin import (
+        _DIAGNOSTICS,
+        _outcome,
+        pytest_sessionfinish,
+        pytest_terminal_summary,
+        pytest_testnodedown,
+    )
+
+    outcomes = [
+        _outcome("one", "send_messages", "finding", "renamed finding"),
+        _outcome("one", "send_messages", "finding", "another error"),
+        _outcome("two", "manage_guild", "unsupported", "unhandled misleading prose"),
+        _outcome("three", "embed_links", "clean", "unsupported: misleading prose"),
+    ]
+    state = {"observed": 0, "sweeps": json.loads(json.dumps(outcomes))}
+    config = SimpleNamespace(stash={_DIAGNOSTICS: state}, getoption=lambda name: True)
+    node = SimpleNamespace(config=config, gateway=SimpleNamespace(id="gw0"))
+    pytest_testnodedown(node, None)
+    session = SimpleNamespace(config=config, exitstatus=pytest.ExitCode.OK)
+    pytest_sessionfinish(session, pytest.ExitCode.OK)
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    lines = []
+    reporter = SimpleNamespace(section=lambda text: None, write_line=lines.append)
+    pytest_terminal_summary(reporter, session.exitstatus, config)
+    assert "(no flags received)" in lines
+    assert "Incomplete coverage: worker diagnostic results unavailable." in lines
+    assert lines[-1] == "2 exercised revocation case(s); 2 unhandled bot error(s); 2 unsupported case(s)"

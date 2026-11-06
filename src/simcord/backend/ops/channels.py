@@ -47,6 +47,7 @@ class ChannelMixin(BackendBase):
             if "position" not in fields:
                 channel.position = len(guild.channel_ids)
             guild.channel_ids.append(channel.id)
+            self.project_permissions(guild_id, channel_id=channel.id, announce=False)
             if announce:
                 self.emit("CHANNEL_CREATE", serializers.channel_payload(self, channel))
         return channel
@@ -70,6 +71,7 @@ class ChannelMixin(BackendBase):
 
     def announce_channel_update(self, channel_id: int) -> None:
         channel = self.get_channel(channel_id)
+        self.project_permissions(channel.guild_id, channel_id=channel_id)
         event = "THREAD_UPDATE" if channel.is_thread else "CHANNEL_UPDATE"
         self.emit(event, serializers.channel_payload(self, channel))
 

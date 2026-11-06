@@ -234,7 +234,7 @@ def thread_payload(backend: BackendBase, thread: Channel) -> thread_types.Thread
             "member_count": len(thread.thread_members),
             "total_message_sent": thread.message_count,
             "applied_tags": [str(t) for t in thread.applied_tags],
-            "flags": 0,
+            "flags": thread.flags,
             "thread_metadata": {
                 "archived": meta.archived,
                 "auto_archive_duration": meta.auto_archive_duration,

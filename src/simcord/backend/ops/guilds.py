@@ -91,6 +91,7 @@ class GuildMixin(BackendBase):
         guild = self.get_guild(guild_id)
         for attr, value in changes.items():
             setattr(guild, attr, value)
+        self.project_permissions(guild_id)
         self.emit("GUILD_UPDATE", serializers.guild_create_payload(self, guild))
         return guild
 
@@ -138,6 +139,7 @@ class GuildMixin(BackendBase):
             joined_at=self.now_iso(),
         )
         guild.members[user_id] = member
+        self.project_permissions(guild_id, channels=user_id == self.bot_user.id, announce=announce)
         if announce:
             payload = dict(serializers.member_payload(self, guild, member))
             payload["guild_id"] = str(guild_id)
@@ -152,6 +154,7 @@ class GuildMixin(BackendBase):
         if user_id not in guild.members:
             raise errors.unknown_member()
         del guild.members[user_id]
+        self.project_permissions(guild_id)
         # Leaving the guild leaves every thread in it, so thread member_count and
         # the thread-member listings stay correct after a kick/ban/prune.
         for thread_id in guild.thread_ids:
@@ -193,6 +196,7 @@ class GuildMixin(BackendBase):
 
     def announce_member_update(self, guild_id: int, user_id: int) -> None:
         guild = self.get_guild(guild_id)
+        self.project_permissions(guild_id, channels=user_id == self.bot_user.id)
         payload = dict(serializers.member_payload(self, guild, guild.members[user_id]))
         payload["guild_id"] = str(guild_id)
         self.emit("GUILD_MEMBER_UPDATE", payload)
@@ -326,6 +330,7 @@ class GuildMixin(BackendBase):
             **fields,
         )
         guild.roles[role.id] = role
+        self.project_permissions(guild_id, role_id=role.id)
         self.emit(
             "GUILD_ROLE_CREATE",
             {"guild_id": str(guild_id), "role": serializers.role_payload(role)},
@@ -338,6 +343,7 @@ class GuildMixin(BackendBase):
         role = self.get_role(guild_id, role_id)
         for attr, value in changes.items():
             setattr(role, attr, value)
+        self.project_permissions(guild_id, role_id=role_id, permissions_edited="permissions" in changes)
         self.emit("GUILD_ROLE_UPDATE", {"guild_id": str(guild_id), "role": serializers.role_payload(role)})
         return role
 

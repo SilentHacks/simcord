@@ -75,6 +75,8 @@ class CommandsMixin(BackendBase):
         unsupported = sorted(payload.keys() - set(COMMAND_FIELDS))
         if unsupported:
             raise ValueError(f"Unsupported command field(s): {', '.join(unsupported)}")
+        if payload.get("nsfw", False) is not False:
+            raise NotImplementedError("NSFW command features are not supported.")
         cmd = dict(payload)
         cmd.setdefault("type", AppCommandType.CHAT_INPUT)
         cmd.setdefault("description", "")

@@ -7,7 +7,7 @@ import json
 
 import discord
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from simcord._diagnostics import PermissionRun
@@ -18,10 +18,12 @@ from simcord.enums import OverwriteType
 from simcord.http.router import RequestContext, dispatch
 
 NOW = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-BITS = st.integers(min_value=0, max_value=discord.Permissions.all().value)
+BITS = st.integers(min_value=0, max_value=(1 << 61) - 1)
 
 
 @given(BITS, BITS, BITS, BITS, BITS, BITS, st.sampled_from([1, 2, 999]), st.booleans())
+@example(0, (1 << 60) | 8, 0, 0, 0, 0, 2, False)
+@example(0, 1 << 60, 0, 0, 0, 0, 2, False)
 def test_explanation_agrees_with_compute(
     everyone, role, allow, deny, member_allow, member_deny, actor, timeout
 ):
@@ -242,3 +244,74 @@ async def test_observed_permissions_match_real_guild_and_dm_prerequisites(env, c
         observed = env.observed_permissions()
         assert observed.send_messages
         assert observed.view_channel
+
+
+async def test_projection_reads_are_pure_and_silent_construction_is_projected(env, channel, alice):
+    backend = env.backend
+    run = PermissionRun(flag="send_messages")
+    run.register(env)
+    silent = backend.create_channel(env.guild.id, "silent", announce=False)
+    assert not backend.compute_permissions(env.guild.id, backend.bot_user.id, silent.id) & permissions.flag(
+        "send_messages"
+    )
+    before = list(backend.transcript)
+    overwrites = [(item.target_id, item.allow, item.deny) for item in silent.overwrites]
+    for actor in (alice.id, backend.bot_user.id):
+        backend.compute_permissions(env.guild.id, actor, silent.id)
+        env.explain_permissions(actor, channel)
+    assert backend.transcript == before
+    assert [(item.target_id, item.allow, item.deny) for item in silent.overwrites] == overwrites
+    assert not any(payload.get("id") == str(silent.id) for kind, _, payload in before if kind == "GATEWAY")
+    backend.permission_projection = None
+
+
+@pytest.mark.parametrize("sharing", ["add", "edit", "silent"])
+async def test_projection_restores_only_owned_role_bit_before_rejecting_sharing(env, alice, sharing):
+    from simcord._diagnostics import UnsupportedProjection
+
+    backend = env.backend
+    guild = backend.get_guild(env.guild.id)
+    bot_role = guild.roles[guild.members[backend.bot_user.id].role_ids[0]]
+    run = PermissionRun(flag="manage_guild", guild_scope=True)
+    run.register(env)
+    bit = permissions.flag("manage_guild")
+    assert not bot_role.permissions & bit
+    backend.edit_role(guild.id, bot_role.id, {"name": "later name"})
+    with pytest.raises(UnsupportedProjection, match="shares a grant"):
+        if sharing == "add":
+            backend.add_member_role(guild.id, alice.id, bot_role.id)
+        elif sharing == "edit":
+            backend.edit_member(guild.id, alice.id, {"role_ids": [bot_role.id]})
+        else:
+            user = backend.make_user("new member")
+            backend.add_member(guild.id, user.id, roles=[bot_role.id], announce=False)
+    assert run.unsupported
+    assert bot_role.permissions & bit
+    assert bot_role.name == "later name"
+    backend.permission_projection = None
+
+
+async def test_explicit_later_role_and_overwrite_edits_relinquish_projection_ownership(env, channel, alice):
+    backend = env.backend
+    guild = backend.get_guild(env.guild.id)
+    role_id = guild.members[backend.bot_user.id].role_ids[0]
+    run = PermissionRun(flag="manage_guild", guild_scope=True)
+    run.register(env)
+    backend.edit_role(guild.id, role_id, {"permissions": permissions.flag("send_messages")})
+    backend.add_member_role(guild.id, alice.id, role_id)
+    assert guild.roles[role_id].permissions == permissions.flag("send_messages")
+    backend.set_overwrite(
+        channel.id,
+        Overwrite(
+            target_id=backend.bot_user.id,
+            type=OverwriteType.MEMBER,
+            allow=permissions.flag("embed_links"),
+        ),
+    )
+    overwrite = next(
+        item for item in backend.channels[channel.id].overwrites if item.target_id == backend.bot_user.id
+    )
+    assert overwrite.allow == permissions.flag("embed_links")
+    assert overwrite.deny == permissions.flag("manage_guild")
+    assert not run.unsupported
+    backend.permission_projection = None

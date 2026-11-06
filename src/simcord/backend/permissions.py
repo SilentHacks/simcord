@@ -100,7 +100,7 @@ def explain(
             if role is not None:
                 step("role", role.permissions, role_id=role_id)
         if value & _ADMINISTRATOR:
-            step("administrator", _ALL)
+            step("administrator", _ALL, deny=value & ~_ALL)
         else:
             if channel is not None:
                 by_target = {o.target_id: o for o in channel.overwrites}
