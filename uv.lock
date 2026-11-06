@@ -1959,7 +1959,7 @@ wheels = [
 
 [[package]]
 name = "simcord"
-version = "3.3.0"
+version = "4.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "discord-py" },

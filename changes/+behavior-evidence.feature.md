@@ -1,0 +1,1 @@
+Add an independently recorded 184-scenario Discord behavior ledger, receipt-safe manual recorder and recovery tooling, permission-endpoint cross-checks, strict offline mismatch/stale-gap ratchets, and a generated dated evidence table. Deliberate metadata and pre-rollout REST differences remain explicitly documented rather than counted as parity.
