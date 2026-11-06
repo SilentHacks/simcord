@@ -131,13 +131,103 @@ assert len(posts) == 1
 assert posts[0].json["content"] == "Pong!"
 ```
 
-Each record exposes `method`, `path`, `params`, `json`, and `reason`. These values are the
-arguments discord.py passed to its transport: query parameters are not wire-normalized
+Each record exposes `method`, `path`, `params`, `json`, `reason`, and `denial`.
+Transport arguments retain discord.py's values: query parameters are not wire-normalized
 strings, and `reason` is not an encoded HTTP header value. Uploaded files are not captured.
 The `json` field preserves every supplied JSON-compatible shape, including top-level arrays.
 `params` and `json` are detached deep snapshots, so later mutations to source containers do
 not alter a record. The request record is appended before fault injection and route handling,
 so failed and unimplemented requests remain observable.
+
+## Permission diagnostics
+
+Explain effective permission bits independently of a failed operation:
+
+```python
+trace = simcord_env.explain_permissions(simcord_env.bot.user, channel)
+effective = discord.Permissions(trace["effective"])
+for step in trace["steps"]:
+    print(step["source"], step["before"], step["after"])
+```
+
+The ordered trace covers base roles, owner/Administrator bypasses, `@everyone`,
+aggregated role and member overwrites, and active timeout masking. Threads use
+their parent's overwrites. This explains permission bits, not every REST policy:
+thread state, channel access and role hierarchy can independently refuse an action.
+
+Bot refusals add `DENIAL` entries to the transcript and structured `denial` detail
+to the failing HTTP request record. Discord exception text and error JSON remain
+unchanged. `env.permission_checks` returns detached check records with actor,
+guild and channel IDs, required/missing flags, effective bits, outcome and reason.
+Non-permission authorization refusals, such as role hierarchy, are attributed too.
+
+```python
+observed = simcord_env.observed_permissions()
+print([name for name, used in observed if used])
+```
+
+Observed flags include refused checks. They describe only paths this environment
+exercised, not a least-privilege guarantee for your entire bot.
+
+### Silent degradations
+
+Some successful requests lose an effect without a Discord error:
+
+```python
+for degradation in simcord_env.degradations:
+    print(degradation["kind"])
+simcord_env.assert_no_degradations()  # opt-in assertion
+```
+
+Records are detached snapshots. Modeled ordinary-send cases are missing TTS
+permission (`tts_permission_dropped`), unmentionable role pings
+(`unmentionable_role_ping_dropped`), ignored ephemeral flags
+(`normal_message_ephemeral_ignored`) and known external custom emojis without
+the external-emoji permission (`external_emoji_permission_stripped`).
+An explicit allowed-mentions policy suppressing a ping is intentional, not a
+degradation. Unknown emoji IDs are not guessed or rewritten. Successful TTS
+creates retain `tts=True` in the create result/event but ordinary bot messages
+read later have `tts=False`, matching the captured behavior.
+
+### Suite reports and failure sweeps
+
+```bash
+pytest --simcord-observed-permissions
+pytest --simcord-sweep
+```
+
+The observed-permissions option aggregates exercised flags across environments
+and xdist workers. The sweep first runs each test normally, then reruns passing
+tests with fresh function-scoped fixtures once per observed permission.
+It discovers both `simcord_env` and environments created directly or through
+`simcord.run`.
+
+Revocation changes real bot-exclusive roles and bot member overwrites, not HTTP
+fault responses. REST enforcement, interaction `app_permissions` and cached
+`channel.permissions_for(guild.me)` therefore agree. A channel overwrite can
+revoke a channel permission while `guild.me.guild_permissions` correctly retains
+the guild-level grant.
+
+Assertions that no longer hold under revocation are ignored. Unhandled bot
+exceptions and timeouts are reported with the permission and source location;
+findings make pytest exit unsuccessfully. Handled refusals are not findings.
+Baseline failures remain ordinary test failures and are not swept.
+
+Env-owned callback/task errors and settlement timeouts carry bot-ownership
+evidence. Direct product calls can also produce findings when their traceback
+reaches application code under pytest's root, outside the configured `testpaths`.
+Keep test helpers under those test paths: a direct SDK helper refusal, or a
+failure without application ownership evidence, is unsupported rather than an
+invented bot failure. Broader external application code is still covered when
+executed as Env-owned bot work. A baseline using only permissionless interaction
+callbacks may observe no flags; that is not permission-revocation coverage.
+
+The report separates exercised and unsupported cases. Broader-scoped user
+fixtures, reused environments, bot-owned guilds, shared Administrator grants,
+and guild-scoped grants that cannot be removed without changing other members
+are unsupported. Harness/setup failures are reported as unsupported rather than
+invented bot failures. An unsupported case is not evidence that your bot handles
+revocation.
 
 ## Injecting API failures
 

@@ -160,7 +160,7 @@ async def broken(simcord_env):
     result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
     result.assert_outcomes(passed=1)
     assert result.ret == pytest.ExitCode.OK
-    result.stdout.fnmatch_lines(["*unsupported:*teardown harness error:*real teardown failure*"])
+    result.stdout.fnmatch_lines(["*unsupported:*real teardown failure*"])
 
 
 def test_baseline_failure_is_not_swept(pytester):
@@ -321,3 +321,56 @@ def test_xdist_aggregates_observed_flags_and_sweep_findings(pytester):
             "*[[]send_messages]: unhandled Forbidden*",
         ]
     )
+
+
+@pytest.mark.parametrize("operation", ["send", "wrapped-fetch", "test-helper"])
+def test_direct_application_errors_are_distinct_from_test_helpers(pytester, operation):
+    pytester.makeini("[pytest]\nasyncio_mode=auto\ntestpaths=tests")
+    pytester.makeconftest(BOT.replace("HANDLER", "pass"))
+    pytester.makepyfile(
+        application="""
+        import discord
+
+        class HistoryUnavailable(Exception):
+            pass
+
+        async def announce(channel, message_id):
+            await channel.send("published")
+
+        async def fetch(channel, message_id):
+            try:
+                await channel.fetch_message(message_id)
+            except discord.HTTPException as error:
+                raise HistoryUnavailable("history inaccessible") from error
+    """
+    )
+    body = {
+        "send": "await application.announce(cached, seed.id)",
+        "wrapped-fetch": "await application.fetch(cached, seed.id)",
+        "test-helper": 'await cached.send("test setup")',
+    }[operation]
+    pytester.mkdir("tests")
+    pytester.makepyfile(
+        **{
+            "tests/test_consumer": f"""
+        import application
+
+        async def test_consumer(simcord_env):
+            env = simcord_env
+            channel = env.create_guild().create_text_channel("general")
+            actor = env.guild.add_member(env.create_user("reader"))
+            seed = await actor.send(channel, "source")
+            cached = env.bot.get_channel(channel.id)
+            {body}
+    """
+        }
+    )
+    result = pytester.runpytest_subprocess("--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    if operation == "test-helper":
+        assert result.ret == pytest.ExitCode.OK
+        result.stdout.fnmatch_lines(["*0 unhandled bot error(s)*1 unsupported case(s)*"])
+    else:
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        kind = "Forbidden" if operation == "send" else "HistoryUnavailable"
+        result.stdout.fnmatch_lines([f"*unhandled {kind}:*application.py:*"])

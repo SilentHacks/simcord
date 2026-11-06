@@ -28,6 +28,7 @@ Requires the ``pytest`` extra (``pip install simcord[pytest]``).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import discord
@@ -86,8 +87,12 @@ def _unsupported_scopes(item):
     if loop_scope not in (None, "function"):
         reasons.append(f"unsupported {loop_scope} asyncio test loop scope")
     for setting in ("asyncio_default_test_loop_scope", "asyncio_default_fixture_loop_scope"):
-        if item.config.getini(setting) not in (None, "", "function"):
-            reasons.append(f"unsupported {setting}={item.config.getini(setting)}")
+        try:
+            scope = item.config.getini(setting)
+        except ValueError:
+            continue  # Older supported pytest-asyncio versions do not register both settings.
+        if scope not in (None, "", "function"):
+            reasons.append(f"unsupported {setting}={scope}")
     return reasons
 
 
@@ -102,27 +107,44 @@ def _leaves(error):
 def _failure_detail(error, source):
     original = getattr(error, "original", error)
     trace = original.__traceback__
+    location = "source location unavailable (no user traceback)"
     while trace is not None:
         module = trace.tb_frame.f_globals.get("__name__", "")
-        if not module.startswith(("simcord.", "discord.", "_pytest.", "pytest_asyncio.")):
+        if not module.startswith(
+            ("simcord.", "discord.", "_pytest.", "pytest_asyncio.", "pluggy.", "asyncio.")
+        ):
             code = trace.tb_frame.f_code
-            source = f"{source}; {code.co_filename}:{trace.tb_lineno} ({code.co_name})"
-            break
+            location = f"{code.co_filename}:{trace.tb_lineno} ({code.co_name})"
         trace = trace.tb_next
-    else:
-        source = f"{source}; source location unavailable (no user traceback)"
+    source = f"{source}; {location}"
     return f"unhandled {type(original).__name__}: {original} (source: {source})"
 
 
-def _bot_http_error(error):
-    if not isinstance(error, discord.HTTPException):
-        return False
-    trace = error.__traceback__
+def _application_error(error, item):
+    """Do not mistake an SDK assertion helper for unhandled application code."""
+    root = item.config.rootpath
+    testpaths = [root / path for path in item.config.getini("testpaths")]
+    if not testpaths:
+        relative = item.path.relative_to(root)
+        testpaths = [root / relative.parts[0] if len(relative.parts) > 1 else root]
+    trace = getattr(error, "original", error).__traceback__
+    caller = None
     while trace is not None:
-        if trace.tb_frame.f_globals.get("__name__", "").startswith("simcord.http."):
+        module = trace.tb_frame.f_globals.get("__name__", "")
+        if isinstance(error, TimeoutError) and module == "simcord._settlement":
             return True
+        filename = Path(trace.tb_frame.f_code.co_filename).resolve()
+        if not module.startswith(
+            ("simcord.", "discord.", "_pytest.", "pytest_asyncio.", "pluggy.", "asyncio.")
+        ) and filename.is_relative_to(root):
+            caller = filename
         trace = trace.tb_next
-    return False
+    return (
+        caller is not None
+        and caller != item.path
+        and caller.name != "conftest.py"
+        and not any(caller.is_relative_to(path) for path in testpaths)
+    )
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -187,12 +209,12 @@ def pytest_runtest_protocol(item, nextitem):
             for error in getattr(report, "_simcord_exceptions", ()):
                 if id(error) in known or (report.when == "call" and isinstance(error, AssertionError)):
                     continue
-                if isinstance(error, TimeoutError) or _bot_http_error(error):
+                if report.when == "call" and _application_error(error, item):
                     failures.append((error, report.when))
                 elif report.failed:
-                    # Report invalid rerun lifecycles explicitly, not as baseline failures.
+                    # Unowned call failures and invalid fixture lifecycles are not bot findings.
                     run.unsupported.append(
-                        f"{report.when} harness error: {_failure_detail(error, report.when)}"
+                        f"{report.when} uncaptured error: {_failure_detail(error, report.when)}"
                     )
                     break
         if run.unsupported:
