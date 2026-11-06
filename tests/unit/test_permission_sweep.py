@@ -323,7 +323,7 @@ def test_xdist_aggregates_observed_flags_and_sweep_findings(pytester):
     )
 
 
-@pytest.mark.parametrize("operation", ["send", "wrapped-fetch", "test-helper"])
+@pytest.mark.parametrize("operation", ["send", "wrapped-fetch", "wrapped-assertion", "test-helper"])
 def test_direct_application_errors_are_distinct_from_test_helpers(pytester, operation):
     pytester.makeini("[pytest]\nasyncio_mode=auto\ntestpaths=tests")
     pytester.makeconftest(BOT.replace("HANDLER", "pass"))
@@ -337,16 +337,17 @@ def test_direct_application_errors_are_distinct_from_test_helpers(pytester, oper
         async def announce(channel, message_id):
             await channel.send("published")
 
-        async def fetch(channel, message_id):
+        async def fetch(channel, message_id, error_type=HistoryUnavailable):
             try:
                 await channel.fetch_message(message_id)
             except discord.HTTPException as error:
-                raise HistoryUnavailable("history inaccessible") from error
+                raise error_type("history inaccessible") from error
     """
     )
     body = {
         "send": "await application.announce(cached, seed.id)",
         "wrapped-fetch": "await application.fetch(cached, seed.id)",
+        "wrapped-assertion": "await application.fetch(cached, seed.id, AssertionError)",
         "test-helper": 'await cached.send("test setup")',
     }[operation]
     pytester.mkdir("tests")
@@ -378,5 +379,9 @@ def test_direct_application_errors_are_distinct_from_test_helpers(pytester, oper
         )
     else:
         assert result.ret == pytest.ExitCode.TESTS_FAILED
-        kind = "Forbidden" if operation == "send" else "HistoryUnavailable"
+        kind = {
+            "send": "Forbidden",
+            "wrapped-fetch": "HistoryUnavailable",
+            "wrapped-assertion": "AssertionError",
+        }[operation]
         result.stdout.fnmatch_lines([f"*unhandled {kind}:*application.py:*"])

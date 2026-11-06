@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -44,7 +45,7 @@ class FakeGateway:
         self._intents_cache: discord.Intents | None = None
         self._visible_channels: dict[int, set[int]] = {}
         self._visible_threads: dict[int, set[int]] = {}
-        self._pending: list[tuple[str, Mapping[str, Any]]] = []
+        self._pending: deque[tuple[Callable[[dict[str, Any]], None], dict[str, Any]]] = deque()
 
     @property
     def intents(self) -> discord.Intents:
@@ -56,22 +57,6 @@ class FakeGateway:
         return cached
 
     def feed(self, event: str, payload: Mapping[str, Any]) -> None:
-        # Guild.create_* installs its REST result in the SDK cache. Deliver
-        # creation afterward, as the real gateway does, so it cannot overwrite
-        # the bot projection with the unredacted response. Keep later events FIFO.
-        if self._pending or (event == "CHANNEL_CREATE" and self._backend._http_dispatch_depth):
-            if not self._pending:
-                asyncio.get_running_loop().call_soon(self._flush_pending)
-            self._pending.append((event, detach(dict(payload))))
-            return
-        self._deliver(event, payload)
-
-    def _flush_pending(self) -> None:
-        pending, self._pending = self._pending, []
-        for event, payload in pending:
-            self._deliver(event, payload)
-
-    def _deliver(self, event: str, payload: Mapping[str, Any]) -> None:
         self._feed(event, payload)
         guild_id = payload.get("id") if event == "GUILD_UPDATE" else payload.get("guild_id")
         if event == "GUILD_DELETE":
@@ -101,6 +86,11 @@ class FakeGateway:
             permission_event = int(payload["user_id"]) == bot_id
         if permission_event:
             self._refresh_visibility(int(guild_id), event, payload)
+
+    def _flush_pending(self) -> None:
+        while self._pending:
+            parser, payload = self._pending.popleft()
+            parser(payload)
 
     def _feed(self, event: str, payload: Mapping[str, Any]) -> None:
         gate = _intents.required_intent(event, payload)
@@ -149,7 +139,15 @@ class FakeGateway:
                 )
         if event == "GUILD_CREATE":
             _intents.prune_guild_create(mutable, self.intents, bot_id)
-        parser(mutable)
+        # Snapshot authorization, projection and intent shaping at emission time.
+        # Guild.create_* installs its REST result in the SDK cache, so only parser
+        # delivery waits until afterward. Keep subsequent parser calls FIFO.
+        if self._pending or (event == "CHANNEL_CREATE" and self._backend._http_dispatch_depth):
+            if not self._pending:
+                asyncio.get_running_loop().call_soon(self._flush_pending)
+            self._pending.append((parser, mutable))
+        else:
+            parser(mutable)
 
     def _visible(self, channel_id: int) -> bool:
         return channel_viewable(self._backend, channel_id, self._backend.bot_user.id)

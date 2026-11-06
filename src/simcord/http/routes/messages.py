@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...backend import errors, permissions, serializers
-from ...backend.access import channel_accessible
+from ...backend import errors, serializers
 from ...enums import AuditLogAction, ChannelType
 from .._access import require_text_access
 from .._helpers import commit_bot_message, edit_bot_message, message_response, prepare_bot_message
@@ -60,14 +59,9 @@ def get_history(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
     channel = require_text_access(ctx, channel_id)
-    perms = (
-        backend.compute_permissions(channel.guild_id, backend.bot_user.id, channel_id)
-        if channel.guild_id is not None
-        else 0
-    )
-    if not channel_accessible(backend, channel_id, backend.bot_user.id, permissions_value=perms):
-        raise errors.missing_access()
-    if channel.guild_id is not None and not perms & permissions.flag("read_message_history"):
+    if not backend.has_permission_flags(
+        channel.guild_id, backend.bot_user.id, channel_id, "read_message_history"
+    ):
         return []
     limit = int(ctx.params.get("limit", 50))
     # Channel scrollback never includes ephemeral interaction responses.
@@ -220,9 +214,9 @@ def get_pins(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
     channel = require_text_access(ctx, channel_id)
-    if channel.guild_id is not None and not backend.compute_permissions(
-        channel.guild_id, backend.bot_user.id, channel_id
-    ) & permissions.flag("read_message_history"):
+    if not backend.has_permission_flags(
+        channel.guild_id, backend.bot_user.id, channel_id, "read_message_history"
+    ):
         return {"items": [], "has_more": False}
     items = [
         {"message": _read_response(ctx, m), "pinned_at": backend.now_iso()}

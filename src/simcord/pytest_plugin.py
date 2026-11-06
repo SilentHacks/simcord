@@ -213,10 +213,12 @@ def pytest_runtest_protocol(item, nextitem):
         known = {id(leaf) for error in captured for leaf in _leaves(error)}
         for report in rerun_reports:
             for error in getattr(report, "_simcord_exceptions", ()):
-                if id(error) in known or (report.when == "call" and isinstance(error, AssertionError)):
+                if id(error) in known:
                     continue
                 if report.when == "call" and _application_error(error, item):
                     failures.append((error, report.when))
+                elif report.when == "call" and isinstance(error, AssertionError):
+                    continue
                 elif report.failed:
                     # Unowned call failures and invalid fixture lifecycles are not bot findings.
                     run.unsupported.append(

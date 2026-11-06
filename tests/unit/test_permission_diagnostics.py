@@ -90,6 +90,29 @@ async def test_denials_preserve_discord_body_and_attribute_request(env, channel,
     json.dumps(env.permission_checks)
 
 
+@pytest.mark.parametrize("operation", ["history", "pins"])
+async def test_empty_history_lists_record_checks_without_http_errors(env, channel, alice, operation):
+    seed = await alice.send(channel, "readable seed")
+    env.backend.set_pinned(channel.id, seed.id, True)
+    cached = env.bot.get_channel(channel.id)
+    assert seed.id in {message.id async for message in getattr(cached, operation)()}
+    assert env.observed_permissions().read_message_history
+    env.backend.set_overwrite(
+        channel.id,
+        Overwrite(
+            target_id=env.bot.user.id,
+            type=OverwriteType.MEMBER,
+            deny=discord.Permissions.read_message_history.flag,
+        ),
+    )
+    assert [message async for message in getattr(cached, operation)()] == []
+    assert env.http_requests[-1].denial is None
+    check = env.permission_checks[-1]
+    assert not check["allowed"]
+    assert check["missing"] == ["read_message_history"]
+    assert "code" not in check
+
+
 async def test_missing_access_and_hierarchy_are_not_permission_flags(env, channel):
     backend = env.backend
     backend.set_overwrite(
@@ -210,6 +233,8 @@ async def test_observed_permissions_match_real_guild_and_dm_prerequisites(env, c
         sent = await alice.send_dm("DM only")
         native = await alice.member.create_dm()
         assert (await native.fetch_message(sent.id)).content == "DM only"
+        assert sent.id in {message.id async for message in native.history()}
+        assert [message async for message in native.pins()] == []
         assert env.observed_permissions().value == 0
     else:
         native = env.bot.get_channel(channel.id)

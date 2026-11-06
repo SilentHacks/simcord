@@ -145,6 +145,36 @@ async def test_bot_creating_self_hidden_channel_has_projected_cache(env):
     assert env.backend.get_channel(created.id).name == "self-hidden"
 
 
+@pytest.mark.parametrize("initially_visible", [False, True])
+async def test_queued_events_keep_emission_time_access(env, alice, initially_visible):
+    seen = []
+
+    async def capture(message):
+        seen.append(message.content)
+
+    env.bot.add_listener(capture, "on_message")
+    guild = env.bot.get_guild(env.guild.id)
+    created = await guild.create_text_channel(
+        "queued-projection",
+        overwrites={guild.me: discord.PermissionOverwrite(view_channel=initially_visible)},
+    )
+    env.backend.create_message(created.id, alice.id, "before access changed")
+    env.backend.set_overwrite(
+        created.id,
+        Overwrite(
+            target_id=env.bot.user.id,
+            type=1,
+            allow=0 if initially_visible else VIEW,
+            deny=VIEW if initially_visible else 0,
+        ),
+    )
+    await env.settle()
+    assert seen == (["before access changed"] if initially_visible else [])
+    assert env.bot.get_channel(created.id).name == (
+        "___hidden___" if initially_visible else "queued-projection"
+    )
+
+
 async def test_hidden_channel_messages_not_dispatched(env):
     seen = []
 

@@ -171,6 +171,9 @@ exercised, not a least-privilege guarantee for your entire bot.
 Implicit guild-channel access contributes `view_channel` (reported as
 `read_messages` when iterating discord.py's native permissions). DM checks do not
 invent guild permission requirements.
+History and pin listings also record their nonthrowing `read_message_history`
+checks. Without that permission, the listings still succeed with an empty result;
+the check is refused, but no HTTP exception or request denial is invented.
 
 ### Silent degradations
 
@@ -211,8 +214,9 @@ fault responses. REST enforcement, interaction `app_permissions` and cached
 revoke a channel permission while `guild.me.guild_permissions` correctly retains
 the guild-level grant.
 
-Assertions that no longer hold under revocation are ignored. Unhandled bot
-exceptions and timeouts are reported with the permission and source location;
+Test-driver assertions that no longer hold under revocation are ignored.
+Assertions raised by application code are findings, like other unhandled bot
+exceptions and timeouts, and are reported with the permission and source location;
 findings make pytest exit unsuccessfully. Handled refusals are not findings.
 Baseline failures remain ordinary test failures and are not swept.
 

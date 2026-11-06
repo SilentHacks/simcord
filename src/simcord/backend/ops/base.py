@@ -358,6 +358,28 @@ class BackendBase:
                 channel = self.get_channel(parent_id)
         return permissions.compute(guild, user_id, channel, now=self.clock.now())
 
+    def has_permission_flags(
+        self, guild_id: int | None, user_id: int, channel_id: int | None, *names: str
+    ) -> bool:
+        """Observe a nonthrowing bit check; callers must authorize channel access first."""
+        perms = self.compute_permissions(guild_id, user_id, channel_id) if guild_id is not None else 0
+        required = list(names) if guild_id is not None else []
+        missing = [name for name in required if not perms & permissions.flag(name)]
+        if user_id == self.bot_user.id:
+            self.permission_checks.append(
+                {
+                    "actor_id": user_id,
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "required": required,
+                    "effective": perms,
+                    "allowed": not missing,
+                    "reason": "missing_permissions" if missing else None,
+                    "missing": missing,
+                }
+            )
+        return not missing
+
     def record_degradation(self, kind: str, **detail: Any) -> None:
         """Record a fidelity fallback; only Env.assert_no_degradations fails on it."""
         self.degradations.append({"kind": kind, **detail})
