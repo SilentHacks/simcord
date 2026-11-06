@@ -33,8 +33,6 @@ async def test_guild_command_lifecycle_preserves_identity(env):
     edited = dispatch(env.backend, "PATCH", f"{scope}/{command_id}", json={"description": "edited"})
     assert edited["id"] == command_id and edited["description"] == "edited"
     assert edited["version"] != created["version"]
-    assert dispatch(env.backend, "PATCH", f"{scope}/{command_id}", json={"nsfw": True})["nsfw"] is True
-    assert dispatch(env.backend, "PATCH", f"{scope}/{command_id}", json={"nsfw": False})["nsfw"] is False
     upserted = dispatch(env.backend, "POST", scope, json=payload)
     assert upserted["id"] == command_id
     fetched = await env.bot.tree.fetch_command(int(command_id), guild=discord.Object(env.guild.id))
@@ -121,3 +119,22 @@ async def test_command_option_validation_matches_live_error_tree(env, invalid):
     stored = dispatch(env.backend, "PATCH", f"{scope}/{valid['id']}", json={"options": ordered})
     assert stored["options"][0]["required"] is True
     assert "required" not in stored["options"][1]
+
+
+@pytest.mark.parametrize("payload", [{}, [{"name": "would-replace", "description": "valid"}, None]])
+async def test_malformed_bulk_commands_cannot_erase_or_partially_replace_registration(env, payload):
+    guild_id = env.guild.id
+    scope = f"/applications/{env.backend.application_id}/guilds/{guild_id}/commands"
+    previous = dispatch(
+        env.backend, "POST", scope, json={"name": "preserved", "description": "existing command"}
+    )
+    route = discord.http.Route(
+        "PUT",
+        "/applications/{application_id}/guilds/{guild_id}/commands",
+        application_id=env.backend.application_id,
+        guild_id=guild_id,
+    )
+    with pytest.raises(discord.HTTPException) as caught:
+        await env.bot.http.request(route, json=payload)
+    assert caught.value.status == 400 and caught.value.code == 50035
+    assert dispatch(env.backend, "GET", scope) == [previous]

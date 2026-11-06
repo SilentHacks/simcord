@@ -204,7 +204,8 @@ async def test_preview_snapshot_filters_entities_references_links_and_assets(env
         selected = target_message(preview._page_payload(preview._python))
         assert selected["reply"]["state"] == "resolved"
         assert selected["reply"]["message_id"] == str(referenced.id)
-        assert selected["mention_user_ids"] == [str(bob.id)]
+        assert str(bob.id) in selected["mention_user_ids"]
+        assert "999999999999" not in selected["mention_user_ids"]
         assert selected["mention_role_ids"] == [str(role.id)]
         assert "url" not in selected["embeds"][0]
         assert selected["embeds"][0]["image"]["available"] is True

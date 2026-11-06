@@ -16,6 +16,13 @@ uv run ruff check src tests examples benchmarks scripts && uv run ruff format --
 uv run pyright src
 ```
 
+Coverage includes the pytest plugin's real subprocess runs. To measure the full
+suite, run `uv run coverage run -m pytest tests examples`, then
+`uv run coverage combine` before `uv run coverage report`. The
+[native subprocess patch](https://coverage.readthedocs.io/en/stable/subprocess.html)
+requires coverage.py 7.10 or newer; do not replace those lifecycle checks with
+mocked pytest calls or lower the coverage ratchet.
+
 The Python hooks run ruff on commit and pyright on push using the project's
 pinned tools. Run the frontend check below separately; passing Python hooks
 does not replace the JavaScript CI gate.

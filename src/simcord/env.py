@@ -79,6 +79,7 @@ class Env:
         self.backend = Backend(clock=Clock(start_time))
         self._errors: list[BaseException] = []
         self._error_ids: set[int] = set()
+        self._unhandled_error_ids: set[int] = set()
         self._errors_acknowledged = 0
         self._guilds: list[GuildHandle] = []
         self._work = _WorkState()
@@ -743,8 +744,10 @@ class Env:
             raise SetupError("error cursor must be a non-negative integer")
         return tuple(self._errors[cursor:])
 
-    def _record_error(self, error: BaseException) -> None:
+    def _record_error(self, error: BaseException, *, unhandled: bool = True) -> None:
         identity = id(error)
+        if unhandled:
+            self._unhandled_error_ids.add(identity)
         if identity in self._error_ids:
             return
         self._error_ids.add(identity)
@@ -757,37 +760,61 @@ class Env:
         return list(self._errors)
 
     def _capture_errors(self) -> None:
+        from discord import Client, app_commands
         from discord.ext import commands
 
-        _dpy_internals.capture_ui_errors(self.bot, self._record_error)
+        def observe_error(error: BaseException) -> None:
+            self._record_error(error, unhandled=False)
 
-        async def on_command_error(_ctx: Any, error: BaseException) -> None:
-            if not isinstance(error, commands.CommandNotFound):
+        _dpy_internals.capture_ui_errors(self.bot, observe_error, self._record_error)
+
+        async def on_command_error(ctx: Any, error: BaseException) -> None:
+            if isinstance(error, commands.CommandNotFound):
+                return
+            observe_error(error)
+            if not _dpy_internals.prefix_error_has_handler(self.bot, ctx):
                 self._record_error(error)
 
+        on_command_error.__simcord_error_observer__ = True
+        previous_on_error = self.bot.on_error
         add_listener = getattr(self.bot, "add_listener", None)
+        remove_listener = getattr(self.bot, "remove_listener", None)
         if add_listener is not None:
+            previous_observer = getattr(previous_on_error, "__simcord_command_error_observer__", None)
+            if previous_observer is not None and remove_listener is not None:
+                remove_listener(previous_observer, "on_command_error")
             add_listener(on_command_error, "on_command_error")
 
-        original_on_error = self.bot.on_error
+        original_on_error = _dpy_internals._original_callback(previous_on_error)
+        default_on_error = getattr(original_on_error, "__func__", original_on_error) is Client.on_error
 
         async def on_error(event_method: str, /, *args: Any, **kwargs: Any) -> None:
             import sys
 
             exc = sys.exc_info()[1]
             if exc is not None:
-                self._record_error(exc)
+                observe_error(exc)
+                if default_on_error:
+                    self._record_error(exc)
             await original_on_error(event_method, *args, **kwargs)
 
+        on_error.__simcord_original_callback__ = original_on_error
+        on_error.__simcord_command_error_observer__ = on_command_error
         self.bot.on_error = on_error  # type: ignore[method-assign]
         tree = getattr(self.bot, "tree", None)
         if tree is not None:
-            original = tree.on_error
+            original = _dpy_internals._original_callback(tree.on_error)
+            default_tree_error = getattr(original, "__func__", original) is app_commands.CommandTree.on_error
 
             async def on_tree_error(interaction: Any, error: BaseException) -> None:
-                self._record_error(error)
+                observe_error(error)
+                if default_tree_error and not _dpy_internals.app_command_has_error_handler(
+                    interaction.command
+                ):
+                    self._record_error(error)
                 await original(interaction, error)
 
+            on_tree_error.__simcord_original_callback__ = original
             tree.on_error = on_tree_error
 
     def preview(

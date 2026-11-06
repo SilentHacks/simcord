@@ -316,7 +316,8 @@ async def test_preview_edit_delete_and_pin_publish_to_bot_and_other_pages(env, a
         "preview-actions",
         overwrites={
             env.guild.default_role: discord.PermissionOverwrite(manage_messages=False),
-            alice: discord.PermissionOverwrite(manage_messages=True),
+            alice: discord.PermissionOverwrite(pin_messages=True),
+            bob: discord.PermissionOverwrite(manage_messages=True, pin_messages=False),
         },
     )
     message = await alice.send(channel, "Before")
@@ -327,6 +328,8 @@ async def test_preview_edit_delete_and_pin_publish_to_bot_and_other_pages(env, a
         other_page = preview._open_page(bob.id, target_id=message.id)
         projection = preview._page_payload(page)["messages"][str(message.id)]
         assert {"edit_message", "delete_message", "set_pinned"} <= set(projection["allowed_actions"])
+        other_projection = preview._page_payload(other_page)["messages"][str(message.id)]
+        assert "set_pinned" not in other_projection["allowed_actions"]
 
         edited = await _action(preview, page, "edit_message", 1, message.id, content="After")
         assert edited["settlement"] == "settled"

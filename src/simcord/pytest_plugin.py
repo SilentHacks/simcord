@@ -203,7 +203,13 @@ def pytest_runtest_protocol(item, nextitem):
             for env in run.envs:
                 env.backend.permission_projection = None
         captured = [error for env in run.envs for error in env.errors_since(0)]
-        failures = [(leaf, "bot callback/task") for error in captured for leaf in _leaves(error)]
+        failures = [
+            (leaf, "bot callback/task")
+            for env in run.envs
+            for error in env.errors_since(0)
+            if id(error) in env._unhandled_error_ids
+            for leaf in _leaves(error)
+        ]
         known = {id(leaf) for error in captured for leaf in _leaves(error)}
         for report in rerun_reports:
             for error in getattr(report, "_simcord_exceptions", ()):

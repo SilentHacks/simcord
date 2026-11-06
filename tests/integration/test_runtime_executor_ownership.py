@@ -264,6 +264,8 @@ async def test_lifecycle_timeout_retains_native_generation_and_hooks(operation, 
         assert env.bot is bot
         assert env._work.executors
         assert loop.run_in_executor != original
+        # The lifecycle deadline was exercised; recovery checks use a normal budget.
+        env.settle_timeout = 1
         release.set()
         await env.settle(timeout=1)
         # A failed detach must leave the old SDK machinery usable, not merely

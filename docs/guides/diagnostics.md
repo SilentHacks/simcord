@@ -168,6 +168,9 @@ print([name for name, used in observed if used])
 
 Observed flags include refused checks. They describe only paths this environment
 exercised, not a least-privilege guarantee for your entire bot.
+Implicit guild-channel access contributes `view_channel` (reported as
+`read_messages` when iterating discord.py's native permissions). DM checks do not
+invent guild permission requirements.
 
 ### Silent degradations
 
@@ -212,6 +215,12 @@ Assertions that no longer hold under revocation are ignored. Unhandled bot
 exceptions and timeouts are reported with the permission and source location;
 findings make pytest exit unsuccessfully. Handled refusals are not findings.
 Baseline failures remain ordinary test failures and are not swept.
+
+Successful custom event, prefix-command, application-command, View and Modal
+error handlers consume their errors for sweep purposes. A handler that raises
+or reraises still produces a finding. Routed errors remain in `Env.errors` for
+normal diagnostics and its existing assertion policy; the sweep distinguishes
+those observations from unhandled runtime failures.
 
 Env-owned callback/task errors and settlement timeouts carry bot-ownership
 evidence. Direct product calls can also produce findings when their traceback

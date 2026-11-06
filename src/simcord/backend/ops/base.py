@@ -382,11 +382,14 @@ class BackendBase:
         if denied_code not in (50013, 50001, 160002):
             raise ValueError("denied_code must be 50013, 50001 or 160002")
         bot = user_id == self.bot_user.id
+        required = list(names) if guild_id is not None else []
+        if guild_id is not None and channel_id is not None and "view_channel" not in required:
+            required.insert(0, "view_channel")
         record: dict[str, Any] = {
             "actor_id": user_id,
             "guild_id": guild_id,
             "channel_id": channel_id,
-            "required": list(names),
+            "required": required,
             "effective": None,
             "allowed": False,
             "reason": None,
@@ -402,6 +405,8 @@ class BackendBase:
                 self, channel_id, user_id, permissions_value=perms
             ):
                 record["reason"] = "missing_access"
+                if not perms & permissions.flag("view_channel"):
+                    record["missing"] = ["view_channel"]
                 raise errors.missing_access()
             if guild_id is None:  # DMs: no guild permissions apply
                 record["allowed"] = True

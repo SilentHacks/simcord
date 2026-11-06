@@ -65,7 +65,7 @@ def test_sweep_finds_unhandled_forbidden_with_fresh_lifecycles(pytester, creatio
             "*[[]send_messages]: unhandled Forbidden*source: bot callback/task*",
         ]
     )
-    assert (pytester.path / "lifecycle").read_text().splitlines() == ["setup", "teardown"] * 2
+    assert (pytester.path / "lifecycle").read_text().splitlines() == ["setup", "teardown"] * 3
 
 
 @pytest.mark.parametrize(
@@ -261,7 +261,7 @@ def test_sweep_reports_permission_dependent_bot_timeout_with_source(pytester):
     result.stdout.fnmatch_lines(
         [
             "*[[]send_messages]: unhandled TimeoutError: permission-dependent wait*conftest.py:*on_message*",
-            "*1 exercised revocation case(s)*1 unhandled bot error(s)*0 unsupported case(s)*",
+            "*2 exercised revocation case(s)*1 unhandled bot error(s)*0 unsupported case(s)*",
         ]
     )
 
@@ -369,7 +369,13 @@ def test_direct_application_errors_are_distinct_from_test_helpers(pytester, oper
     result.assert_outcomes(passed=1)
     if operation == "test-helper":
         assert result.ret == pytest.ExitCode.OK
-        result.stdout.fnmatch_lines(["*0 unhandled bot error(s)*1 unsupported case(s)*"])
+        result.stdout.fnmatch_lines(
+            [
+                "*[[]read_messages]: unsupported:*",
+                "*[[]send_messages]: unsupported:*",
+                "*0 unhandled bot error(s)*",
+            ]
+        )
     else:
         assert result.ret == pytest.ExitCode.TESTS_FAILED
         kind = "Forbidden" if operation == "send" else "HistoryUnavailable"

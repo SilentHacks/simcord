@@ -81,7 +81,7 @@ async def test_forum_post_requires_send_messages(env):
     cached = env.bot.get_channel(forum.id)
     with pytest.raises(discord.Forbidden) as exc_info:
         await cached.create_thread(name="nope", content="blocked")
-    assert exc_info.value.code == 50013
+    assert exc_info.value.code == 50001
 
 
 def _forum_state(backend, forum_id):

@@ -9,17 +9,22 @@ from ...backend import errors
 from ...backend.ops.commands import COMMAND_FIELDS
 from ..router import RequestContext, route
 
+_HTTP_COMMAND_FIELDS = tuple(name for name in COMMAND_FIELDS if name != "nsfw")
+
 
 def _command_fields(ctx: RequestContext, payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
-        raise ValueError("Command payloads must be objects")
-    return ctx.fields(*COMMAND_FIELDS, body=dict(payload))
+        raise errors.invalid_form_body("Command payloads must be objects")
+    unsupported = (
+        {"nsfw": "NSFW command visibility is not modeled."} if payload.get("nsfw", False) is not False else {}
+    )
+    return ctx.fields(*_HTTP_COMMAND_FIELDS, ignore=("nsfw",), reject=unsupported, body=dict(payload))
 
 
 def _bulk_upsert_commands(ctx: RequestContext, guild_id: int | None) -> list[dict[str, Any]]:
-    return ctx.backend.register_commands(
-        guild_id, [_command_fields(ctx, payload) for payload in ctx.json or []]
-    )
+    if not isinstance(ctx.json, list):
+        raise errors.invalid_form_body("Bulk command registration requires an array")
+    return ctx.backend.register_commands(guild_id, [_command_fields(ctx, payload) for payload in ctx.json])
 
 
 @route("PUT", "/applications/{application_id}/commands")

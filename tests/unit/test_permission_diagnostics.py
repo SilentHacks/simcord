@@ -202,3 +202,18 @@ async def test_administrator_revocation_is_unsupported_without_losing_unrelated_
     cached = env.bot.get_channel(channel.id)
     assert cached.permissions_for(cached.guild.me).administrator
     backend.permission_projection = None
+
+
+@pytest.mark.parametrize("dm", [False, True])
+async def test_observed_permissions_match_real_guild_and_dm_prerequisites(env, channel, alice, dm):
+    if dm:
+        sent = await alice.send_dm("DM only")
+        native = await alice.member.create_dm()
+        assert (await native.fetch_message(sent.id)).content == "DM only"
+        assert env.observed_permissions().value == 0
+    else:
+        native = env.bot.get_channel(channel.id)
+        await native.send("guild message")
+        observed = env.observed_permissions()
+        assert observed.send_messages
+        assert observed.view_channel
