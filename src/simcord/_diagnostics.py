@@ -104,11 +104,20 @@ class PermissionProjection:
             if self.run.guild_scope and guild.everyone_role.permissions & bit:
                 self.unsupported(f"guild {guild.id}: guild-scoped flag granted by shared @everyone")
                 continue
+            if any(
+                guild.roles[role_id].permissions & admin
+                for role_id in member.role_ids
+                if role_id in guild.roles
+            ):
+                self.unsupported(
+                    f"guild {guild.id}: bot Administrator bypass cannot be reduced to one revoked permission"
+                )
+                continue
             for role_id in member.role_ids:
                 role = guild.roles.get(role_id)
                 if role is None:
                     continue
-                remove = admin | (bit if self.run.guild_scope else 0)
+                remove = bit if self.run.guild_scope else 0
                 if not role.permissions & remove:
                     continue
                 if any(role_id in other.role_ids for uid, other in guild.members.items() if uid != bot_id):

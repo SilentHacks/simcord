@@ -223,9 +223,11 @@ executed as Env-owned bot work. A baseline using only permissionless interaction
 callbacks may observe no flags; that is not permission-revocation coverage.
 
 The report separates exercised and unsupported cases. Broader-scoped user
-fixtures, reused environments, bot-owned guilds, shared Administrator grants,
+fixtures, reused environments, bot-owned guilds, Administrator bypasses,
 and guild-scoped grants that cannot be removed without changing other members
-are unsupported. Harness/setup failures are reported as unsupported rather than
+are unsupported. Removing Administrator could revoke unrelated permissions, so
+it is never presented as a faithful one-flag sweep. Harness/setup failures are
+reported as unsupported rather than
 invented bot failures. An unsupported case is not evidence that your bot handles
 revocation.
 

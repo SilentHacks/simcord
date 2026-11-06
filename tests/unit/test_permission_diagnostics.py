@@ -171,10 +171,34 @@ async def test_sweep_backend_rest_interaction_and_cache_agree(env, channel, alic
     ]
     assert creation_events == ["CHANNEL_CREATE"]
     bot_role = backend.get_guild(env.guild.id).members[backend.bot_user.id].role_ids[0]
-    backend.edit_role(env.guild.id, bot_role, {"permissions": discord.Permissions.all().value})
+    grants = discord.Permissions.all().value & ~discord.Permissions.administrator.flag
+    backend.edit_role(env.guild.id, bot_role, {"permissions": grants})
     await env.settle()
     dynamic = env.bot.get_channel(other.id)
     assert not getattr(dynamic.permissions_for(dynamic.guild.me), flag)
     assert not backend.compute_permissions(env.guild.id, backend.bot_user.id, other.id) & bit
     assert not run.unsupported
+    backend.permission_projection = None
+
+
+async def test_administrator_revocation_is_unsupported_without_losing_unrelated_grants(env, channel, alice):
+    backend = env.backend
+    guild = backend.get_guild(env.guild.id)
+    bot_role = guild.members[backend.bot_user.id].role_ids[0]
+    backend.edit_role(guild.id, bot_role, {"permissions": discord.Permissions.administrator.flag})
+    await env.settle()
+    before = backend.compute_permissions(guild.id, backend.bot_user.id, channel.id)
+    actor_before = backend.compute_permissions(guild.id, alice.id, channel.id)
+    roles_before = {ident: role.permissions for ident, role in guild.roles.items()}
+    overwrites_before = list(backend.channels[channel.id].overwrites)
+    run = PermissionRun(flag="embed_links")
+    run.register(env)
+    assert backend.compute_permissions(guild.id, backend.bot_user.id, channel.id) == before
+    assert run.unsupported
+    assert {ident: role.permissions for ident, role in guild.roles.items()} == roles_before
+    assert backend.channels[channel.id].overwrites == overwrites_before
+    assert backend.compute_permissions(guild.id, alice.id, channel.id) == actor_before
+    await env.settle()
+    cached = env.bot.get_channel(channel.id)
+    assert cached.permissions_for(cached.guild.me).administrator
     backend.permission_projection = None
