@@ -252,7 +252,7 @@ async def test_explicit_allowed_mentions_control_stored_pings_and_native_mention
     assert stored.ping_user_ids == [alice.id]
     assert stored.ping_role_ids == [role.id]
     assert stored.mention_everyone is False
-    assert {member.id for member in message.mentions} == {alice.id, bob.id}
+    assert {member.id for member in message.mentions} == {alice.id}
     assert [mentioned_role.id for mentioned_role in message.role_mentions] == [role.id]
     assert message.mention_everyone is False
 
@@ -266,7 +266,7 @@ async def test_sticker_count_duplicates_unknown_and_unavailable_reject_without_m
     sticker = env.guild.create_sticker("wave")
     await _assert_message_rejected(env, channel.id, {"sticker_ids": [sticker.id] * 4}, 50035)
     await _assert_message_rejected(env, channel.id, {"sticker_ids": [str(sticker.id), sticker.id]}, 50035)
-    await _assert_message_rejected(env, channel.id, {"sticker_ids": [sticker.id + 1000]}, 10060)
+    await _assert_message_rejected(env, channel.id, {"sticker_ids": [sticker.id + 1000]}, 50081)
 
     sticker.available = False
     await _assert_message_rejected(env, channel.id, {"sticker_ids": [str(sticker.id)]}, 50035)

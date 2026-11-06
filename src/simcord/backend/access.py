@@ -73,6 +73,35 @@ def channel_accessible(
     return True
 
 
+def channel_viewable(backend: BackendBase, channel_id: int, viewer_id: int) -> bool:
+    """Gateway/list visibility, including categories and connected voice channels.
+
+    https://docs.discord.com/developers/resources/channel#channel-object-obfuscated-channels
+    """
+    channel = backend.channels.get(channel_id)
+    if channel is None:
+        return False
+    if channel.guild_id is None:
+        return channel_accessible(backend, channel_id, viewer_id)
+    guild = backend.guilds.get(channel.guild_id)
+    if guild is None or viewer_id not in guild.members:
+        return False
+    if channel_accessible(backend, channel_id, viewer_id):
+        return True
+    voice = guild.voice_states.get(viewer_id)
+    if channel.type in (ChannelType.VOICE, ChannelType.STAGE_VOICE) and voice is not None:
+        return voice.channel_id == channel_id
+    if channel.type == ChannelType.CATEGORY:
+        return any(
+            child.parent_id == channel_id
+            and child.type != ChannelType.CATEGORY
+            and channel_viewable(backend, child.id, viewer_id)
+            for cid in guild.channel_ids
+            if (child := backend.channels.get(cid)) is not None
+        )
+    return False
+
+
 def can_access_channel(env: Env, channel_id: int, viewer: Any, *, history: bool = False) -> bool:
     """Env-bound adapter used by public actors and the optional preview bridge."""
     if getattr(viewer, "_env", None) is not env:

@@ -15,3 +15,5 @@ class HttpLogEntry:
     params: dict[str, Any]
     json: Any | None
     reason: str | None
+    #: JSON-friendly authorization detail; never part of Discord's error body.
+    denial: dict[str, Any] | None = None

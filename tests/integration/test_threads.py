@@ -158,3 +158,24 @@ async def test_thread_member_ops_reject_non_thread(env):
     with pytest.raises(errors.BackendError) as exc:
         env.backend.add_thread_member(channel.id, env.bot.user.id)
     assert exc.value.code == 50024
+
+
+@pytest.mark.parametrize("source", ["standalone", "message"])
+async def test_announcement_thread_round_trips_as_thread(env, source):
+    parent = env.guild.create_news_channel("announcements")
+    cached = env.bot.get_channel(parent.id)
+    if source == "message":
+        starter = await cached.send("announcement")
+        thread = await starter.create_thread(name="discussion")
+    else:
+        thread = await cached.create_thread(name="discussion", type=discord.ChannelType.news_thread)
+    await env.settle()
+    assert env.backend.get_channel(thread.id).is_thread
+    assert env.bot.get_channel(thread.id).type is discord.ChannelType.news_thread
+    message = await thread.send("announcement discussion")
+    assert (await thread.fetch_message(message.id)).content == "announcement discussion"
+    await thread.edit(archived=True)
+    archived = [item.id async for item in cached.archived_threads()]
+    assert thread.id in archived
+    await thread.delete()
+    assert env.bot.get_channel(thread.id) is None

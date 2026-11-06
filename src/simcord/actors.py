@@ -91,6 +91,7 @@ class MemberActor:
         backend = self._env.backend
         perm = "send_messages_in_threads" if channel.is_thread else "send_messages"
         self._check(channel, perm)
+        backend.require_thread_mutable(channel.id, self.id, sending=True)
         reference = None
         if reply_to is not None:
             _visible_message(self, reply_to)
@@ -153,7 +154,7 @@ class MemberActor:
         stored = self._message(message)
         if not isinstance(pinned, bool):
             raise SetupError("pinned must be a boolean")
-        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "manage_messages")
+        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "pin_messages")
         self._env.backend.set_pinned(stored.channel_id, stored.id, pinned, actor_id=self.id)
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.set_pinned")

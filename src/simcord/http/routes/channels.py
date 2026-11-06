@@ -7,9 +7,73 @@ from typing import Any
 from ...backend import errors, serializers
 from ...backend.access import channel_accessible
 from ...backend.models import Overwrite, Webhook
+from ...backend.permissions import flag
 from ...enums import AuditLogAction, ChannelType, OverwriteType
+from .._access import require_text_access
 from .._helpers import message_response, prepare_bot_message
 from ..router import RequestContext, route
+
+
+def validate_channel_fields(body: dict[str, Any], channel_type: int) -> None:
+    """Validate captured channel limits before allocating or mutating state."""
+    failures: dict[str, Any] = {}
+    for field, maximum in (("name", 100), ("topic", 4096 if channel_type == ChannelType.FORUM else 1024)):
+        value = body.get(field)
+        if isinstance(value, str) and len(value) > maximum:
+            failures[field] = {
+                "_errors": [
+                    {"code": "BASE_TYPE_MAX_LENGTH", "message": f"Must be {maximum} or fewer in length."}
+                ]
+            }
+    slowmode = body.get("rate_limit_per_user")
+    if slowmode is not None:
+        if slowmode < 0:
+            failures["rate_limit_per_user"] = {
+                "_errors": [
+                    {
+                        "code": "NUMBER_TYPE_MIN",
+                        "message": "int value should be greater than or equal to 0.",
+                    }
+                ]
+            }
+        elif slowmode > 21600:
+            failures["rate_limit_per_user"] = {
+                "_errors": [
+                    {
+                        "code": "NUMBER_TYPE_MAX",
+                        "message": "int value should be less than or equal to 21600.",
+                    }
+                ]
+            }
+    if failures:
+        raise errors.invalid_form_body(errors=failures)
+
+
+def _require_channel_management(ctx: RequestContext, *, editing: bool = False) -> Any:
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
+    if not channel.is_thread:
+        ctx.require_channel_permissions(channel.id, "manage_channels")
+        return channel
+    if not editing:
+        ctx.require_channel_permissions(channel.id, "manage_threads")
+        return channel
+    backend = ctx.backend
+    body = ctx.body() if editing else {}
+    if editing:
+        ctx.require_channel_permissions(channel.id, "send_messages_in_threads", denied_code=50001)
+        meta = channel.thread_metadata
+        if meta and meta.locked and body.get("archived") is False:
+            assert channel.guild_id is not None
+            permissions = backend.compute_permissions(channel.guild_id, backend.bot_user.id, channel.id)
+            if not permissions & flag("manage_threads"):
+                raise errors.BackendError(
+                    403, 160005, "A locked thread can only be unarchived by a moderator"
+                )
+    # Unarchiving an unlocked thread is available to members who can send.
+    unarchiving = editing and set(body) <= {"archived"} and body.get("archived") is False
+    if channel.owner_id != backend.bot_user.id and not unarchiving:
+        ctx.require_channel_permissions(channel.id, "manage_threads", denied_code=50001)
+    return channel
 
 
 @route("GET", "/channels/{channel_id}")
@@ -21,8 +85,9 @@ def get_channel(ctx: RequestContext) -> Any:
 @route("PATCH", "/channels/{channel_id}")
 def edit_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_channels")
+    channel = _require_channel_management(ctx, editing=True)
     body = ctx.body()
+    validate_channel_fields(body, channel.type)
     # Scalar fields mapped 1:1 onto the Channel model. Voice fields only reach
     # this handler for voice/stage channels (discord.py omits them otherwise).
     # parent_id arrives only when position is absent: discord.py routes any edit
@@ -37,12 +102,16 @@ def edit_channel(ctx: RequestContext) -> Any:
         "user_limit",
         "rtc_region",
         "parent_id",
+        "flags",
     )
     # Keys this handler honours but applies itself (not via the scalar `changes`).
     ignore = ("permission_overwrites",)
     if channel.is_thread:
         ignore += ("archived", "locked", "auto_archive_duration", "invitable", "applied_tags")
     changes = ctx.fields(*editable, ignore=ignore)
+    # Discord treats an empty thread rename as retaining the current name.
+    if channel.is_thread and changes.get("name") == "":
+        changes.pop("name")
     if changes.get("parent_id") is not None:
         changes["parent_id"] = int(changes["parent_id"])
     thread_metadata: dict[str, Any] | None = None
@@ -109,7 +178,7 @@ def bulk_update_channels(ctx: RequestContext) -> Any:
 @route("DELETE", "/channels/{channel_id}")
 def delete_channel(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_channels")
+    channel = _require_channel_management(ctx)
     payload = dict(serializers.channel_payload(backend, channel))
     guild_id, channel_id, name = channel.guild_id, channel.id, channel.name
     backend.delete_channel(channel.id)
@@ -150,7 +219,7 @@ def delete_overwrite(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/typing")
 def typing(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
+    channel = require_text_access(ctx, ctx.int_arg("channel_id"))
     ctx.require_channel_permissions(
         channel.id, "send_messages_in_threads" if channel.is_thread else "send_messages"
     )
@@ -167,37 +236,35 @@ def typing(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/threads")
 def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
+    channel = require_text_access(ctx, ctx.int_arg("channel_id"))
+    validate_channel_fields(ctx.body(), ChannelType.PUBLIC_THREAD)
     if channel.type == ChannelType.FORUM:
-        # A forum post is a message posted into the forum, so it is gated on
-        # send_messages there, not create_public_threads. Thread slowmode
-        # (rate_limit_per_user) is accepted and discarded — unmodelled offline.
-        ctx.require_channel_permissions(channel.id, "send_messages")
-        # A forum post is always a public thread, so ``type`` is accepted and
-        # discarded; thread slowmode (rate_limit_per_user) is unmodelled.
+        # A forum post is gated on send_messages in its parent.
+        ctx.require_channel_permissions(channel.id, "send_messages", denied_code=50001)
         body = ctx.fields(
             "name",
             "message",
             "applied_tags",
             "auto_archive_duration",
-            ignore=("type", "rate_limit_per_user"),
+            "rate_limit_per_user",
+            ignore=("type",),
         )
         return _create_forum_post(ctx, channel.id, body)
-    # invitable (private-thread joinability) and rate_limit_per_user are accepted
-    # and discarded: neither is modelled for offline threads.
+    # Private-thread joinability is currently unmodelled.
     permission = (
         "create_private_threads"
         if int(ctx.body().get("type", 11)) == ChannelType.PRIVATE_THREAD
         else "create_public_threads"
     )
     ctx.require_channel_permissions(channel.id, permission)
-    body = ctx.fields("name", "type", "auto_archive_duration", ignore=("invitable", "rate_limit_per_user"))
+    body = ctx.fields("name", "type", "auto_archive_duration", "rate_limit_per_user", ignore=("invitable",))
     thread = backend.create_thread(
         channel.id,
         body["name"],
         backend.bot_user.id,
         type=int(body.get("type", 11)),
         auto_archive_duration=int(body.get("auto_archive_duration", 1440)),
+        rate_limit_per_user=int(body.get("rate_limit_per_user") or 0),
     )
     return dict(serializers.thread_payload(backend, thread))
 
@@ -215,8 +282,9 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
         forum_id,
         body["name"],
         starter,
-        auto_archive_duration=int(body.get("auto_archive_duration") or 1440),
+        auto_archive_duration=int(body.get("auto_archive_duration") or 4320),
         applied_tags=[int(tag) for tag in body.get("applied_tags") or []],
+        rate_limit_per_user=int(body.get("rate_limit_per_user") or 0),
         uploads=[
             (file.filename, data, file.description) for file, data in zip(ctx.files, upload_data, strict=True)
         ],
@@ -230,16 +298,18 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
 @route("POST", "/channels/{channel_id}/messages/{message_id}/threads")
 def create_thread_from_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
+    channel = require_text_access(ctx, ctx.int_arg("channel_id"))
+    ctx.require_channel_permissions(channel.id, "create_public_threads")
+    validate_channel_fields(ctx.body(), ChannelType.PUBLIC_THREAD)
     message = ctx.require_message(channel.id, ctx.int_arg("message_id"), "read_message_history")
-    # rate_limit_per_user (thread slowmode) is accepted and discarded.
-    body = ctx.fields("name", "auto_archive_duration", ignore=("rate_limit_per_user",))
+    body = ctx.fields("name", "auto_archive_duration", "rate_limit_per_user")
     thread = backend.create_thread(
         channel.id,
         body["name"],
         backend.bot_user.id,
         message_id=message.id,
         auto_archive_duration=int(body.get("auto_archive_duration", 1440)),
+        rate_limit_per_user=int(body.get("rate_limit_per_user") or 0),
     )
     return dict(serializers.thread_payload(backend, thread))
 
@@ -254,7 +324,6 @@ def join_thread(ctx: RequestContext) -> Any:
 @route("DELETE", "/channels/{channel_id}/thread-members/@me")
 def leave_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     backend.remove_thread_member(ctx.int_arg("channel_id"), backend.bot_user.id)
 
 

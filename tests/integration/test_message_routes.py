@@ -53,6 +53,35 @@ async def test_pin_then_unpin(env, channel):
     assert env.backend.get_message(channel.id, message.id).pinned is False
 
 
+@pytest.mark.parametrize("subject", ["bot", "member"])
+async def test_pinning_requires_pin_messages_not_manage_messages(env, channel, alice, subject):
+    cached = env.bot.get_channel(channel.id)
+    message = await cached.send("pin permission split")
+    await env.settle()
+    target = env.guild.me if subject == "bot" else env.bot.get_guild(env.guild.id).get_member(alice.id)
+    await cached.set_permissions(target, manage_messages=True, pin_messages=False)
+    expected_error = discord.Forbidden if subject == "bot" else simcord.BackendError
+    with pytest.raises(expected_error) as caught:
+        if subject == "bot":
+            await message.pin()
+        else:
+            await alice.set_pinned(message, True)
+    assert caught.value.code == 50013
+    assert not channel.pinned_messages()
+
+    await cached.set_permissions(target, manage_messages=False, pin_messages=True)
+    if subject == "bot":
+        await message.pin()
+    else:
+        await alice.set_pinned(message, True)
+    assert [item.id for item in channel.pinned_messages()] == [message.id]
+    if subject == "bot":
+        await message.unpin()
+    else:
+        await alice.set_pinned(message, False)
+    assert not channel.pinned_messages()
+
+
 def _make_poll() -> discord.Poll:
     poll = discord.Poll(question="Lunch?", duration=datetime.timedelta(hours=1))
     poll.add_answer(text="Pizza")
@@ -139,7 +168,7 @@ async def test_empty_creation_rejected_for_user_bot_and_backend(env, channel, al
         await alice.send(channel)
     with pytest.raises(discord.HTTPException) as caught:
         await env.bot.get_channel(channel.id).send()
-    assert caught.value.code == 50035
+    assert caught.value.code == 50006
     with pytest.raises(simcord.BackendError, match="empty message"):
         env.backend.create_message(channel.id, alice.id, " \n\t")
     assert not env.backend.messages[channel.id]

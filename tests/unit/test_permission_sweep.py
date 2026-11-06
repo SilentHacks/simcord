@@ -1,0 +1,323 @@
+"""The shipped plugin runs complete pytest lifecycles, not HTTP fault scripts."""
+
+from __future__ import annotations
+
+import pytest
+
+BOT = """
+import discord
+import pytest
+from discord.ext import commands
+
+@pytest.fixture
+def simcord_bot():
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+    @bot.event
+    async def on_message(message):
+        if message.author.bot:
+            return
+        HANDLER
+    return bot
+"""
+
+
+@pytest.mark.parametrize("creation", ["run", "direct", "fixture"])
+def test_sweep_finds_unhandled_forbidden_with_fresh_lifecycles(pytester, creation):
+    pytester.makeconftest(BOT.replace("HANDLER", 'await message.channel.send("reply")'))
+    setup = """
+        guild = env.create_guild()
+        channel = guild.create_text_channel("general")
+        alice = guild.add_member(env.create_user("alice"))
+        await alice.send(channel, "hello")
+        assert channel.last_message.content == "reply"
+"""
+    if creation == "run":
+        body = "async with simcord.run(simcord_bot) as env:\n" + setup
+        signature = "simcord_bot, lifecycle"
+    elif creation == "direct":
+        body = (
+            "env = simcord.Env(simcord_bot)\nawait env.start()\ntry:\n"
+            + setup
+            + "\nfinally:\n    await env.shutdown()"
+        )
+        signature = "simcord_bot, lifecycle"
+    else:
+        body = "env = simcord_env\n" + "\n".join(line[8:] for line in setup.strip("\n").splitlines())
+        signature = "simcord_env, lifecycle"
+    pytester.makepyfile(
+        "import simcord\nimport pytest\nfrom pathlib import Path\n\n"
+        "@pytest.fixture\ndef lifecycle():\n"
+        "    with Path('lifecycle').open('a') as log: log.write('setup\\n')\n"
+        "    yield\n"
+        "    with Path('lifecycle').open('a') as log: log.write('teardown\\n')\n\n"
+        f"async def test_bot({signature}):\n" + "\n".join("    " + line for line in body.splitlines())
+    )
+    result = pytester.runpytest_subprocess(
+        "-o", "asyncio_mode=auto", "--simcord-sweep", "--simcord-observed-permissions"
+    )
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(
+        [
+            "*simcord observed permissions*",
+            "*send_messages*",
+            "*simcord permission sweep*",
+            "*[[]send_messages]: unhandled Forbidden*source: bot callback/task*",
+        ]
+    )
+    assert (pytester.path / "lifecycle").read_text().splitlines() == ["setup", "teardown"] * 2
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        'try:\n            await message.channel.send("reply")\n        except discord.Forbidden:\n            pass',
+        'if message.channel.permissions_for(message.guild.me).send_messages:\n            await message.channel.send("reply")',
+    ],
+)
+def test_sweep_ignores_handled_forbidden_and_driver_assertions(pytester, handler):
+    pytester.makeconftest(BOT.replace("HANDLER", handler))
+    pytester.makepyfile("""
+        async def test_bot(simcord_env):
+            env = simcord_env
+            guild = env.create_guild()
+            channel = guild.create_text_channel("general")
+            alice = guild.add_member(env.create_user("alice"))
+            await alice.send(channel, "hello")
+            assert channel.last_message.content == "reply"
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.OK
+    result.stdout.fnmatch_lines(["*[[]send_messages]: no unhandled bot errors", "*0 unhandled bot error(s)*"])
+
+
+def test_sweep_keeps_teardown_bot_errors_after_driver_assertion(pytester):
+    pytester.makeconftest(
+        BOT.replace(
+            "HANDLER",
+            """if message.content == "late":
+            await message.channel.send("reply")
+        else:
+            try:
+                await message.channel.send("reply")
+            except discord.Forbidden:
+                pass""",
+        )
+        + """
+import pytest_asyncio
+
+@pytest_asyncio.fixture
+async def late(simcord_env):
+    env = simcord_env
+    guild = env.create_guild()
+    channel = guild.create_text_channel("general")
+    alice = guild.add_member(env.create_user("alice"))
+    yield channel, alice
+    await alice.send(channel, "late")
+"""
+    )
+    pytester.makepyfile("""
+        async def test_bot(simcord_env, late):
+            channel, alice = late
+            await alice.send(channel, "first")
+            assert channel.last_message.content == "reply"
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(["*[[]send_messages]: unhandled Forbidden*source: bot callback/task*"])
+
+
+def test_sweep_does_not_swallow_real_fixture_teardown_failures(pytester):
+    pytester.makeconftest(
+        BOT.replace(
+            "HANDLER",
+            """try:
+            await message.channel.send("reply")
+        except discord.Forbidden:
+            pass""",
+        )
+        + """
+import pytest_asyncio
+
+@pytest_asyncio.fixture
+async def broken(simcord_env):
+    yield
+    channel = simcord_env.guild.channels["general"]
+    value = simcord_env.backend.compute_permissions(simcord_env.guild.id, simcord_env.backend.bot_user.id, channel.id)
+    if not discord.Permissions(value).send_messages:
+        raise RuntimeError("real teardown failure")
+"""
+    )
+    pytester.makepyfile("""
+        async def test_bot(simcord_env, broken):
+            env = simcord_env
+            channel = env.create_guild().create_text_channel("general")
+            alice = env.guild.add_member(env.create_user("alice"))
+            await alice.send(channel, "hello")
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.OK
+    result.stdout.fnmatch_lines(["*unsupported:*teardown harness error:*real teardown failure*"])
+
+
+def test_baseline_failure_is_not_swept(pytester):
+    pytester.makeconftest(BOT.replace("HANDLER", 'await message.channel.send("reply")'))
+    pytester.makepyfile("""
+        async def test_bot(simcord_env):
+            env = simcord_env
+            channel = env.create_guild().create_text_channel("general")
+            alice = env.guild.add_member(env.create_user("alice"))
+            await alice.send(channel, "hello")
+            assert False, "baseline failed"
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*[[]baseline]: baseline not passed; not swept"])
+
+
+def test_broader_user_fixture_scope_is_reported_unsupported(pytester):
+    pytester.makeconftest(
+        BOT.replace(
+            "@pytest.fixture\ndef simcord_bot", '@pytest.fixture(scope="module")\ndef simcord_bot'
+        ).replace("HANDLER", 'await message.channel.send("reply")')
+    )
+    pytester.makepyfile("""
+        async def test_bot(simcord_env):
+            env = simcord_env
+            channel = env.create_guild().create_text_channel("general")
+            alice = env.guild.add_member(env.create_user("alice"))
+            await alice.send(channel, "hello")
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(
+        ["*[[]baseline]: unsupported: fixture 'simcord_bot' has unsupported module scope"]
+    )
+
+
+def test_observed_report_unions_direct_env_checks_including_denials(pytester):
+    pytester.makepyfile("""
+        import discord
+        import simcord
+        from simcord.backend.models import Overwrite
+        from simcord.enums import OverwriteType
+
+        async def test_denied():
+            env = simcord.Env(discord.Client(intents=discord.Intents.none()))
+            guild = env.create_guild()
+            channel = guild.create_text_channel("general")
+            env.backend.set_overwrite(channel.id, Overwrite(
+                target_id=env.backend.bot_user.id, type=OverwriteType.MEMBER,
+                deny=discord.Permissions.send_messages.flag,
+            ))
+            try:
+                env.backend.require_permissions(guild.id, env.backend.bot_user.id, channel.id, "send_messages")
+            except simcord.BackendError:
+                pass
+
+        async def test_allowed():
+            env = simcord.Env(discord.Client(intents=discord.Intents.none()))
+            guild = env.create_guild()
+            env.backend.require_permissions(guild.id, env.backend.bot_user.id, None, "manage_guild")
+            actor = guild.add_member(env.create_user("actor"))
+            try:
+                env.backend.require_permissions(guild.id, actor.id, None, "manage_roles")
+            except simcord.BackendError:
+                pass
+    """)
+    result = pytester.runpytest_subprocess(
+        "-o",
+        "asyncio_mode=auto",
+        "--simcord-observed-permissions",
+    )
+    result.assert_outcomes(passed=2)
+    result.stdout.fnmatch_lines(["*simcord observed permissions*", "*manage_guild*send_messages*"])
+    assert "manage_roles" not in result.stdout.str()
+
+
+def test_sweep_reports_permission_dependent_bot_timeout_with_source(pytester):
+    pytester.makeconftest(
+        BOT.replace(
+            "HANDLER",
+            """if not message.channel.permissions_for(message.guild.me).send_messages:
+            raise TimeoutError("permission-dependent wait")
+        await message.channel.send("reply")""",
+        )
+    )
+    pytester.makepyfile("""
+        async def test_bot(simcord_env):
+            env = simcord_env
+            channel = env.create_guild().create_text_channel("general")
+            alice = env.guild.add_member(env.create_user("alice"))
+            await alice.send(channel, "hello")
+            assert channel.last_message.content == "reply"
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(
+        [
+            "*[[]send_messages]: unhandled TimeoutError: permission-dependent wait*conftest.py:*on_message*",
+            "*1 exercised revocation case(s)*1 unhandled bot error(s)*0 unsupported case(s)*",
+        ]
+    )
+
+
+def test_shared_guild_grant_is_explicitly_unsupported_not_falsely_revoked(pytester):
+    pytester.makepyfile("""
+        import discord
+        import simcord
+
+        async def test_bot():
+            env = simcord.Env(discord.Client(intents=discord.Intents.none()))
+            guild = env.create_guild()
+            env.backend.require_permissions(guild.id, env.backend.bot_user.id, None, "change_nickname")
+    """)
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.OK
+    result.stdout.fnmatch_lines(
+        [
+            "*[[]change_nickname]: unsupported:*guild-scoped flag granted by shared @everyone*",
+            "*0 exercised revocation case(s)*1 unsupported case(s)*",
+        ]
+    )
+
+
+def test_xdist_aggregates_observed_flags_and_sweep_findings(pytester):
+    pytest.importorskip("xdist")
+    pytester.makeconftest(BOT.replace("HANDLER", 'await message.channel.send("reply")'))
+    pytester.makepyfile("""
+        async def test_send(simcord_env):
+            env = simcord_env
+            channel = env.create_guild().create_text_channel("general")
+            alice = env.guild.add_member(env.create_user("alice"))
+            await alice.send(channel, "hello")
+            assert channel.last_message.content == "reply"
+
+        async def test_other_flag(simcord_env):
+            env = simcord_env
+            guild = env.create_guild()
+            env.backend.require_permissions(guild.id, env.backend.bot_user.id, None, "manage_guild")
+    """)
+    result = pytester.runpytest_subprocess(
+        "-n",
+        "2",
+        "-o",
+        "asyncio_mode=auto",
+        "--simcord-sweep",
+        "--simcord-observed-permissions",
+    )
+    result.assert_outcomes(passed=2)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(
+        [
+            "*simcord observed permissions*",
+            "*manage_guild*send_messages*",
+            "*simcord permission sweep*",
+            "*[[]send_messages]: unhandled Forbidden*",
+        ]
+    )

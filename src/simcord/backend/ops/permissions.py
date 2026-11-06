@@ -7,6 +7,13 @@ from .base import BackendBase
 
 
 class PermissionsMixin(BackendBase):
+    def _hierarchy_denied(self, actor_id: int, guild_id: int, **detail: int) -> None:
+        error = errors.missing_permissions()
+        record = self.record_denial("hierarchy", actor_id=actor_id, guild_id=guild_id, code=50013, **detail)
+        if record is not None:
+            error.__dict__["denial"] = record
+        raise error
+
     def require_hierarchy(self, guild_id: int, actor_id: int, target_id: int) -> None:
         """Role hierarchy: you cannot moderate members at or above your top role."""
         guild = self.get_guild(guild_id)
@@ -15,7 +22,7 @@ class PermissionsMixin(BackendBase):
         if target_id == guild.owner_id or guild.top_role_position(target_id) >= guild.top_role_position(
             actor_id
         ):
-            raise errors.missing_permissions()
+            self._hierarchy_denied(actor_id, guild_id, target_id=target_id)
 
     def require_role_assignable(self, guild_id: int, actor_id: int, role_id: int) -> None:
         """A role can only be assigned/edited if it sits below the actor's top role."""
@@ -24,7 +31,7 @@ class PermissionsMixin(BackendBase):
             return
         role = self.get_role(guild_id, role_id)
         if role.position >= guild.top_role_position(actor_id):
-            raise errors.missing_permissions()
+            self._hierarchy_denied(actor_id, guild_id, role_id=role_id)
 
     def require_position_assignable(self, guild_id: int, actor_id: int, position: int) -> None:
         """A role can only be moved to a slot below the actor's own top role."""
@@ -32,7 +39,7 @@ class PermissionsMixin(BackendBase):
         if actor_id == guild.owner_id:
             return
         if position >= guild.top_role_position(actor_id):
-            raise errors.missing_permissions()
+            self._hierarchy_denied(actor_id, guild_id, position=position)
 
     def require_can_grant(self, guild_id: int, actor_id: int, role_permissions: int) -> None:
         """You cannot grant a role permissions you do not hold yourself (unless admin)."""
@@ -43,4 +50,4 @@ class PermissionsMixin(BackendBase):
         if actor_perms & permissions.flag("administrator"):
             return
         if role_permissions & ~actor_perms:
-            raise errors.missing_permissions()
+            self._hierarchy_denied(actor_id, guild_id, role_permissions=role_permissions)

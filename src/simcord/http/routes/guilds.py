@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from ...backend import errors, serializers
+from ...backend.access import channel_viewable
 from ...backend.models import Overwrite
 from ...enums import AuditLogAction, ChannelType, OverwriteType
 from ..router import RequestContext, route
+from .channels import validate_channel_fields
 
 
 @route("POST", "/guilds")
@@ -120,9 +122,12 @@ def create_guild_channel(ctx: RequestContext) -> Any:
         "rtc_region",
         "parent_id",
         "position",
+        "flags",
+        "available_tags",
         ignore=("permission_overwrites",),
         body=normalized_body,
     )
+    validate_channel_fields(body, int(body.get("type", ChannelType.TEXT)))
     overwrites = [
         Overwrite(
             target_id=int(o["id"]),
@@ -136,6 +141,12 @@ def create_guild_channel(ctx: RequestContext) -> Any:
     for key in ("topic", "rate_limit_per_user", "bitrate", "user_limit", "rtc_region"):
         if body.get(key) is not None:
             fields[key] = body[key]
+    if "flags" in body:
+        fields["flags"] = int(body["flags"])
+    if "available_tags" in body:
+        fields["available_tags"] = [
+            {**tag, "id": str(tag.get("id") or backend.snowflake())} for tag in body["available_tags"]
+        ]
     if body.get("parent_id") is not None:
         fields["parent_id"] = int(body["parent_id"])
     if body.get("position") is not None:
@@ -161,7 +172,12 @@ def create_guild_channel(ctx: RequestContext) -> Any:
 def get_guild_channels(ctx: RequestContext) -> Any:
     backend = ctx.backend
     guild = backend.get_guild(ctx.int_arg("guild_id"))
-    return [dict(serializers.channel_payload(backend, backend.channels[cid])) for cid in guild.channel_ids]
+    ctx.require_guild_permissions(guild.id)
+    return [
+        dict(serializers.channel_payload(backend, backend.channels[cid]))
+        for cid in guild.channel_ids
+        if channel_viewable(backend, cid, backend.bot_user.id)
+    ]
 
 
 @route("GET", "/guilds/{guild_id}/members")

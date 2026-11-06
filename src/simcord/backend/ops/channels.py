@@ -146,6 +146,30 @@ class ChannelMixin(BackendBase):
             raise errors.cannot_execute_on_channel_type()
         return channel
 
+    def require_thread_mutable(self, channel_id: int, actor_id: int, *, sending: bool = False) -> None:
+        """Validate thread state without mutating it or affecting ordinary channels."""
+        channel = self.get_channel(channel_id)
+        meta = channel.thread_metadata
+        if not channel.is_thread or meta is None:
+            return
+        if not sending and meta.archived:
+            raise errors.BackendError(400, 50083, "Thread is archived")
+        if sending and meta.locked:
+            self.require_permissions(
+                channel.guild_id, actor_id, channel.id, "manage_threads", denied_code=50001
+            )
+
+    def unarchive_thread_for_send(self, channel_id: int, actor_id: int) -> None:
+        """Unarchive only after the caller has validated the complete message."""
+        self.require_thread_mutable(channel_id, actor_id, sending=True)
+        channel = self.get_channel(channel_id)
+        if channel.is_thread and channel.thread_metadata and channel.thread_metadata.archived:
+            self.edit_channel(
+                channel.id,
+                {},
+                thread_metadata={"archived": False, "archive_timestamp": self.now_iso()},
+            )
+
     def add_thread_member(self, thread_id: int, user_id: int) -> Channel:
         thread = self.get_thread(thread_id)
         if user_id not in thread.thread_members:
@@ -174,12 +198,14 @@ class ChannelMixin(BackendBase):
         ]
 
     def archived_threads(self, channel_id: int, *, private: bool) -> list[Channel]:
-        kind = ChannelType.PRIVATE_THREAD if private else ChannelType.PUBLIC_THREAD
+        kinds = (
+            (ChannelType.PRIVATE_THREAD,) if private else (ChannelType.NEWS_THREAD, ChannelType.PUBLIC_THREAD)
+        )
         return [
             t
             for t in self.channels.values()
             if t.parent_id == channel_id
-            and t.type == kind
+            and t.type in kinds
             and t.thread_metadata is not None
             and t.thread_metadata.archived
         ]
@@ -217,9 +243,12 @@ class ChannelMixin(BackendBase):
         auto_archive_duration: int = 1440,
         message_id: int | None = None,
         applied_tags: Iterable[int] = (),
+        rate_limit_per_user: int = 0,
         broadcast: bool = True,
     ) -> Channel:
         parent = self.get_channel(parent_id)
+        if parent.type == ChannelType.NEWS and type == ChannelType.PUBLIC_THREAD:
+            type = ChannelType.NEWS_THREAD
         guild = self.get_guild(parent.guild_id)  # type: ignore[arg-type]
         now = self.now_iso()
         thread = Channel(
@@ -230,6 +259,7 @@ class ChannelMixin(BackendBase):
             parent_id=parent_id,
             owner_id=owner_id,
             applied_tags=list(applied_tags),
+            rate_limit_per_user=rate_limit_per_user,
             thread_metadata=ThreadMetadata(
                 auto_archive_duration=auto_archive_duration, archive_timestamp=now, create_timestamp=now
             ),
@@ -258,6 +288,7 @@ class ChannelMixin(BackendBase):
         *,
         uploads: Iterable[tuple[str, bytes, str | None]] = (),
         auto_archive_duration: int = 1440,
+        rate_limit_per_user: int = 0,
         applied_tags: Iterable[int] = (),
         broadcast: bool = True,
     ) -> tuple[Channel, Message]:
@@ -272,6 +303,8 @@ class ChannelMixin(BackendBase):
         if auto_archive_duration not in (60, 1440, 4320, 10080):
             raise errors.invalid_form_body("Invalid auto_archive_duration")
         tags = list(applied_tags)
+        if forum.flags & 16 and not tags:
+            raise errors.BackendError(400, 40067, "A tag is required to create a forum post in this channel")
         available = {int(tag["id"]) for tag in forum.available_tags if tag.get("id") is not None}
         if len(tags) > 5 or any(tag not in available for tag in tags):
             raise errors.invalid_form_body("applied_tags: Unknown or excessive tags")
@@ -309,6 +342,7 @@ class ChannelMixin(BackendBase):
             starter.author_id,
             auto_archive_duration=auto_archive_duration,
             applied_tags=tags,
+            rate_limit_per_user=rate_limit_per_user,
             message_id=thread_id,
             broadcast=False,
         )

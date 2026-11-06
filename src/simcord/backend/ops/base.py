@@ -88,10 +88,15 @@ class BackendBase:
         self.cdn = CdnStore()
         self.subscribers: list[EventListener] = []
         self.http_requests: list[HttpLogEntry] = []
+        self._http_dispatch_depth = 0
         #: Interleaved record of everything that crossed either seam, in order:
         #: ("HTTP", "METHOD /path", body) and ("GATEWAY", event, payload).
         self.transcript: list[tuple[str, str, Any]] = []
         self.faults: list[dict[str, Any]] = []
+        # JSON-friendly diagnostic records, independent of authorization decisions.
+        self.permission_checks: list[dict[str, Any]] = []
+        self.degradations: list[dict[str, Any]] = []
+        self.permission_projection: Callable[..., Mapping[str, Any] | None] | None = None
         self.application_id: int = self.snowflake()
         self.bot_user: User = self.make_user("TestBot", bot=True)
 
@@ -140,6 +145,10 @@ class BackendBase:
         self.clock.advance(seconds)
 
     def emit(self, event: str, payload: Mapping[str, Any]) -> None:
+        if self.permission_projection is not None:
+            projected = self.permission_projection(self, event, payload)
+            if projected is not None:
+                payload = projected
         envelope = detach(payload)
         # Without live consumers the first detached graph is already history.
         history = detach(envelope) if self.subscribers else envelope
@@ -335,6 +344,8 @@ class BackendBase:
     # ------------------------------------------------------------ permissions
 
     def compute_permissions(self, guild_id: int, user_id: int, channel_id: int | None = None) -> int:
+        if self.permission_projection is not None:
+            self.permission_projection(self)
         guild = self.get_guild(guild_id)
         channel = None
         if channel_id is not None:
@@ -347,20 +358,77 @@ class BackendBase:
                 channel = self.get_channel(parent_id)
         return permissions.compute(guild, user_id, channel, now=self.clock.now())
 
+    def record_degradation(self, kind: str, **detail: Any) -> None:
+        """Record a fidelity fallback; only Env.assert_no_degradations fails on it."""
+        self.degradations.append({"kind": kind, **detail})
+
+    def record_denial(self, reason: str, *, actor_id: int, **detail: Any) -> dict[str, Any] | None:
+        """Record a bot-only non-permission authorization refusal."""
+        if actor_id != self.bot_user.id:
+            return None
+        record = {"actor_id": actor_id, "reason": reason, **detail}
+        self.transcript.append(("DENIAL", reason, record))
+        return record
+
     def require_permissions(
-        self, guild_id: int | None, user_id: int, channel_id: int | None, *names: str
+        self,
+        guild_id: int | None,
+        user_id: int,
+        channel_id: int | None,
+        *names: str,
+        denied_code: int = 50013,
     ) -> None:
-        if channel_id is not None and self.get_channel(channel_id).guild_id != guild_id:
-            raise errors.missing_access()
-        perms = self.compute_permissions(guild_id, user_id, channel_id) if guild_id is not None else 0
-        if channel_id is not None and not channel_accessible(
-            self, channel_id, user_id, permissions_value=perms
-        ):
-            raise errors.missing_access()
-        if guild_id is None:  # DMs: no guild permissions apply
-            return
-        if user_id not in self.get_guild(guild_id).members:
-            raise errors.missing_access()
-        for name in names:
-            if not perms & permissions.flag(name):
-                raise errors.missing_permissions()
+        """Authorize normally, recording bot checks without changing Discord errors."""
+        if denied_code not in (50013, 50001, 160002):
+            raise ValueError("denied_code must be 50013, 50001 or 160002")
+        bot = user_id == self.bot_user.id
+        record: dict[str, Any] = {
+            "actor_id": user_id,
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "required": list(names),
+            "effective": None,
+            "allowed": False,
+            "reason": None,
+            "missing": [],
+        }
+        try:
+            if channel_id is not None and self.get_channel(channel_id).guild_id != guild_id:
+                record["reason"] = "missing_access"
+                raise errors.missing_access()
+            perms = self.compute_permissions(guild_id, user_id, channel_id) if guild_id is not None else 0
+            record["effective"] = perms
+            if channel_id is not None and not channel_accessible(
+                self, channel_id, user_id, permissions_value=perms
+            ):
+                record["reason"] = "missing_access"
+                raise errors.missing_access()
+            if guild_id is None:  # DMs: no guild permissions apply
+                record["allowed"] = True
+                return
+            if user_id not in self.get_guild(guild_id).members:
+                record["reason"] = "missing_access"
+                raise errors.missing_access()
+            missing = [name for name in names if not perms & permissions.flag(name)]
+            record["missing"] = missing
+            if missing:
+                record["reason"] = "missing_permissions"
+                if denied_code == 160002:
+                    raise errors.BackendError(
+                        403, 160002, "Cannot reply without permission to read message history"
+                    )
+                raise errors.missing_access() if denied_code == 50001 else errors.missing_permissions()
+            record["allowed"] = True
+        except errors.BackendError as error:
+            if bot:
+                record["code"] = error.code
+                record["reason"] = record["reason"] or (
+                    "missing_access" if error.code == 50001 else "resource_unavailable"
+                )
+                if error.code in (50001, 50013, 160002):
+                    error.__dict__["denial"] = record
+                    self.transcript.append(("DENIAL", str(record["reason"]), record))
+            raise
+        finally:
+            if bot:
+                self.permission_checks.append(record)

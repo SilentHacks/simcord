@@ -94,6 +94,7 @@ class FakeHTTPClient(HTTPClient):
             payload, file_list = router.parse_form(list(form), file_list)
             if payload is not None:
                 json = payload
+        self.backend._http_dispatch_depth += 1
         try:
             return router.dispatch(
                 self.backend,
@@ -112,6 +113,8 @@ class FakeHTTPClient(HTTPClient):
             raise
         except BackendError as exc:
             _raise_for(exc)
+        finally:
+            self.backend._http_dispatch_depth -= 1
 
 
 class FakeWebhookAdapter:

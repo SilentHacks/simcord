@@ -26,6 +26,7 @@ from . import _dpy_internals
 from . import intents as _intents
 from ._payload import detach
 from .backend import serializers
+from .backend.access import channel_viewable
 
 if TYPE_CHECKING:
     from .backend import Backend
@@ -41,6 +42,9 @@ class FakeGateway:
         self._backend = backend
         self._state = connection_state
         self._intents_cache: discord.Intents | None = None
+        self._visible_channels: dict[int, set[int]] = {}
+        self._visible_threads: dict[int, set[int]] = {}
+        self._pending: list[tuple[str, Mapping[str, Any]]] = []
 
     @property
     def intents(self) -> discord.Intents:
@@ -52,6 +56,53 @@ class FakeGateway:
         return cached
 
     def feed(self, event: str, payload: Mapping[str, Any]) -> None:
+        # Guild.create_* installs its REST result in the SDK cache. Deliver
+        # creation afterward, as the real gateway does, so it cannot overwrite
+        # the bot projection with the unredacted response. Keep later events FIFO.
+        if self._pending or (event == "CHANNEL_CREATE" and self._backend._http_dispatch_depth):
+            if not self._pending:
+                asyncio.get_running_loop().call_soon(self._flush_pending)
+            self._pending.append((event, detach(dict(payload))))
+            return
+        self._deliver(event, payload)
+
+    def _flush_pending(self) -> None:
+        pending, self._pending = self._pending, []
+        for event, payload in pending:
+            self._deliver(event, payload)
+
+    def _deliver(self, event: str, payload: Mapping[str, Any]) -> None:
+        self._feed(event, payload)
+        guild_id = payload.get("id") if event == "GUILD_UPDATE" else payload.get("guild_id")
+        if event == "GUILD_DELETE":
+            guild_id = int(payload["id"])
+            self._visible_channels.pop(guild_id, None)
+            self._visible_threads.pop(guild_id, None)
+            return
+        if guild_id is None:
+            return
+        bot_id = self._backend.bot_user.id
+        permission_event = event in {
+            "CHANNEL_CREATE",
+            "CHANNEL_UPDATE",
+            "CHANNEL_DELETE",
+            "GUILD_ROLE_CREATE",
+            "GUILD_ROLE_UPDATE",
+            "GUILD_ROLE_DELETE",
+            "THREAD_CREATE",
+            "THREAD_UPDATE",
+            "THREAD_DELETE",
+            "THREAD_MEMBERS_UPDATE",
+            "GUILD_UPDATE",
+        }
+        if event in {"GUILD_MEMBER_UPDATE", "GUILD_MEMBER_ADD", "GUILD_MEMBER_REMOVE"}:
+            permission_event = int(payload["user"]["id"]) == bot_id
+        if event == "VOICE_STATE_UPDATE":
+            permission_event = int(payload["user_id"]) == bot_id
+        if permission_event:
+            self._refresh_visibility(int(guild_id), event, payload)
+
+    def _feed(self, event: str, payload: Mapping[str, Any]) -> None:
         gate = _intents.required_intent(event, payload)
         if gate is not None and not getattr(self.intents, gate):
             # Real Discord never sends events outside the declared intents.
@@ -68,6 +119,9 @@ class FakeGateway:
         # backend state shared with other subscribers — and the intent
         # shaping below must not leak back into the backend either.
         mutable: dict[str, Any] = detach(dict(payload))
+        if not self._project(event, mutable):
+            self._backend.transcript.append(("DROPPED", event, "channel not visible to bot"))
+            return
         bot_id = self._backend.bot_user.id
         if not self.intents.message_content:
             censored = False
@@ -96,6 +150,125 @@ class FakeGateway:
         if event == "GUILD_CREATE":
             _intents.prune_guild_create(mutable, self.intents, bot_id)
         parser(mutable)
+
+    def _visible(self, channel_id: int) -> bool:
+        return channel_viewable(self._backend, channel_id, self._backend.bot_user.id)
+
+    def _obfuscate(self, payload: dict[str, Any], guild_id: int) -> None:
+        # Live captures retain structural, slowmode and voice-limit metadata.
+        # Other sensitive fields are neutralized; unspecified reductions remain
+        # simulator policy rather than a claim of complete wire parity.
+        kept = {
+            "id",
+            "type",
+            "position",
+            "parent_id",
+            "guild_id",
+            "rate_limit_per_user",
+            "bitrate",
+            "user_limit",
+        }
+        for key, value in payload.items():
+            if key not in kept:
+                payload[key] = (
+                    []
+                    if isinstance(value, list)
+                    else False
+                    if isinstance(value, bool)
+                    else 0
+                    if isinstance(value, int)
+                    else None
+                )
+        payload["name"] = "___hidden___"
+        payload["flags"] = 1 << 17
+        payload["permission_overwrites"] = [
+            {"id": str(guild_id), "type": 0, "allow": "0", "deny": str(discord.Permissions.view_channel.flag)}
+        ]
+
+    def _project(self, event: str, payload: dict[str, Any]) -> bool:
+        # Interactions use a separate, unobfuscated Discord path.
+        if event == "INTERACTION_CREATE":
+            return True
+        if event in {"GUILD_CREATE", "GUILD_UPDATE"}:
+            guild_id = int(payload["id"])
+            channels = payload.get("channels", [])
+            visible = {int(c["id"]) for c in channels if self._visible(int(c["id"]))}
+            if event == "GUILD_CREATE":
+                self._visible_channels[guild_id] = visible
+            for channel in channels:
+                if int(channel["id"]) not in visible:
+                    self._obfuscate(channel, guild_id)
+            payload["threads"] = [
+                t
+                for t in payload.get("threads", [])
+                if self._visible(int(t["id"])) and not t.get("thread_metadata", {}).get("archived", False)
+            ]
+            if event == "GUILD_CREATE":
+                self._visible_threads[guild_id] = {int(t["id"]) for t in payload["threads"]}
+            payload["voice_states"] = [
+                v
+                for v in payload.get("voice_states", [])
+                if v.get("channel_id") is None or self._visible(int(v["channel_id"]))
+            ]
+            return True
+        guild_id = payload.get("guild_id")
+        if guild_id is None:
+            return True
+        if event in {"CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"}:
+            channel_id = int(payload["id"])
+            visible = (
+                channel_id in self._visible_channels.get(int(guild_id), set())
+                if event == "CHANNEL_DELETE"
+                else self._visible(channel_id)
+            )
+            if not visible:
+                self._obfuscate(payload, int(guild_id))
+            return True
+        if event == "THREAD_LIST_SYNC":
+            payload["threads"] = [t for t in payload.get("threads", []) if self._visible(int(t["id"]))]
+            ids = {t["id"] for t in payload["threads"]}
+            payload["members"] = [m for m in payload.get("members", []) if m["id"] in ids]
+            return True
+        if event.startswith("THREAD_"):
+            channel_id = int(payload["id"])
+            if event == "THREAD_DELETE":
+                return channel_id in self._visible_threads.get(int(guild_id), set())
+            return self._visible(channel_id)
+        channel_id = payload.get("channel_id")
+        return channel_id is None or self._visible(int(channel_id))
+
+    def _refresh_visibility(self, guild_id: int, event: str, payload: Mapping[str, Any]) -> None:
+        guild = self._backend.guilds.get(guild_id)
+        if guild is None:
+            return
+        previous = self._visible_channels.get(guild_id, set())
+        visible = {cid for cid in guild.channel_ids if self._visible(cid)}
+        self._visible_channels[guild_id] = visible
+        original = int(payload["id"]) if event.startswith("CHANNEL_") else None
+        for channel_id in sorted(previous ^ visible):
+            if channel_id != original and channel_id in self._backend.channels:
+                self._feed(
+                    "CHANNEL_UPDATE",
+                    serializers.channel_payload(self._backend, self._backend.channels[channel_id]),
+                )
+        threads = [
+            thread
+            for tid in guild.thread_ids
+            if (thread := self._backend.channels.get(tid)) is not None
+            and self._visible(tid)
+            and (metadata := thread.thread_metadata) is not None
+            and not metadata.archived
+        ]
+        thread_ids = {t.id for t in threads}
+        previous_threads = self._visible_threads.get(guild_id, set())
+        self._visible_threads[guild_id] = thread_ids
+        # A sync also evicts cached threads after revocation. The documented
+        # reveal sync is certain; using the same envelope for revocation is a
+        # cache-safety inference pending a live reference capture.
+        if previous_threads != thread_ids:
+            data = serializers.thread_list_payload(self._backend, threads)
+            data["guild_id"] = str(guild_id)
+            self._feed("THREAD_LIST_SYNC", data)
 
     def deliver(self, event: str, payload: Mapping[str, Any]) -> None:
         """Deliver a connection-targeted event (e.g. a chunk response) ungated.

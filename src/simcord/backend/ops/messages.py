@@ -578,7 +578,7 @@ class MessageMixin(BackendBase):
         return message
 
     #: discord.MessageFlags.crossposted — set when an announcement is published.
-    CROSSPOSTED_FLAG = 1 << 1
+    CROSSPOSTED_FLAG = 1 << 0
 
     def crosspost_message(self, channel_id: int, message_id: int) -> Message:
         """Publish an announcement message: set the crossposted flag, announce it."""

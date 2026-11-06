@@ -94,6 +94,7 @@ class ChannelType(IntEnum):
     VOICE = 2
     CATEGORY = 4
     NEWS = 5
+    NEWS_THREAD = 10
     PUBLIC_THREAD = 11
     PRIVATE_THREAD = 12
     STAGE_VOICE = 13

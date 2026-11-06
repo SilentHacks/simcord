@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import discord
@@ -215,6 +216,44 @@ class GuildMixin(BackendBase):
         member = self.get_member(guild_id, user_id)
         if changes.keys() - {"nick", "role_ids", "timed_out_until", "mute", "deaf"}:
             raise errors.invalid_form_body("Unknown member field")
+        nick = changes.get("nick")
+        if nick is not None and len(nick) > 32:
+            raise errors.invalid_form_body(
+                errors={
+                    "nick": {
+                        "_errors": [
+                            {"code": "BASE_TYPE_MAX_LENGTH", "message": "Must be 32 or fewer in length."}
+                        ]
+                    }
+                }
+            )
+        until = changes.get("timed_out_until")
+        if until is not None:
+            try:
+                deadline = datetime.fromisoformat(until)
+            except (TypeError, ValueError):
+                raise errors.invalid_form_body() from None
+            if deadline.tzinfo is None:
+                raise errors.invalid_form_body()
+            if deadline > self.clock.now() + timedelta(days=28):
+                raise errors.invalid_form_body(
+                    errors={
+                        "communication_disabled_until": {
+                            "_errors": [
+                                {
+                                    "code": "INVALID_COMMUNICATION_DISABLED_TIMESTAMP",
+                                    "message": "Invalid communication disabled timestamp",
+                                }
+                            ]
+                        }
+                    }
+                )
+            if user_id == guild.owner_id or any(
+                discord.Permissions(guild.roles[role_id].permissions).administrator
+                for role_id in [guild.id, *member.role_ids]
+                if role_id in guild.roles
+            ):
+                raise errors.missing_permissions()
         prepared = replace(member, **changes)
         state = guild.voice_states.get(user_id)
         voice_changed = move_voice or "mute" in changes or "deaf" in changes
