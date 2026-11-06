@@ -58,6 +58,8 @@ def _result(allowed: bool, reason: str | None = None) -> Access:
 
 
 def command_access(backend: Any, command: dict[str, Any], *, user_id: int, channel_id: int) -> Access:
+    if command.get("nsfw"):
+        raise NotImplementedError("NSFW command visibility and age-gated invocation are not modeled.")
     channel = backend.get_channel(channel_id)
     guild_id = channel.guild_id
     command_guild_id = command.get("guild_id")

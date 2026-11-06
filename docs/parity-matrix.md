@@ -34,7 +34,7 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Prefix commands (`ext.commands`) | ✅ | Converters, checks, cooldowns, error handlers |
 | Permissions engine | ✅ | Overwrites, hierarchy, timeouts, owner/admin |
 | Bot channel visibility | ✅ | Hidden gateway channels are obfuscated, REST guild-channel listings are filtered, and role/overwrite changes refresh visibility. Authoritative setup state and interaction wire payloads stay unredacted; unspecified neutral fields remain docs-based simulator policy. |
-| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes. NSFW-marked registrations remain unsupported. |
+| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes. NSFW registration metadata is preserved; visibility and invocation of NSFW-marked commands raise `NotImplementedError` because age gating is not modeled. |
 | App command permissions | ✅ | `AppCommand.fetch_permissions`; seed via `guild.set_command_permissions` |
 | Context menus (user & message) | ✅ | |
 | Autocomplete | ✅ | Focused options must be declared and have autocomplete enabled |

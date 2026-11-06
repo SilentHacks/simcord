@@ -9,16 +9,16 @@ from ...backend import errors
 from ...backend.ops.commands import COMMAND_FIELDS
 from ..router import RequestContext, route
 
-_HTTP_COMMAND_FIELDS = tuple(name for name in COMMAND_FIELDS if name != "nsfw")
-
 
 def _command_fields(ctx: RequestContext, payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise errors.invalid_form_body("Command payloads must be objects")
     unsupported = (
-        {"nsfw": "NSFW command visibility is not modeled."} if payload.get("nsfw", False) is not False else {}
+        {"nsfw": "Non-boolean NSFW metadata is not modeled."}
+        if not isinstance(payload.get("nsfw", False), bool)
+        else {}
     )
-    return ctx.fields(*_HTTP_COMMAND_FIELDS, ignore=("nsfw",), reject=unsupported, body=dict(payload))
+    return ctx.fields(*COMMAND_FIELDS, reject=unsupported, body=dict(payload))
 
 
 def _bulk_upsert_commands(ctx: RequestContext, guild_id: int | None) -> list[dict[str, Any]]:

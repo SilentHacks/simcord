@@ -23,6 +23,9 @@ This is one behavior-fidelity update, without legacy-behavior opt-outs.
   `Guild.fetch_channels()` omits channels the bot cannot view. Overwrite and role
   changes reveal or hide channels and their threads without restarting the bot.
   There is no obfuscation opt-out.
+  Their synthetic bot-visible overwrites are not canonical evidence of other
+  members' access. Use `env.explain_permissions(actor, channel)` in fixtures;
+  production bots must not infer audience permissions from hidden metadata.
 - Announcement threads now have type `news_thread` and inherit their parent's
   permissions like other threads. Messaging and public archived-thread listings
   support them.
@@ -33,6 +36,8 @@ This is one behavior-fidelity update, without legacy-behavior opt-outs.
 - Archived/locked thread actions and thread-edit authority follow the
   [recorded rules](guides/permissions.md#bot-rest-behavior). Thread creators
   still need `manage_threads` to delete their own thread.
+  A creator may archive/lock without `manage_threads`; archived threads can leave
+  the active SDK cache, so use `fetch_channel()` when checking closed threads.
 - Nicknames, thread names, channel topics, slowmode, polls and timeouts enforce
   captured boundary errors. Administrator timeouts, invalid message targets,
   empty messages and unknown stickers now fail with their observed Discord codes.
@@ -40,10 +45,14 @@ This is one behavior-fidelity update, without legacy-behavior opt-outs.
 - Stored application commands use Discord's normalized response shape, and
   bulk registration validates the complete batch before changing state. The
   26-option and required-after-optional cases are rejected server-side.
-- `AllowedMentions` and message flags now affect returned content and metadata.
-  Inspect `env.degradations` or explicitly call `env.assert_no_degradations()`
-  when a successful request losing an effect should fail your test. No default
-  degradation assertion is enabled.
+  NSFW metadata is stored, but NSFW visibility and invocation remain explicitly
+  unsupported (`NotImplementedError`); recording metadata does not model age gates.
+- `AllowedMentions` now controls parsed mention metadata and notification effects;
+  a literal `<@id>` in content need not appear in `Message.mentions`. Explicitly
+  opt intended recipients into your bot's notification policy in ping tests.
+  Message flags also affect returned metadata. Inspect `env.degradations` or call
+  `env.assert_no_degradations()` when a successful request losing an effect should
+  fail your test. No default degradation assertion is enabled.
 - `--simcord-sweep` and `--simcord-observed-permissions` are normal, supported
   pytest options. Sweeps require fresh function-scoped user fixtures; unsupported
   reruns are reported separately, never counted as proof of graceful handling.
