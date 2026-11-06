@@ -251,6 +251,8 @@ as unsupported; pytest still tears down its fixtures. Explicit later permission
 edits relinquish ownership of the old suppressed bit; unrelated role/overwrite
 edits are retained. No roles are cloned and no whole-world rollback is used.
 Harness/setup failures are unsupported rather than invented bot failures.
+Skipped revocation setup or test calls are unsupported, not exercised coverage;
+any already-captured unhandled bot errors remain findings.
 An unsupported case is not evidence that your bot handles revocation.
 Missing xdist worker reports explicitly mark coverage incomplete.
 

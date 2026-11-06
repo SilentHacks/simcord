@@ -454,3 +454,68 @@ def test_outcome_boundaries_use_status_not_detail():
     assert "(no flags received)" in lines
     assert "Incomplete coverage: worker diagnostic results unavailable." in lines
     assert lines[-1] == "2 exercised revocation case(s); 2 unhandled bot error(s); 2 unsupported case(s)"
+
+
+@pytest.mark.parametrize("skip_phase", ["setup", "call", "after_error"])
+def test_skipped_revocation_lifecycle_is_not_exercised(pytester, skip_phase):
+    pytester.makeconftest(
+        BOT.replace(
+            "HANDLER",
+            'raise RuntimeError("bot failed before skip")' if skip_phase == "after_error" else "pass",
+        )
+        + f"""
+from pathlib import Path
+
+@pytest.fixture
+def lifecycle():
+    yield
+    with Path("teardowns").open("a") as log:
+        log.write("teardown\\n")
+
+@pytest.fixture
+def probe(simcord_env, lifecycle):
+    env = simcord_env
+    guild = env.create_guild()
+    allowed = env.backend.has_permission_flags(
+        guild.id, env.backend.bot_user.id, None, "manage_guild"
+    )
+    if not allowed and {skip_phase!r} == "setup":
+        pytest.skip("revoked during setup")
+    return allowed
+"""
+    )
+    pytester.makepyfile(
+        f"""
+        import pytest
+
+        pytestmark = pytest.mark.simcord(check_errors=False)
+
+        async def test_probe(probe, simcord_env):
+            if not probe:
+                if {skip_phase!r} == "after_error":
+                    env = simcord_env
+                    channel = env.guild.create_text_channel("general")
+                    actor = env.guild.add_member(env.create_user("actor"))
+                    await actor.send(channel, "trigger")
+                pytest.skip("revoked during call")
+    """
+    )
+    result = pytester.runpytest_subprocess("-o", "asyncio_mode=auto", "--simcord-sweep")
+    result.assert_outcomes(passed=1)
+    if skip_phase == "after_error":
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        result.stdout.fnmatch_lines(
+            [
+                "*[[]manage_guild]: unhandled RuntimeError: bot failed before skip*",
+                "*1 unhandled bot error(s)*",
+            ]
+        )
+    else:
+        assert result.ret == pytest.ExitCode.OK
+        result.stdout.fnmatch_lines(
+            [
+                "*[[]manage_guild]: unsupported:*skipped*",
+                "*0 exercised revocation case(s)*1 unsupported case(s)*",
+            ]
+        )
+    assert (pytester.path / "teardowns").read_text().splitlines() == ["teardown", "teardown"]

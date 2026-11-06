@@ -248,6 +248,10 @@ def pytest_runtest_protocol(item, nextitem):
         elif failures:
             for error, source in failures:
                 state["sweeps"].append(_outcome(item.nodeid, flag, "finding", _failure_detail(error, source)))
+        elif any(report.skipped for report in rerun_reports):
+            state["sweeps"].append(
+                _outcome(item.nodeid, flag, "unsupported", "unsupported: revocation lifecycle skipped")
+            )
         else:
             state["sweeps"].append(_outcome(item.nodeid, flag, "clean", "no unhandled bot errors"))
     return True
