@@ -1,0 +1,460 @@
+{
+  "gaps": {
+    "file.text": {
+      "actual": {
+        "code": 0,
+        "effect": {
+          "history_probe": {
+            "after_status": 200,
+            "before_status": 200,
+            "new_message": true
+          },
+          "message": {
+            "body": {
+              "attachments": [
+                {
+                  "content_type": "text/plain",
+                  "description": null,
+                  "filename": "lab.txt",
+                  "size": 9
+                }
+              ],
+              "content": "lab-file",
+              "embeds": [],
+              "flags": 0,
+              "mention_everyone": false,
+              "mention_roles": [],
+              "mentions": [],
+              "pinned": false,
+              "reactions": [],
+              "sticker_items": [],
+              "tts": false,
+              "type": 0
+            },
+            "status": 200
+          }
+        },
+        "errors": null,
+        "response": {
+          "attachments": [
+            {
+              "content_type": "text/plain",
+              "description": null,
+              "filename": "lab.txt",
+              "size": 9
+            }
+          ],
+          "content": "lab-file",
+          "embeds": [],
+          "flags": 0,
+          "mention_everyone": false,
+          "mention_roles": [],
+          "mentions": [],
+          "pinned": false,
+          "reactions": [],
+          "sticker_items": [],
+          "tts": false,
+          "type": 0
+        },
+        "status": 200
+      },
+      "expected": {
+        "code": 0,
+        "effect": {
+          "history_probe": {
+            "after_status": 200,
+            "before_status": 200,
+            "new_message": true
+          },
+          "message": {
+            "body": {
+              "attachments": [
+                {
+                  "content_type": "text/plain; charset=utf-8",
+                  "description": null,
+                  "filename": "lab.txt",
+                  "size": 9
+                }
+              ],
+              "content": "lab-file",
+              "embeds": [],
+              "flags": 0,
+              "mention_everyone": false,
+              "mention_roles": [],
+              "mentions": [],
+              "pinned": false,
+              "reactions": [],
+              "sticker_items": [],
+              "tts": false,
+              "type": 0
+            },
+            "status": 200
+          }
+        },
+        "errors": null,
+        "response": {
+          "attachments": [
+            {
+              "content_type": "text/plain; charset=utf-8",
+              "description": null,
+              "filename": "lab.txt",
+              "size": 9
+            }
+          ],
+          "content": "lab-file",
+          "embeds": [],
+          "flags": 0,
+          "mention_everyone": false,
+          "mention_roles": [],
+          "mentions": [],
+          "pinned": false,
+          "reactions": [],
+          "sticker_items": [],
+          "tts": false,
+          "type": 0
+        },
+        "status": 200
+      },
+      "reason": "Deliberate metadata gap: the offline CDN infers MIME types from filenames, while live Discord also sniffs the UTF-8 charset. File bytes, filename, size, permission requirements and delivery agree; content sniffing is not modeled."
+    },
+    "hidden.guild-list": {
+      "actual": {
+        "code": 0,
+        "effect": {},
+        "errors": null,
+        "response": [
+          {
+            "flags": 0,
+            "id": "$category",
+            "name": "lab-behavior-category",
+            "parent_id": null,
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 4
+          },
+          {
+            "flags": 0,
+            "id": "$forum",
+            "name": "lab-behavior-forum",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "type": 15
+          },
+          {
+            "flags": 0,
+            "id": "$news",
+            "name": "lab-behavior-news",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 5
+          },
+          {
+            "flags": 0,
+            "id": "$stage",
+            "name": "lab-behavior-stage",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 13
+          },
+          {
+            "flags": 0,
+            "id": "$voice",
+            "name": "lab-behavior-voice",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 2
+          }
+        ],
+        "status": 200
+      },
+      "expected": {
+        "code": 0,
+        "effect": {},
+        "errors": null,
+        "response": [
+          {
+            "flags": 0,
+            "id": "$category",
+            "name": "lab-behavior-category",
+            "parent_id": null,
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 4
+          },
+          {
+            "flags": 0,
+            "id": "$forum",
+            "name": "lab-behavior-forum",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "type": 15
+          },
+          {
+            "flags": 0,
+            "id": "$news",
+            "name": "lab-behavior-news",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 5
+          },
+          {
+            "flags": 0,
+            "id": "$stage",
+            "name": "lab-behavior-stage",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 13
+          },
+          {
+            "flags": 0,
+            "id": "$text",
+            "name": "lab-behavior-text",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795005504",
+                "deny": "1024",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 21600,
+            "topic": null,
+            "type": 0
+          },
+          {
+            "flags": 0,
+            "id": "$voice",
+            "name": "lab-behavior-voice",
+            "parent_id": "$category",
+            "permission_overwrites": [
+              {
+                "allow": "0",
+                "deny": "1024",
+                "id": "$guild",
+                "type": 0
+              },
+              {
+                "allow": "2815144974875728",
+                "deny": "0",
+                "id": "$author",
+                "type": 1
+              },
+              {
+                "allow": "2815127795006528",
+                "deny": "0",
+                "id": "$subject",
+                "type": 1
+              }
+            ],
+            "rate_limit_per_user": 0,
+            "topic": null,
+            "type": 2
+          }
+        ],
+        "status": 200
+      },
+      "reason": "Deliberate pre-enforcement rollout difference: the live capture on 2026-11-06 still returned hidden channels from this REST list. SimCord implements the documented mandatory filtering with no opt-out; the opt-in gateway capture already confirmed hidden-channel obfuscation."
+    }
+  },
+  "schema": 1
+}

@@ -1,0 +1,580 @@
+"""Hand-written probes, independently derived from the linked official API docs.
+
+These are hypotheses, not observations. Only ``record`` produces live evidence.
+Each refusal candidate names a single-cause positive control.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+DOCS = {
+    "permissions": "https://docs.discord.com/developers/topics/permissions",
+    "message": "https://docs.discord.com/developers/resources/message",
+    "channel": "https://docs.discord.com/developers/resources/channel",
+    "threads": "https://docs.discord.com/developers/topics/threads",
+    "poll": "https://docs.discord.com/developers/resources/poll",
+    "guild": "https://docs.discord.com/developers/resources/guild#modify-guild-member",
+    "commands": "https://docs.discord.com/developers/interactions/application-commands",
+    "gateway": "https://docs.discord.com/developers/events/gateway-events",
+}
+
+POLL = {
+    "question": {"text": "lab-question"},
+    "answers": [{"poll_media": {"text": "one"}}, {"poll_media": {"text": "two"}}],
+    "duration": 1,
+    "allow_multiselect": False,
+    "layout_type": 1,
+}
+
+
+@dataclass(frozen=True)
+class Case:
+    id: str
+    operation: str
+    target: str = "text"
+    body: dict[str, Any] = field(default_factory=dict)
+    deny: tuple[str, ...] = ()
+    state: str = "active"
+    control: str | None = None
+    source: str = "permissions"
+    actor: str = "subject"
+    note: str = ""
+
+
+def c(
+    id,
+    operation="send",
+    target="text",
+    body=None,
+    *,
+    deny=(),
+    state="active",
+    control=None,
+    source="permissions",
+    actor="subject",
+    note="",
+):
+    return Case(
+        id,
+        operation,
+        target,
+        {"content": "lab-message"} if body is None and operation == "send" else body or {},
+        deny,
+        state,
+        control,
+        source,
+        actor,
+        note,
+    )
+
+
+# Deliberately enumerated: no pairwise/cartesian expansion concealing missing cases.
+CASES = (
+    c("send.text"),
+    c("send.no-view", deny=("view_channel",), control="send.text"),
+    c("send.no-send", deny=("send_messages",), control="send.text"),
+    c("send.no-history", deny=("read_message_history",)),
+    c("send.no-connect", deny=("connect",)),
+    c("embed.text", body={"embeds": [{"description": "lab-embed"}]}),
+    c(
+        "embed.no-embed",
+        body={"embeds": [{"description": "lab-embed"}]},
+        deny=("embed_links",),
+        control="embed.text",
+    ),
+    c(
+        "embed.no-send",
+        body={"embeds": [{"description": "lab-embed"}]},
+        deny=("send_messages",),
+        control="embed.text",
+    ),
+    c(
+        "embed.no-view",
+        body={"embeds": [{"description": "lab-embed"}]},
+        deny=("view_channel",),
+        control="embed.text",
+    ),
+    c("file.text", "file", body={"content": "lab-file"}),
+    c("file.no-attach", "file", body={"content": "lab-file"}, deny=("attach_files",), control="file.text"),
+    c("file.no-send", "file", body={"content": "lab-file"}, deny=("send_messages",), control="file.text"),
+    c("file.no-view", "file", body={"content": "lab-file"}, deny=("view_channel",), control="file.text"),
+    c("poll.text", body={"poll": POLL}, source="poll"),
+    c("poll.no-polls", body={"poll": POLL}, deny=("send_polls",), control="poll.text", source="poll"),
+    c("poll.no-send", body={"poll": POLL}, deny=("send_messages",), control="poll.text"),
+    c("reply.text", "reply"),
+    c("reply.no-history", "reply", deny=("read_message_history",), control="reply.text"),
+    c("reply.no-send", "reply", deny=("send_messages",), control="reply.text"),
+    c("reply.no-view", "reply", deny=("view_channel",), control="reply.text"),
+    c("history.text", "history"),
+    c("history.no-history", "history", deny=("read_message_history",), control="history.text"),
+    c("history.no-view", "history", deny=("view_channel",), control="history.text"),
+    c("fetch.text", "fetch"),
+    c("fetch.no-history", "fetch", deny=("read_message_history",), control="fetch.text"),
+    c("fetch.no-view", "fetch", deny=("view_channel",), control="fetch.text"),
+    c("pins.text", "pins"),
+    c("pins.no-history", "pins", deny=("read_message_history",), control="pins.text"),
+    c("pins.no-view", "pins", deny=("view_channel",), control="pins.text"),
+    c("pin.text", "pin"),
+    c("pin.no-pin", "pin", deny=("pin_messages",), control="pin.text"),
+    c("pin.no-manage", "pin", deny=("manage_messages",)),
+    c("pin.no-history", "pin", deny=("read_message_history",), control="pin.text"),
+    c("pin.no-view", "pin", deny=("view_channel",), control="pin.text"),
+    c("unpin.text", "unpin"),
+    c("unpin.no-pin", "unpin", deny=("pin_messages",), control="unpin.text"),
+    c("crosspost.own", "crosspost", "news"),
+    c("crosspost.other", "crosspost-other", "news"),
+    c("crosspost.own-no-manage", "crosspost", "news", deny=("manage_messages",)),
+    c(
+        "crosspost.other-no-manage",
+        "crosspost-other",
+        "news",
+        deny=("manage_messages",),
+        control="crosspost.other",
+    ),
+    c("crosspost.no-send", "crosspost", "news", deny=("send_messages",), control="crosspost.own"),
+    c("crosspost.no-view", "crosspost", "news", deny=("view_channel",), control="crosspost.own"),
+    c("reaction.new", "react"),
+    c("reaction.no-add", "react", deny=("add_reactions",), control="reaction.new"),
+    c("reaction.existing-no-add", "react-existing", deny=("add_reactions",)),
+    c("reaction.no-history", "react", deny=("read_message_history",), control="reaction.new"),
+    c("reaction.no-send", "react", deny=("send_messages",)),
+    c("reaction.no-view", "react", deny=("view_channel",), control="reaction.new"),
+    c("reaction.remove-own", "unreact"),
+    c("reaction.remove-own-no-add", "unreact", deny=("add_reactions",)),
+    c("thread.send", target="thread"),
+    c("thread.no-parent-send", target="thread", deny=("send_messages",)),
+    c("thread.no-thread-send", target="thread", deny=("send_messages_in_threads",), control="thread.send"),
+    c("thread.no-view", target="thread", deny=("view_channel",), control="thread.send"),
+    c("thread.archived-send", target="thread", state="archived"),
+    c("thread.locked-send", target="thread", state="locked", control="thread.archived-send"),
+    c("thread.locked-manager-send", target="thread", state="locked-manager"),
+    c("thread.archived-react", "react", "thread", state="archived", control="thread.active-react"),
+    c("thread.active-react", "react", "thread"),
+    c("thread.locked-react", "react", "thread", state="locked", control="thread.active-locked-react"),
+    c(
+        "thread.archived-edit",
+        "edit-message",
+        "thread",
+        {"content": "lab-edited"},
+        state="archived",
+        control="thread.active-edit",
+    ),
+    c("thread.active-edit", "edit-message", "thread", {"content": "lab-edited"}),
+    c("thread.archived-delete", "delete-message", "thread", state="archived"),
+    c("thread.locked-delete", "delete-message", "thread", state="locked"),
+    c("thread.unarchive", "edit-channel", "thread", {"archived": False}, state="archived"),
+    c(
+        "thread.locked-unarchive",
+        "edit-channel",
+        "thread",
+        {"archived": False},
+        state="locked",
+        control="thread.unarchive",
+    ),
+    c("thread.manager-unarchive", "edit-channel", "thread", {"archived": False}, state="locked-manager"),
+    c("thread.owner-rename", "edit-channel", "own-thread", {"name": "lab-renamed"}),
+    c(
+        "thread.other-rename",
+        "edit-channel",
+        "thread",
+        {"name": "lab-renamed"},
+        control="thread.manager-rename",
+    ),
+    c("thread.manager-rename", "edit-channel", "thread", {"name": "lab-renamed"}, state="manager"),
+    c("thread.owner-lock", "edit-channel", "own-thread", {"locked": True}, control="thread.manager-lock"),
+    c("thread.manager-lock", "edit-channel", "own-thread", {"locked": True}, state="manager"),
+    c("thread.leave", "leave", "thread"),
+    c("thread.leave-no-view", "leave", "thread", deny=("view_channel",)),
+    c("thread.join", "join", "thread"),
+    c("thread.join-no-view", "join", "thread", deny=("view_channel",), control="thread.join"),
+    c("news-thread.send", target="news-thread"),
+    c("news-thread.no-parent-send", target="news-thread", deny=("send_messages",)),
+    c(
+        "news-thread.no-thread-send",
+        target="news-thread",
+        deny=("send_messages_in_threads",),
+        control="news-thread.send",
+    ),
+    c("news-thread.archived-send", target="news-thread", state="archived"),
+    c("news-thread.locked-send", target="news-thread", state="locked", control="news-thread.archived-send"),
+    c("news-thread.leave-no-view", "leave", "news-thread", deny=("view_channel",)),
+    c("voice.send", target="voice"),
+    c("voice.no-connect-send", target="voice", deny=("connect",), control="voice.send"),
+    c("voice.no-view-send", target="voice", deny=("view_channel",), control="voice.send"),
+    c("voice.no-send", target="voice", deny=("send_messages",), control="voice.send"),
+    c("voice.pin", "pin", "voice"),
+    c("voice.no-connect-pin", "pin", "voice", deny=("connect",), control="voice.pin"),
+    c("voice.no-pin", "pin", "voice", deny=("pin_messages",), control="voice.pin"),
+    c("voice.history", "history", "voice"),
+    c("voice.no-connect-history", "history", "voice", deny=("connect",), control="voice.history"),
+    c("stage.send", target="stage"),
+    c("stage.no-connect-send", target="stage", deny=("connect",), control="stage.send"),
+    c("stage.no-view-send", target="stage", deny=("view_channel",), control="stage.send"),
+    c("stage.pin", "pin", "stage"),
+    c("stage.no-connect-pin", "pin", "stage", deny=("connect",), control="stage.pin"),
+    c("stage.no-pin", "pin", "stage", deny=("pin_messages",), control="stage.pin"),
+    c("nickname.valid", "nickname", body={"nick": "lab-nick"}, source="guild"),
+    c("nickname.max", "nickname", body={"nick": "n" * 32}, source="guild"),
+    c("nickname.over", "nickname", body={"nick": "n" * 33}, control="nickname.max", source="guild"),
+    c("nickname.clear", "nickname", body={"nick": None}, source="guild"),
+    c("thread.name-max", "edit-channel", "own-thread", {"name": "n" * 100}, source="channel"),
+    c(
+        "thread.name-over",
+        "edit-channel",
+        "own-thread",
+        {"name": "n" * 101},
+        control="thread.name-max",
+        source="channel",
+    ),
+    c(
+        "thread.name-empty",
+        "edit-channel",
+        "own-thread",
+        {"name": ""},
+        control="thread.name-max",
+        source="channel",
+    ),
+    c("topic.max", "edit-channel", body={"topic": "t" * 1024}, state="manager", source="channel"),
+    c(
+        "topic.over",
+        "edit-channel",
+        body={"topic": "t" * 1025},
+        state="manager",
+        control="topic.max",
+        source="channel",
+    ),
+    c("topic.clear", "edit-channel", body={"topic": None}, state="manager", source="channel"),
+    c("forum.topic-max", "edit-channel", "forum", {"topic": "t" * 4096}, state="manager", source="channel"),
+    c(
+        "forum.topic-over",
+        "edit-channel",
+        "forum",
+        {"topic": "t" * 4097},
+        state="manager",
+        control="forum.topic-max",
+        source="channel",
+    ),
+    c("slowmode.zero", "edit-channel", body={"rate_limit_per_user": 0}, state="manager", source="channel"),
+    c("slowmode.max", "edit-channel", body={"rate_limit_per_user": 21600}, state="manager", source="channel"),
+    c(
+        "slowmode.over",
+        "edit-channel",
+        body={"rate_limit_per_user": 21601},
+        state="manager",
+        control="slowmode.max",
+        source="channel",
+    ),
+    c(
+        "slowmode.negative",
+        "edit-channel",
+        body={"rate_limit_per_user": -1},
+        state="manager",
+        control="slowmode.zero",
+        source="channel",
+    ),
+    c("poll.duration-max", body={"poll": {**POLL, "duration": 768}}, source="poll"),
+    c(
+        "poll.duration-over",
+        body={"poll": {**POLL, "duration": 769}},
+        control="poll.duration-max",
+        source="poll",
+    ),
+    c("poll.duration-zero", body={"poll": {**POLL, "duration": 0}}, control="poll.text", source="poll"),
+    c(
+        "poll.one-answer",
+        body={"poll": {**POLL, "answers": POLL["answers"][:1]}},
+        control="poll.text",
+        source="poll",
+    ),
+    c(
+        "timeout.short",
+        "timeout",
+        body={"communication_disabled_until": "$future-minute"},
+        actor="admin",
+        source="guild",
+    ),
+    c(
+        "timeout.over",
+        "timeout",
+        body={"communication_disabled_until": "$future-29days"},
+        actor="admin",
+        control="timeout.short",
+        source="guild",
+    ),
+    c(
+        "timeout.past",
+        "timeout",
+        body={"communication_disabled_until": "$past-minute"},
+        actor="admin",
+        source="guild",
+    ),
+    c(
+        "timeout.admin",
+        "timeout",
+        body={"communication_disabled_until": "$future-minute"},
+        state="administrator",
+        actor="admin",
+        control="timeout.short",
+        source="guild",
+    ),
+    c("target.category", target="category", control="send.text", source="channel"),
+    c("target.forum", target="forum", control="send.text", source="channel"),
+    c("message.empty", body={}, control="send.text", source="message"),
+    c("message.empty-content", body={"content": ""}, control="send.text", source="message"),
+    c("message.sticker-unknown", body={"sticker_ids": ["$missing"]}, control="send.text", source="message"),
+    c("message.content-max", body={"content": "c" * 2000}, source="message"),
+    c("message.content-over", body={"content": "c" * 2001}, control="message.content-max", source="message"),
+    c("mentions.none", body={"content": "<@$author>", "allowed_mentions": {"parse": []}}, source="message"),
+    c(
+        "mentions.user",
+        body={"content": "<@$author>", "allowed_mentions": {"users": ["$author"]}},
+        source="message",
+    ),
+    c(
+        "mentions.role-blocked",
+        body={"content": "<@&$mention-role>", "allowed_mentions": {"parse": ["roles"]}},
+        deny=("mention_everyone",),
+        source="message",
+    ),
+    c(
+        "mentions.role-allowed",
+        body={"content": "<@&$mention-role>", "allowed_mentions": {"parse": ["roles"]}},
+        source="message",
+    ),
+    c(
+        "mentions.invalid-overlap",
+        body={"content": "<@$author>", "allowed_mentions": {"parse": ["users"], "users": ["$author"]}},
+        control="mentions.user",
+        source="message",
+    ),
+    c("tts.allowed", body={"content": "lab-tts", "tts": True}, source="message"),
+    c(
+        "tts.no-permission",
+        body={"content": "lab-tts", "tts": True},
+        deny=("send_tts_messages",),
+        control="tts.allowed",
+        source="message",
+    ),
+    c("flags.ephemeral-normal", body={"content": "lab-flags", "flags": 64}, source="message"),
+    c("flags.suppress-embeds", body={"content": "lab-flags", "flags": 4}, source="message"),
+    c("flags.silent", body={"content": "lab-flags", "flags": 4096}, source="message"),
+    c(
+        "forum.post",
+        "forum-post",
+        "forum",
+        {"name": "lab-post", "message": {"content": "lab-starter"}},
+        source="channel",
+    ),
+    c(
+        "forum.require-tag-missing",
+        "forum-post",
+        "forum",
+        {"name": "lab-post", "message": {"content": "lab-starter"}},
+        state="require-tag",
+        control="forum.post",
+        source="channel",
+    ),
+    c(
+        "forum.require-tag-present",
+        "forum-post",
+        "forum",
+        {"name": "lab-post", "message": {"content": "lab-starter"}, "applied_tags": ["$tag"]},
+        state="require-tag",
+        source="channel",
+    ),
+    c(
+        "forum.no-send",
+        "forum-post",
+        "forum",
+        {"name": "lab-post", "message": {"content": "lab-starter"}},
+        deny=("send_messages",),
+        control="forum.post",
+    ),
+    c(
+        "forum.no-thread-create",
+        "forum-post",
+        "forum",
+        {"name": "lab-post", "message": {"content": "lab-starter"}},
+        deny=("create_public_threads",),
+    ),
+    c(
+        "command.store",
+        "command",
+        body={
+            "name": "$command-name",
+            "description": "lab-command",
+            "default_member_permissions": "0",
+            "nsfw": True,
+        },
+        source="commands",
+    ),
+    c(
+        "command.options-25",
+        "command",
+        body={
+            "name": "$command-name",
+            "description": "lab-command",
+            "options": [{"type": 3, "name": f"opt{i}", "description": "lab-option"} for i in range(25)],
+        },
+        source="commands",
+    ),
+    c(
+        "command.options-26",
+        "command",
+        body={
+            "name": "$command-name",
+            "description": "lab-command",
+            "options": [{"type": 3, "name": f"opt{i}", "description": "lab-option"} for i in range(26)],
+        },
+        control="command.options-25",
+        source="commands",
+    ),
+    c(
+        "command.required-first",
+        "command",
+        body={
+            "name": "$command-name",
+            "description": "lab-command",
+            "options": [
+                {"type": 3, "name": "first", "description": "lab-option", "required": True},
+                {"type": 3, "name": "second", "description": "lab-option", "required": False},
+            ],
+        },
+        source="commands",
+    ),
+    c(
+        "command.required-after",
+        "command",
+        body={
+            "name": "$command-name",
+            "description": "lab-command",
+            "options": [
+                {"type": 3, "name": "first", "description": "lab-option", "required": False},
+                {"type": 3, "name": "second", "description": "lab-option", "required": True},
+            ],
+        },
+        control="command.required-first",
+        source="commands",
+    ),
+    c("hidden.fetch", "channel", deny=("view_channel",), control="hidden.visible", source="channel"),
+    c("hidden.visible", "channel", source="channel"),
+    c("hidden.guild-list", "guild-channels", deny=("view_channel",), source="channel"),
+    c("hidden.gateway-create", "gateway-create", state="hidden", source="gateway"),
+    c("hidden.gateway-update", "gateway-update", state="hidden", source="gateway"),
+    c(
+        "hidden.creation-self-hide",
+        "create-channel",
+        body={"name": "lab-self-hidden", "type": 0},
+        state="self-hide",
+        source="channel",
+    ),
+    c("emoji.external-allowed", "external-emoji", source="message"),
+    c(
+        "emoji.external-denied",
+        "external-emoji",
+        deny=("external_emojis",),
+        control="emoji.external-allowed",
+        source="message",
+    ),
+    c("poll.question-max", body={"poll": {**POLL, "question": {"text": "q" * 300}}}, source="poll"),
+    c(
+        "poll.question-over",
+        body={"poll": {**POLL, "question": {"text": "q" * 301}}},
+        control="poll.question-max",
+        source="poll",
+    ),
+    c(
+        "poll.answer-max",
+        body={"poll": {**POLL, "answers": [{"poll_media": {"text": "a" * 55}}, POLL["answers"][1]]}},
+        source="poll",
+    ),
+    c(
+        "poll.answer-over",
+        body={"poll": {**POLL, "answers": [{"poll_media": {"text": "a" * 56}}, POLL["answers"][1]]}},
+        control="poll.answer-max",
+        source="poll",
+    ),
+    c("crosspost.no-history", "crosspost", "news", deny=("read_message_history",), control="crosspost.own"),
+    c("thread.active-pin", "pin", "thread"),
+    c("thread.archived-pin", "pin", "thread", state="archived", control="thread.active-pin"),
+    c("thread.active-unpin", "unpin", "thread"),
+    c("thread.archived-unpin", "unpin", "thread", state="archived", control="thread.active-unpin"),
+    c("thread.active-bulk-delete", "bulk-delete", "thread"),
+    c(
+        "thread.archived-bulk-delete",
+        "bulk-delete",
+        "thread",
+        state="archived",
+        control="thread.active-bulk-delete",
+    ),
+    c("thread.owner-archive", "edit-channel", "own-thread", {"archived": True}),
+    c("thread.other-archive", "edit-channel", "thread", {"archived": True}, control="thread.manager-archive"),
+    c("thread.manager-archive", "edit-channel", "thread", {"archived": True}, state="manager"),
+    c(
+        "thread.rename-no-thread-send",
+        "edit-channel",
+        "own-thread",
+        {"name": "lab-renamed"},
+        deny=("send_messages_in_threads",),
+        control="thread.owner-rename",
+    ),
+    c(
+        "thread.unarchive-no-thread-send",
+        "edit-channel",
+        "thread",
+        {"archived": False},
+        deny=("send_messages_in_threads",),
+        state="archived",
+        control="thread.unarchive",
+    ),
+    c("thread.active-locked-send", target="thread", state="active-locked"),
+    c("thread.active-locked-react", "react", "thread", state="active-locked"),
+    c("thread.owner-delete", "delete-channel", "own-thread", control="thread.owner-manager-delete"),
+    c("thread.owner-manager-delete", "delete-channel", "own-thread", state="manager"),
+    c("thread.other-delete", "delete-channel", "thread", control="thread.manager-delete"),
+    c("thread.manager-delete", "delete-channel", "thread", state="manager"),
+    c("hidden.gateway-voice", "gateway-create", "voice", state="hidden", source="gateway"),
+    c("hidden.gateway-forum", "gateway-create", "forum", state="hidden", source="gateway"),
+    c("hidden.gateway-category", "gateway-create", "category", state="hidden", source="gateway"),
+    c("pins.populated", "pins", state="pinned", source="message"),
+    c(
+        "pins.populated-no-history",
+        "pins",
+        deny=("read_message_history",),
+        state="pinned",
+        control="pins.populated",
+        source="message",
+    ),
+    c(
+        "pins.populated-no-view",
+        "pins",
+        deny=("view_channel",),
+        state="pinned",
+        control="pins.populated",
+        source="message",
+    ),
+)
+
+BY_ID = {case.id: case for case in CASES}
+
+
+def select(patterns):
+    import fnmatch
+
+    selected = [
+        case
+        for case in CASES
+        if not patterns or any(fnmatch.fnmatchcase(case.id, pattern) for pattern in patterns)
+    ]
+    if not selected:
+        raise ValueError("No scenario matches selection")
+    wanted = {case.id for case in selected}
+    pending = list(wanted)
+    while pending:
+        control = BY_ID[pending.pop()].control
+        if control and control not in wanted:
+            wanted.add(control)
+            pending.append(control)
+    return [case for case in CASES if case.id in wanted]
