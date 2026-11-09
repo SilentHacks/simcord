@@ -17,6 +17,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: |
-          uv sync --extra dev
-          uv pip install -U "discord.py @ git+https://github.com/Rapptz/discord.py"
-      - run: uv run pytest tests examples -q
+          uv sync --locked --extra dev --extra screenshot
+          uv pip install --no-deps -U "discord.py @ git+https://github.com/Rapptz/discord.py"
+      # Do not let project sync replace the upstream checkout with locked discord.py.
+      - run: uv run --no-sync python -m playwright install --with-deps chromium
+      - run: uv run --no-sync python -c "import discord; print(discord.__version__)"
+      - run: uv run --no-sync pytest tests examples -q

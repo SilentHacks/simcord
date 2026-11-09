@@ -39,6 +39,10 @@ uv sync --extra dev --extra screenshot                # matches the CI lint job
 uv run playwright install --with-deps chromium        # needed once for browser capture tests + the example
 ```
 
+The weekly `discord.py master` workflow installs the same screenshot dependencies
+and Chromium before exercising upstream discord.py. After installing that checkout,
+use `uv run --no-sync` so the project lock does not replace it with the released SDK.
+
 Frontend contributors also need Node 24:
 
 ```bash

@@ -4,6 +4,26 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 4.0.0 (2026-11-09)
+
+### Features
+
+- Add an independently recorded 184-scenario Discord behavior ledger, receipt-safe manual recorder and recovery tooling, permission-endpoint cross-checks, strict offline mismatch/stale-gap ratchets, and a generated dated evidence table. Deliberate metadata and pre-rollout REST differences remain explicitly documented rather than counted as parity.
+- Add permission explanations, structured denial details on HTTP request records and transcripts, observed-permission reports, and explicit degradation assertions. Nonthrowing history and pin-list checks contribute observed flags without inventing HTTP errors. `pytest --simcord-sweep` reruns passing function-scoped tests with authentic permission revocation, reports unhandled bot exceptions/timeouts and application assertions with source locations, and distinguishes unsupported configurations from exercised coverage, including xdist runs.
+- Project the bot's gateway cache through Discord channel obfuscation and omit hidden channels from guild REST channel listings. Role, overwrite and bot-membership changes refresh visibility; authoritative test handles retain their real data. Deferred gateway delivery retains emission-time access rather than authorizing old events against later permission changes. There is no legacy-visibility opt-out. See the permissions guide for the distinction between documented behavior and unrecorded field details.
+
+### Bug fixes
+
+- Match independently recorded Discord behavior for message payload permissions, reply/history access, reactions, pins and crossposts; archived and locked threads, creator edit authority, voice/stage text access, mentions and silent effects. Require `pin_messages` rather than `manage_messages` for bot and simulated-user pin/unpin operations. Add announcement threads and required forum tags, enforce captured validation boundaries and error trees, reject invalid timeouts and message targets, and normalize stored application commands with atomic bulk validation. See the 3.x-to-4.0 migration guide and dated behavior ledger for deliberate gaps and bot-versus-actor boundaries.
+  Keep permission reads side-effect-free during sweeps, report unsupported role-sharing transitions explicitly, preserve visible voice departures without exposing hidden destinations, and round-trip forum pin flags. Reject NSFW enabling on commands and channels while keeping unrelated previews usable; observe requested permission-dependent send effects and preserve exact Administrator permission explanations.
+  Skipped revocation lifecycles no longer count as exercised coverage, and previously captured unhandled bot failures retain precedence over skips.
+
+### Miscellaneous
+
+- Allow PyAV 17 and 18 in the optional Preview and screenshot extras, and refresh the locked media dependency to PyAV 18.1.0.
+- Repair the weekly discord.py development-branch check by installing Preview/browser dependencies and retaining the upstream SDK installation instead of resynchronizing it back to the locked release.
+
+
 ## 3.3.0 (2026-11-02)
 
 ### Features
