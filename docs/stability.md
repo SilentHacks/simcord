@@ -1,6 +1,6 @@
 ---
 title: "Stability & versioning"
-description: "SimCord's public API, semantic versioning, and the compatible 2.3 migration bridge for 3.0."
+description: "SimCord's public API, semantic versioning, and the complete 3.x to 4.0 behavior-fidelity migration."
 ---
 
 # Stability & versioning
@@ -10,6 +10,71 @@ description: "SimCord's public API, semantic versioning, and the compatible 2.3 
     finite callback chains. Recognized external waits may park only through
     `env.external_wait(awaitable, reason=...)`; unknown waits time out. Ownership survives
     timeout, cancellation, later operations, restart, and teardown boundaries.
+
+## Migrating from 3.x to 4.0
+
+This is one behavior-fidelity update, without legacy-behavior opt-outs.
+
+- Grant `pin_messages` wherever a bot or simulated user must pin or unpin.
+  `manage_messages` alone no longer authorizes those operations, matching
+  Discord's [pin-permission split](https://github.com/discord/discord-api-docs/discussions/7966).
+- Read hidden-channel fixture names and topics from setup `ChannelHandle` objects,
+  not the bot cache. The cache receives `___hidden___` and neutral metadata;
+  `Guild.fetch_channels()` omits channels the bot cannot view. Overwrite and role
+  changes reveal or hide channels and their threads without restarting the bot.
+  There is no obfuscation opt-out.
+  Their synthetic bot-visible overwrites are not canonical evidence of other
+  members' access. Use `env.explain_permissions(actor, channel)` in fixtures;
+  production bots must not infer audience permissions from hidden metadata.
+- Announcement threads now have type `news_thread` and inherit their parent's
+  permissions like other threads. Messaging and public archived-thread listings
+  support them.
+- Ordinary sends now enforce embed, upload, poll and reply-history permissions.
+  Bot reactions no longer require history; pin listings without history are
+  empty. Voice/stage text actions require Connect. Update tests that relied on
+  the old false accepts or refusals rather than catching these errors in SimCord.
+- Remove old test overrides of `RequestContext.require_channel_permissions`
+  when they duplicate the native thread rules; forwarding its new keyword
+  arguments would retain obsolete permission semantics. Assess unrelated
+  transport workarounds separately rather than removing them as a bundle.
+- Archived/locked thread actions and thread-edit authority follow the
+  [recorded rules](guides/permissions.md#bot-rest-behavior). Thread creators
+  still need `manage_threads` to delete their own thread.
+  A creator may archive/lock without `manage_threads`; archived threads can leave
+  the active SDK cache, so use `fetch_channel()` when checking closed threads.
+- Nicknames, thread names, channel topics, slowmode, polls and timeouts enforce
+  captured boundary errors. Administrator timeouts, invalid message targets,
+  empty messages and unknown stickers now fail with their observed Discord codes.
+  Forums honor required tags.
+- Stored application commands use Discord's normalized response shape, and
+  bulk registration validates the complete batch before changing state. The
+  26-option and required-after-optional cases are rejected server-side.
+  NSFW enabling is deliberately rejected before registration changes state
+  (`UnsupportedField` at REST boundaries, `NotImplementedError` in backend setup).
+  False or omitted metadata remains compatible with ordinary discord.py sync.
+  Pre-existing NSFW commands are omitted from `available_commands()` and Preview
+  without exposing their identity; Preview reports generic incomplete command
+  behavior only after ordinary visibility exclusions. Direct invocation still
+  raises `NotImplementedError`. No age gating or NSFW channel features are modeled.
+- `AllowedMentions` now controls parsed mention metadata and notification effects;
+  a literal `<@id>` in content need not appear in `Message.mentions`. Explicitly
+  opt intended recipients into your bot's notification policy in ping tests.
+  Message flags also affect returned metadata. Inspect `env.degradations` or call
+  `env.assert_no_degradations()` when a successful request losing an effect should
+  fail your test. No default degradation assertion is enabled.
+- `--simcord-sweep` and `--simcord-observed-permissions` are normal, supported
+  pytest options. Sweeps require fresh function-scoped user fixtures; unsupported
+  reruns are reported separately, never counted as proof of graceful handling.
+
+These behaviors apply through discord.py's real parsers. Interaction wire
+payloads remain full, but discord.py 2.7.1 can prefer an already-cached hidden
+channel for `Interaction.channel`. Its formatter can also raise `AttributeError`
+while formatting the authentic nested 50035 error for an oversized command
+option list; SimCord preserves Discord's error tree rather than patching the SDK.
+
+The [dated behavior evidence](parity-matrix.md#behavior-evidence) separates
+independently captured facts, docs-based policies and deliberate gaps. It does
+not certify every unrecorded wire field or human-actor rule.
 
 ## Migrating from 1.x
 
@@ -38,8 +103,8 @@ The fuzzer proves that across every route whose body is a field set — message
 send and edits, webhook execute, bulk delete, and the rest — an unrecognised
 request key raises `UnsupportedField` rather than being silently dropped. The
 few routes that *cannot* be expressed as one flat field set are not swept under
-the rug: those with no JSON body, the command-sync routes that store their
-payload verbatim (so nothing is dropped), and the polymorphic
+the rug: those with no JSON body, nested application-command definitions, and
+the polymorphic
 interaction-callback envelope (whose message `data` is itself vetted) are
 enumerated with a reason and drift-guarded, so the boundary stays explicit.
 
@@ -72,6 +137,8 @@ The public surface is exactly what `simcord` exports from its top-level package
 - `Preview`, `PreviewCapture`, and the documented `window.simcordPreview` readiness fields for
   the optional local component preview;
 - the request-observability type `HttpLogEntry` and `Env.http_requests`;
+- permission explanations, check/degradation snapshots, observed permissions and
+  `Env.assert_no_degradations()`;
 - the assertion helpers (`assert_responded`, `assert_sent`, `assert_message`,
   `assert_error`, `assert_no_errors`);
 - the error and parity-signal types `BackendError`, `SetupError`, `OptionError`,
@@ -99,7 +166,10 @@ not captured. The `json` field retains every supplied JSON-compatible shape, inc
 top-level arrays. `params` and `json` are detached deep snapshots, so later source
 container mutations do not alter records.
 
-The `pytest` plugin (the `simcord_env` fixture) is part of the public surface too.
+The `pytest` plugin, including `simcord_env`, `--simcord-observed-permissions`,
+and `--simcord-sweep`, is part of the public surface too. Sweep report categories,
+permission names and source locations are supported; see the explicit
+[fixture and revocation limits](guides/diagnostics.md#suite-reports-and-failure-sweeps).
 
 The shared clock now advances UTC at intermediate resource/timer deadlines, not just the
 final horizon. Allocating IDs no longer advances time; exact generated IDs change, and

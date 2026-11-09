@@ -18,8 +18,8 @@ What it proves, for every honesty-vetted route:
 What it does *not* prove: that a declared key is actually written to state (the
 ``*_fields_apply`` cases in ``test_field_honesty.py`` cover that), and it only
 covers routes that *use* the honesty layer. The handful that legitimately do not —
-no-body routes, the command-overwrite routes that round-trip their payload
-verbatim, and the polymorphic interaction-callback envelope — are enumerated in
+no-body routes, nested command-array validation, and the polymorphic
+interaction-callback envelope — are enumerated in
 ``EXEMPT`` with a reason and guarded by :func:`test_every_write_route_is_classified`,
 which — like the parity drift guard — fails loudly if a new write route is neither
 vetted nor explicitly exempt.
@@ -206,14 +206,13 @@ EXEMPT: dict[tuple[str, str], str] = {
     ("PUT", "/guilds/{guild_id}/bans/{user_id}"): (
         "delete_message_seconds is sent as a query param, not a JSON body — nothing to vet"
     ),
-    # Round-tripped verbatim: register_commands stores each command object as-is,
-    # so no key is dropped — there is nothing for a flat field set to catch.
+    # Nested command arrays vet every object, but do not have one flat-body contract.
     (
         "PUT",
         "/applications/{application_id}/commands",
-    ): "stores each command object verbatim (no per-key drop)",
+    ): "nested command array; each object is vetted before atomic registration",
     ("PUT", "/applications/{application_id}/guilds/{guild_id}/commands"): (
-        "stores each command object verbatim (no per-key drop)"
+        "nested command array; each object is vetted before atomic registration"
     ),
     # Polymorphic envelope: {type, data} are both consumed, and the message-create
     # `data` branch is vetted by bot_message via ctx.fields; the modal / autocomplete

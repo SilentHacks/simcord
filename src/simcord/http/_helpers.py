@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import intents
@@ -22,22 +23,83 @@ from ..components import (
     resolve_attachment_references,
 )
 from ..enums import AppCommandType, MessageType
+from ._access import require_text_access
 from .router import RequestContext
+
+_CUSTOM_EMOJI = re.compile(r"<a?:([A-Za-z0-9_]+):(\d+)>")
 
 
 def poll_from_wire(backend: Any, wire: dict[str, Any]) -> Poll:
     """Build a :class:`Poll` from the create payload discord.py sends."""
+    question = (wire.get("question") or {}).get("text") or ""
+    if not 1 <= len(question) <= 300:
+        raise errors.invalid_form_body(
+            errors={
+                "poll": {
+                    "question": {
+                        "text": {
+                            "_errors": [
+                                {
+                                    "code": "BASE_TYPE_BAD_LENGTH",
+                                    "message": "Must be between 1 and 300 in length.",
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        )
+    duration_hours = float(wire.get("duration", 24))
+    if not 1 <= duration_hours <= 768:
+        maximum = duration_hours > 768
+        raise errors.invalid_form_body(
+            errors={
+                "poll": {
+                    "duration": {
+                        "_errors": [
+                            {
+                                "code": "NUMBER_TYPE_MAX" if maximum else "NUMBER_TYPE_MIN",
+                                "message": (
+                                    "int32 value should be less than or equal to 768."
+                                    if maximum
+                                    else "int32 value should be greater than or equal to 1."
+                                ),
+                            }
+                        ]
+                    }
+                }
+            }
+        )
     answers = []
     for index, answer in enumerate(wire.get("answers") or [], start=1):
         media = answer.get("poll_media") or {}
+        text = media.get("text")
+        if isinstance(text, str) and len(text) > 55:
+            raise errors.invalid_form_body(
+                errors={
+                    "proto_data": {
+                        "poll": {
+                            "answers": {
+                                str(index - 1): {
+                                    "_errors": [
+                                        {
+                                            "code": "POLL_ANSWER_TEXT_INVALID_LENGTH",
+                                            "message": "Poll answer text cannot exceed 55 characters",
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            )
         emoji = media.get("emoji")
         emoji_str = None
         if isinstance(emoji, dict):
             emoji_str = f"{emoji.get('name')}:{emoji['id']}" if emoji.get("id") else emoji.get("name")
         answers.append(PollAnswer(answer_id=index, text=media.get("text"), emoji=emoji_str))
-    duration_hours = float(wire.get("duration") or 24)
     return Poll(
-        question=(wire.get("question") or {}).get("text") or "",
+        question=question,
         answers=answers,
         expiry=backend.iso_after(duration_hours * 3600),
         allow_multiselect=bool(wire.get("allow_multiselect")),
@@ -110,8 +172,20 @@ def _allowed_mentions(value: Any) -> AllowedMentions:
             raise errors.invalid_form_body(f"allowed_mentions.{name} entries must be unique")
         return frozenset(parsed)
 
-    if ("users" in parse and "users" in value) or ("roles" in parse and "roles" in value):
-        raise errors.invalid_form_body("allowed_mentions cannot mix parse and explicit IDs of one type")
+    for name in ("users", "roles"):
+        if name in parse and name in value:
+            raise errors.invalid_form_body(
+                errors={
+                    "allowed_mentions": {
+                        "_errors": [
+                            {
+                                "code": "MESSAGE_ALLOWED_MENTIONS_PARSE_EXCLUSIVE",
+                                "message": f'parse:["{name}"] and {name}: [ids...] are mutually exclusive.',
+                            }
+                        ]
+                    }
+                }
+            )
     replied_user = value.get("replied_user", False)
     if not isinstance(replied_user, bool):
         raise errors.invalid_form_body("allowed_mentions.replied_user must be a boolean")
@@ -123,7 +197,9 @@ def _allowed_mentions(value: Any) -> AllowedMentions:
     )
 
 
-def _message_stickers(ctx: RequestContext, channel_id: int, raw_ids: Any) -> list[MessageSticker]:
+def _message_stickers(
+    ctx: RequestContext, channel_id: int, raw_ids: Any, *, ordinary_send: bool = False
+) -> list[MessageSticker]:
     if not isinstance(raw_ids, list):
         raise errors.invalid_form_body("sticker_ids must be an array")
     if len(raw_ids) > 3:
@@ -152,6 +228,8 @@ def _message_stickers(ctx: RequestContext, channel_id: int, raw_ids: Any) -> lis
             None,
         )
         if sticker is None:
+            if ordinary_send:
+                raise errors.BackendError(400, 50081, "Invalid sticker sent")
             raise errors.unknown_sticker()
         if not sticker.available:
             raise errors.invalid_form_body(f"sticker {sticker_id} is unavailable")
@@ -212,9 +290,12 @@ def prepare_bot_message(
     body: dict[str, Any] | None = None,
     webhook_execute: bool = False,
     pending: bool = False,
+    ordinary_send: bool = False,
 ) -> tuple[Message, list[bytes]]:
     """Validate all fields and read all uploads without changing backend state."""
     backend = ctx.backend
+    channel = backend.get_channel(channel_id)
+    degradation_kinds: list[str] = []
     handled = _MESSAGE_HANDLED
     ignore = _MESSAGE_IGNORED
     reject: dict[str, str] = {}
@@ -233,6 +314,41 @@ def prepare_bot_message(
         reject=reject,
         body=ctx.body() if body is None else body,
     )
+    if ordinary_send and isinstance(body.get("content"), str) and len(body["content"]) > 2000:
+        raise errors.invalid_form_body(
+            errors={
+                "content": {
+                    "_errors": [
+                        {
+                            "code": "BASE_TYPE_MAX_LENGTH",
+                            "message": "Must be 2000 or fewer in length.",
+                        }
+                    ]
+                }
+            }
+        )
+    if ordinary_send and isinstance(body.get("content"), str) and channel.guild_id is not None:
+        if any(
+            guild.id != channel.guild_id and int(match[2]) in guild.emojis
+            for match in _CUSTOM_EMOJI.finditer(body["content"])
+            for guild in backend.guilds.values()
+        ) and not backend.has_permission_flags(
+            channel.guild_id, backend.bot_user.id, channel_id, "external_emojis"
+        ):
+
+            def strip_external(match: re.Match[str]) -> str:
+                emoji_id = int(match[2])
+                if any(
+                    guild.id != channel.guild_id and emoji_id in guild.emojis
+                    for guild in backend.guilds.values()
+                ):
+                    return f":{match[1]}:"
+                return match[0]
+
+            content = _CUSTOM_EMOJI.sub(strip_external, body["content"])
+            if content != body["content"]:
+                body["content"] = content
+                degradation_kinds.append("external_emoji_permission_stripped")
     author_name = body.get("username") if apply_identity else None
     author_avatar = body.get("avatar_url") if apply_identity else None
     try:
@@ -242,7 +358,22 @@ def prepare_bot_message(
     tts = body.get("tts", False)
     if not isinstance(tts, bool):
         raise errors.invalid_form_body("tts must be a boolean")
-    sticker_items = _message_stickers(ctx, channel_id, body.get("sticker_ids", []))
+    if ordinary_send:
+        if flags & (1 << 6):
+            flags &= ~(1 << 6)
+            degradation_kinds.append("normal_message_ephemeral_ignored")
+        if (
+            tts
+            and channel.guild_id is not None
+            and not backend.has_permission_flags(
+                channel.guild_id, backend.bot_user.id, channel_id, "send_tts_messages"
+            )
+        ):
+            tts = False
+            degradation_kinds.append("tts_permission_dropped")
+    sticker_items = _message_stickers(
+        ctx, channel_id, body.get("sticker_ids", []), ordinary_send=ordinary_send
+    )
     mention_policy = _allowed_mentions(body.get("allowed_mentions"))
     interaction_metadata = None
     message_type = None
@@ -267,7 +398,11 @@ def prepare_bot_message(
         elif interaction.command_type in {AppCommandType.USER, AppCommandType.MESSAGE}:
             message_type = MessageType.CONTEXT_MENU_COMMAND
     reference = backend.normalize_message_reference(channel_id, body.get("message_reference"))
+    if ordinary_send and reference is not None and reference["type"] == 0:
+        ctx.require_channel_permissions(channel_id, "read_message_history", denied_code=160002)
     if reference is not None and reference["type"] == 1:
+        if ordinary_send:
+            require_text_access(ctx, int(reference["channel_id"]))
         source = backend._forward_source(
             channel_id, author_id if author_id is not None else backend.bot_user.id, reference
         )
@@ -282,6 +417,14 @@ def prepare_bot_message(
         embeds = []
     poll = poll_from_wire(backend, body["poll"]) if body.get("poll") else None
     uploads = _preview_uploads(ctx)
+    if ordinary_send:
+        for present, permission in (
+            (bool(embeds), "embed_links"),
+            (bool(ctx.files), "attach_files"),
+            (poll is not None, "send_polls"),
+        ):
+            if present:
+                ctx.require_channel_permissions(channel_id, permission)
     components = body.get("components") if body.get("components") is not None else []
     fields = {
         "author_id": author_id if author_id is not None else backend.bot_user.id,
@@ -300,12 +443,33 @@ def prepare_bot_message(
         "poll": poll,
         "message_type": message_type,
     }
-    message = backend.prepare_message(channel_id, attachments=uploads, **fields)
+    try:
+        message = backend.prepare_message(channel_id, attachments=uploads, **fields)
+    except errors.BackendError as exc:
+        if ordinary_send and exc.code == 50035 and "Cannot send an empty message" in exc.message:
+            raise errors.BackendError(400, 50006, "Cannot send an empty message") from exc
+        raise
     try:
         check_attachment_references(message.components, uploads)
     except (ComponentValidationError, TypeError, ValueError) as exc:
         raise errors.invalid_form_body(str(exc)) from exc
-    return message, [file.fp.read() for file in ctx.files]
+    upload_data = [file.fp.read() for file in ctx.files]
+    if ordinary_send:
+        if channel.guild_id is not None:
+            guild = backend.get_guild(channel.guild_id)
+            if any(
+                mention_policy.allows_role(role_id)
+                and (role := guild.roles.get(role_id)) is not None
+                and not role.mentionable
+                and role_id not in message.ping_role_ids
+                for role_id in message.mention_role_ids
+            ):
+                degradation_kinds.append("unmentionable_role_ping_dropped")
+        message.mention_user_ids = list(message.ping_user_ids)
+        message.mention_role_ids = list(message.ping_role_ids)
+        for kind in degradation_kinds:
+            backend.record_degradation(kind, channel_id=channel_id)
+    return message, upload_data
 
 
 def commit_bot_message(

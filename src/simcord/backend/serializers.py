@@ -196,6 +196,7 @@ def channel_payload(backend: BackendBase, channel: Channel) -> channel_types.Gui
         "topic": channel.topic,
         "rate_limit_per_user": channel.rate_limit_per_user,
         "last_message_id": str(channel.last_message_id) if channel.last_message_id else None,
+        "flags": channel.flags,
     }
     if channel.guild_id is not None:
         payload["guild_id"] = str(channel.guild_id)
@@ -204,6 +205,7 @@ def channel_payload(backend: BackendBase, channel: Channel) -> channel_types.Gui
         payload["user_limit"] = channel.user_limit
         payload["rtc_region"] = channel.rtc_region
     if channel.type == ChannelType.FORUM:
+        payload["default_auto_archive_duration"] = 4320
         payload["available_tags"] = list(channel.available_tags)
         payload["default_reaction_emoji"] = channel.default_reaction_emoji
     if channel.type == ChannelType.DM:
@@ -232,14 +234,14 @@ def thread_payload(backend: BackendBase, thread: Channel) -> thread_types.Thread
             "member_count": len(thread.thread_members),
             "total_message_sent": thread.message_count,
             "applied_tags": [str(t) for t in thread.applied_tags],
-            "flags": 0,
+            "flags": thread.flags,
             "thread_metadata": {
                 "archived": meta.archived,
                 "auto_archive_duration": meta.auto_archive_duration,
                 "archive_timestamp": meta.archive_timestamp,
                 "locked": meta.locked,
                 "create_timestamp": meta.create_timestamp,
-                "invitable": meta.invitable,
+                **({"invitable": meta.invitable} if thread.type == ChannelType.PRIVATE_THREAD else {}),
             },
         },
     )
@@ -353,7 +355,9 @@ def message_payload(
     if reference is not None:
         if message.snapshots:
             payload["message_snapshots"] = deepcopy(message.snapshots)
-        payload["message_reference"] = dict(reference)
+        payload["message_reference"] = {
+            key: value for key, value in reference.items() if key != "fail_if_not_exists"
+        }
         if reference.get("type", 0) == 0:
             referenced = backend.messages.get(int(reference.get("channel_id", message.channel_id)), {}).get(
                 int(reference["message_id"])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import discord
@@ -90,6 +91,7 @@ class GuildMixin(BackendBase):
         guild = self.get_guild(guild_id)
         for attr, value in changes.items():
             setattr(guild, attr, value)
+        self.project_permissions(guild_id)
         self.emit("GUILD_UPDATE", serializers.guild_create_payload(self, guild))
         return guild
 
@@ -137,6 +139,7 @@ class GuildMixin(BackendBase):
             joined_at=self.now_iso(),
         )
         guild.members[user_id] = member
+        self.project_permissions(guild_id, channels=user_id == self.bot_user.id, announce=announce)
         if announce:
             payload = dict(serializers.member_payload(self, guild, member))
             payload["guild_id"] = str(guild_id)
@@ -151,6 +154,7 @@ class GuildMixin(BackendBase):
         if user_id not in guild.members:
             raise errors.unknown_member()
         del guild.members[user_id]
+        self.project_permissions(guild_id)
         # Leaving the guild leaves every thread in it, so thread member_count and
         # the thread-member listings stay correct after a kick/ban/prune.
         for thread_id in guild.thread_ids:
@@ -192,6 +196,7 @@ class GuildMixin(BackendBase):
 
     def announce_member_update(self, guild_id: int, user_id: int) -> None:
         guild = self.get_guild(guild_id)
+        self.project_permissions(guild_id, channels=user_id == self.bot_user.id)
         payload = dict(serializers.member_payload(self, guild, guild.members[user_id]))
         payload["guild_id"] = str(guild_id)
         self.emit("GUILD_MEMBER_UPDATE", payload)
@@ -215,6 +220,44 @@ class GuildMixin(BackendBase):
         member = self.get_member(guild_id, user_id)
         if changes.keys() - {"nick", "role_ids", "timed_out_until", "mute", "deaf"}:
             raise errors.invalid_form_body("Unknown member field")
+        nick = changes.get("nick")
+        if nick is not None and len(nick) > 32:
+            raise errors.invalid_form_body(
+                errors={
+                    "nick": {
+                        "_errors": [
+                            {"code": "BASE_TYPE_MAX_LENGTH", "message": "Must be 32 or fewer in length."}
+                        ]
+                    }
+                }
+            )
+        until = changes.get("timed_out_until")
+        if until is not None:
+            try:
+                deadline = datetime.fromisoformat(until)
+            except (TypeError, ValueError):
+                raise errors.invalid_form_body() from None
+            if deadline.tzinfo is None:
+                raise errors.invalid_form_body()
+            if deadline > self.clock.now() + timedelta(days=28):
+                raise errors.invalid_form_body(
+                    errors={
+                        "communication_disabled_until": {
+                            "_errors": [
+                                {
+                                    "code": "INVALID_COMMUNICATION_DISABLED_TIMESTAMP",
+                                    "message": "Invalid communication disabled timestamp",
+                                }
+                            ]
+                        }
+                    }
+                )
+            if user_id == guild.owner_id or any(
+                discord.Permissions(guild.roles[role_id].permissions).administrator
+                for role_id in [guild.id, *member.role_ids]
+                if role_id in guild.roles
+            ):
+                raise errors.missing_permissions()
         prepared = replace(member, **changes)
         state = guild.voice_states.get(user_id)
         voice_changed = move_voice or "mute" in changes or "deaf" in changes
@@ -287,6 +330,7 @@ class GuildMixin(BackendBase):
             **fields,
         )
         guild.roles[role.id] = role
+        self.project_permissions(guild_id, role_id=role.id)
         self.emit(
             "GUILD_ROLE_CREATE",
             {"guild_id": str(guild_id), "role": serializers.role_payload(role)},
@@ -299,6 +343,7 @@ class GuildMixin(BackendBase):
         role = self.get_role(guild_id, role_id)
         for attr, value in changes.items():
             setattr(role, attr, value)
+        self.project_permissions(guild_id, role_id=role_id, permissions_edited="permissions" in changes)
         self.emit("GUILD_ROLE_UPDATE", {"guild_id": str(guild_id), "role": serializers.role_payload(role)})
         return role
 

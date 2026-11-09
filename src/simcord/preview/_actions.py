@@ -479,7 +479,8 @@ class _ActionOps:
                 # recorded response lets an identical replay return the same
                 # outcome instead of wedging on "pending" forever. Recording
                 # keeps genuine bugs visible in env.errors for assertions.
-                self.env._record_error(exc)
+                if id(exc) not in self.env._error_ids:
+                    self.env._record_error(exc)
                 page.status = "stale"
                 result = self._finish_action(page, action, "failed", cursor, exc)
             action.response = result

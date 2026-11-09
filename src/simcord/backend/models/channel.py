@@ -5,7 +5,7 @@ from typing import Any
 
 from ...enums import ChannelType, OverwriteType
 
-THREAD_TYPES = (ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD)
+THREAD_TYPES = (ChannelType.NEWS_THREAD, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD)
 
 
 @dataclass
@@ -37,6 +37,7 @@ class Channel:
     topic: str | None = None
     parent_id: int | None = None
     rate_limit_per_user: int = 0
+    flags: int = 0
     last_message_id: int | None = None
     recipient_ids: list[int] = field(default_factory=list)  # DM channels
     # Voice/stage-only fields

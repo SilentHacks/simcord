@@ -10,16 +10,21 @@ from ...backend.ops.commands import COMMAND_FIELDS
 from ..router import RequestContext, route
 
 
+def _command_fields(ctx: RequestContext, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise errors.invalid_form_body("Command payloads must be objects")
+    unsupported = (
+        {"nsfw": "NSFW command features are not supported."}
+        if payload.get("nsfw", False) is not False
+        else {}
+    )
+    return ctx.fields(*COMMAND_FIELDS, reject=unsupported, body=dict(payload))
+
+
 def _bulk_upsert_commands(ctx: RequestContext, guild_id: int | None) -> list[dict[str, Any]]:
-    payloads = []
-    for payload in ctx.json or []:
-        if not isinstance(payload, Mapping):
-            raise ValueError("Command payloads must be objects")
-        normalized_payload = dict(payload)
-        if normalized_payload.get("nsfw") is False:
-            normalized_payload.pop("nsfw")
-        payloads.append(ctx.fields(*COMMAND_FIELDS, body=normalized_payload))
-    return ctx.backend.register_commands(guild_id, payloads)
+    if not isinstance(ctx.json, list):
+        raise errors.invalid_form_body("Bulk command registration requires an array")
+    return ctx.backend.register_commands(guild_id, [_command_fields(ctx, payload) for payload in ctx.json])
 
 
 @route("PUT", "/applications/{application_id}/commands")
@@ -40,6 +45,29 @@ def get_global_commands(ctx: RequestContext) -> Any:
 @route("GET", "/applications/{application_id}/guilds/{guild_id}/commands")
 def get_guild_commands(ctx: RequestContext) -> Any:
     return list(ctx.backend.commands.get(ctx.int_arg("guild_id"), {}).values())
+
+
+@route("POST", "/applications/{application_id}/guilds/{guild_id}/commands")
+def create_guild_command(ctx: RequestContext) -> Any:
+    return ctx.backend.upsert_command(ctx.int_arg("guild_id"), _command_fields(ctx, ctx.json))
+
+
+@route("GET", "/applications/{application_id}/guilds/{guild_id}/commands/{command_id}")
+def get_guild_command(ctx: RequestContext) -> Any:
+    return ctx.backend.get_command(ctx.int_arg("guild_id"), ctx.int_arg("command_id"))
+
+
+@route("PATCH", "/applications/{application_id}/guilds/{guild_id}/commands/{command_id}")
+def edit_guild_command(ctx: RequestContext) -> Any:
+    return ctx.backend.upsert_command(
+        ctx.int_arg("guild_id"), _command_fields(ctx, ctx.json), command_id=ctx.int_arg("command_id")
+    )
+
+
+@route("DELETE", "/applications/{application_id}/guilds/{guild_id}/commands/{command_id}")
+def delete_guild_command(ctx: RequestContext) -> Any:
+    ctx.backend.delete_command(ctx.int_arg("guild_id"), ctx.int_arg("command_id"))
+    return None
 
 
 @route("GET", "/applications/{application_id}/guilds/{guild_id}/commands/{command_id}/permissions")

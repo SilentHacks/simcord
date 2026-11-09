@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from ..backend.access import can_access_channel
+from ..backend.command_access import command_access
 from ..backend.errors import BackendError, SetupError
 from ..enums import AppCommandType, OptionType
 from ..interactions import command_leaves
@@ -216,6 +217,23 @@ def _authorized_catalog(preview: Preview, page: _Page) -> dict[str, Any]:
     return _available_catalog(application, entries, truncated=catalog.get("truncated", False))
 
 
+def commands_incomplete(preview: Preview, page: _Page) -> bool:
+    """Report unsupported commands only after ordinary visibility exclusions."""
+    if page.status == "access_denied" or not command_permission(preview, page):
+        return False
+    channel = preview.env.backend.get_channel(page.channel_id)
+    scopes = (channel.guild_id, None) if channel.guild_id is not None else (None,)
+    return any(
+        command_access(
+            preview.env.backend, command, user_id=page.viewer.id, channel_id=page.channel_id
+        ).reason
+        == "unsupported-nsfw"
+        for scope in scopes
+        for command in preview.env.backend.commands.get(scope, {}).values()
+        if command.get("type", AppCommandType.CHAT_INPUT) == AppCommandType.CHAT_INPUT
+    )
+
+
 def unsynced_commands(preview: Preview, page: _Page) -> bool:
     """Whether the tree has chat-input roots missing from their backend scope."""
     tree = getattr(preview.env.bot, "tree", None)
@@ -239,6 +257,7 @@ __all__ = [
     "MAX_CATALOG_LEAVES",
     "build_catalog",
     "command_permission",
+    "commands_incomplete",
     "entry_for_leaf",
     "unavailable_catalog",
     "unsynced_commands",

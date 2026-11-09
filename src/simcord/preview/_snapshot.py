@@ -200,6 +200,10 @@ def _snapshot_diagnostics(
     preview: Preview, page: _Page, projected: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
+    from ._commands import commands_incomplete
+
+    if commands_incomplete(preview, page):
+        diagnostics.append(make_diagnostic("commands-incomplete"))
     for item in page.diagnostics:
         if isinstance(item, Mapping):
             subject = None

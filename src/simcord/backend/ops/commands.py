@@ -14,6 +14,7 @@ COMMAND_FIELDS = (
     "name",
     "description",
     "type",
+    "nsfw",
     "options",
     "default_member_permissions",
     "dm_permission",
@@ -24,32 +25,136 @@ COMMAND_FIELDS = (
 )
 
 
+def _prepare_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(options) > 25:
+        raise errors.invalid_form_body(
+            errors={
+                "_errors": [{"code": "BASE_TYPE_MAX_LENGTH", "message": "Must be 25 or fewer in length."}]
+            }
+        )
+    prepared = []
+    optional_seen = False
+    for index, option in enumerate(options):
+        required = option.get("required", False)
+        if required and optional_seen:
+            raise errors.invalid_form_body(
+                errors={
+                    str(index): {
+                        "_errors": [
+                            {
+                                "code": "APPLICATION_COMMAND_OPTIONS_REQUIRED_INVALID",
+                                "message": "Required options must be placed before non-required options",
+                            }
+                        ]
+                    }
+                }
+            )
+        optional_seen |= not required
+        normalized = dict(option)
+        normalized["name_localizations"] = normalized.get("name_localizations") or None
+        normalized["description_localizations"] = normalized.get("description_localizations") or None
+        for key in ("required", "autocomplete"):
+            if normalized.get(key) is False:
+                normalized.pop(key)
+        for key in ("options", "choices", "channel_types"):
+            if key in normalized and not normalized[key]:
+                normalized.pop(key)
+        if "options" in normalized:
+            try:
+                normalized["options"] = _prepare_options(normalized["options"])
+            except errors.BackendError as exc:
+                raise errors.invalid_form_body(errors={str(index): {"options": exc.errors}}) from None
+        prepared.append(normalized)
+    return prepared
+
+
 class CommandsMixin(BackendBase):
     # --------------------------------------------------- application commands
 
-    def register_commands(self, guild_id: int | None, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        allowed = set(COMMAND_FIELDS)
-        unsupported = sorted({key for payload in payloads for key in payload if key not in allowed})
+    def prepare_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        unsupported = sorted(payload.keys() - set(COMMAND_FIELDS))
         if unsupported:
             raise ValueError(f"Unsupported command field(s): {', '.join(unsupported)}")
+        if payload.get("nsfw", False) is not False:
+            raise NotImplementedError("NSFW command features are not supported.")
+        cmd = dict(payload)
+        cmd.setdefault("type", AppCommandType.CHAT_INPUT)
+        cmd.setdefault("description", "")
+        options = cmd.pop("options", None)
+        if options:
+            try:
+                cmd["options"] = _prepare_options(options)
+            except errors.BackendError as exc:
+                raise errors.invalid_form_body(errors={"options": exc.errors}) from None
+        permissions = cmd.get("default_member_permissions")
+        cmd["default_member_permissions"] = str(permissions) if permissions is not None else None
+        cmd.setdefault("dm_permission", True)
+        cmd.setdefault("nsfw", False)
+        cmd["name_localizations"] = cmd.get("name_localizations") or None
+        cmd["description_localizations"] = cmd.get("description_localizations") or None
+        return cmd
 
-        registered = {}
+    def _store_command(
+        self, guild_id: int | None, cmd: dict[str, Any], previous: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        if guild_id is not None:
+            for key in ("dm_permission", "contexts", "integration_types"):
+                cmd.pop(key, None)
+        unchanged = previous is not None and cmd == {
+            key: value
+            for key, value in previous.items()
+            if key not in {"id", "application_id", "guild_id", "version"}
+        }
+        cmd["version"] = previous["version"] if unchanged and previous is not None else str(self.snowflake())
+        cmd["id"] = previous["id"] if previous is not None else str(self.snowflake())
+        cmd["application_id"] = str(self.application_id)
+        if guild_id is not None:
+            cmd["guild_id"] = str(guild_id)
+        return cmd
+
+    def register_commands(self, guild_id: int | None, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared = []
+        for index, payload in enumerate(payloads):
+            try:
+                prepared.append(self.prepare_command(payload))
+            except errors.BackendError as exc:
+                if exc.errors is not None:
+                    raise errors.invalid_form_body(errors={str(index): exc.errors}) from None
+                raise
         existing = self.commands.get(guild_id, {})
-        for payload in payloads:
-            cmd = dict(payload)
-            cmd.setdefault("type", AppCommandType.CHAT_INPUT)
-            previous = existing.get((cmd["name"], cmd["type"]))
-            cmd["id"] = previous["id"] if previous is not None else str(self.snowflake())
-            cmd["application_id"] = str(self.application_id)
-            cmd.setdefault("description", "")
-            cmd.setdefault("options", [])
-            cmd.setdefault("default_member_permissions", None)
-            cmd.setdefault("dm_permission", True)
-            if guild_id is not None:
-                cmd["guild_id"] = str(guild_id)
-            registered[(cmd["name"], cmd["type"])] = cmd
+        registered = {}
+        for cmd in prepared:
+            key = (cmd["name"], cmd["type"])
+            registered[key] = self._store_command(guild_id, cmd, existing.get(key))
         self.commands[guild_id] = registered
         return list(registered.values())
+
+    def get_command(self, guild_id: int | None, command_id: int) -> dict[str, Any]:
+        for command in self.commands.get(guild_id, {}).values():
+            if int(command["id"]) == command_id:
+                return command
+        raise errors.BackendError(404, 10063, "Unknown application command")
+
+    def upsert_command(
+        self, guild_id: int | None, payload: dict[str, Any], *, command_id: int | None = None
+    ) -> dict[str, Any]:
+        previous = self.get_command(guild_id, command_id) if command_id is not None else None
+        if previous is not None:
+            payload = {**{key: previous[key] for key in COMMAND_FIELDS if key in previous}, **payload}
+        cmd = self.prepare_command(payload)
+        key = (cmd["name"], cmd["type"])
+        commands = self.commands.setdefault(guild_id, {})
+        if previous is None:
+            previous = commands.get(key)
+        cmd = self._store_command(guild_id, cmd, previous)
+        if previous is not None:
+            commands.pop((previous["name"], previous["type"]))
+        commands[key] = cmd
+        return cmd
+
+    def delete_command(self, guild_id: int | None, command_id: int) -> None:
+        command = self.get_command(guild_id, command_id)
+        del self.commands[guild_id][(command["name"], command["type"])]
 
     def set_command_permissions(
         self, guild_id: int, command_id: int, permissions: list[dict[str, Any]]

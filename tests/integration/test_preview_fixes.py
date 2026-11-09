@@ -733,8 +733,18 @@ async def test_browser_reauthorizes_cached_channel_select_draft_after_refresh(en
                 await page.goto(preview.url)
                 await page.wait_for_function("() => window.simcordPreview?.ready")
                 trigger = page.locator(".select-trigger").first
-                await trigger.click()
-                await page.locator(".select-candidate-search").first.fill(private.name)
+                async with page.expect_response(
+                    lambda response: (
+                        response.url.endswith("/api/action")
+                        and response.request.post_data_json.get("kind") == "browse_candidates"
+                        and response.request.post_data_json.get("query") == private.name
+                    )
+                ):
+                    await trigger.click()
+                    await page.locator(".select-candidate-search").first.fill(private.name)
+                await page.wait_for_function(
+                    "() => window.simcordPreview.ready && !window.simcordPreview.pendingQuery"
+                )
                 option = page.locator(".select-option").filter(has_text=private.name).first
                 await option.wait_for()
                 await option.click()
@@ -756,11 +766,11 @@ async def test_browser_reauthorizes_cached_channel_select_draft_after_refresh(en
                     """({id, name, key}) => {
                       const status = window.simcordPreview;
                       const trigger = document.querySelector(".select-trigger");
-                      const guidance = document.querySelector(".select-guidance")?.textContent || "";
-                      return !status.selectDrafts[key]?.includes(id)
-                        && !trigger?.textContent.includes(name)
-                        && !trigger?.textContent.includes(id)
-                        && guidance.includes("no longer available");
+                      return status.ready && !status.pendingQuery && trigger && !trigger.disabled
+                        && status.selectStates[key]?.valid === false
+                        && !status.selectDrafts[key]?.includes(id)
+                        && !trigger.textContent.includes(name)
+                        && !trigger.textContent.includes(id);
                     }""",
                     arg={"id": str(private.id), "name": private.name, "key": key},
                 )

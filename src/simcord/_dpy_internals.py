@@ -17,7 +17,9 @@ from types import ModuleType
 from typing import Any
 
 import discord
+from discord import app_commands as _app_commands
 from discord.context_managers import Typing
+from discord.ext import commands as _commands
 from discord.ext import tasks as _ext_tasks
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
@@ -35,8 +37,12 @@ def listener_futures(client: discord.Client) -> list[Any]:
     return [fut for entries in (listeners or {}).values() for fut, _ in entries]
 
 
-def capture_ui_errors(client: discord.Client, record_error: Callable[[BaseException], None]) -> None:
-    """Capture UI exceptions before discord.py's default handlers swallow them."""
+def capture_ui_errors(
+    client: discord.Client,
+    observe_error: Callable[[BaseException], None],
+    record_unhandled: Callable[[BaseException], None],
+) -> None:
+    """Observe UI errors, distinguishing user handlers from SDK logging defaults."""
     store = get_state(client)._view_store
     add_view = _original_callback(store.add_view)
 
@@ -44,15 +50,54 @@ def capture_ui_errors(client: discord.Client, record_error: Callable[[BaseExcept
         original = _original_callback(view.on_error)
 
         async def on_error(interaction: Any, error: BaseException, *args: Any) -> None:
-            record_error(error)
+            observe_error(error)
+            if getattr(original, "__func__", original) in (
+                _view.BaseView.on_error,
+                discord.ui.Modal.on_error,
+            ):
+                record_unhandled(error)
             await original(interaction, error, *args)
 
         on_error.__simcord_original_callback__ = original
+        on_error.__simcord_error_observer__ = True
         view.on_error = on_error
         add_view(view, message_id)
 
     register.__simcord_original_callback__ = add_view
     store.add_view = register
+
+
+def prefix_error_has_handler(client: discord.Client, ctx: Any) -> bool:
+    """Whether prefix error routing reaches a real user error handler."""
+    command = ctx.command
+    local = _original_callback(getattr(command, "on_error", None))
+    if callable(local) and not getattr(local, "__simcord_error_observer__", False):
+        return True
+    cog = ctx.cog
+    if cog is not None:
+        local = _commands.Cog._get_overridden_method(cog.cog_command_error)
+        if local is not None:
+            local = _original_callback(local)
+            if not getattr(local, "__simcord_error_observer__", False):
+                return True
+    global_handler = _original_callback(getattr(client, "on_command_error", None))
+    if (
+        callable(global_handler)
+        and not getattr(global_handler, "__simcord_error_observer__", False)
+        and getattr(global_handler, "__func__", global_handler) is not _commands.Bot.on_command_error
+    ):
+        return True
+    return any(
+        callable(listener) and not getattr(listener, "__simcord_error_observer__", False)
+        for callback in getattr(client, "extra_events", {}).get("on_command_error", ())
+        if not getattr(callback, "__simcord_error_observer__", False)
+        for listener in (_original_callback(callback),)
+    )
+
+
+def app_command_has_error_handler(command: Any) -> bool:
+    """Use the SDK's local/group/binding/context-menu error-handler rules."""
+    return command is not None and command._has_any_error_handlers()
 
 
 def verify() -> None:
@@ -77,6 +122,16 @@ def verify() -> None:
         (ConnectionState, "intents"),
         (ConnectionState, "parse_guild_members_chunk"),
         (discord.Client, "_run_event"),
+        # Error classification follows the SDK's own routing and default handlers:
+        (_view.ViewStore, "add_view"),
+        (_view.BaseView, "on_error"),
+        (discord.ui.Modal, "on_error"),
+        (_commands.Command, "dispatch_error"),
+        (_commands.Cog, "_get_overridden_method"),
+        (_commands.Bot, "on_command_error"),
+        (_app_commands.Command, "_invoke_error_handlers"),
+        (_app_commands.Command, "_has_any_error_handlers"),
+        (_app_commands.ContextMenu, "_has_any_error_handlers"),
         (ChunkRequest, "done"),
         (DiscordWebSocket, "request_chunks"),
         (discord.Client, "_get_websocket"),

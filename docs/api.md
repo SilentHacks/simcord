@@ -58,6 +58,30 @@ encoded headers; uploaded files are not captured. The `json` field preserves the
 JSON-compatible shape, including top-level arrays. `params` and `json` are detached deep
 snapshots, so later mutations to source containers do not alter a record.
 
+Permission refusals additionally populate `denial` with structured authorization
+detail; successful requests leave it `None`. This diagnostic is separate from the
+authentic Discord error body.
+
+### Permission diagnostics
+
+`Env.explain_permissions(actor, channel)` returns a JSON-friendly mapping with
+`actor_id`, `guild_id`, the requested `channel_id`, `permission_channel_id`,
+ordered `steps`, and final integer `effective` bits. Each step includes `source`,
+`before`, `allow`, `deny` and `after`, satisfying `after = (before & ~deny) | allow`;
+roles and overwrites include their target identifiers. Administrator resets to the
+canonical all-permissions mask, discarding unknown bits. Thread explanations resolve
+inherited parent overwrites.
+
+`Env.permission_checks` is a detached snapshot of bot authorization checks.
+`Env.observed_permissions()` returns a `discord.Permissions` union of exercised
+flags, including denied checks and nonthrowing checks for requested send effects:
+enabled TTS, known external emoji references, and policy-permitted mass mentions
+or unmentionable role pings. Refused effects still degrade successfully and do not
+populate a successful request's `denial`. Plain text, suppressed mentions, and DMs
+do not add irrelevant guild effect flags. This reports exercised paths, not the
+permissions needed by every possible bot execution. See
+[permission diagnostics](guides/diagnostics.md#permission-diagnostics).
+
 ## Builders
 
 Synchronous, omnipotent handles for arranging the virtual Discord. Returned by `env`/`guild`

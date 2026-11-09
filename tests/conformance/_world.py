@@ -43,6 +43,7 @@ class World:
     dm_uid: int
     interaction_token: str
     entitlement: int
+    command: int
 
 
 def build_world() -> World:
@@ -106,6 +107,7 @@ def build_world() -> World:
     interaction.respond_with_message(msg.id, ephemeral=False)
     sku = b.create_sku("Consumable", type=3)
     entitlement = b.seed_entitlement(sku.id, user_id=member.id)
+    command = b.register_commands(gid, [{"name": "fuzz-command", "description": "Fuzz command"}])[0]
 
     return World(
         backend=b,
@@ -133,6 +135,7 @@ def build_world() -> World:
         dm_uid=dm.id,
         interaction_token=interaction.token,
         entitlement=entitlement.id,
+        command=int(command["id"]),
     )
 
 
@@ -180,6 +183,7 @@ def _param(name: str, template: str, w: World) -> object | None:
         "sticker_id": w.sticker,
         "code": w.invite,
         "application_id": w.app_id,
+        "command_id": w.command,
         "entitlement_id": w.entitlement,
         "answer_id": 1,
     }

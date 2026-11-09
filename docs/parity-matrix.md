@@ -25,15 +25,16 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Bulk delete (`purge` / `delete_messages`) | ✅ | 2–100 messages, single `MESSAGE_DELETE_BULK`, audit-logged |
 | Embeds, attachments, replies, mentions | ✅ | In-memory CDN; slash `ATTACHMENT` options accept `(filename, bytes)` uploads; `attachment.read()` works |
 | Message forwarding | ⚠️ | Native `actor.forward(message, channel)` and SDK `message.forward(channel)`; immutable rich snapshots, permissions, content-access projection and Preview. Already-forwarded sources fail explicitly rather than flattening unverified nested semantics. |
-| Pins | ✅ | Current paginated endpoints |
+| Pins | ✅ | Current paginated endpoints; `pin_messages`, not `manage_messages`, authorizes pin/unpin |
 | Typing | ✅ | Both directions |
 | Reactions | ✅ | Add/remove/list, clear-all & clear-emoji, gateway events |
 | DM channels | ✅ | User→bot and bot→user; `UserHandle.slash()` / `.autocomplete()` exercise bot-DM commands |
-| Threads | ✅ | Create (standalone & from message), messaging within; join/leave, add/remove member, `fetch_members`, `archived_threads`, `Guild.active_threads`, `edit(archived=/locked=)` |
+| Threads | ✅ | Public, private and announcement threads; create (standalone & from message), messaging within; join/leave, add/remove member, `fetch_members`, `archived_threads`, `Guild.active_threads`, `edit(archived=/locked=)` |
 | Forum posts | ✅ | `ForumChannel.create_thread` (starter message + `applied_tags`); tag config via edit |
 | Prefix commands (`ext.commands`) | ✅ | Converters, checks, cooldowns, error handlers |
 | Permissions engine | ✅ | Overwrites, hierarchy, timeouts, owner/admin |
-| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes |
+| Bot channel visibility | ✅ | Hidden gateway channels are obfuscated, REST guild-channel listings are filtered, and role/overwrite changes refresh visibility. Authoritative setup state and interaction wire payloads stay unredacted; unspecified neutral fields remain docs-based simulator policy. |
+| Slash commands | ✅ | Option constraints and choices, resolved data, subcommand groups; `available_commands()` lists visible leaf invocations; actors enforce command visibility with reason codes. NSFW enabling is deliberately rejected atomically; false/omitted metadata remains sync-compatible. Pre-existing NSFW commands are excluded from enumeration and Preview with a generic incomplete diagnostic, without disclosing identity; direct invocation raises `NotImplementedError`. No age-gating model. |
 | App command permissions | ✅ | `AppCommand.fetch_permissions`; seed via `guild.set_command_permissions` |
 | Context menus (user & message) | ✅ | |
 | Autocomplete | ✅ | Focused options must be declared and have autocomplete enabled |
@@ -72,6 +73,292 @@ routes are local presentation endpoints and are intentionally not part of the Di
 | Rate limit simulation | ❌ | Deliberate: tests stay fast; use `inject_error` for 429 paths |
 | Sharding simulation | ✅ | `AutoShardedClient`/`AutoShardedBot`; full and partial shard sets, Discord guild routing, per-shard READY/chunking/presence/latency/controls; no multi-process IPC |
 
+### Behavior evidence
+
+The independently authored [behavior ledger](https://github.com/SilentHacks/simcord/blob/master/tests/fixtures/behavior/ledger.json)
+contains **184 unique live scenarios**, recorded on **2026-11-06** with two bots
+in an isolated Community server. The main 181-row recording completed in about
+13 minutes; a six-row supplementary run adds populated-pin checks and explicit
+permission-endpoint cross-checks. Three overlapping control rows agree. No code
+or fixtures were copied from another project's truth table.
+
+Each row preserves its immutable scenario, symbolic raw request, status, Discord
+code, new-validator error tree and relevant response/state effects. Capture dates,
+API version, gateway capabilities and separate capture-run membership live in
+provenance. Replays rebuild each actual capture run independently; combining
+supplementary recordings must not pool their state. Real IDs, absolute timestamps,
+tokens and raw private receipts do not belong in published scenario rows.
+
+**Comparison boundary:** this is semantic behavior evidence, not complete wire or
+client certification. The replay compares the request and modeled message/channel
+fields and effects; absent optional arrays and neutral defaults compare equally,
+overwrite order is immaterial, and volatile server revisions, scanner metadata,
+poll tallies/expiry and unmodeled cosmetic fields are not scored. Original durable
+receipts remain private. Serializer/parser conformance checks cover their own
+contracts separately. Bot recordings do not establish simulated-human policies.
+
+The CI ratchet requires every row to replay. New mismatches, changed mismatch
+signatures, changed requests and now-passing stale gaps fail. The only deliberate
+[known gaps](https://github.com/SilentHacks/simcord/blob/master/tests/fixtures/behavior/known_gaps.json)
+are:
+
+- `file.text`: Discord sniffs `text/plain; charset=utf-8`; the offline CDN infers
+  `text/plain` from the filename. Bytes, filename, size and permission behavior agree.
+- `hidden.guild-list`: REST filtering had not yet been enforced on the capture
+  date. SimCord deliberately implements the documented mandatory filtering without
+  an opt-out. Capability-32768 gateway captures already confirmed obfuscation.
+- `command.store`: the authentic capture accepted `nsfw=true`; SimCord deliberately
+  forbids enabling NSFW commands and rejects the unchanged request before storage.
+  The exact known-gap signature records this local policy, not Discord parity.
+
+The generated Evidence column below distinguishes actual live observations from
+the official documentation used to derive each hypothesis. Status/code describe
+the live observation; the exceptions above are not passing parity claims.
+
+<!-- behavior:begin (generated — do not edit by hand) -->
+
+| Scenario | Evidence | Status/code | Single-cause control |
+| --- | --- | --- | --- |
+| `send.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `send.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `send.text` |
+| `send.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `send.text` |
+| `send.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `send.no-connect` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `embed.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `embed.no-embed` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `embed.text` |
+| `embed.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `embed.text` |
+| `embed.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `embed.text` |
+| `file.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `file.no-attach` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `file.text` |
+| `file.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `file.text` |
+| `file.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `file.text` |
+| `poll.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 200/0 | `—` |
+| `poll.no-polls` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 403/50013 | `poll.text` |
+| `poll.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `poll.text` |
+| `reply.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `reply.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/160002 | `reply.text` |
+| `reply.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `reply.text` |
+| `reply.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `reply.text` |
+| `history.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `history.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `history.text` |
+| `history.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `history.text` |
+| `fetch.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `fetch.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `fetch.text` |
+| `fetch.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `fetch.text` |
+| `pins.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `pins.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `pins.text` |
+| `pins.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `pins.text` |
+| `pin.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `pin.no-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `pin.text` |
+| `pin.no-manage` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `pin.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `pin.text` |
+| `pin.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `pin.text` |
+| `unpin.text` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `unpin.no-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `unpin.text` |
+| `crosspost.own` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `crosspost.other` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `crosspost.own-no-manage` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `crosspost.other-no-manage` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `crosspost.other` |
+| `crosspost.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `crosspost.own` |
+| `crosspost.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `crosspost.own` |
+| `reaction.new` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `reaction.no-add` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `reaction.new` |
+| `reaction.existing-no-add` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `reaction.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `reaction.new` |
+| `reaction.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `reaction.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `reaction.new` |
+| `reaction.remove-own` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `reaction.remove-own-no-add` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.no-parent-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.no-thread-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.send` |
+| `thread.no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.send` |
+| `thread.archived-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.locked-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.archived-send` |
+| `thread.locked-manager-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.archived-react` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `thread.active-react` |
+| `thread.active-react` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.locked-react` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `thread.active-locked-react` |
+| `thread.archived-edit` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `thread.active-edit` |
+| `thread.active-edit` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.archived-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `—` |
+| `thread.locked-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `—` |
+| `thread.unarchive` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.locked-unarchive` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/160005 | `thread.unarchive` |
+| `thread.manager-unarchive` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.owner-rename` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.other-rename` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.manager-rename` |
+| `thread.manager-rename` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.owner-lock` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `thread.manager-lock` |
+| `thread.manager-lock` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.leave` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.leave-no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.join` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.join-no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.join` |
+| `news-thread.send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `news-thread.no-parent-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `news-thread.no-thread-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `news-thread.send` |
+| `news-thread.archived-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `news-thread.locked-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `news-thread.archived-send` |
+| `news-thread.leave-no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `voice.send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `voice.no-connect-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `voice.send` |
+| `voice.no-view-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `voice.send` |
+| `voice.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `voice.send` |
+| `voice.pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50019 | `—` |
+| `voice.no-connect-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `voice.pin` |
+| `voice.no-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50019 | `voice.pin` |
+| `voice.history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `voice.no-connect-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `voice.history` |
+| `stage.send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `stage.no-connect-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `stage.send` |
+| `stage.no-view-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `stage.send` |
+| `stage.pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50019 | `—` |
+| `stage.no-connect-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `stage.pin` |
+| `stage.no-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50019 | `stage.pin` |
+| `nickname.valid` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 200/0 | `—` |
+| `nickname.max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 200/0 | `—` |
+| `nickname.over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 400/50035 | `nickname.max` |
+| `nickname.clear` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 200/0 | `—` |
+| `thread.name-max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `thread.name-over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50035 | `thread.name-max` |
+| `thread.name-empty` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `thread.name-max` |
+| `topic.max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `topic.over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50035 | `topic.max` |
+| `topic.clear` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `forum.topic-max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `forum.topic-over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50035 | `forum.topic-max` |
+| `slowmode.zero` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `slowmode.max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `slowmode.over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50035 | `slowmode.max` |
+| `slowmode.negative` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50035 | `slowmode.zero` |
+| `poll.duration-max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 200/0 | `—` |
+| `poll.duration-over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 400/50035 | `poll.duration-max` |
+| `poll.duration-zero` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 400/50035 | `poll.text` |
+| `poll.one-answer` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 200/0 | `poll.text` |
+| `timeout.short` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 200/0 | `—` |
+| `timeout.over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 400/50035 | `timeout.short` |
+| `timeout.past` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 200/0 | `—` |
+| `timeout.admin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/guild#modify-guild-member) | 403/50013 | `timeout.short` |
+| `target.category` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50008 | `send.text` |
+| `target.forum` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/50008 | `send.text` |
+| `message.empty` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 400/50006 | `send.text` |
+| `message.empty-content` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 400/50006 | `send.text` |
+| `message.sticker-unknown` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 400/50081 | `send.text` |
+| `message.content-max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `message.content-over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 400/50035 | `message.content-max` |
+| `mentions.none` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `mentions.user` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `mentions.role-blocked` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `mentions.role-allowed` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `mentions.invalid-overlap` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 400/50035 | `mentions.user` |
+| `tts.allowed` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `tts.no-permission` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `tts.allowed` |
+| `flags.ephemeral-normal` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `flags.suppress-embeds` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `flags.silent` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `forum.post` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 201/0 | `—` |
+| `forum.require-tag-missing` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 400/40067 | `forum.post` |
+| `forum.require-tag-present` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 201/0 | `—` |
+| `forum.no-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `forum.post` |
+| `forum.no-thread-create` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 201/0 | `—` |
+| `command.store` | Live (2026-11-06); [docs](https://docs.discord.com/developers/interactions/application-commands) | 201/0 | `—` |
+| `command.options-25` | Live (2026-11-06); [docs](https://docs.discord.com/developers/interactions/application-commands) | 201/0 | `—` |
+| `command.options-26` | Live (2026-11-06); [docs](https://docs.discord.com/developers/interactions/application-commands) | 400/50035 | `command.options-25` |
+| `command.required-first` | Live (2026-11-06); [docs](https://docs.discord.com/developers/interactions/application-commands) | 201/0 | `—` |
+| `command.required-after` | Live (2026-11-06); [docs](https://docs.discord.com/developers/interactions/application-commands) | 400/50035 | `command.required-first` |
+| `hidden.fetch` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 403/50001 | `hidden.visible` |
+| `hidden.visible` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `hidden.guild-list` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 200/0 | `—` |
+| `hidden.gateway-create` | Live (2026-11-06); [docs](https://docs.discord.com/developers/events/gateway-events) | 201/0 | `—` |
+| `hidden.gateway-update` | Live (2026-11-06); [docs](https://docs.discord.com/developers/events/gateway-events) | 200/0 | `—` |
+| `hidden.creation-self-hide` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/channel) | 201/0 | `—` |
+| `emoji.external-allowed` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `emoji.external-denied` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `emoji.external-allowed` |
+| `poll.question-max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 200/0 | `—` |
+| `poll.question-over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 400/50035 | `poll.question-max` |
+| `poll.answer-max` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 200/0 | `—` |
+| `poll.answer-over` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/poll) | 400/50035 | `poll.answer-max` |
+| `crosspost.no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `crosspost.own` |
+| `thread.active-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.archived-pin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `thread.active-pin` |
+| `thread.active-unpin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.archived-unpin` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `thread.active-unpin` |
+| `thread.active-bulk-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.archived-bulk-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 400/50083 | `thread.active-bulk-delete` |
+| `thread.owner-archive` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.other-archive` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.manager-archive` |
+| `thread.manager-archive` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.rename-no-thread-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.owner-rename` |
+| `thread.unarchive-no-thread-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `thread.unarchive` |
+| `thread.active-locked-send` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50001 | `—` |
+| `thread.active-locked-react` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 204/0 | `—` |
+| `thread.owner-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `thread.owner-manager-delete` |
+| `thread.owner-manager-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `thread.other-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 403/50013 | `thread.manager-delete` |
+| `thread.manager-delete` | Live (2026-11-06); [docs](https://docs.discord.com/developers/topics/permissions) | 200/0 | `—` |
+| `hidden.gateway-voice` | Live (2026-11-06); [docs](https://docs.discord.com/developers/events/gateway-events) | 201/0 | `—` |
+| `hidden.gateway-forum` | Live (2026-11-06); [docs](https://docs.discord.com/developers/events/gateway-events) | 201/0 | `—` |
+| `hidden.gateway-category` | Live (2026-11-06); [docs](https://docs.discord.com/developers/events/gateway-events) | 201/0 | `—` |
+| `pins.populated` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `—` |
+| `pins.populated-no-history` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 200/0 | `pins.populated` |
+| `pins.populated-no-view` | Live (2026-11-06); [docs](https://docs.discord.com/developers/resources/message) | 403/50001 | `pins.populated` |
+
+<!-- behavior:end -->
+
+#### Replaying or refreshing behavior evidence
+
+Routine CI is offline:
+
+```bash
+python -m scripts.behavior_reference replay \
+  --ledger tests/fixtures/behavior/ledger.json \
+  --known-gaps tests/fixtures/behavior/known_gaps.json
+python -m scripts.behavior_reference table \
+  --ledger tests/fixtures/behavior/ledger.json
+```
+
+Live recording is manual, authorized work, never a CI prerequisite. Stop other
+processes using the subject token first and restore them afterwards. Credentials
+are environment-only (`BEHAVIOR_ADMIN_TOKEN`, `BEHAVIOR_SUBJECT_TOKEN` and
+`BEHAVIOR_SUBJECT_ID`); never put tokens in arguments, logs or committed files.
+The recorder refuses any guild other than the explicitly approved lab, verifies
+two distinct bot identities and administrator/hierarchy access, paces requests,
+and only mutates positively receipt-owned resources. Names alone are not ownership.
+It never bulk-overwrites existing commands, edits managed roles or tests on humans.
+
+Use distinct private directories for preflight and recording:
+
+```bash
+python -m scripts.behavior_reference preflight --directory /private/preflight
+python -m scripts.behavior_reference record \
+  --directory /private/behavior-run --ledger /private/behavior-live.json
+```
+
+`--case` selects hand-written scenarios and automatically includes their controls.
+`crosscheck` uses the same arguments and compares known explicit permission bits
+with Discord's member-permission endpoint (`implicit=false`); raw oracle receipts
+remain private. The committed supplement spot-checks four such configurations,
+not every ledger row.
+
+Interrupted or ambiguous writes are never retried as if they had failed. Keep the
+private journal, resolve any uncertain receipt, then run `cleanup` with the original
+directory. Successful parent deletion proves deletion of positively correlated
+children; unrelated objects are never inferred to be owned. Cleanup restores the
+subject's original nickname/timeout and removes only owned resources.
+
+```bash
+python -m scripts.behavior_reference cleanup --directory /private/behavior-run
+python -m scripts.behavior_reference publish \
+  --directory /private/behavior-run --ledger /private/recovered-live.json
+```
+
+Publication is offline and requires receipt-proven cleanup plus unchanged scenario
+snapshots. `publish --supplement /private/supplement.json` merges genuine captures
+only when overlapping complete rows agree. Do not rewrite historical observations
+or weaken error trees to make a replay pass; recapture changed scenarios instead.
+
+
 ### Preview feature and evidence matrix
 
 The [fixture ledger](https://github.com/SilentHacks/simcord/blob/master/tests/fixtures/preview/coverage.json) defines 94 rows across
@@ -101,9 +388,9 @@ so it is exact by construction.
 
 <!-- routes:begin (generated — do not edit by hand) -->
 
-**140 routes implemented**, grouped by resource below. Anything else fails loudly with `RouteNotImplemented`.
+**144 routes implemented**, grouped by resource below. Anything else fails loudly with `RouteNotImplemented`.
 
-???+ success "Applications · 16 route(s)"
+???+ success "Applications · 20 route(s)"
 
     | Method | Route |
     | --- | --- |
@@ -120,7 +407,11 @@ so it is exact by construction.
     | `DELETE` | `/applications/{application_id}/entitlements/{entitlement_id}` |
     | `POST` | `/applications/{application_id}/entitlements/{entitlement_id}/consume` |
     | `GET` | `/applications/{application_id}/guilds/{guild_id}/commands` |
+    | `POST` | `/applications/{application_id}/guilds/{guild_id}/commands` |
     | `PUT` | `/applications/{application_id}/guilds/{guild_id}/commands` |
+    | `GET` | `/applications/{application_id}/guilds/{guild_id}/commands/{command_id}` |
+    | `PATCH` | `/applications/{application_id}/guilds/{guild_id}/commands/{command_id}` |
+    | `DELETE` | `/applications/{application_id}/guilds/{guild_id}/commands/{command_id}` |
     | `GET` | `/applications/{application_id}/guilds/{guild_id}/commands/{command_id}/permissions` |
     | `GET` | `/applications/{application_id}/skus` |
 
@@ -308,9 +599,9 @@ issue if your bot needs one.
 
 <!-- gaps:begin (generated — do not edit by hand) -->
 
-**47 discord.py REST routes are not yet implemented**, grouped by resource below; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
+**43 discord.py REST routes are not yet implemented**, grouped by resource below; calling one fails loudly with `RouteNotImplemented` (path parameters shown as `{}`). Open an issue if your bot needs one.
 
-???+ warning "Applications · 11 route(s)"
+???+ warning "Applications · 7 route(s)"
 
     | Route | discord.py `HTTPClient` method |
     | --- | --- |
@@ -319,11 +610,7 @@ issue if your bot needs one.
     | `GET /applications/{}/commands/{}` | `get_global_command` |
     | `PATCH /applications/{}/commands/{}` | `edit_global_command` |
     | `DELETE /applications/{}/commands/{}` | `delete_global_command` |
-    | `POST /applications/{}/guilds/{}/commands` | `upsert_guild_command` |
     | `GET /applications/{}/guilds/{}/commands/permissions` | `get_guild_application_command_permissions` |
-    | `GET /applications/{}/guilds/{}/commands/{}` | `get_guild_command` |
-    | `PATCH /applications/{}/guilds/{}/commands/{}` | `edit_guild_command` |
-    | `DELETE /applications/{}/guilds/{}/commands/{}` | `delete_guild_command` |
     | `PUT /applications/{}/guilds/{}/commands/{}/permissions` | `edit_application_command_permissions` |
 
 ???+ warning "Authentication · 1 route(s)"

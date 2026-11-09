@@ -81,7 +81,7 @@ async def test_forum_post_requires_send_messages(env):
     cached = env.bot.get_channel(forum.id)
     with pytest.raises(discord.Forbidden) as exc_info:
         await cached.create_thread(name="nope", content="blocked")
-    assert exc_info.value.code == 50013
+    assert exc_info.value.code == 50001
 
 
 def _forum_state(backend, forum_id):
@@ -268,3 +268,112 @@ def test_forwarded_forum_starter_keeps_inherited_thread_send_gate(env):
         )
     assert exc.value.code == 50013
     assert _forum_state(env.backend, forum.id) == before
+
+
+async def test_forum_pin_unpin_roundtrips_preserve_other_flags(env):
+    forum = env.guild.create_forum_channel("pins")
+    await env.settle()
+    post = await env.bot.get_channel(forum.id).create_thread(name="post", content="starter")
+    stored = env.backend.get_channel(post.thread.id)
+    stored.flags = 256
+    thread = await env.bot.fetch_channel(stored.id)
+    for pinned in (True, False):
+        thread = await thread.edit(pinned=pinned)
+        await env.settle()
+        expected = 256 | (2 if pinned else 0)
+        assert stored.flags == expected
+        assert thread.flags.value == expected
+        assert (await env.bot.fetch_channel(thread.id)).flags.value == expected
+        assert env.bot.get_channel(thread.id).flags.value == expected
+        active = await thread.guild.active_threads()
+        assert next(item for item in active if item.id == thread.id).flags.value == expected
+        thread = await thread.edit(archived=True)
+        archived = [item async for item in env.bot.get_channel(forum.id).archived_threads()]
+        assert next(item for item in archived if item.id == thread.id).flags.value == expected
+        thread = await thread.edit(archived=False)
+
+
+async def test_forum_pin_requires_manage_threads_even_for_creator(env):
+    forum = env.guild.create_forum_channel("pins")
+    await env.settle()
+    post = await env.bot.get_channel(forum.id).create_thread(name="post", content="starter")
+    stored = env.backend.get_channel(post.thread.id)
+    # The creator can still rename, but cannot pin or unpin.
+    mask = ~discord.Permissions(manage_threads=True).value
+    for role in env.backend.get_guild(env.guild.id).roles.values():
+        role.permissions &= mask
+    for initial, pinned in ((0, True), (2, False)):
+        stored.flags = initial
+        thread = await env.bot.fetch_channel(stored.id)
+        events_before = [entry for entry in env.backend.transcript if entry[0] == "GATEWAY"]
+        audit_before = list(env.guild.audit_log())
+        with pytest.raises(discord.Forbidden):
+            await thread.edit(name="must-not-change", pinned=pinned)
+        assert stored.name == "post" and stored.flags == initial
+        assert [entry for entry in env.backend.transcript if entry[0] == "GATEWAY"] == events_before
+        assert env.guild.audit_log() == audit_before
+    await thread.edit(name="creator-rename")
+    assert stored.name == "creator-rename"
+
+
+async def test_thread_flags_reject_unsupported_bits_and_nonforum_pins_atomically(env, channel):
+    forum = env.guild.create_forum_channel("pins")
+    await env.settle()
+    post = await env.bot.get_channel(forum.id).create_thread(name="post", content="starter")
+    ordinary = await env.bot.get_channel(channel.id).create_thread(
+        name="ordinary", type=discord.ChannelType.public_thread
+    )
+    await env.settle()
+    for thread, flags in ((post.thread, 4), (ordinary, None)):
+        before = [entry for entry in env.backend.transcript if entry[0] == "GATEWAY"]
+        audit = list(env.guild.audit_log())
+        with pytest.raises(router.UnsupportedField):
+            if flags is None:
+                await thread.edit(name="must-not-change", pinned=True)
+            else:
+                await env.bot.http.request(
+                    discord.http.Route("PATCH", f"/channels/{thread.id}"),
+                    json={"flags": flags, "name": "must-not-change"},
+                )
+        assert env.backend.get_channel(thread.id).name == thread.name
+        assert env.backend.get_channel(thread.id).flags == 0
+        assert [entry for entry in env.backend.transcript if entry[0] == "GATEWAY"] == before
+        assert env.guild.audit_log() == audit
+
+
+@pytest.mark.parametrize("forum_parent", [False, True])
+async def test_thread_create_cannot_enable_nsfw(env, channel, forum_parent):
+    parent = env.guild.create_forum_channel("forum") if forum_parent else channel
+    await env.settle()
+    path = f"/channels/{parent.id}/threads"
+    body = (
+        {"name": "post", "message": {"content": "starter"}} if forum_parent else {"name": "post", "type": 11}
+    )
+    channels_before = set(env.backend.channels)
+    before = [entry for entry in env.backend.transcript if entry[0] == "GATEWAY"]
+    with pytest.raises(router.UnsupportedField):
+        await env.bot.http.request(discord.http.Route("POST", path), json={**body, "nsfw": True})
+    assert set(env.backend.channels) == channels_before
+    assert [entry for entry in env.backend.transcript if entry[0] == "GATEWAY"] == before
+    created = await env.bot.http.request(discord.http.Route("POST", path), json={**body, "nsfw": False})
+    assert int(created["id"]) in env.backend.channels
+
+
+async def test_channel_patch_false_nsfw_is_inert(env, channel):
+    native = env.bot.get_channel(channel.id)
+    edited = await native.edit(name="renamed", nsfw=False)
+    assert edited.name == "renamed"
+    assert not hasattr(env.backend.get_channel(channel.id), "nsfw")
+
+
+async def test_message_thread_create_rejects_nsfw_enabling(env, channel):
+    message = await env.bot.get_channel(channel.id).send("starter")
+    path = f"/channels/{channel.id}/messages/{message.id}/threads"
+    before = set(env.backend.channels)
+    with pytest.raises(router.UnsupportedField):
+        await env.bot.http.request(discord.http.Route("POST", path), json={"name": "post", "nsfw": True})
+    assert set(env.backend.channels) == before
+    created = await env.bot.http.request(
+        discord.http.Route("POST", path), json={"name": "post", "nsfw": False}
+    )
+    assert int(created["id"]) in env.backend.channels

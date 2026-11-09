@@ -805,3 +805,42 @@ async def test_dm_catalog_and_command_run(env, alice):
         )
         assert receipt["settlement"] == "settled"
         assert receipt["command"]["invocation"] == "dm_greeting"
+
+
+@pytest.mark.asyncio
+async def test_seeded_nsfw_commands_are_isolated_across_preview_lifecycle(env, channel, alice):
+    from simcord.preview._dependencies import _DependencyRead
+    from simcord.preview._snapshot import build_snapshot
+
+    command = env.backend.upsert_command(
+        env.guild.id, {"name": "private-nsfw-root", "description": "private-nsfw-schema"}
+    )
+    # Adversarial pre-existing state; supported registration may not enable it.
+    command["nsfw"] = True
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+        page = preview._python
+        for snapshot in (page.snapshot, build_snapshot(preview, page)):
+            diagnostic = next(d for d in snapshot["diagnostics"] if d["code"] == "commands-incomplete")
+            assert diagnostic["complete"] is False and "subject" not in diagnostic
+            serialized = json.dumps(snapshot)
+            assert command["id"] not in serialized
+            assert "private-nsfw" not in serialized
+            _VALIDATOR.validate(snapshot)
+        assert page.command_catalog["truncated"] is False
+        assert "private-nsfw-root" not in alice.available_commands(channel)
+        assert not _DependencyRead(preview, page).entity("command", command["id"])
+        assert _commands.visible_leaf(preview, page, command["id"], [command["name"]]) is None
+        preview._publish(page, reason="refresh")
+        catalog = _commands._authorized_catalog(preview, page)
+        assert "private-nsfw" not in json.dumps(catalog)
+        assert command["id"] not in json.dumps(catalog)
+        pin = preview._pin_capture(alice, None, 0, (640, 360), "channel")
+        assert any(d["code"] == "commands-incomplete" for d in pin.page.snapshot["diagnostics"])
+        assert "private-nsfw" not in json.dumps(pin.page.snapshot)
+        before = len(env.backend.interactions)
+        with pytest.raises(NotImplementedError, match="NSFW command"):
+            await alice.slash(channel, command["name"])
+        assert len(env.backend.interactions) == before
+        command["contexts"] = [1]
+        preview._publish(page, reason="refresh")
+        assert not any(d["code"] == "commands-incomplete" for d in page.snapshot["diagnostics"])

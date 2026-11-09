@@ -61,8 +61,12 @@ state and cross-guild role/member targets are rejected before channel creation.
   (`50013`). It also can't delete the `@everyone` role.
 - **Editing others' messages** — the bot can't edit another user's message (`50005`).
 - **Timeouts** — a timed-out member loses everything except viewing and reading history.
-- **Reactions** — `add_reactions` is required to introduce a new emoji, not to join an
-  existing reaction. Both require access to the message and its history.
+- **Bot reactions** — `add_reactions` is required to introduce a new emoji, not
+  to join an existing reaction or remove your own. Read Message History is not
+  required on these bot REST paths. Simulated users and Preview retain their
+  separate history-access checks.
+- **Pins** — pinning and unpinning require `pin_messages`, for both bots and
+  simulated users. `manage_messages` does not grant this permission.
 
 ```python
 async def test_cannot_ban_higher_role(simcord_env):
@@ -80,6 +84,74 @@ async def test_cannot_ban_higher_role(simcord_env):
     assert "can't ban" in result.response.content.lower()
     assert guild.get_ban(boss) is None
 ```
+
+## Bot-visible channels
+
+The bot's cache follows Discord's [channel-obfuscation contract](https://docs.discord.com/developers/resources/channel#channel-object-obfuscated-channels):
+channels it cannot view have the name `___hidden___`, the obfuscated flag, neutral
+sensitive fields and a synthetic `@everyone` overwrite denying `view_channel`.
+Guild channel listings omit those channels; fetching one directly is denied.
+Role and overwrite changes update this projection, including threads under a
+hidden parent. Categories remain visible when a child is visible, and a connected
+voice channel remains visible to the bot.
+
+Builders, actors and backend state retain their authoritative data. Use a
+`ChannelHandle` to inspect test setup, not the bot cache. Interaction wire payloads
+remain unobfuscated; discord.py 2.7.1 may nevertheless resolve `Interaction.channel`
+from its existing cache, and does not expose the wire obfuscation flag on every
+channel class.
+
+Our [live evidence](../parity-matrix.md#behavior-evidence) includes opt-in gateway
+captures for text, voice, forum and category channels. Structural fields such as
+slowmode and voice limits are retained. REST list filtering follows Discord's
+documented mandatory behavior; it was not yet enforced in the dated live capture
+and is an explicit known gap, not a claim of matching that pre-rollout response.
+Uncaptured neutral-field details and category/voice visibility edge rules remain
+documented simulator policy.
+
+Visible voice occupants are projected per connection at event admission, including
+events waiting for FIFO parser delivery. Moving into a hidden channel (or losing
+visibility while stationary) clears the SDK voice cache with a departure built
+only from the last authorized snapshot and `channel_id: null`. Hidden-to-hidden
+movement discloses nothing; a reveal restores current authorized occupants.
+This departure wire shape is an intentional privacy/cache-safety inference, not
+a recorded live Discord observation. Canonical backend voice state is unchanged,
+and normal voice intent and shard routing still apply.
+
+## Bot REST behavior
+
+- Embeds, uploads and polls on ordinary messages require `embed_links`,
+  `attach_files` and `send_polls`. Replies require history (`160002`); fetching a
+  message, pinning and crossposting also check history. Listing pins without
+  history succeeds with an empty list.
+- Voice and stage text actions require `connect` (`50001`). Pinning there is
+  refused with `50019`, even when `pin_messages` is granted.
+- Archived-thread edit, delete, bulk delete, reaction and pin actions fail with
+  `50083`. Sending automatically unarchives an unlocked thread after validating
+  the payload. Locked sends need `manage_threads`; locked unarchive without it
+  fails with `160005`.
+- Thread creators may rename, archive and lock their threads; other members
+  need `manage_threads`. Edits and unarchive also need
+  `send_messages_in_threads`. **Deleting requires `manage_threads`, including
+  for the creator**, as confirmed by our own recording. Leaving needs no view
+  access.
+- Forum thread pinning and unpinning require `manage_threads`, even for the
+  creator. The pinned flag is returned consistently by edits, fetches, gateway
+  events and active/archived listings. Pinning non-forum threads and changing
+  unsupported thread flag bits are rejected before mutation; existing unrelated
+  bits are preserved.
+- NSFW channels are not modeled: channel creation/edit and thread creation reject
+  enabling NSFW. Omitted or literal `False` metadata is accepted inertly; there is
+  no way to enable NSFW.
+- `AllowedMentions` controls the returned mention arrays. Missing TTS permission,
+  unmentionable role pings, ignored ephemeral flags on normal sends and denied
+  known external custom emojis are modeled as successful requests with reduced
+  effects, reported through [`env.degradations`](diagnostics.md#silent-degradations).
+
+These bot recordings do not establish the rules for simulated human actors.
+Actor behavior is unchanged except for the documented pin-permission split and
+the docs-based locked-thread send guard.
+
 
 ## Application command visibility
 

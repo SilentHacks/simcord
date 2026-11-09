@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import inspect
 import math
 import weakref
@@ -78,6 +79,7 @@ class Env:
         self.backend = Backend(clock=Clock(start_time))
         self._errors: list[BaseException] = []
         self._error_ids: set[int] = set()
+        self._unhandled_error_ids: set[int] = set()
         self._errors_acknowledged = 0
         self._guilds: list[GuildHandle] = []
         self._work = _WorkState()
@@ -104,6 +106,11 @@ class Env:
         self._shard_count, self._shard_ids = self._resolve_shards(bot)
         self._started = False
         self._last_dispatch: str | None = None
+        from ._diagnostics import ACTIVE_RUN
+
+        diagnostic_run = ACTIVE_RUN.get()
+        if diagnostic_run is not None:
+            diagnostic_run.register(self)
 
     @staticmethod
     def _validate_timeout(value: float, name: str) -> float:
@@ -205,6 +212,11 @@ class Env:
                 self._pre_shutdown_task = None
 
     def _begin_operation(self, label: str) -> None:
+        from ._diagnostics import ACTIVE_RUN
+
+        diagnostic_run = ACTIVE_RUN.get()
+        if diagnostic_run is not None:
+            diagnostic_run.register(self)
         scope = _BOT_SCOPE.get()
         if scope is not None and scope[0] is self:
             raise SetupError(f"bot-owned work cannot call simcord operation {label}")
@@ -732,8 +744,10 @@ class Env:
             raise SetupError("error cursor must be a non-negative integer")
         return tuple(self._errors[cursor:])
 
-    def _record_error(self, error: BaseException) -> None:
+    def _record_error(self, error: BaseException, *, unhandled: bool = True) -> None:
         identity = id(error)
+        if unhandled:
+            self._unhandled_error_ids.add(identity)
         if identity in self._error_ids:
             return
         self._error_ids.add(identity)
@@ -746,37 +760,61 @@ class Env:
         return list(self._errors)
 
     def _capture_errors(self) -> None:
+        from discord import Client, app_commands
         from discord.ext import commands
 
-        _dpy_internals.capture_ui_errors(self.bot, self._record_error)
+        def observe_error(error: BaseException) -> None:
+            self._record_error(error, unhandled=False)
 
-        async def on_command_error(_ctx: Any, error: BaseException) -> None:
-            if not isinstance(error, commands.CommandNotFound):
+        _dpy_internals.capture_ui_errors(self.bot, observe_error, self._record_error)
+
+        async def on_command_error(ctx: Any, error: BaseException) -> None:
+            if isinstance(error, commands.CommandNotFound):
+                return
+            observe_error(error)
+            if not _dpy_internals.prefix_error_has_handler(self.bot, ctx):
                 self._record_error(error)
 
+        on_command_error.__simcord_error_observer__ = True
+        previous_on_error = self.bot.on_error
         add_listener = getattr(self.bot, "add_listener", None)
+        remove_listener = getattr(self.bot, "remove_listener", None)
         if add_listener is not None:
+            previous_observer = getattr(previous_on_error, "__simcord_command_error_observer__", None)
+            if previous_observer is not None and remove_listener is not None:
+                remove_listener(previous_observer, "on_command_error")
             add_listener(on_command_error, "on_command_error")
 
-        original_on_error = self.bot.on_error
+        original_on_error = _dpy_internals._original_callback(previous_on_error)
+        default_on_error = getattr(original_on_error, "__func__", original_on_error) is Client.on_error
 
         async def on_error(event_method: str, /, *args: Any, **kwargs: Any) -> None:
             import sys
 
             exc = sys.exc_info()[1]
             if exc is not None:
-                self._record_error(exc)
+                observe_error(exc)
+                if default_on_error:
+                    self._record_error(exc)
             await original_on_error(event_method, *args, **kwargs)
 
+        on_error.__simcord_original_callback__ = original_on_error
+        on_error.__simcord_command_error_observer__ = on_command_error
         self.bot.on_error = on_error  # type: ignore[method-assign]
         tree = getattr(self.bot, "tree", None)
         if tree is not None:
-            original = tree.on_error
+            original = _dpy_internals._original_callback(tree.on_error)
+            default_tree_error = getattr(original, "__func__", original) is app_commands.CommandTree.on_error
 
             async def on_tree_error(interaction: Any, error: BaseException) -> None:
-                self._record_error(error)
+                observe_error(error)
+                if default_tree_error and not _dpy_internals.app_command_has_error_handler(
+                    interaction.command
+                ):
+                    self._record_error(error)
                 await original(interaction, error)
 
+            on_tree_error.__simcord_original_callback__ = original
             tree.on_error = on_tree_error
 
     def preview(
@@ -1057,6 +1095,54 @@ class Env:
 
     # ----------------------------------------------------------- diagnostics
 
+    def explain_permissions(self, actor: Any, channel: Any) -> dict[str, Any]:
+        """Explain effective bits using JSON-friendly ordered overwrite steps.
+
+        ``actor`` and ``channel`` accept handles, discord.py objects, or integer
+        IDs. Threads report their requested ID and inherited permission channel.
+        This traces permission bits, not visibility, hierarchy, or REST policy.
+        """
+        from .backend import permissions
+
+        actor_id = actor if isinstance(actor, int) else actor.id
+        channel_id = channel if isinstance(channel, int) else channel.id
+        stored = self.backend.get_channel(channel_id)
+        if stored.guild_id is None:
+            raise SetupError("explain_permissions requires a guild channel")
+        permission_channel = self.backend.get_channel(stored.permission_channel_id())
+        self.backend.compute_permissions(stored.guild_id, actor_id, channel_id)
+        result = permissions.explain(
+            self.backend.get_guild(stored.guild_id), actor_id, permission_channel, now=self.now()
+        )
+        result["channel_id"] = channel_id
+        result["permission_channel_id"] = permission_channel.id
+        return result
+
+    @property
+    def permission_checks(self) -> list[dict[str, Any]]:
+        """Bot-only checks: IDs, required/missing names, effective bits, allowed, reason/code."""
+        return copy.deepcopy(self.backend.permission_checks)
+
+    def observed_permissions(self) -> discord.Permissions:
+        """Union of bot-required flags, including checks that were denied."""
+        from .backend.permissions import flag
+
+        value = 0
+        for record in self.backend.permission_checks:
+            for name in record["required"]:
+                value |= flag(name)
+        return discord.Permissions(value)
+
+    @property
+    def degradations(self) -> list[dict[str, Any]]:
+        """JSON-friendly fidelity fallbacks, each with ``kind`` and operation detail."""
+        return copy.deepcopy(self.backend.degradations)
+
+    def assert_no_degradations(self) -> None:
+        """Explicitly fail on recorded fidelity fallbacks; ordinary teardown does not."""
+        if self.backend.degradations:
+            raise AssertionError(f"simcord degradations: {self.backend.degradations!r}")
+
     @property
     def http_requests(self) -> list[HttpLogEntry]:
         """Every REST call the bot made as a structured request record."""
@@ -1072,7 +1158,8 @@ class Env:
         """
         lines = []
         for kind, name, payload in self.backend.transcript:
-            lines.append(f"{kind:<8} {name:<28} {_summarize(payload)}")
+            detail = repr(payload) if kind == "DENIAL" else _summarize(payload)
+            lines.append(f"{kind:<8} {name:<28} {detail}")
         return "\n".join(lines)
 
     def raise_errors(self) -> None:

@@ -12,7 +12,7 @@ import copy
 import fnmatch
 import json as _json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..backend import Backend, errors
@@ -143,7 +143,7 @@ class RequestContext:
             raise UnsupportedField(self.method, self.path, unsupported)
         return [dict(item) for item in items]
 
-    def require_channel_permissions(self, channel_id: int, *names: str) -> Channel:
+    def require_channel_permissions(self, channel_id: int, *names: str, denied_code: int = 50013) -> Channel:
         """Check the bot has ``names`` in a channel; return the channel.
 
         Consolidates the get-channel-then-permission-check preamble most route
@@ -151,16 +151,22 @@ class RequestContext:
         in a handler body.
         """
         channel = self.backend.get_channel(channel_id)
-        self.backend.require_permissions(channel.guild_id, self.backend.bot_user.id, channel.id, *names)
+        self.backend.require_permissions(
+            channel.guild_id, self.backend.bot_user.id, channel.id, *names, denied_code=denied_code
+        )
         return channel
 
-    def require_guild_permissions(self, guild_id: int, *names: str) -> None:
+    def require_guild_permissions(self, guild_id: int, *names: str, denied_code: int = 50013) -> None:
         """Check the bot has guild-level ``names`` (no channel context)."""
-        self.backend.require_permissions(guild_id, self.backend.bot_user.id, None, *names)
+        self.backend.require_permissions(
+            guild_id, self.backend.bot_user.id, None, *names, denied_code=denied_code
+        )
 
-    def require_message(self, channel_id: int, message_id: int, *names: str) -> Message:
+    def require_message(
+        self, channel_id: int, message_id: int, *names: str, denied_code: int = 50013
+    ) -> Message:
         """Authorize a bot-authenticated channel message before exposing or mutating it."""
-        self.require_channel_permissions(channel_id, *names)
+        self.require_channel_permissions(channel_id, *names, denied_code=denied_code)
         message = self.backend.get_message(channel_id, message_id)
         # Ephemeral messages are available only through their interaction token,
         # never the bot-authenticated channel message API.
@@ -206,6 +212,7 @@ def dispatch(
     reason: str | None = None,
     message_content_access: bool = True,
 ) -> Any:
+    entry_index = len(backend.http_requests)
     backend.http_requests.append(
         HttpLogEntry(method, path, copy.deepcopy(params or {}), copy.deepcopy(json), reason)
     )
@@ -244,7 +251,28 @@ def dispatch(
         path=path,
         message_content_access=message_content_access,
     )
-    return best[2](ctx)
+    try:
+        return best[2](ctx)
+    except BackendError as error:
+        if error.code in (50001, 50013, 160002):
+            detail = getattr(error, "denial", None)
+            if detail is None:
+                detail = backend.record_denial(
+                    "missing_access" if error.code == 50001 else "authorization",
+                    actor_id=backend.bot_user.id,
+                    code=error.code,
+                    method=method,
+                    path=path,
+                    **{
+                        key: int(value)
+                        for key, value in ctx.args.items()
+                        if key in ("guild_id", "channel_id")
+                    },
+                )
+            backend.http_requests[entry_index] = replace(
+                backend.http_requests[entry_index], denial=copy.deepcopy(detail)
+            )
+        raise
 
 
 def _check_faults(backend: Backend, method: str, path: str) -> None:

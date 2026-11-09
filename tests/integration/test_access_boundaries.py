@@ -174,7 +174,7 @@ async def test_missing_history_returns_empty_list_but_known_message_fetch_is_den
     assert [item async for item in native.history()] == []
     with pytest.raises(discord.Forbidden) as caught:
         await native.fetch_message(message.id)
-    assert caught.value.code == 50013
+    assert caught.value.code == 50001
 
 
 async def test_dm_and_interaction_token_reads_survive_bot_guild_denial(env, channel, alice):
@@ -247,10 +247,10 @@ async def test_reaction_policies_keep_existing_emoji_and_deny_missing_history(en
     )
     with pytest.raises(discord.Forbidden):
         _ = [user async for user in fetched.reactions[0].users()]
-    with pytest.raises(discord.Forbidden):
-        await fetched.remove_reaction("✅", env.bot.user)
+    await fetched.remove_reaction("✅", env.bot.user)
     stored = env.backend.get_message(channel.id, message.id)
-    assert env.bot.user.id in stored.reaction_for("✅").user_ids
+    assert env.bot.user.id not in stored.reaction_for("✅").user_ids
+    assert alice.id in stored.reaction_for("✅").user_ids
 
 
 @pytest.mark.parametrize("kind", ["user", "role", "channel"])

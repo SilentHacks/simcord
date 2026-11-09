@@ -16,6 +16,13 @@ uv run ruff check src tests examples benchmarks scripts && uv run ruff format --
 uv run pyright src
 ```
 
+Coverage includes the pytest plugin's real subprocess runs. To measure the full
+suite, run `uv run coverage run -m pytest tests examples`, then
+`uv run coverage combine` before `uv run coverage report`. The
+[native subprocess patch](https://coverage.readthedocs.io/en/stable/subprocess.html)
+requires coverage.py 7.10 or newer; do not replace those lifecycle checks with
+mocked pytest calls or lower the coverage ratchet.
+
 The Python hooks run ruff on commit and pyright on push using the project's
 pinned tools. Run the frontend check below separately; passing Python hooks
 does not replace the JavaScript CI gate.
@@ -31,6 +38,10 @@ Optional extras layer on top of `dev` depending on what you work on:
 uv sync --extra dev --extra screenshot                # matches the CI lint job
 uv run playwright install --with-deps chromium        # needed once for browser capture tests + the example
 ```
+
+The weekly `discord.py master` workflow installs the same screenshot dependencies
+and Chromium before exercising upstream discord.py. After installing that checkout,
+use `uv run --no-sync` so the project lock does not replace it with the released SDK.
 
 Frontend contributors also need Node 24:
 

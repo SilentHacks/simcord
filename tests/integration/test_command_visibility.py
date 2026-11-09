@@ -104,36 +104,9 @@ async def test_context_menu_refuses_invisible_commands(env, channel, alice, reas
     assert env.transcript().count("INTERACTION_CREATE") == dispatches_before
 
 
-async def test_command_sync_discards_default_field_at_http_boundary(env):
-    await env.bot.tree.sync()
-    sync_request = next(
-        request
-        for request in reversed(env.backend.http_requests)
-        if request.method == "PUT" and request.path.endswith("/commands")
-    )
-    assert sync_request.json
-    assert all(command.get("nsfw") is False for command in sync_request.json)
-
-    response = router.dispatch(
-        env.backend,
-        sync_request.method,
-        sync_request.path,
-        json=sync_request.json,
-    )
-    assert all("nsfw" not in command for command in response)
-    assert all("nsfw" not in command for command in env.backend.commands[None].values())
-
-    fetched = router.dispatch(
-        env.backend,
-        "GET",
-        f"/applications/{env.backend.application_id}/commands",
-    )
-    assert all("nsfw" not in command for command in fetched)
-
-
 @pytest.mark.parametrize("scope", ["global", "guild"])
 @pytest.mark.parametrize("field_value", [True, 0, None])
-async def test_marked_command_batch_rejected_atomically(env, scope, field_value):
+async def test_unmodeled_command_metadata_rejected_atomically(env, scope, field_value):
     guild_id = None if scope == "global" else env.guild.id
     path = (
         f"/applications/{env.backend.application_id}/commands"
@@ -153,6 +126,23 @@ async def test_marked_command_batch_rejected_atomically(env, scope, field_value)
 
     assert exc.value.fields == ["nsfw"]
     assert env.backend.commands[guild_id] == previous
+
+
+async def test_nsfw_metadata_cannot_silently_allow_unmodeled_command_dispatch(env, channel, alice):
+    for name, kind in (("tag", AppCommandType.CHAT_INPUT), ("Report Member", AppCommandType.USER)):
+        command = env.backend.find_command(name, env.guild.id, type=kind)
+        assert command is not None
+        command["nsfw"] = True
+    interactions_before = set(env.backend.interactions)
+    for invoke in (
+        lambda: alice.slash(channel, "tag", name="python"),
+        lambda: alice.autocomplete(channel, "tag", "name", "py"),
+        lambda: alice.context_menu(channel, "Report Member", alice),
+    ):
+        with pytest.raises(NotImplementedError):
+            await invoke()
+    assert "tag" not in alice.available_commands(channel)
+    assert set(env.backend.interactions) == interactions_before
 
 
 async def test_guild_command_scope_reason_for_slash_and_autocomplete(env, channel, alice):
@@ -306,22 +296,6 @@ async def test_picker_option_types_choices_and_constraints(env, channel, alice):
         color="red",
     )
     assert result.response.content == "hello:3:0.5:True:target:general:Helpers:target:red"
-
-
-async def test_real_discord_py_command_metadata_matches_visibility(env):
-    commands_by_name = {
-        command["name"]: command
-        for scope in (None, env.guild.id)
-        for command in env.backend.commands.get(scope, {}).values()
-    }
-    assert commands_by_name["manage_settings"]["default_member_permissions"] == (
-        discord.Permissions(manage_guild=True).value
-    )
-    assert 0 in commands_by_name["dm_greeting"]["contexts"]
-    assert 1 in commands_by_name["dm_greeting"]["contexts"]
-    assert commands_by_name["guild_greeting"]["dm_permission"] is False
-    assert 1 in commands_by_name["dm_whisper"]["contexts"]
-    assert 0 not in commands_by_name["dm_whisper"]["contexts"]
 
 
 async def test_strict_sync_false_fallback_still_checks_visibility():

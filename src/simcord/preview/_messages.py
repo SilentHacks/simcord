@@ -154,9 +154,7 @@ def _message_allowed_actions(preview: Preview, page: _Page, channel: Any, messag
             actions.extend(("edit_message", "delete_message"))
         elif _has_channel_permission(preview, page, channel, "manage_messages"):
             actions.append("delete_message")
-        if channel.guild_id is not None and _has_channel_permission(
-            preview, page, channel, "manage_messages"
-        ):
+        if channel.guild_id is not None and _has_channel_permission(preview, page, channel, "pin_messages"):
             actions.append("set_pinned")
     if channel.guild_id is None or _has_channel_permission(preview, page, channel, "add_reactions"):
         actions.append("set_reaction")

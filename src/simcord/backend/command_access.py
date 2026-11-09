@@ -58,6 +58,13 @@ def _result(allowed: bool, reason: str | None = None) -> Access:
 
 
 def command_access(backend: Any, command: dict[str, Any], *, user_id: int, channel_id: int) -> Access:
+    access = _command_access(backend, command, user_id=user_id, channel_id=channel_id)
+    if access.allowed and command.get("nsfw"):
+        return _result(False, "unsupported-nsfw")
+    return access
+
+
+def _command_access(backend: Any, command: dict[str, Any], *, user_id: int, channel_id: int) -> Access:
     channel = backend.get_channel(channel_id)
     guild_id = channel.guild_id
     command_guild_id = command.get("guild_id")
