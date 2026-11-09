@@ -220,28 +220,30 @@ def edit_member(ctx: RequestContext) -> Any:
         changes["timed_out_until"] = body["communication_disabled_until"]
     for key in ("mute", "deaf"):
         if key in body:
-            ctx.require_guild_permissions(guild_id, "moderate_members" if key == "deaf" else "mute_members")
+            ctx.require_guild_permissions(guild_id, "deafen_members" if key == "deaf" else "mute_members")
+            backend.require_hierarchy(guild_id, bot_id, user_id)
             changes[key] = body[key]
 
-    member = backend.edit_member(guild_id, user_id, changes)
-
-    # Voice channel move/disconnect (server-side); reflect server mute/deaf too.
+    target_channel = None
     if "channel_id" in body:
-        target_channel = body["channel_id"]
-        if user_id not in guild.voice_states:
-            raise errors.target_not_connected_to_voice()
+        ctx.require_guild_permissions(guild_id, "move_members")
+        backend.require_hierarchy(guild_id, bot_id, user_id)
+        target_channel = None if body["channel_id"] is None else int(body["channel_id"])
+        if target_channel is not None:
+            destination = backend.get_channel(target_channel)
+            if destination.guild_id != guild_id:
+                raise errors.unknown_channel()
+            if destination.type not in (ChannelType.VOICE, ChannelType.STAGE_VOICE):
+                raise errors.cannot_execute_on_channel_type()
+            ctx.require_channel_permissions(target_channel, "connect")
+    member = backend.edit_member(
+        guild_id, user_id, changes, move_voice="channel_id" in body, channel_id=target_channel
+    )
+    if "channel_id" in body:
         if target_channel is None:
-            backend.set_voice_state(guild_id, user_id, None)
             log.append((AuditLogAction.MEMBER_DISCONNECT, {}, {}))
         else:
-            backend.set_voice_state(
-                guild_id, user_id, int(target_channel), mute=member.mute, deaf=member.deaf
-            )
             log.append((AuditLogAction.MEMBER_MOVE, {}, {"channel_id": str(target_channel), "count": "1"}))
-    elif user_id in guild.voice_states and ("mute" in body or "deaf" in body):
-        backend.set_voice_state(
-            guild_id, user_id, guild.voice_states[user_id].channel_id, mute=member.mute, deaf=member.deaf
-        )
 
     member_changes: list[dict[str, Any]] = []
     if "nick" in changes and old_nick != member.nick:
@@ -369,14 +371,7 @@ def unban(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     user_id = ctx.int_arg("user_id")
     ctx.require_guild_permissions(guild_id, "ban_members")
-    guild = backend.get_guild(guild_id)
-    if user_id not in guild.bans:
-        raise errors.unknown_ban()
-    del guild.bans[user_id]
-    backend.emit(
-        "GUILD_BAN_REMOVE",
-        {"guild_id": str(guild_id), "user": serializers.user_payload(backend.get_user(user_id))},
-    )
+    backend.remove_ban(guild_id, user_id)
     backend.record_audit_log(guild_id, AuditLogAction.MEMBER_UNBAN, target_id=user_id, reason=ctx.reason)
 
 
@@ -629,13 +624,16 @@ def delete_role(ctx: RequestContext) -> Any:
     guild_id = ctx.int_arg("guild_id")
     role_id = ctx.int_arg("role_id")
     ctx.require_guild_permissions(guild_id, "manage_roles")
-    name = ctx.backend.get_role(guild_id, role_id).name
+    role = ctx.backend.get_role(guild_id, role_id)
+    ctx.backend.require_role_assignable(guild_id, ctx.backend.bot_user.id, role_id)
+    if role.managed or role_id == guild_id:
+        raise errors.missing_permissions()
     ctx.backend.delete_role(guild_id, role_id)
     ctx.backend.record_audit_log(
         guild_id,
         AuditLogAction.ROLE_DELETE,
         target_id=role_id,
-        changes=[{"key": "name", "old_value": name}],
+        changes=[{"key": "name", "old_value": role.name}],
         reason=ctx.reason,
     )
 

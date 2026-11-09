@@ -5,15 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 from ...backend import errors, serializers
+from ...backend.access import channel_accessible
 from ...backend.models import Overwrite, Webhook
 from ...enums import AuditLogAction, ChannelType, OverwriteType
-from .._helpers import commit_bot_message, message_response, prepare_bot_message
+from .._helpers import message_response, prepare_bot_message
 from ..router import RequestContext, route
 
 
 @route("GET", "/channels/{channel_id}")
 def get_channel(ctx: RequestContext) -> Any:
-    return dict(serializers.channel_payload(ctx.backend, ctx.backend.get_channel(ctx.int_arg("channel_id"))))
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
+    return dict(serializers.channel_payload(ctx.backend, channel))
 
 
 @route("PATCH", "/channels/{channel_id}")
@@ -148,7 +150,10 @@ def delete_overwrite(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/typing")
 def typing(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
+    ctx.require_channel_permissions(
+        channel.id, "send_messages_in_threads" if channel.is_thread else "send_messages"
+    )
     payload: dict[str, Any] = {
         "channel_id": str(channel.id),
         "user_id": str(backend.bot_user.id),
@@ -162,7 +167,7 @@ def typing(ctx: RequestContext) -> Any:
 @route("POST", "/channels/{channel_id}/threads")
 def create_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    channel = backend.get_channel(ctx.int_arg("channel_id"))
+    channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     if channel.type == ChannelType.FORUM:
         # A forum post is a message posted into the forum, so it is gated on
         # send_messages there, not create_public_threads. Thread slowmode
@@ -178,9 +183,14 @@ def create_thread(ctx: RequestContext) -> Any:
             ignore=("type", "rate_limit_per_user"),
         )
         return _create_forum_post(ctx, channel.id, body)
-    ctx.require_channel_permissions(channel.id, "create_public_threads")
     # invitable (private-thread joinability) and rate_limit_per_user are accepted
     # and discarded: neither is modelled for offline threads.
+    permission = (
+        "create_private_threads"
+        if int(ctx.body().get("type", 11)) == ChannelType.PRIVATE_THREAD
+        else "create_public_threads"
+    )
+    ctx.require_channel_permissions(channel.id, permission)
     body = ctx.fields("name", "type", "auto_archive_duration", ignore=("invitable", "rate_limit_per_user"))
     thread = backend.create_thread(
         channel.id,
@@ -200,30 +210,18 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
     response carries the thread fields with the starter ``message`` embedded.
     """
     backend = ctx.backend
-    forum = backend.get_channel(forum_id)
-    applied_tags = [int(t) for t in body.get("applied_tags") or []]
-    available = {int(tag["id"]) for tag in forum.available_tags if tag.get("id") is not None}
-    unknown = [t for t in applied_tags if t not in available]
-    if unknown:
-        raise errors.invalid_form_body(f"applied_tags: Unknown tag(s) {unknown}")
-    name = body["name"]
-    auto_archive_duration = int(body.get("auto_archive_duration") or 1440)
-    prepared = prepare_bot_message(ctx, forum_id, body=body.get("message") or {})
-    thread = backend.create_thread(
+    starter, upload_data = prepare_bot_message(ctx, forum_id, body=body.get("message") or {})
+    thread, message = backend.create_forum_post(
         forum_id,
-        name,
-        backend.bot_user.id,
-        type=ChannelType.PUBLIC_THREAD,
-        auto_archive_duration=auto_archive_duration,
-        applied_tags=applied_tags,
-        broadcast=False,
+        body["name"],
+        starter,
+        auto_archive_duration=int(body.get("auto_archive_duration") or 1440),
+        applied_tags=[int(tag) for tag in body.get("applied_tags") or []],
+        uploads=[
+            (file.filename, data, file.description) for file, data in zip(ctx.files, upload_data, strict=True)
+        ],
+        broadcast=not starter.is_ephemeral,
     )
-    message = commit_bot_message(ctx, thread.id, prepared, broadcast=False)
-    forum.last_message_id = thread.id
-    # Publish only once both the thread and its mandatory starter are visible.
-    backend.announce_thread_create(thread)
-    if prepared[0]["broadcast"]:
-        backend.announce_message_create(message)
     payload = dict(serializers.thread_payload(backend, thread))
     payload["message"] = message_response(ctx, message)
     return payload
@@ -233,7 +231,7 @@ def _create_forum_post(ctx: RequestContext, forum_id: int, body: dict[str, Any])
 def create_thread_from_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "create_public_threads")
-    message = backend.get_message(channel.id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel.id, ctx.int_arg("message_id"), "read_message_history")
     # rate_limit_per_user (thread slowmode) is accepted and discarded.
     body = ctx.fields("name", "auto_archive_duration", ignore=("rate_limit_per_user",))
     thread = backend.create_thread(
@@ -249,33 +247,39 @@ def create_thread_from_message(ctx: RequestContext) -> Any:
 @route("PUT", "/channels/{channel_id}/thread-members/@me")
 def join_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
+    ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     backend.add_thread_member(ctx.int_arg("channel_id"), backend.bot_user.id)
 
 
 @route("DELETE", "/channels/{channel_id}/thread-members/@me")
 def leave_thread(ctx: RequestContext) -> Any:
     backend = ctx.backend
+    ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     backend.remove_thread_member(ctx.int_arg("channel_id"), backend.bot_user.id)
 
 
 @route("PUT", "/channels/{channel_id}/thread-members/{user_id}")
 def add_thread_member(ctx: RequestContext) -> Any:
+    ctx.require_channel_permissions(ctx.int_arg("channel_id"), "send_messages_in_threads")
     ctx.backend.add_thread_member(ctx.int_arg("channel_id"), ctx.int_arg("user_id"))
 
 
 @route("DELETE", "/channels/{channel_id}/thread-members/{user_id}")
 def remove_thread_member(ctx: RequestContext) -> Any:
+    ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_threads")
     ctx.backend.remove_thread_member(ctx.int_arg("channel_id"), ctx.int_arg("user_id"))
 
 
 @route("GET", "/channels/{channel_id}/thread-members")
 def list_thread_members(ctx: RequestContext) -> Any:
+    ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     thread = ctx.backend.get_thread(ctx.int_arg("channel_id"))
     return [serializers.thread_member_payload(thread, uid) for uid in thread.thread_members]
 
 
 @route("GET", "/channels/{channel_id}/thread-members/{user_id}")
 def get_thread_member(ctx: RequestContext) -> Any:
+    ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     thread = ctx.backend.get_thread(ctx.int_arg("channel_id"))
     user_id = ctx.int_arg("user_id")
     if user_id not in thread.thread_members:
@@ -285,9 +289,13 @@ def get_thread_member(ctx: RequestContext) -> Any:
 
 def _archived_threads(ctx: RequestContext, *, private: bool, joined_only: bool = False) -> dict[str, Any]:
     backend = ctx.backend
+    parent = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "read_message_history")
+    if private and not joined_only:
+        ctx.require_channel_permissions(parent.id, "manage_threads")
     threads = backend.archived_threads(ctx.int_arg("channel_id"), private=private)
     if joined_only:
         threads = [t for t in threads if backend.bot_user.id in t.thread_members]
+    threads = [t for t in threads if channel_accessible(backend, t.id, backend.bot_user.id)]
     return serializers.thread_list_payload(backend, threads, has_more=False)
 
 
@@ -314,7 +322,7 @@ def follow_channel(ctx: RequestContext) -> Any:
     # source is a news channel client-side; we mirror the server check, then mint
     # the destination webhook (manage_webhooks is required there).
     backend = ctx.backend
-    source = backend.get_channel(ctx.int_arg("channel_id"))
+    source = ctx.require_channel_permissions(ctx.int_arg("channel_id"))
     if source.type != ChannelType.NEWS:
         raise errors.cannot_execute_on_channel_type()
     body = ctx.fields("webhook_channel_id")
@@ -342,7 +350,7 @@ def create_webhook(ctx: RequestContext) -> Any:
 def get_channel_webhooks(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    backend.get_channel(channel_id)
+    ctx.require_channel_permissions(channel_id, "manage_webhooks")
     return [
         serializers.webhook_payload(backend, w)
         for w in backend.webhooks.values()
@@ -389,6 +397,10 @@ def edit_webhook(ctx: RequestContext) -> Any:
     webhook = backend.get_webhook(ctx.int_arg("webhook_id"))
     ctx.require_channel_permissions(webhook.channel_id, "manage_webhooks")
     changes = ctx.fields("name", "channel_id")
+    if "channel_id" in changes:
+        destination = ctx.require_channel_permissions(int(changes["channel_id"]), "manage_webhooks")
+        if destination.guild_id != webhook.guild_id:
+            raise errors.missing_access()
     return serializers.webhook_payload(backend, backend.edit_webhook(webhook.id, changes))
 
 

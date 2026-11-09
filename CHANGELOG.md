@@ -4,6 +4,69 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 3.3.0 (2026-11-02)
+
+### Features
+
+- Add the aware `start_time` option to `Env`, `simcord.run` and pytest markers, applying a validated UTC origin before fixtures and startup while preserving the deterministic default and elapsed time across bot restarts. Application and SQL clocks still require explicit application clock injection.
+
+### Bug fixes
+
+- Recognize discord.py's native typing interval as a virtual-only wait while preserving the initial typing request, every five-second refresh, HTTP work, and normal cancellation and lifecycle cleanup.
+- Deliver already-real-due native asyncio cancellation deadlines through blocked input during automatic clock advancement, preserving chronological resource/timer processing, strict settlement, executor ownership, and undelivered settlement failures.
+
+### Documentation
+
+- Clarify the guild-versus-DM handle scopes enforced since 3.2.1, with actionable setup errors and migration examples: use `member.user.send_dm(...)` for DM messages and `member.user` for DM slash commands, autocomplete, components, and modals. The existing `member.send_dm(...)` convenience remains supported; accepted and rejected actions are unchanged.
+
+
+## 3.2.2 (2026-10-31)
+
+### Bug fixes
+
+- Detach nested AutoMod create/edit inputs and returned rule data so SDK object mutation cannot silently change enforcement. Lazily retain visited keyword patterns on each live rule, replacing preparation when its actual keyword filter changes and avoiding dependence on the shared regex cache.
+- Synchronize per-Env callback publication, retirement and settlement snapshots when owned executor threads schedule callbacks. Preserve cancellation, context and exact-once completed effects without holding the lifecycle lock while user callbacks run.
+- Settlement now considers the earliest live recognized wake across tracked and native timers, so a later timer cannot make an actor operation return before an earlier wake completes. Future-valued timer results are not mistaken for wake targets. Retired callbacks release their Handle links without changing native cancellation, Context or error behavior.
+- Payload detachment uses exact type identity for its wire fast path. Custom metaclass equality can no longer bypass independent copying or the original whole-graph deepcopy hooks and failures.
+- Retire all live message deadlines before publishing explicit finalization of a shared backend Poll, including when a subscriber raises. Keep automatic Poll expiry index-driven without an additional alias index.
+- Preserve scheduled-event pass membership during synchronous subscriber creation without losing later-event rescheduling. Accept unhashable AutoMod string keywords and keep text-identical keyword definitions distinct with lazy positional preparation. Centralize edit preparation and callback-index lifecycle ownership while preserving upload atomicity, deferred-response identity, cancellation and native callback behavior; remove the superseded sleep recognizer.
+  Keep the standalone attribution overlay aligned with the canonical edit commit so documented comparison runs remain executable.
+
+### Miscellaneous
+
+- AutoMod lazily skips impossible ASCII keyword matches before compiling or searching regexes, using the existing live-rule preparation owner. Keyword priority, Unicode and wildcard semantics, in-place edit detection and detached rule payloads are unchanged. No-rule, early-hit and Unicode workloads are not claimed as universal speedups.
+  Deferred preparation retains the original keyword's regex definition, including across equal-valued string-subclass replacements.
+- Reconstruct send, edit and history dispatch worlds for every measured benchmark round, including their HTTP/transcript state. Add a small complete command/reply scenario to the existing public-operation lane and distinguish its setup/shutdown scope from bare dispatch and stress workloads.
+- Reuse the publication schema fingerprint when validating live command catalogs, hashing only published keys without reconstructing wire option trees. Preserve live permissions, stale-entry removal, bounded publication and refresh behavior.
+- Reduce settlement CPU for bots with live Views and native I/O: drain owned progress before rescanning SDK waits, and read verified View lifecycle fields directly rather than scanning their attributes. Preserve completed effects, executor ownership, virtual time and settlement deadlines. Add a fresh-world local-I/O/live-View scenario to the existing reported benchmark lane without adding caches or scheduling indexes.
+- Avoid redundant wait recognition when neither an owned task nor its waiter has an indexed timer wake. Skip Preview mention/emoji discovery and command-map construction when all relevant message texts lack their opening syntax, preserving everyone mentions, channel mention inventories, rendered search and live authorization. No new cache, scheduler, ownership representation or tuning option; sparse search, repeated composition classification and expanded reply-history retention retain their existing scaling limits.
+- Detach nested REST/SDK message responses, edit inputs and retained HTTP/gateway history from canonical state and live subscriber envelopes. Complete fallible ingress detachment before upload, deferred-response and index side effects; retain shared-Poll and ordered subscriber/partial-commit behavior. These correctness fixes add copying CPU and retained-memory costs. Avoid task scans for callbacks without wake targets, eager ordered-bucket allocation, unchanged message index membership updates and per-ID removal of discarded channel buckets. Exact rendered Preview text search now seeks bounded pages with correct surviving-pivot witnesses and empty-page semantics; sparse/absent queries remain linear. No new dependency, cache, retention policy or public protocol change.
+
+  Preserve previously functioning deep reply ancestry using stack-safe wire-payload detachment at event, response and SDK parsing boundaries. Keep independent mutable snapshots and custom-data deepcopy behavior; avoid an unused live envelope when no subscribers exist. Add reproducible interleaved original/correctness-reference/optimized comparisons rather than attributing all measured overhead to necessary isolation.
+- Reduce simulator CPU overhead in callback tracking, wait classification, virtual-time scheduling, component preparation, bounded history/entitlement queries, and Preview projection. Wake settlement on tracked progress rather than imposing a callback-only polling delay. Preserve detached request/result payloads and authorization; mutate indexed backend state through Backend methods, not raw internal fields. Ordered selection adds the pure-Python Sorted Containers runtime dependency. Rejected actor/webhook message validation no longer leaves partially installed upload assets.
+
+  Retire callbacks canceled during settlement and inactive due poll schedules without waiting for a safety sweep. Preserve traversal-order errors when malformed deadlines and mixed timezone awareness coexist.
+
+
+## 3.2.1 (2026-10-24)
+
+### Bug fixes
+
+- Fix obsolete preview responses restoring an older viewer, and reauthorize cached references, identities, command catalogs, and retained autocomplete results without publishing unrelated edits. Centralize browser read/poll ownership and capture geometry; release evicted media, clear private modal and command-picker state, preserve native keyboard focus, and make simulated layouts follow their logical viewport. Preserve affected-message diagnostic navigation and terminal completeness across Inspector redraws; recover cached catalogs even when an obsolete read fails. Keep protocol 3 and status schema 1 unchanged; add development-only checks for the extracted JavaScript boundaries.
+
+  Give browser actions, assets, catalog observations, File-bearing drafts and rendered surfaces explicit lifetimes; strictly check all first-party JavaScript and preserve frozen publication/result provenance across revocation and capture. Validate compound member/voice and forum mutations before committing state, enforce actor and bot REST authority without conflating token access, and track actual executor execution separately from caller cancellation. Split capture configuration, journal/recovery and transport responsibilities; independently verify exact API test-grant provenance and retain distinct capture crop policies. Networked reference capture now requires aiohttp 3.12+ to prevent implicit uncertain-write retries; Preview library requirements are unchanged.
+
+  Preserve supported native SDK overwrite targets while rejecting foreign state and cross-guild roles/members; apply existing-emoji reaction permissions consistently in actors, REST and preview controls. Keep newer Reply intents when older sends settle, reconcile refreshed entity selections, and restore Escape after applying modal choices. Verify captured animation content and timing without depending on unrelated avatar antialiasing.
+
+  Move selection-state reporting into its owner, leaving the bootstrap to assemble read-only status.
+
+  Observe native executor submission and completion independently of failed or cancelled caller facades, including initializer rejection and picklable process-pool calls. Preserve live gateway, shard and webhook machinery after a native-work shutdown timeout. Keep deleted session-owned grants out of later baselines without weakening receipt checks. Preserve earlier bot avatars when a human DM message is focused or captured, while retaining live revocation checks; construct uncached SDK messages with native partial channels.
+
+  Release successful executor callables without retaining them until long-lived parent tasks finish; preserve unobserved-error handling.
+
+  Reject DM and cross-guild service-message references at the fixture boundary while preserving valid same-guild, cross-channel references. ([#41](https://github.com/SilentHacks/simcord/pull/41))
+
+
 ## 3.2.0 (2026-10-22)
 
 ### Features

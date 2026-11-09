@@ -577,6 +577,155 @@ class ValidationTests(unittest.TestCase):
         self.bundle.rows["gateway"][0]["payload"]["d"]["user_id"] = "999"
         self.assertIn("subscription_identity_mismatch", self.codes(self.bundle.save()))
 
+    def api_grant(self, payload_changes=None, body_changes=None, missing_type=False):
+        payload = {
+            "id": "500",
+            "application_id": "100",
+            "sku_id": "400",
+            "user_id": "200",
+            "type": 8,
+        }
+        body = {"sku_id": "400", "owner_id": "200", "owner_type": 2}
+        payload.update(payload_changes or {})
+        body.update(body_changes or {})
+        if missing_type:
+            payload.pop("type")
+        ref = self.bundle.request("POST", "/applications/100/entitlements", payload, body=body)
+        self.bundle.request("DELETE", "/applications/100/entitlements/500", status=204)
+        self.bundle.manifest["owned_entitlements"]["500"] = {**body, "deleted": True}
+        return ref
+
+    def test_legacy_creation_keeps_ordered_correlation_and_partial_facts(self):
+        self.bundle = Bundle(Path(self.temp.name), version=1)
+        self.api_grant()
+        self.bundle.manifest["created_entitlement_ids"] = ["500"]
+        report = self.bundle.save()
+        self.assertTrue(report["valid"], report)
+        self.assertTrue(report["legacy"])
+        self.assertIn("legacy_partial_evidence", {item["code"] for item in report["warnings"]})
+        self.assertFalse(report["coverage"]["pagination"]["calibrated"])
+        self.bundle.rows["rest"][1]["response"].pop("type")
+        report = self.bundle.save()
+        self.assertIn("invalid_create_provenance", self.codes(report))
+        self.assertIn("unowned_cleanup", self.codes(report))
+
+    def test_api_cleanup_proof_requires_exact_type_and_correlated_requested_scope(self):
+        variants = [
+            ({"type": 4}, {}, False),
+            ({"type": True}, {}, False),
+            ({"type": "8"}, {}, False),
+            ({"type": 8.0}, {}, False),
+            ({}, {}, True),
+            ({"sku_id": "401"}, {}, False),
+            ({"application_id": "101"}, {}, False),
+            ({"user_id": "201"}, {}, False),
+            ({}, {"owner_type": True}, False),
+            ({"guild_id": "300"}, {}, False),
+            ({}, {"owner_type": 1, "owner_id": "300"}, False),
+        ]
+        for payload, body, missing in variants:
+            with self.subTest(payload=payload, body=body, missing=missing):
+                self.bundle = Bundle(Path(self.temp.name))
+                self.bundle.manifest["other_user_id"] = "201"
+                self.api_grant(payload, body, missing)
+                report = self.bundle.save()
+                self.assertIn("invalid_create_provenance", self.codes(report))
+                self.assertIn("unowned_cleanup", self.codes(report))
+                self.assertIn("missing_create_provenance", self.codes(report))
+
+    def test_exact_guild_test_grant_has_a_separate_requested_scope(self):
+        self.api_grant({"user_id": None, "guild_id": "300"}, {"owner_type": 1, "owner_id": "300"})
+        self.assertTrue(self.bundle.save()["valid"])
+
+    def test_duplicate_create_and_manual_ids_never_gain_new_ownership(self):
+        self.api_grant()
+        self.bundle.request(
+            "POST",
+            "/applications/100/entitlements",
+            {"id": "500", "application_id": "100", "sku_id": "400", "user_id": "200", "type": 8},
+            body={"sku_id": "400", "owner_id": "200", "owner_type": 2},
+        )
+        self.assertIn("invalid_create_provenance", self.codes(self.bundle.save()))
+        self.bundle.manifest["manual_test_purchase_ids"] = ["500"]
+        report = self.bundle.save()
+        self.assertIn("invalid_create_provenance", self.codes(report))
+        self.assertIn("unowned_cleanup", self.codes(report))
+        self.assertIn("manual_entitlement_claimed_owned", self.codes(report))
+
+    def test_unknown_or_uncorrelated_success_cannot_prove_cleanup(self):
+        for unknown in (True, False):
+            with self.subTest(unknown=unknown):
+                self.bundle = Bundle(Path(self.temp.name))
+                self.api_grant()
+                response = self.bundle.rows["rest"][1]
+                if unknown:
+                    response["outcome_unknown"] = True
+                else:
+                    response["body"] = {"sku_id": "different"}
+                report = self.bundle.save()
+                expected = "unresolved_mutation" if unknown else "correlation_mismatch"
+                self.assertIn(expected, self.codes(report))
+                self.assertIn("unowned_cleanup", self.codes(report))
+
+    def test_missing_schema2_identity_cannot_use_anonymous_response(self):
+        self.api_grant()
+        self.bundle.rows["requests"][1].pop("request_id")
+        self.bundle.rows["rest"][1].pop("request_id")
+        report = self.bundle.save()
+        self.assertIn("missing_request_id", self.codes(report))
+        self.assertIn("unowned_cleanup", self.codes(report))
+
+    def test_late_malformed_shapes_keep_earlier_diagnostics_and_locations(self):
+        secret = "never-echo-this-captured-secret"
+        self.bundle.manifest["token"] = secret
+        ref = self.bundle.record("interactions", payload={"member": [secret]}, sequence=1)
+        self.bundle.manifest["cases"]["late"] = {
+            "status": "observed",
+            "interactions": [ref],
+            "expected_actor_id": "200",
+        }
+        report = self.bundle.save()
+        self.assertIn("unredacted_secret", self.codes(report))
+        self.assertIn(
+            {"code": "malformed_evidence_structure", "location": "interactions.jsonl:1"},
+            report["errors"],
+        )
+        self.assertIn("unsupported_interaction_identity_claim", self.codes(report))
+        self.assertEqual(report["coverage"]["rest_outcomes"], 1)
+        self.assertNotIn(secret, json.dumps(report))
+        self.assertNotIn({"code": "malformed_evidence_structure", "location": "bundle"}, report["errors"])
+
+    def test_malformed_case_references_and_health_values_are_located(self):
+        self.bundle.manifest["pending_write"] = {}
+        ref = self.bundle.record(
+            "health",
+            event="observation_end",
+            action=[],
+            monotonic_ns=None,
+        )
+        self.bundle.manifest["cases"]["bad"] = {"status": "observed", "health": [ref, {}]}
+        report = self.bundle.save()
+        self.assertIn("unresolved_mutation", self.codes(report))
+        self.assertIn("invalid_references", self.codes(report))
+        self.assertIn({"code": "malformed_evidence_structure", "location": ref}, report["errors"])
+        self.assertEqual(report["coverage"]["rest_outcomes"], 1)
+
+    def test_cli_usage_and_multi_bundle_report_contract(self):
+        import contextlib
+        import io
+
+        self.bundle.save()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            validator.main([])
+        self.assertEqual(raised.exception.code, 2)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            code = validator.main([str(self.bundle.directory), str(self.bundle.directory / "missing")])
+        reports = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(reports[0]["valid"])
+        self.assertFalse(reports[1]["valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

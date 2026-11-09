@@ -214,6 +214,48 @@ async def test_preview_screenshot_busy_cancellation_and_idempotent_close(tmp_pat
         assert env._preview is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["before_png", "after_png"])
+@pytest.mark.parametrize("allow_incomplete", [False, True])
+async def test_capture_dependency_loss_never_installs_png(
+    tmp_path, env, channel, alice, monkeypatch, phase, allow_incomplete
+):
+    pytest.importorskip("playwright")
+    from playwright.async_api import Page
+
+    from simcord.preview._capture import ManagedCapture
+
+    message = await env.bot.get_channel(channel.id).send("Pinned private content")
+    destination = tmp_path / "capture.png"
+    destination.write_bytes(b"existing destination")
+    original_screenshot = Page.screenshot
+    original_freeze = ManagedCapture._freeze
+    screenshots = 0
+
+    async def screenshot(page, *args, **kwargs):
+        nonlocal screenshots
+        screenshots += 1
+        result = await original_screenshot(page, *args, **kwargs)
+        if phase == "after_png":
+            await message.delete()
+        return result
+
+    async def freeze(page):
+        await original_freeze(page)
+        if phase == "before_png":
+            await message.delete()
+
+    monkeypatch.setattr(Page, "screenshot", screenshot)
+    monkeypatch.setattr(ManagedCapture, "_freeze", staticmethod(freeze))
+    async with env.preview(channel, viewers=[alice]) as preview:
+        await preview.show(message)
+        with pytest.raises(simcord.SetupError, match="managed capture projected message"):
+            await preview.screenshot(destination, allow_incomplete=allow_incomplete)
+    assert screenshots == (1 if phase == "after_png" else 0)
+    assert destination.read_bytes() == b"existing destination"
+    assert not tuple(tmp_path.glob("*.tmp"))
+
+
 def test_visual_comparator_reports_color_offset_regions_wrap_and_dimensions(tmp_path):
     reference = tmp_path / "reference.png"
     actual = tmp_path / "actual.png"

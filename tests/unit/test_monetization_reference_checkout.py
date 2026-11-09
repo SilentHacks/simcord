@@ -127,13 +127,13 @@ def test_cancellation_needs_correlated_reporting_not_ended_entitlement(checkout)
 
 
 def test_no_flags_do_no_io(checkout):
-    asyncio.run(checkout.capture_checkouts(SimpleNamespace(args=SimpleNamespace(), state={})))
+    asyncio.run(checkout.capture_checkouts(SimpleNamespace(checkout=SimpleNamespace(), state={})))
 
 
 def test_flags_without_attestation_only_block(checkout):
     blocked = []
     ctx = SimpleNamespace(
-        args=SimpleNamespace(deleted_purchase=True, live_upgrade=True),
+        checkout=SimpleNamespace(deleted_purchase=True, live_upgrade=True),
         state={},
         block=lambda case, reason: blocked.append(case),
     )
@@ -158,7 +158,8 @@ def test_zero_total_confirmation_is_not_implicit(checkout, monkeypatch):
 
 class PurchaseContext:
     def __init__(self, reject_delete=False):
-        self.args = SimpleNamespace(user=789, consumable="Consumable")
+        self.identity = SimpleNamespace(user=789)
+        self.checkout = SimpleNamespace(consumable="Consumable")
         self.app = {"id": "456"}
         self.skus = [{"id": "111", "name": "Consumable", "type": 3}]
         self.state = {"cases": {}, "owned_entitlements": {}}
@@ -232,7 +233,7 @@ def test_interrupted_live_checkout_keeps_cancellation_obligation(checkout, monke
     b = {"id": "112", "name": "B", "type": 5, "flags": 256}
     ctx = PurchaseContext()
     ctx.skus = [a, b]
-    ctx.args.user_sku_a, ctx.args.user_sku_b = "A", "B"
+    ctx.checkout.user_sku_a, ctx.checkout.user_sku_b = "A", "B"
 
     async def interrupted(*args, **kwargs):
         stage = ctx.state["checkout"]["live_upgrade"]
@@ -250,7 +251,7 @@ def test_interrupted_live_checkout_keeps_cancellation_obligation(checkout, monke
 
 def test_cancellation_resume_never_returns_to_checkout(checkout, monkeypatch):
     ctx = PurchaseContext()
-    ctx.args.user_sku_a, ctx.args.user_sku_b = "A", "B"
+    ctx.checkout.user_sku_a, ctx.checkout.user_sku_b = "A", "B"
     ctx.skus = [
         {"id": "111", "name": "A", "type": 5, "flags": 256},
         {"id": "112", "name": "B", "type": 5, "flags": 256},
@@ -306,3 +307,23 @@ def test_canceled_replacement_does_not_hide_uncanceled_original(checkout):
     rows["123"]["ends_at"] = "2020-01-01T00:00:00Z"
     asyncio.run(checkout._cancel(ctx, "checkout.live_upgrade", stage, a, b))
     assert stage["cancellation_verified"]
+
+
+@pytest.mark.parametrize(
+    "state,stage",
+    [
+        ({"expiry_source": {"entitlement_id": "123"}}, {}),
+        ({}, {"cancellation_started": True}),
+        ({}, {"cancellation_verified": True}),
+        ({"upgrade_source": {"period_end": "2000-01-01T00:00:00+00:00"}}, {}),
+    ],
+)
+def test_recovery_authority_never_reopens_checkout(checkout, monkeypatch, state, stage):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No checkout confirmation or prompt is authorized")
+
+    monkeypatch.setattr("builtins.input", forbidden)
+    ctx = SimpleNamespace(state=state, save=forbidden, probe=forbidden)
+    with pytest.raises(RuntimeError):
+        asyncio.run(checkout._manual(ctx, "case", stage, "subscribe_prompted", "Never printed", zero=True))
+    assert not stage.get("subscribe_prompted")

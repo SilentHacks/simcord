@@ -25,16 +25,19 @@ const LANGUAGES = {
 };
 for (const [name, grammar] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, grammar);
 
+/** @type {Record<string, string>} */
 const ALIASES = {
   c: "cpp", "c++": "cpp", cs: "csharp", csharp: "csharp", "c#": "csharp",
   htm: "xml", html: "xml", js: "javascript", node: "javascript", py: "python",
   md: "markdown", sh: "bash", shell: "bash", ts: "typescript", yml: "yaml",
 };
 
+/** @param {HTMLElement} parent @param {unknown} text */
 function appendText(parent, text) {
   parent.append(document.createTextNode(String(text ?? "")));
 }
 
+/** @param {HTMLElement} parent @param {import('./preview-types').Emoji | string | null | undefined} emoji @param {import('./preview-types').RenderOptions} [options] @param {string} [label] */
 export function appendEmojiValue(parent, emoji, options = {}, label = "Custom emoji") {
   if (!emoji || typeof emoji !== "object") {
     appendText(parent, emoji);
@@ -84,6 +87,7 @@ export function appendEmojiValue(parent, emoji, options = {}, label = "Custom em
   parent.append(image);
 }
 
+/** @param {unknown} value */
 function safeLink(value) {
   if (typeof value !== "string") return null;
   try {
@@ -94,6 +98,7 @@ function safeLink(value) {
   }
 }
 
+/** @param {HTMLElement} parent @param {import('./preview-types').MarkdownToken} token @param {import('./preview-types').RenderOptions} options */
 function renderTimestamp(parent, token, options) {
   const unix = Number(token.unix);
   const date = new Date(unix * 1000);
@@ -105,6 +110,7 @@ function renderTimestamp(parent, token, options) {
     if (valid) {
       const locale = options.locale || "en-US";
       const timezone = options.timezone || "UTC";
+      /** @type {Record<string, Intl.DateTimeFormatOptions>} */
       const formats = {
         t: { hour: "numeric", minute: "2-digit" },
         T: { hour: "numeric", minute: "2-digit", second: "2-digit" },
@@ -123,6 +129,7 @@ function renderTimestamp(parent, token, options) {
         if (!Number.isFinite(basis.getTime())) throw new RangeError("invalid presentation time");
         const seconds = (date.getTime() - basis.getTime()) / 1000;
         const absolute = Math.abs(seconds);
+        /** @type {[Intl.RelativeTimeFormatUnit, number]} */
         const [unit, amount] = absolute < 60 ? ["second", seconds]
           : absolute < 3600 ? ["minute", seconds / 60]
             : absolute < 86400 ? ["hour", seconds / 3600]
@@ -161,6 +168,7 @@ function renderTimestamp(parent, token, options) {
   parent.append(time);
 }
 
+/** @param {HTMLElement} parent @param {import('./preview-types').MarkdownToken[] | undefined} tokens @param {import('./preview-types').RenderOptions} options */
 function renderInlineTokens(parent, tokens, options) {
   const stack = [parent];
   for (const token of tokens || []) {
@@ -187,12 +195,14 @@ function renderInlineTokens(parent, tokens, options) {
       continue;
     }
     if (token.type === "link_close") { if (stack.length > 1) stack.pop(); continue; }
+    /** @type {Record<string, keyof HTMLElementTagNameMap>} */
     const marks = { strong: "strong", em: "em", s: "del", u: "u", spoiler: "span" };
     const isOpen = token.type.endsWith("_open");
     const name = token.type.replace(/_(?:open|close)$/, "");
     const tag = marks[name];
     if (!tag) continue;
     if (!isOpen) { if (stack.length > 1) stack.pop(); continue; }
+    /** @type {HTMLElement} */
     const element = document.createElement(tag);
     const content = name === "spoiler" ? node("span", "markdown-spoiler-content") : element;
     if (name === "spoiler") {
@@ -208,12 +218,12 @@ function renderInlineTokens(parent, tokens, options) {
         const paragraph = element.closest(".markdown-paragraph");
         const fragments = group === null || !paragraph
           ? [element]
-          : [...paragraph.querySelectorAll(".markdown-spoiler")]
+          : [...paragraph.querySelectorAll(".markdown-spoiler")].filter((fragment) => fragment instanceof HTMLElement)
             .filter((fragment) => fragment.dataset.spoilerGroup === group);
         for (const fragment of fragments) {
           fragment.classList.add("is-revealed");
           const fragmentContent = fragment.querySelector(".markdown-spoiler-content");
-          if (!fragmentContent) continue;
+          if (!(fragmentContent instanceof HTMLElement)) continue;
           fragmentContent.inert = false;
           fragmentContent.removeAttribute("aria-hidden");
           fragment.removeAttribute("role");
@@ -232,14 +242,17 @@ function renderInlineTokens(parent, tokens, options) {
   }
 }
 
+/** @param {unknown} value */
 function languageName(value) {
   const input = String(value || "").trim().toLowerCase();
   const language = ALIASES[input] || input;
   return Object.hasOwn(LANGUAGES, language) ? language : null;
 }
 
+/** @param {HTMLElement} parent @param {string} value */
 function appendHighlightedOutput(parent, value) {
   const stack = [parent];
+  /** @type {Record<string, string>} */
   const entities = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#x27;": "'" };
   let index = 0;
   while (index < value.length) {
@@ -272,6 +285,7 @@ function appendHighlightedOutput(parent, value) {
   }
 }
 
+/** @param {import('./preview-types').MarkdownToken} block @param {import('./preview-types').RenderOptions} options */
 function renderCodeBlock(block, options) {
   const wrapper = node("div", "code-block-wrap");
   const sourceLanguage = typeof block.language === "string" ? block.language : "";
@@ -299,6 +313,7 @@ function renderCodeBlock(block, options) {
   return wrapper;
 }
 
+/** @param {import('./preview-types').MarkdownToken} block @param {HTMLElement} target @param {import('./preview-types').RenderOptions} options */
 function renderBlock(block, target, options) {
   if (!block || typeof block !== "object") return;
   if (block.type === "inline" || block.type === "subtext") {
@@ -311,24 +326,36 @@ function renderBlock(block, target, options) {
     return;
   }
   if (block.type === "code_block") { target.append(renderCodeBlock(block, options)); return; }
+  /** @type {Record<string, keyof HTMLElementTagNameMap>} */
   const tags = {
     paragraph: "p", blockquote: "blockquote", bullet_list: "ul", ordered_list: "ol",
-    list_item: "li", heading: /^h[1-6]$/.test(block.tag || "") ? block.tag : "h3",
+    list_item: "li", heading: headingTag(block.tag),
   };
   const element = node(tags[block.type] || "div", `markdown-${block.type || "block"}`);
   for (const child of block.children || []) renderBlock(child, element, options);
   target.append(element);
 }
 
+/** @param {HTMLElement} parent @param {unknown} value @param {import('./preview-types').MarkdownToken[] | undefined} tokens @param {import('./preview-types').RenderOptions} [options] */
 export function appendMarkdownOrText(parent, value, tokens, options = {}) {
   if (Array.isArray(tokens) && tokens.length) {
     for (const token of tokens) renderBlock(token, parent, options);
   } else appendText(parent, value);
 }
 
+/** @param {string | undefined} tag @returns {'h1'|'h2'|'h3'|'h4'|'h5'|'h6'} */
+function headingTag(tag) {
+  switch (tag) {
+    case "h1": case "h2": case "h3": case "h4": case "h5": case "h6": return tag;
+    default: return "h3";
+  }
+}
+
 const EMOJI_CLUSTER = /(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3)/u;
+/** @param {import('./preview-types').MarkdownToken[] | undefined} tokens */
 export function isEmojiOnly(tokens) {
   let found = false;
+  /** @param {import('./preview-types').MarkdownToken[] | undefined} items @returns {boolean} */
   const visit = (items) => {
     for (const token of items || []) {
       if (!token || typeof token !== "object") continue;

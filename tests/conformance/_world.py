@@ -101,7 +101,7 @@ def build_world() -> World:
     # An interaction with a materialised response message. The webhook-shaped
     # interaction-response routes (``/webhooks/{id}/{token}/messages/...``) key
     # off the interaction token, so this is what lets the fuzzer reach their
-    # ``message_edit_changes`` (and thus ``ctx.fields``) call.
+    # ``edit_bot_message`` (and thus ``ctx.fields``) call.
     interaction = b.new_interaction(type=2, channel_id=text.id, user_id=member.id, guild_id=gid)
     interaction.respond_with_message(msg.id, ephemeral=False)
     sku = b.create_sku("Consumable", type=3)

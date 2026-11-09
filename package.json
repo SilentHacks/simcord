@@ -1,0 +1,11 @@
+{
+  "name": "simcord-preview-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:preview": "tsc --project jsconfig.preview.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

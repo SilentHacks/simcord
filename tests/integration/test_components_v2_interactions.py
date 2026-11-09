@@ -357,7 +357,11 @@ async def test_modal_choice_validation_is_reported_through_actor_api(env, channe
         await alice.submit_modal(result, {})
 
 
-async def test_modal_upload_and_checkbox_validation_is_reported_through_actor_api(env, channel, alice):
+async def test_modal_upload_and_checkbox_validation_is_reported_through_actor_api(
+    env, channel, alice, monkeypatch
+):
+    submissions = []
+
     class Form(discord.ui.Modal, title="Files"):
         upload = discord.ui.Label(
             text="Upload",
@@ -369,24 +373,40 @@ async def test_modal_upload_and_checkbox_validation_is_reported_through_actor_ap
         )
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
+            attachment = self.upload.component.values[0]
+            submissions.append((attachment.filename, await attachment.read(), self.accepted.component.value))
             await interaction.response.send_message("ok")
 
     opened = await _open_modal(env, channel, alice, Form())
-    with pytest.raises(simcord.SetupError, match="Required modal control 'upload' was not supplied"):
+    with pytest.raises(simcord.SetupError):
         await alice.submit_modal(opened, {"accepted": True})
-    with pytest.raises(simcord.SetupError, match=r"expects .*filename, bytes.* tuples"):
+    with pytest.raises(simcord.SetupError):
         await alice.submit_modal(opened, {"upload": "file", "accepted": True})
-    with pytest.raises(simcord.SetupError, match=r"expects .*filename, bytes.* tuples"):
+    with pytest.raises(simcord.SetupError):
         await alice.submit_modal(opened, {"upload": [("bad", "text")], "accepted": True})
-    with pytest.raises(simcord.SetupError, match="expects between 1 and 1 files"):
+    with pytest.raises(simcord.SetupError):
         await alice.submit_modal(
             opened,
             {"upload": [("one", b"1"), ("two", b"2")], "accepted": True},
         )
-    with pytest.raises(simcord.SetupError, match="Checkbox 'accepted' expects a bool"):
-        await alice.submit_modal(opened, {"upload": ("one", b"1"), "accepted": "yes"})
+    before = len(env.backend.interactions)
+
+    def unexpected_upload(*args, **kwargs):
+        raise AssertionError("An invalid later field committed a staged upload")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.backend.cdn, "store_attachment", unexpected_upload)
+        with pytest.raises(simcord.SetupError):
+            await alice.submit_modal(opened, {"upload": ("one", b"1"), "accepted": "yes"})
+    assert submissions == []
+    assert len(env.backend.interactions) == before
+
     result = await alice.submit_modal(opened, {"upload": ("one", b"1"), "accepted": True})
     assert result.response.content == "ok"
+    assert submissions == [("one", b"1", True)]
+    with pytest.raises(simcord.SetupError):
+        await alice.submit_modal(opened, {"upload": ("two", b"2"), "accepted": False})
+    assert submissions == [("one", b"1", True)]
 
 
 async def test_ephemeral_v2_edits_preserve_visibility_for_update_and_original_response():
@@ -485,3 +505,46 @@ async def test_optional_modal_upload_and_checkbox_group_clear_to_empty(env, chan
     result = await alice.submit_modal(opened, {"upload": [], "checks": []})
     assert result.response.content == "ok"
     assert captured == {"upload": [], "checks": []}
+
+
+async def test_modal_optional_omissions_preserve_explicit_checkbox_choice(env, channel, alice):
+    submitted = []
+
+    class Form(discord.ui.Modal, title="Optional inputs"):
+        radio = discord.ui.Label(
+            text="Optional radio",
+            component=discord.ui.RadioGroup(
+                custom_id="radio",
+                options=[
+                    discord.RadioGroupOption(label="One", value="one"),
+                    discord.RadioGroupOption(label="Two", value="two"),
+                ],
+                required=False,
+            ),
+        )
+        accepted = discord.ui.Label(
+            text="Preselected checkbox",
+            component=discord.ui.Checkbox(custom_id="accepted", default=True),
+        )
+        checks = discord.ui.Label(
+            text="Required choices",
+            component=discord.ui.CheckboxGroup(
+                custom_id="checks",
+                options=[discord.CheckboxGroupOption(label="One", value="one")],
+                required=True,
+            ),
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            submitted.append(
+                (self.radio.component.value, self.accepted.component.value, self.checks.component.values)
+            )
+            await interaction.response.send_message("saved")
+
+    shown = await _open_modal(env, channel, alice, Form())
+    with pytest.raises(simcord.SetupError):
+        await alice.submit_modal(shown, {})
+    assert submitted == []
+    result = await alice.submit_modal(shown, {"checks": ["one"]})
+    assert result.response.content == "saved"
+    assert submitted == [(None, True, ["one"])]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from importlib import resources
 from types import SimpleNamespace
 
@@ -193,13 +194,156 @@ async def test_command_catalog_route_authorization_visibility_and_revocation(env
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["options", "description", "rename", "remove", "permission"])
+async def test_catalog_reads_revoke_changed_command_and_active_picker(env, channel, alice, change):
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview, ClientSession() as client:
+        page = preview._python
+        entry = _entry(page, "picker_options")
+        key = f"command:{entry['commandId']}:picker_options:option:user"
+        receipt = await preview._action(
+            page.id,
+            action_body(
+                page,
+                "browse_candidates",
+                1,
+                control_key=key,
+                query="",
+                cursor=None,
+                modal_handle=None,
+            ),
+        )
+        assert receipt["settlement"] == "settled"
+        published = deepcopy(page.command_catalog)
+        snapshot = deepcopy(page.snapshot)
+        headers = preview_headers(preview, page.id)
+        catalog_url = preview._origin + "/api/commands"
+        state_url = preview._origin + "/api/state"
+        response = await client.get(catalog_url, headers=headers)
+        assert response.status == 200
+        assert await response.json() == published
+        response = await client.get(state_url, headers=headers)
+        assert response.status == 200
+        observed = await response.json()
+        assert observed["commands"] == snapshot["commands"]
+        assert observed["candidates"][key] == snapshot["candidates"][key]
+
+        scope, command = _registered(env, "picker_options")
+        if change == "options":
+            command["options"].append({"name": "added", "description": "New option", "type": 3})
+        elif change == "description":
+            command["description"] = "Unpublished description"
+        elif change == "rename":
+            command["name"] = "renamed_picker"
+        elif change == "remove":
+            env.backend.commands[scope].pop(("picker_options", 1))
+        else:
+            env.backend.set_command_permissions(
+                env.guild.id,
+                int(command["id"]),
+                [{"id": str(alice.id), "type": 2, "permission": False}],
+            )
+
+        response = await client.get(catalog_url, headers=headers)
+        assert response.status == 200
+        current = await response.json()
+        assert current["entries"] == [item for item in published["entries"] if item["key"] != entry["key"]]
+        assert current["fingerprint"] != published["fingerprint"]
+        assert current["application"] == published["application"]
+        assert current["truncated"] == published["truncated"]
+        response = await client.get(state_url, headers=headers)
+        assert response.status == 200
+        observed = await response.json()
+        assert observed["publishedRevision"] == snapshot["publishedRevision"]
+        assert observed["commands"] == {
+            "state": current["state"],
+            "fingerprint": current["fingerprint"],
+            "count": len(current["entries"]),
+        }
+        assert key not in observed["candidates"]
+        assert page.command_catalog == published
+        assert page.snapshot == snapshot
+
+        await preview.refresh()
+        response = await client.get(catalog_url, headers=headers)
+        refreshed = await response.json()
+        if change in {"options", "description", "rename"}:
+            replacement = next(
+                item for item in refreshed["entries"] if item["commandId"] == entry["commandId"]
+            )
+            assert replacement["schemaFingerprint"] != entry["schemaFingerprint"]
+            assert replacement["invocation"] == ("renamed_picker" if change == "rename" else "picker_options")
+        else:
+            assert all(item["commandId"] != entry["commandId"] for item in refreshed["entries"])
+
+
+@pytest.mark.asyncio
+async def test_catalog_new_and_newly_granted_commands_wait_for_refresh(env, channel, alice):
+    _, restricted = _registered(env, "tag")
+    env.backend.set_command_permissions(
+        env.guild.id,
+        int(restricted["id"]),
+        [{"id": str(alice.id), "type": 2, "permission": False}],
+    )
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview, ClientSession() as client:
+        page = preview._python
+        published = deepcopy(page.command_catalog)
+        assert all(item["invocation"] != "tag" for item in published["entries"])
+
+        async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message("New command")
+
+        env.bot.tree.add_command(
+            app_commands.Command(name="newly_registered", description="New command", callback=callback)
+        )
+        await env.bot.tree.sync()
+        env.backend.set_command_permissions(env.guild.id, int(restricted["id"]), [])
+        headers = preview_headers(preview, page.id)
+        response = await client.get(preview._origin + "/api/commands", headers=headers)
+        assert response.status == 200
+        assert await response.json() == published
+        response = await client.get(preview._origin + "/api/state", headers=headers)
+        assert response.status == 200
+        assert (await response.json())["commands"] == page.snapshot["commands"]
+
+        await preview.refresh()
+        response = await client.get(preview._origin + "/api/commands", headers=headers)
+        assert response.status == 200
+        current = await response.json()
+        assert {"tag", "newly_registered"} <= {item["invocation"] for item in current["entries"]}
+        assert current["fingerprint"] != published["fingerprint"]
+
+
+@pytest.mark.asyncio
 async def test_catalog_truncation_fingerprints_and_unsynced_diagnostic(env, channel, alice, monkeypatch):
-    async with env.preview(channel, viewers=[alice], layout="channel") as preview:
+    async with env.preview(channel, viewers=[alice], layout="channel") as preview, ClientSession() as client:
         page = preview._python
         monkeypatch.setattr(_commands, "MAX_CATALOG_LEAVES", 2)
         preview._publish(page, reason="refresh")
         assert len(page.command_catalog["entries"]) == 2
         assert page.command_catalog["truncated"] is True
+        headers = preview_headers(preview, page.id)
+        response = await client.get(preview._origin + "/api/commands", headers=headers)
+        assert response.status == 200
+        assert await response.json() == page.command_catalog
+        response = await client.get(preview._origin + "/api/state", headers=headers)
+        assert response.status == 200
+        assert (await response.json())["commands"] == page.snapshot["commands"]
+        published = deepcopy(page.command_catalog)
+        first_id = published["entries"][0]["commandId"]
+        scope, registered_key, removed = next(
+            (scope, key, command)
+            for scope, commands in env.backend.commands.items()
+            for key, command in commands.items()
+            if command["id"] == first_id
+        )
+        env.backend.commands[scope].pop(registered_key)
+        response = await client.get(preview._origin + "/api/commands", headers=headers)
+        assert response.status == 200
+        current = await response.json()
+        assert current["truncated"] is True
+        assert current["entries"] == [item for item in published["entries"] if item["commandId"] != first_id]
+        assert page.command_catalog == published
+        env.backend.commands[scope][registered_key] = removed
 
         scope, command = _registered(env, "tag")
         path, leaf = command_leaves(command)[0]
@@ -207,7 +351,7 @@ async def test_catalog_truncation_fingerprints_and_unsynced_diagnostic(env, chan
         reversed_leaf = dict(reversed(list(leaf.items())))
         one = _commands.entry_for_leaf(command, path, leaf)
         reordered = _commands.entry_for_leaf(reversed_root, path, reversed_leaf)
-        assert one["schemaFingerprint"] == reordered["schemaFingerprint"]
+        assert one == reordered
         changed = {**leaf, "description": "Changed description"}
         assert (
             one["schemaFingerprint"] != _commands.entry_for_leaf(command, path, changed)["schemaFingerprint"]

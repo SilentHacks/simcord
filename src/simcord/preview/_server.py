@@ -36,10 +36,23 @@ class PreviewServer:
     _STATIC_FILES: ClassVar[dict[str, str]] = {
         "/": "index.html",
         "/app.js": "app.js",
+        "/session.js": "session.js",
+        "/geometry.js": "geometry.js",
+        "/backend-diagnostics.json": "backend-diagnostics.json",
         "/workbench.js": "workbench.js",
         "/select-drafts.js": "select-drafts.js",
         "/timeline.js": "timeline.js",
         "/transport.js": "transport.js",
+        "/actions.js": "actions.js",
+        "/assets.js": "assets.js",
+        "/connection.js": "connection.js",
+        "/command-catalog.js": "command-catalog.js",
+        "/command-drafts.js": "command-drafts.js",
+        "/modal.js": "modal.js",
+        "/diagnostics.js": "diagnostics.js",
+        "/focus.js": "focus.js",
+        "/surfaces.js": "surfaces.js",
+        "/presentation.js": "presentation.js",
         "/components.js": "components.js",
         "/selects.js": "selects.js",
         "/listbox.js": "listbox.js",
@@ -90,10 +103,23 @@ class PreviewServer:
         "preview.css": "text/css",
         "protocol.schema.json": "application/schema+json",
         "app.js": "application/javascript",
+        "session.js": "application/javascript",
+        "geometry.js": "application/javascript",
+        "backend-diagnostics.json": "application/json",
         "workbench.js": "application/javascript",
         "select-drafts.js": "application/javascript",
         "timeline.js": "application/javascript",
         "transport.js": "application/javascript",
+        "actions.js": "application/javascript",
+        "assets.js": "application/javascript",
+        "connection.js": "application/javascript",
+        "command-catalog.js": "application/javascript",
+        "command-drafts.js": "application/javascript",
+        "modal.js": "application/javascript",
+        "diagnostics.js": "application/javascript",
+        "focus.js": "application/javascript",
+        "surfaces.js": "application/javascript",
+        "presentation.js": "application/javascript",
         "components.js": "application/javascript",
         "media.js": "application/javascript",
         "messages.js": "application/javascript",
@@ -137,6 +163,7 @@ class PreviewServer:
         app.router.add_delete("/api/pages/{context_id}", self._delete_page)
         app.router.add_get("/api/state", self._state)
         app.router.add_get("/api/commands", self._commands)
+        app.router.add_get("/api/action-result", self._action_result)
         app.router.add_post("/api/action", self._action)
         app.router.add_get("/api/assets/{asset_id}", self._asset)
         self.runner = web.AppRunner(app, access_log=None)
@@ -261,8 +288,7 @@ class PreviewServer:
         return web.json_response(payload, headers=self._SECURITY_HEADERS)
 
     async def _commands(self, request: Any) -> Any:
-        from ..backend.access import can_access_channel
-        from ._commands import unavailable_catalog
+        from ._commands import _authorized_catalog
 
         context_id = request.headers.get("X-Simcord-Context")
         if not self._authorized(request, context=context_id):
@@ -273,17 +299,43 @@ class PreviewServer:
             return web.json_response(
                 {"error": make_diagnostic("context-unavailable")}, status=410, headers=self._SECURITY_HEADERS
             )
-        if page.snapshot.get("commands", {}).get("state") == "unavailable" or not can_access_channel(
-            self.preview.env, page.channel_id, page.viewer, history=True
-        ):
-            catalog = unavailable_catalog()
-        else:
-            catalog = page.command_catalog
+        catalog = _authorized_catalog(self.preview, page)
         return web.json_response(
             catalog,
             headers=self._SECURITY_HEADERS,
             dumps=lambda value: json.dumps(value, separators=(",", ":")),
         )
+
+    async def _action_result(self, request: Any) -> Any:
+        context_id = request.headers.get("X-Simcord-Context")
+        if not self._authorized(request, context=context_id):
+            raise web.HTTPUnauthorized()
+        try:
+            page = self.preview._get_page(context_id)
+        except (SetupError, BackendError):
+            return web.json_response(
+                {"error": make_diagnostic("context-unavailable")}, status=410, headers=self._SECURITY_HEADERS
+            )
+        request_id = request.query.get("request_id")
+        sequence = request.query.get("sequence", "")
+        action = page.latest_action
+        if (
+            not request_id
+            or not sequence.isascii()
+            or not sequence.isdecimal()
+            or action is None
+            or action.request_id != request_id
+            or sequence.lstrip("0") != str(action.sequence)
+            or not self.preview._action_scope_current(page, action)
+        ):
+            return web.json_response(
+                {"error": make_diagnostic("command-unavailable")}, status=404, headers=self._SECURITY_HEADERS
+            )
+        if action.response is None:
+            return web.json_response(
+                {"error": make_diagnostic("busy")}, status=409, headers=self._SECURITY_HEADERS
+            )
+        return web.json_response(self.preview._replay_response(page, action), headers=self._SECURITY_HEADERS)
 
     async def _action(self, request: Any) -> Any:
         context_id = request.headers.get("X-Simcord-Context")

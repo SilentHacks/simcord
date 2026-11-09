@@ -10,11 +10,14 @@ import {
   renderSpoilerMedia,
 } from "./media.js";
 
+/** @param {import('./preview-types').Component[] | undefined} components @param {import('./preview-types').Embed[] | undefined} embeds */
 function referencedAssets(components, embeds) {
+  /** @type {Set<string | null | undefined>} */
   const found = new Set();
+  /** @param {unknown} value */
   const visit = (value) => {
     if (!value || typeof value !== "object") return;
-    if (typeof value.asset_id === "string") found.add(value.asset_id);
+    if ("asset_id" in value && typeof value.asset_id === "string") found.add(value.asset_id);
     Object.values(value).forEach(visit);
   };
   visit(components);
@@ -22,6 +25,7 @@ function referencedAssets(components, embeds) {
   return found;
 }
 
+/** @param {string} value @param {import('./preview-types').RenderOptions} options */
 function absoluteTime(value, options) {
   return new Intl.DateTimeFormat(options.locale || "en-US", {
     timeZone: options.timezone || "UTC",
@@ -30,6 +34,7 @@ function absoluteTime(value, options) {
   }).format(new Date(value));
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').Reply | undefined} reply @param {import('./preview-types').RenderOptions} options */
 function appendReply(root, reply, options) {
   if (reply?.state !== "resolved") return;
   const preview = node("div", "message-reply");
@@ -47,6 +52,7 @@ function appendReply(root, reply, options) {
   root.append(preview);
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').Thread | undefined} thread */
 function appendThread(root, thread) {
   if (!thread) return;
   const summary = node(
@@ -58,6 +64,7 @@ function appendThread(root, thread) {
   root.append(summary);
 }
 
+/** @param {HTMLElement} parent @param {import('./preview-types').DiscordLink | undefined} value @param {string} label */
 function appendDiscordLink(parent, value, label) {
   if (typeof value?.url !== "string") return;
   try {
@@ -73,6 +80,7 @@ function appendDiscordLink(parent, value, label) {
   }
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').SystemMessage} system @param {import('./preview-types').RenderOptions} options */
 function appendSystemMessage(root, system, options) {
   const content = node("div", "message-system");
   content.append(node("span", "message-system-icon", system.icon || "system"));
@@ -91,6 +99,7 @@ function appendSystemMessage(root, system, options) {
   root.append(content);
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').InteractionHeader} interaction */
 function appendInteractionHeader(root, interaction) {
   const header = node("div", "message-interaction-header");
   const invoker = interaction.user?.name;
@@ -105,6 +114,7 @@ function appendInteractionHeader(root, interaction) {
   root.append(header);
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').Media[] | undefined} stickers @param {import('./preview-types').RenderOptions} options @param {Promise<unknown>[]} pendingMedia */
 function appendStickers(root, stickers, options, pendingMedia) {
   if (!stickers?.length) return;
   const list = node("div", "message-stickers");
@@ -132,6 +142,7 @@ function appendStickers(root, stickers, options, pendingMedia) {
   if (list.childNodes.length) root.append(list);
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').Message} message @param {import('./preview-types').RenderOptions} options @param {boolean} v2 */
 function appendMessageContent(root, message, options, v2) {
   if (message.system) {
     appendSystemMessage(root, message.system, options);
@@ -145,6 +156,7 @@ function appendMessageContent(root, message, options, v2) {
     root.append(content);
   }
 }
+/** @param {HTMLElement} item @param {import('./preview-types').Media} attachment @param {import('./preview-types').RenderOptions} options */
 function appendFileAttachment(item, attachment, options) {
   const filename = attachment.filename || "attachment";
   const content = attachment.spoiler ? node("div") : item;
@@ -174,7 +186,7 @@ function appendFileAttachment(item, attachment, options) {
   } else {
     footer.prepend(badge);
   }
-  const available = Boolean(attachment.asset_id) && attachment.available !== false
+  const available = !!attachment.asset_id && attachment.available !== false
     && options.assets?.[attachment.asset_id]?.available !== false && options.loadAsset;
   if (!available) content.append(node("div", "media-unavailable", `${filename} unavailable`));
   const download = downloadButton(attachment, options, filename);
@@ -193,6 +205,7 @@ function appendFileAttachment(item, attachment, options) {
   }
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').Message} message @param {import('./preview-types').RenderOptions} options @param {Promise<unknown>[]} pendingMedia */
 function appendMessageBody(root, message, options, pendingMedia) {
   const v2 = message.components_v2 === true || (Number(message.flags) & 32768) !== 0;
   const suppressEmbeds = (Number(message.flags) & 4) !== 0;
@@ -214,6 +227,7 @@ function appendMessageBody(root, message, options, pendingMedia) {
     const list = node("ul", "message-attachments");
     list.dataset.imageCount = String(Math.min(10, images.length));
     list.dataset.attachmentCount = String(Math.min(10, attachments.length));
+    /** @type {import('./preview-types').LightboxGroup} */
     const imageGroup = { items: [] };
     attachments.forEach((attachment, index) => {
       const inline = attachment.inline && attachment.asset_id;
@@ -251,20 +265,27 @@ function appendMessageBody(root, message, options, pendingMedia) {
   }
 }
 
+/** @param {HTMLElement[]} players */
 function disposeUnusedPlayers(players) {
   players.forEach((player) => {
     if (!player.isConnected) player._previewMediaPlayer?.dispose?.();
   });
 }
 
+/** @param {HTMLElement} root @param {import('./preview-types').Message | null | undefined} message @param {import('./preview-types').RenderOptions} [options] */
 export function renderMessage(root, message, options = {}) {
+  root._previewDispose?.();
+  let alive = true;
+  root._previewDispose = () => { alive = false; };
+  options = { ...options, isCurrent: () => alive };
   const pendingMedia = options.pendingMedia || [];
   options.pendingMedia = pendingMedia;
   const reuseScope = message
     ? JSON.stringify([String(message.id), String(options.contextId ?? ""), String(options.viewerId ?? "")])
     : null;
+  /** @type {Map<string | undefined, HTMLElement[]>} */
   const reusePlayers = new Map();
-  const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")];
+  const oldPlayers = [...root.querySelectorAll(".media-player[data-media-reuse-key]")].filter((player) => player instanceof HTMLElement);
   const canReuse = reuseScope !== null && root.dataset.mediaReuseScope === reuseScope;
   oldPlayers.forEach((player) => {
     const reusable = canReuse && player._previewMediaPlayer?.active === true;
@@ -289,6 +310,7 @@ export function renderMessage(root, message, options = {}) {
   options.messageAuthor = message.author;
   options.messageTimestamp = message.timestamp;
   options.lightboxGroup ||= { items: [] };
+  /** @param {string} value */
   const shortTime = (value) => new Intl.DateTimeFormat(options.locale || "en-US", {
     timeZone: options.timezone || "UTC",
     hour: "numeric",
@@ -296,7 +318,7 @@ export function renderMessage(root, message, options = {}) {
   }).format(new Date(value));
 
   appendReply(root, message.reply, options);
-  if (["application_command", "context_menu_command"].includes(message.interaction_header?.kind)) {
+  if (message.interaction_header && ["application_command", "context_menu_command"].includes(message.interaction_header.kind ?? "")) {
     appendInteractionHeader(root, message.interaction_header);
   }
   if (!message.compact) {
@@ -365,11 +387,11 @@ export function renderMessage(root, message, options = {}) {
     message.reactions.forEach((reaction, index) => {
       const canReact = Boolean(reaction.can_toggle) && typeof options.onReaction === "function";
       const chip = node(canReact ? "button" : "span", "reaction-chip", "");
-      if (canReact) {
+      if (chip instanceof HTMLButtonElement && canReact) {
         chip.type = "button";
         chip.dataset.controlKey = `message:${message.id}:reaction:${index}`;
         chip.setAttribute("aria-pressed", String(Boolean(reaction.viewer_reacted)));
-        chip.addEventListener("click", () => options.onReaction(message, reaction));
+        chip.addEventListener("click", () => options.onReaction?.(message, reaction));
       }
       if (reaction.viewer_reacted) chip.classList.add("is-selected");
       const emoji = node("span", "reaction-emoji");
@@ -405,7 +427,7 @@ export function renderMessage(root, message, options = {}) {
       }
       label.append(node("span", "", String(answer.text ?? "")));
       choice.append(label);
-      if (canVote && !showResults) {
+      if (choice instanceof HTMLButtonElement && canVote && !showResults) {
         choice.type = "button";
         choice.dataset.controlKey = `message:${message.id}:poll:${answerId}`;
         choice.setAttribute("aria-pressed", String(selected.has(answerId)));
@@ -416,7 +438,7 @@ export function renderMessage(root, message, options = {}) {
             if (!poll.multiselect) next.clear();
             next.add(answerId);
           }
-          options.onPollDraft(message, [...next]);
+          options.onPollDraft?.(message, [...next]);
         });
       }
       const isSelected = showResults ? answer.viewer_selected : selected.has(answerId);
@@ -451,6 +473,7 @@ export function renderMessage(root, message, options = {}) {
     status.append(node("span", "poll-time", timeLeft));
     footer.append(status);
     const actions = node("div", "poll-actions");
+    /** @param {string} label @param {string} className @param {string} key @param {() => void} callback */
     const addButton = (label, className, key, callback) => {
       const button = node("button", className, label);
       button.type = "button";
@@ -461,12 +484,12 @@ export function renderMessage(root, message, options = {}) {
     };
     if (canVote && typeof options.onPollSubmit === "function") {
       if (voted) {
-        addButton("Remove Vote", "poll-secondary", "remove", () => options.onPollSubmit(message, []));
+        addButton("Remove Vote", "poll-secondary", "remove", () => options.onPollSubmit?.(message, []));
       } else if (showResults) {
         addButton("Go back to vote", "poll-secondary", "back", () => options.onPollResults?.(message, false));
       } else {
         addButton("Show results", "poll-show-results", "results", () => options.onPollResults?.(message, true));
-        const submit = addButton("Vote", "poll-submit", "submit", () => options.onPollSubmit(message, [...selected]));
+        const submit = addButton("Vote", "poll-submit", "submit", () => options.onPollSubmit?.(message, [...selected]));
         submit.disabled = selected.size === 0;
       }
     }
@@ -478,6 +501,7 @@ export function renderMessage(root, message, options = {}) {
     const toolbar = node("div", "message-context-actions");
     toolbar.setAttribute("role", "toolbar");
     toolbar.setAttribute("aria-label", `Actions for ${message.author?.name || "message"}`);
+    /** @param {'reply'|'edit'|'delete'|'pin'} key @param {string} label @param {import('./preview-types').MessageAction | null | undefined} callback */
     const addAction = (key, label, callback) => {
       if (typeof callback !== "function") return;
       const button = iconButton(key, label, "message-action-button");
@@ -493,7 +517,7 @@ export function renderMessage(root, message, options = {}) {
     }
     if (toolbar.childElementCount) root.append(toolbar);
   }
-  root.dataset.mediaReuseScope = reuseScope;
+  root.dataset.mediaReuseScope = reuseScope ?? "";
   disposeUnusedPlayers(oldPlayers);
   if (hadPlayerReuse) options.mediaPlayerReuse = previousPlayerReuse;
   else delete options.mediaPlayerReuse;

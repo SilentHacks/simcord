@@ -9,35 +9,44 @@ const TYPE = Object.freeze({
   MENTIONABLE_SELECT: 7,
   CHANNEL_SELECT: 8,
 });
+/** @type {ReadonlySet<number>} */
 export const SELECT_TYPES = new Set(Object.values(TYPE));
 const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"/></svg>';
 
+/** @param {string} path */
 function safeId(path) {
   return encodeURIComponent(path);
 }
+/** @param {string} key @param {string} value */
 function optionId(key, value) {
   return `option-${safeId(JSON.stringify([key, value]))}`;
 }
+/** @param {import('./preview-types').Component} component @param {string} path @param {string} [scope] */
 function keyFor(component, path, scope = "message") {
   if (typeof component.control_key === "string") return component.control_key;
   if (typeof component.id === "number" && component.id > 0) return `${scope}:component:${component.id}`;
   return `${scope}:component:${path}`;
 }
+/** @param {import('./preview-types').Identity[]} options */
 export function optionDefaults(options) {
   return options.filter((item) => item && item.default === true).map((item) => String(item.value));
 }
+/** @param {import('./preview-types').Component} component @param {import('./preview-types').CandidateDescriptor | undefined} candidates */
 export function optionEntries(component, candidates) {
   if (component.type === TYPE.STRING_SELECT) return Array.isArray(component.options) ? component.options : [];
   return Array.isArray(candidates?.entries) ? candidates.entries : [];
 }
+/** @param {import('./preview-types').Identity} entry */
 function entryValue(entry) {
   return String(entry.value ?? entry.id ?? "");
 }
+/** @param {import('./preview-types').CandidateDescriptor | undefined} descriptor */
 export function selectedIds(descriptor) {
   return Array.isArray(descriptor?.selected)
     ? descriptor.selected.map((entry) => String(entry.id))
     : [];
 }
+/** @param {string[]} values @param {import('./preview-types').Identity[]} entries @param {import('./preview-types').Identity[]} selectedEntries @param {string | undefined} placeholder */
 function displaySelection(values, entries, selectedEntries, placeholder) {
   const labels = values.map((value) => {
     const found = entries.find((item) => entryValue(item) === String(value))
@@ -47,14 +56,16 @@ function displaySelection(values, entries, selectedEntries, placeholder) {
   return labels.length ? labels.join(", ") : (placeholder || "Select an option");
 }
 
+/** @param {import('./preview-types').Component} component @param {string} path @param {import('./preview-types').RenderOptions} options */
 export function renderSelect(component, path, options) {
-  const { drafts, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel, onNavigate, onClear } = options;
+  const { draftValue = () => undefined, candidates, dropdown, scope = "message", onInit, onOpen, onDraft, onCommit, onCancel, onNavigate, onClear } = options;
   const key = keyFor(component, path, scope);
   const candidateKey = component.control_key || key;
   const descriptor = candidates?.[candidateKey];
   const entries = optionEntries(component, descriptor);
   const ROLE_MARK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 2 21 6v6c0 6-9 10-9 10S3 18 3 12V6zM8.6 8.6a3.4 3.4 0 1 0 6.8 0 3.4 3.4 0 0 0-6.8 0zM12 13.2c-3.8 0-7 2-8.4 4.9a9.95 9.95 0 0 0 8.4 4.9 9.95 9.95 0 0 0 8.4-4.9c-1.4-2.9-4.6-4.9-8.4-4.9z"/></svg>';
   const HASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10.4 3h2l-.8 5.4h4.4l.8-5.4h2l-.8 5.4h3.6v1.9h-3.9l-1 6.4h3.9v1.9h-4.2l-.8 5.4h-2l.8-5.4H4.4v-1.9h3.9l1-6.4H5.4V8.4h4.2l.8-5.4zM10.3 15.7h4.4l1-6.4h-4.4l-1 6.4z"/></svg>';
+  /** @param {import('./preview-types').Identity} entry @param {string} kind */
   const entityIcon = (entry, kind) => {
     const icon = node("span", "entity-icon");
     if (kind === "user") {
@@ -88,18 +99,19 @@ export function renderSelect(component, path, options) {
     ...(Array.isArray(descriptor?.selected) ? descriptor.selected.filter((entry) => entry && typeof entry === "object") : []),
     ...(options.identityEntries?.(candidateKey) || []),
   ];
-  if (!drafts.has(key)) {
+  if (draftValue(key) === undefined) {
     const initial = component.type !== TYPE.STRING_SELECT && Array.isArray(descriptor?.selected)
       ? selectedIds(descriptor)
       : optionDefaults(entries).slice(0, maximum);
     onInit?.(key, initial);
   }
-  const rawSelected = Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : [];
+  const draft = draftValue(key);
+  const rawSelected = Array.isArray(draft) ? [...draft] : [];
   const entryValues = new Set(entries.map(entryValue));
   let selected = identityPending ? [] : rawSelected.map(String);
   if (component.type === TYPE.STRING_SELECT) {
     const valid = selected.filter((value) => entryValues.has(value));
-    if (valid.length !== selected.length) drafts.set(key, valid);
+    if (valid.length !== selected.length) options.onReconcileDraft?.(key, valid);
     selected = valid;
     onInit?.(key, valid);
   }
@@ -112,6 +124,7 @@ export function renderSelect(component, path, options) {
   const label = component.placeholder || (multi ? "Select one or more options" : "Select an option");
   const trigger = node("button", "select-trigger");
   const valueDisplay = node("span", "select-value");
+  /** @param {string} value */
   const findEntry = (value) => entries.find((entry) => entryValue(entry) === String(value))
     || selectedEntries.find((entry) => entryValue(entry) === String(value));
   const single = selected.length === 1 ? findEntry(selected[0]) : null;
@@ -181,10 +194,14 @@ export function renderSelect(component, path, options) {
   }
   trigger.setAttribute("aria-controls", `listbox-${safeId(key)}`);
   const activeValue = isOpen ? String(dropdown?.highlight ?? "") : "";
+  /** @type {ReturnType<typeof createListbox> | null} */
   let listbox = null;
+  /** @type {ReturnType<typeof createListbox> | null} */
   let searchListbox = null;
+  /** @type {HTMLInputElement | null} */
   let searchInput = null;
   // Singles commit on choice; multis on Enter/Apply/trigger-close/outside pointer; Escape/focusout cancel.
+  /** @param {string} value */
   const choose = (value) => {
     onDraft?.(key, value, multi, minimum, maximum, selected, findEntry(value));
     if (!multi) onCommit?.(key, [value]);
@@ -225,6 +242,7 @@ export function renderSelect(component, path, options) {
     }, 0);
   });
   const candidateQuery = () => options.candidateQuery?.(candidateKey) ?? descriptor?.query ?? "";
+  /** @param {string | null} cursor */
   const candidatePage = (cursor) => options.onCandidateQuery?.(
     candidateKey, candidateQuery(), cursor, options.modalHandle || null,
   );
@@ -294,6 +312,7 @@ export function renderSelect(component, path, options) {
     tools.append(searchLabel, pages, status);
     popup.append(tools);
   }
+  /** @param {HTMLElement} option @param {import('./preview-types').Identity} entry @param {string} kind */
   const decorateEntity = (option, entry, kind) => {
     option.classList.add("option-entity");
     option.append(entityIcon(entry, kind));
@@ -328,7 +347,7 @@ export function renderSelect(component, path, options) {
     option.tabIndex = -1;
     const disabled = atMax && !selected.includes(value);
     if (disabled) { option.classList.add("is-disabled"); option.setAttribute("aria-disabled", "true"); }
-    if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown.highlight ?? "") === value) option.classList.add("is-highlighted");
+    if (selected.includes(value)) { option.classList.add("is-selected"); const tick = node("span", "option-check"); tick.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M9.55 16.93 4.41 11.79a1.1 1.1 0 1 0-1.41 1.41l5.84 5.84a1.1 1.1 0 0 0 1.42 0L21 8.3a1.1 1.1 0 1 0-1.41-1.41L9.55 16.93Z"/></svg>'; option.append(tick); } if (isOpen && String(dropdown?.highlight ?? "") === value) option.classList.add("is-highlighted");
     if (entry.kind && entry.kind !== "string") {
       decorateEntity(option, entry, entry.kind);
     } else {
@@ -340,23 +359,24 @@ export function renderSelect(component, path, options) {
   });
   if (!entries.length) list.append(node("div", "select-empty", "No available options"));
   popup.append(list);
-  const optionNodes = [...list.querySelectorAll('[role="option"]')];
+  const optionNodes = [...list.querySelectorAll('[role="option"]')].filter((item) => item instanceof HTMLElement);
   const activeIndex = optionNodes.findIndex((item) => item.dataset.value === activeValue);
+  /** @type {Omit<import('./preview-types').ListboxOptions, 'owner'>} */
   const listboxOptions = {
     list,
     idPrefix: `option-${safeId(key)}`,
-    isSelected: (item) => selected.includes(item.dataset.value),
+    isSelected: (item) => selected.includes(item.dataset.value ?? ""),
     activeClass: "is-highlighted",
-    onNavigate: (item) => options.onNavigate?.(key, item.dataset.value),
+    onNavigate: (item) => options.onNavigate?.(key, item.dataset.value ?? ""),
   };
   listbox = createListbox({
     ...listboxOptions,
     owner: trigger,
     activationKeys: [" "],
-    onActivate: (item) => choose(item.dataset.value),
+    onActivate: (item) => choose(item.dataset.value ?? ""),
     onCommit: (item) => {
       if (multi) onCommit?.(key);
-      else if (item) choose(item.dataset.value);
+      else if (item) choose(item.dataset.value ?? "");
     },
   });
   listbox.setItems(optionNodes);
@@ -368,7 +388,7 @@ export function renderSelect(component, path, options) {
       owner: searchInput,
       onCommit: (item) => {
         if (!item) return;
-        choose(item.dataset.value);
+        choose(item.dataset.value ?? "");
         if (multi) onCommit?.(key);
       },
     });
@@ -391,5 +411,8 @@ export function renderSelect(component, path, options) {
     popup.append(actions);
   }
   wrap.append(popup);
-  return { element: wrap, value: () => (Array.isArray(drafts.get(key)) ? [...drafts.get(key)] : []), key };
+  return { element: wrap, value: () => {
+    const value = draftValue(key);
+    return Array.isArray(value) ? value.map(String) : [];
+  }, key };
 }

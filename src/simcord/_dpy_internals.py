@@ -8,6 +8,7 @@ mysteriously. Keep this inventory in sync with what the framework touches.
 import asyncio
 import asyncio.timeouts
 import datetime as _datetime
+import inspect
 import sys
 import threading
 import time as _time
@@ -16,13 +17,14 @@ from types import ModuleType
 from typing import Any
 
 import discord
+from discord.context_managers import Typing
 from discord.ext import tasks as _ext_tasks
 from discord.gateway import DiscordWebSocket
 from discord.http import HTTPClient
 from discord.interactions import _InteractionMessageState
 from discord.state import ChunkRequest, ConnectionState
 from discord.ui import view as _view
-from discord.webhook.async_ import _WebhookState, async_context
+from discord.webhook.async_ import AsyncWebhookAdapter, _WebhookState, async_context
 
 from .backend.errors import SetupError
 
@@ -83,16 +85,38 @@ def verify() -> None:
         (_view.BaseView, "_BaseView__timeout_task_impl"),
         (_ext_tasks.Loop, "_loop"),
         (_ext_tasks.SleepHandle, "_wrapped_set_result"),
+        (Typing, "do_typing"),
         (asyncio.timeouts.Timeout, "_on_timeout"),
     ):
         if not hasattr(cls, attr):  # pragma: no cover - fires only if discord.py drops an internal
             problems.append(f"{cls.__name__}.{attr}")
+    for name in (
+        "create_interaction_response",
+        "get_original_interaction_response",
+        "edit_original_interaction_response",
+        "delete_original_interaction_response",
+        "execute_webhook",
+        "get_webhook_message",
+        "edit_webhook_message",
+        "delete_webhook_message",
+        "fetch_webhook",
+        "fetch_webhook_with_token",
+        "edit_webhook",
+        "edit_webhook_with_token",
+        "delete_webhook",
+        "delete_webhook_with_token",
+    ):
+        helper = getattr(AsyncWebhookAdapter, name, None)
+        if not callable(helper) or not callable(getattr(helper, "__get__", None)):
+            problems.append(f"AsyncWebhookAdapter.{name}")
     run_event_code = getattr(discord.Client._run_event, "__code__", None)
     if run_event_code is None or "coro" not in run_event_code.co_varnames:  # pragma: no cover
         problems.append("discord.Client._run_event no longer exposes its handler coroutine")
     client_probe = discord.Client(intents=discord.Intents.none())
     if not hasattr(client_probe, "_listeners"):  # pragma: no cover
         problems.append("discord.Client no longer exposes _listeners")
+    if not hasattr(client_probe.http, "_HTTPClient__session"):
+        problems.append("HTTPClient.__session")
     store_probe = _view.ViewStore(client_probe._connection)
     for attr in ("_views", "_modals"):
         if not hasattr(store_probe, attr):  # pragma: no cover
@@ -100,16 +124,21 @@ def verify() -> None:
     if not hasattr(discord.ui.Button(label="x", custom_id="y"), "_view"):  # pragma: no cover
         problems.append("Item._view")
     view_probe = discord.ui.View(timeout=5)
-    for suffix in ("__stopped", "__timeout_task"):
-        if not any(name.endswith(suffix) for name in vars(view_probe)):  # pragma: no cover
-            problems.append(f"BaseView.{suffix}")
+    for attr in ("_BaseView__stopped", "_BaseView__timeout_task"):
+        if not hasattr(view_probe, attr):  # pragma: no cover
+            problems.append(f"BaseView.{attr}")
     impl_probe = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
     if (
         impl_probe is None
-        or not asyncio.iscoroutinefunction(impl_probe)
+        or not inspect.iscoroutinefunction(impl_probe)
         or "self" not in impl_probe.__code__.co_varnames
     ):  # pragma: no cover
         problems.append("BaseView._BaseView__timeout_task_impl coroutine")
+    typing_impl = getattr(Typing, "do_typing", None)
+    if (
+        not inspect.iscoroutinefunction(typing_impl) or "self" not in typing_impl.__code__.co_varnames
+    ):  # pragma: no cover
+        problems.append("Typing.do_typing coroutine")
     if not hasattr(asyncio.timeouts.Timeout(0.0), "_task"):  # pragma: no cover
         problems.append("Timeout._task")
 
@@ -148,7 +177,9 @@ def is_listener_future(client: discord.Client, waiter: Any) -> bool:
     return any(future is waiter and not future.done() for future in listener_futures(client))
 
 
-def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
+def _listener_wait_for_frame(
+    client: discord.Client, task: asyncio.Task[Any], listeners: set[Any] | None = None
+) -> bool:  # pragma: no cover
     """True when the task's coroutine stack runs ``asyncio.wait_for`` on a listener."""
     wait_for_code = getattr(asyncio.wait_for, "__code__", None)
     if wait_for_code is None:
@@ -159,39 +190,53 @@ def _listener_wait_for_frame(client: discord.Client, task: asyncio.Task[Any]) ->
         seen.add(id(coroutine))
         frame = getattr(coroutine, "cr_frame", None)
         if frame is not None and frame.f_code is wait_for_code:
-            if is_listener_future(client, frame.f_locals.get("fut")):
+            future = frame.f_locals.get("fut")
+            if (
+                is_listener_future(client, future)
+                if listeners is None
+                else future in listeners and not future.done()
+            ):
                 return True
         coroutine = getattr(coroutine, "cr_await", None)
     return False
 
 
-def is_wait_for_listener(client: discord.Client, task: asyncio.Task[Any]) -> bool:  # pragma: no cover
+def is_wait_for_listener(
+    client: discord.Client, task: asyncio.Task[Any], listeners: set[Any] | None = None
+) -> bool:  # pragma: no cover
     """Recognize the CPython 3.11 ``wait_for`` wrapper around a listener future."""
     if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
         return False
-    return _listener_wait_for_frame(client, task)
+    return _listener_wait_for_frame(client, task, listeners)
+
+
+def _stored_view_facts(client: discord.Client) -> tuple[set[Any], set[Any]]:
+    store = getattr(get_state(client), "_view_store", None)
+    futures: set[Any] = set()
+    tasks: set[Any] = set()
+    if store is None:
+        return futures, tasks
+    views = {
+        id(view): view
+        for entries in getattr(store, "_views", {}).values()
+        for item in entries.values()
+        if (view := getattr(item, "_view", None)) is not None
+    }
+    views.update((id(view), view) for view in getattr(store, "_modals", {}).values())
+    for view in views.values():
+        stopped = getattr(view, "_BaseView__stopped", None)
+        if isinstance(stopped, asyncio.Future):
+            futures.add(stopped)
+            if stopped.done():
+                continue
+        timeout_task = getattr(view, "_BaseView__timeout_task", None)
+        if timeout_task is not None:
+            tasks.add(timeout_task)
+    return futures, tasks
 
 
 def _stored_wait_futures(client: discord.Client) -> set[Any]:
-    state = get_state(client)
-    store = getattr(state, "_view_store", None)
-    futures: set[Any] = set()
-    if store is None:
-        return futures
-    views = getattr(store, "_views", {})
-    for entries in views.values():
-        for item in entries.values():
-            view = getattr(item, "_view", None)
-            if view is None:
-                continue
-            for name, value in vars(view).items():
-                if name.endswith("__stopped") and isinstance(value, asyncio.Future):
-                    futures.add(value)
-    for modal in getattr(store, "_modals", {}).values():
-        for name, value in vars(modal).items():
-            if name.endswith("__stopped") and isinstance(value, asyncio.Future):
-                futures.add(value)
-    return futures
+    return _stored_view_facts(client)[0]
 
 
 def is_view_wait_future(client: discord.Client, waiter: Any) -> bool:
@@ -229,42 +274,26 @@ def is_wakeup_callback(callback: Any, args: tuple[Any, ...], waiter: Any, task: 
     )
 
 
-def _view_timeout_task_identity(client: discord.Client, task: asyncio.Task[Any]) -> bool:
+def _view_timeout_task_identity(
+    client: discord.Client, task: asyncio.Task[Any], expiry_tasks: set[Any] | None = None
+) -> bool:
     """True when task is a registered View/Modal's expiry task."""
     coro = task.get_coro()
     impl = getattr(_view.BaseView, "_BaseView__timeout_task_impl", None)
     if impl is not None and getattr(coro, "cr_code", None) is getattr(impl, "__code__", None):
         owner = getattr(getattr(coro, "cr_frame", None), "f_locals", {}).get("self")
         if isinstance(owner, _view.BaseView):
-            for name, value in vars(owner).items():
-                if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
-                    return False
-            return True
-    store = getattr(get_state(client), "_view_store", None)
-    if store is None:
-        return False
-    candidates = [
-        getattr(item, "_view", None)
-        for entries in getattr(store, "_views", {}).values()
-        for item in entries.values()
-    ]
-    candidates.extend(getattr(store, "_modals", {}).values())
-    for view in candidates:
-        if view is None:
-            continue
-        for name, value in vars(view).items():
-            if name.endswith("__stopped") and isinstance(value, asyncio.Future) and value.done():
-                break
-            if name.endswith("__timeout_task") and value is task:
-                return True
-    return False
+            return not owner.is_finished()
+    return task in (_stored_view_facts(client)[1] if expiry_tasks is None else expiry_tasks)
 
 
-def view_expiry_task(client: discord.Client, task: asyncio.Task[Any], waiter: Any) -> bool:
+def view_expiry_task(
+    client: discord.Client, task: asyncio.Task[Any], waiter: Any, expiry_tasks: set[Any] | None = None
+) -> bool:
     """True while task is a store-registered View/Modal expiry task suspended on its timer."""
     if waiter is None or waiter.done():
         return False
-    return _view_timeout_task_identity(client, task)
+    return _view_timeout_task_identity(client, task, expiry_tasks)
 
 
 def _tasks_loop_self(task: asyncio.Task[Any]) -> Any:
@@ -289,20 +318,50 @@ def tasks_loop_sleep(task: asyncio.Task[Any], waiter: Any) -> bool:
     return getattr(handle, "future", None) is waiter
 
 
+def typing_interval(task: asyncio.Task[Any], waiter: Any) -> bool:
+    """Recognize only the SDK task's direct sleep, including timer construction."""
+    if not isinstance(waiter, asyncio.Future) or waiter.done():
+        return False
+    coro = task.get_coro()
+    if getattr(coro, "cr_code", None) is not Typing.do_typing.__code__:
+        return False
+    frame = getattr(coro, "cr_frame", None)
+    owner = frame.f_locals.get("self") if frame is not None else None
+    if not isinstance(owner, Typing) or getattr(owner, "task", None) is not task:
+        return False
+    sleep = getattr(coro, "cr_await", None)
+    sleep_frame = getattr(sleep, "cr_frame", None)
+    if getattr(sleep, "cr_code", None) is asyncio.sleep.__code__:
+        return sleep_frame is not None and sleep_frame.f_locals.get("future") is waiter
+    # During call_later the coroutine is executing, not yet suspended.
+    # Inspect the exact direct caller, never an HTTP retry's nested sleep.
+    if task is not asyncio.current_task():
+        return False
+    current = inspect.currentframe()
+    try:
+        while current is not None:
+            if current.f_code is asyncio.sleep.__code__:
+                return current.f_locals.get("future") is waiter and current.f_back is frame
+            current = current.f_back
+        return False
+    finally:
+        del current
+
+
 def is_intentional_wait_wakeup(
     client: discord.Client, callback: Any, args: tuple[Any, ...], task: asyncio.Task[Any]
 ) -> bool:
     """True when a timer scheduled right now exists only to resume a wait on this task.
 
     Covers the shapes identifiable at schedule time, before the task suspends:
-    a registered View/Modal expiry task's sleep, an ext.tasks iteration
-    ``SleepHandle``, and a 3.11 ``wait_for`` listener's ``_release_waiter``.
+    a registered View/Modal expiry task's sleep, a native typing interval,
+    an ext.tasks ``SleepHandle``, and a 3.11 listener's ``_release_waiter``.
     Timer wake-ups not identifiable here are still caught at settle time and
     gated at fire time by the env.
     """
     name = getattr(callback, "__name__", "")
     if name == "_set_result_unless_cancelled":
-        return _view_timeout_task_identity(client, task)
+        return _view_timeout_task_identity(client, task) or (bool(args) and typing_interval(task, args[0]))
     if name == "_wrapped_set_result":
         return is_tasks_loop_task(task)
     return name == "_release_waiter" and any(is_listener_future(client, arg) for arg in args)
@@ -314,20 +373,6 @@ def _original_callback(callback: Any) -> Any:
         if original is callback:
             return callback
         callback = original
-
-
-def is_sleep_waiter(waiter: Any, loop: Any, deadline: float) -> bool:
-    if waiter is None or waiter.done():
-        return False
-    for handle in getattr(loop, "_scheduled", ()):
-        if handle.cancelled() or handle.when() <= deadline:
-            continue
-        callback = _original_callback(getattr(handle, "_callback", None))
-        if getattr(callback, "__name__", "") == "_set_result_unless_cancelled" and any(
-            arg is waiter for arg in getattr(handle, "_args", ())
-        ):
-            return True
-    return False
 
 
 def composed_tasks(task: asyncio.Task[Any], waiter: Any) -> list[Any]:
@@ -475,6 +520,22 @@ def message_belongs_to_states(message: discord.Message, states: Collection[Any])
     return state in states
 
 
+def resource_belongs_to_states(
+    resource: (
+        discord.app_commands.AppCommand
+        | discord.ScheduledEvent
+        | discord.Guild
+        | discord.Role
+        | discord.Member
+        | discord.User
+        | discord.ClientUser
+    ),
+    states: Collection[Any],
+) -> bool:
+    """Check native SDK connection provenance before IDs enter public operations."""
+    return resource._state in states
+
+
 def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:
     """Wake a member-chunk request whose guild vanished before it was answered.
 
@@ -494,6 +555,17 @@ def resolve_pending_chunk(state: Any, guild_id: int, nonce: str | None) -> None:
     if request is not None and (nonce is None or request.nonce == nonce):
         request.done()
         requests.pop(guild_id, None)
+
+
+def initialize_http_session(http: HTTPClient) -> None:
+    """Provide the session captured by SDK interactions and state-backed webhooks."""
+    http._HTTPClient__session = None  # type: ignore[assignment]
+
+
+def bind_webhook_helper(adapter: Any, name: str) -> Any:
+    """Run the real SDK helper against the fake adapter's request implementation."""
+    helper = getattr(AsyncWebhookAdapter, name)
+    return helper.__get__(adapter, type(adapter))
 
 
 def install_http(client: discord.Client, http: HTTPClient) -> None:

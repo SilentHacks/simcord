@@ -67,7 +67,7 @@ The public surface is exactly what `simcord` exports from its top-level package
 - the world builders — `GuildHandle`, `ChannelHandle`, `UserHandle`,
   `RoleHandle` — and the `MemberActor` that drives simulated users;
 - `SKUHandle`, `EntitlementHandle`, the Env SKU/entitlement fixture methods,
-  `Env.now()` and `Env.time_context()`;
+  `Env.now()`, `Env.time_context()` and the `Env`/`run` `start_time` option;
 - the result objects `ResponseMessage` and `InteractionResult`;
 - `Preview`, `PreviewCapture`, and the documented `window.simcordPreview` readiness fields for
   the optional local component preview;
@@ -110,6 +110,12 @@ use virtual time without replacing application/global datetime. See
 [simulator policies](guides/monetization.md#evidence-and-open-parity-checks), not captured
 Discord parity; future calibration may correct these policies.
 
+`start_time=None` preserves the 2026-01-01 UTC origin and default generated IDs.
+An aware custom origin takes effect before fixtures/startup and persists across restarts;
+offsets normalize to UTC and unsupported origins fail with `SetupError` before backend
+allocation or runtime hook installation. It does not virtualize application or SQL wall
+clocks. The private `Clock` implementation is not a public clock-provider API.
+
 
 ## What is intentionally internal
 
@@ -118,6 +124,10 @@ Everything else may change in any release, including a patch:
 - **`Backend`** and its methods, state dictionaries and payload shapes. It is
   importable for advanced assertions, but is not semver-covered — treat reads as
   best-effort and expect churn.
+  Indexed message membership, owner fields and resource deadlines must be changed
+  through Backend mutation methods, not by directly editing stored models or
+  dictionaries. Raw writes bypass derived indexes and are unsupported. Read-only
+  inspection remains useful; public builders and SDK operations maintain the indexes.
 - The **route table**, route handlers and the serializers in
   `simcord.backend.serializers`.
 - The **gateway event payloads** simcord injects, and the `simcord.parity`
@@ -161,9 +171,8 @@ prevent rejected forum requests from publishing partial state. Tests depending o
 invalid Discord payloads must change; nullable edits remain supported.
 Independent startup budgets and `strict_sync=False` remain supported.
 
-This release retains preview protocol 2. The protocol-3 work and its additional
-action kinds remain on the separate 3.0 development line. No Discord visual
-calibration or human accessibility sign-off is implied by local automated checks.
+The current release uses Preview protocol 3. No Discord visual calibration or
+human accessibility sign-off is implied by local automated checks.
 
 ## Deprecation policy
 

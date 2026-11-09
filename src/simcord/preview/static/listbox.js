@@ -1,6 +1,7 @@
 /**
  * Build keyboard navigation for a role=listbox element. setItems accepts an
  * array of already-rendered option HTMLElements, keeping rendering caller-owned.
+ * @param {import('./preview-types').ListboxOptions} options
  */
 export function createListbox({
   list,
@@ -18,6 +19,7 @@ export function createListbox({
   closeOnEscape = false,
   activationKeys = [],
 }) {
+  /** @type {HTMLElement[]} */
   let items = [];
   let index = -1;
   const activeClassName = activeClass || "";
@@ -27,7 +29,9 @@ export function createListbox({
   if (expanded !== undefined) owner.setAttribute("aria-expanded", String(expanded));
   else if (!owner.hasAttribute("aria-expanded")) owner.setAttribute("aria-expanded", "false");
 
+  /** @param {HTMLElement} item */
   const isDisabled = (item) => item.matches(":disabled, [aria-disabled='true'], .is-disabled");
+  /** @param {HTMLElement} item @param {number} itemIndex */
   const isItemSelected = (item, itemIndex) => typeof isSelected === "function"
     ? isSelected(item, itemIndex)
     : itemIndex === index;
@@ -44,6 +48,7 @@ export function createListbox({
     else owner.removeAttribute("aria-activedescendant");
   }
 
+  /** @param {number} nextIndex @param {{scroll?: boolean}} [options] */
   function setActive(nextIndex, { scroll = true } = {}) {
     const next = Number.isInteger(nextIndex) && nextIndex >= 0 && nextIndex < items.length
       && !isDisabled(items[nextIndex])
@@ -59,6 +64,7 @@ export function createListbox({
     if (items[index]) onNavigate?.(items[index], index);
   }
 
+  /** @param {number} delta */
   function move(delta) {
     if (!items.length || !Number.isFinite(delta) || delta === 0) return index;
     const direction = delta > 0 ? 1 : -1;
@@ -87,6 +93,7 @@ export function createListbox({
     return true;
   }
 
+  /** @param {KeyboardEvent} event */
   function handleKey(event) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -120,12 +127,14 @@ export function createListbox({
     }
     if (activationKeys.includes(event.key)) {
       event.preventDefault();
-      if (activeItem()) onActivate?.(activeItem(), index, event);
+      const active = activeItem();
+      if (active) onActivate?.(active, index, event);
       return true;
     }
     return false;
   }
 
+  /** @param {Iterable<Element> | ArrayLike<Element>} nextItems */
   function setItems(nextItems) {
     items = Array.from(nextItems || []).filter((item) => item instanceof HTMLElement);
     index = -1;
@@ -137,6 +146,7 @@ export function createListbox({
     sync();
   }
 
+  /** @param {boolean} value */
   function setExpanded(value) {
     owner.setAttribute("aria-expanded", String(Boolean(value)));
   }

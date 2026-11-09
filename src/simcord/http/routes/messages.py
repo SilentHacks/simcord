@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...backend import errors, serializers
+from ...backend import errors, permissions, serializers
+from ...backend.access import channel_accessible
 from ...enums import AuditLogAction, ChannelType
-from .._helpers import bot_message, message_edit_changes, message_response
+from .._helpers import bot_message, edit_bot_message, message_response
 from ..router import RequestContext, route
 
 
@@ -31,7 +32,9 @@ def send_message(ctx: RequestContext) -> Any:
 @route("GET", "/channels/{channel_id}/messages/{message_id}")
 def get_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    message = backend.get_message(ctx.int_arg("channel_id"), ctx.int_arg("message_id"))
+    message = ctx.require_message(
+        ctx.int_arg("channel_id"), ctx.int_arg("message_id"), "read_message_history"
+    )
     return message_response(ctx, message, for_user=backend.bot_user.id)
 
 
@@ -39,38 +42,51 @@ def get_message(ctx: RequestContext) -> Any:
 def get_history(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    backend.get_channel(channel_id)
+    channel = backend.get_channel(channel_id)
+    perms = (
+        backend.compute_permissions(channel.guild_id, backend.bot_user.id, channel_id)
+        if channel.guild_id is not None
+        else 0
+    )
+    if not channel_accessible(backend, channel_id, backend.bot_user.id, permissions_value=perms):
+        raise errors.missing_access()
+    if channel.guild_id is not None and not perms & permissions.flag("read_message_history"):
+        return []
     limit = int(ctx.params.get("limit", 50))
-    # Ephemeral messages are never returned by the channel-messages endpoint,
-    # just as they are invisible in a real client's channel scrollback.
-    visible = [m for m in backend.messages[channel_id].values() if not m.is_ephemeral]
+    # Channel scrollback never includes ephemeral interaction responses.
     if "around" in ctx.params:
         around = int(ctx.params["around"])
-        ascending = sorted(visible, key=lambda m: m.id)
-        pivot = min(range(len(ascending)), key=lambda i: abs(ascending[i].id - around), default=None)
-        if pivot is None:
+        lower = backend.select_messages(channel_id, before=around + 1, newest_first=True, limit=1)
+        upper = backend.select_messages(channel_id, after=around - 1, limit=1)
+        candidates = lower + upper
+        if not candidates:
             return []
+        pivot = min(candidates, key=lambda message: (abs(message.id - around), message.id))
         half = limit // 2
-        window = ascending[max(0, pivot - half) : pivot + half + 1]
-        return [message_response(ctx, m) for m in reversed(window[:limit])]
-    messages = sorted(visible, key=lambda m: m.id, reverse=True)
-    if "before" in ctx.params:
-        messages = [m for m in messages if m.id < int(ctx.params["before"])]
-    if "after" in ctx.params:
-        messages = [m for m in messages if m.id > int(ctx.params["after"])]
-    return [message_response(ctx, m) for m in messages[:limit]]
+        older = backend.select_messages(channel_id, before=pivot.id, newest_first=True, limit=half)
+        newer = backend.select_messages(channel_id, after=pivot.id, limit=half)
+        window = [*reversed(older), pivot, *newer]
+        return [message_response(ctx, message) for message in reversed(window[:limit])]
+    messages = backend.select_messages(
+        channel_id,
+        newest_first=True,
+        limit=limit,
+        before=int(ctx.params["before"]) if "before" in ctx.params else None,
+        after=int(ctx.params["after"]) if "after" in ctx.params else None,
+    )
+    return [message_response(ctx, message) for message in messages]
 
 
 @route("PATCH", "/channels/{channel_id}/messages/{message_id}")
 def edit_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
     # Real Discord only lets you edit your own messages (50005); the bot editing
     # someone else's message is exactly the kind of bug this framework surfaces.
     if message.author_id != backend.bot_user.id:
         raise errors.cannot_edit_other_user()
-    message = backend.edit_message(channel_id, message.id, message_edit_changes(ctx, message))
+    message = edit_bot_message(ctx, message)
     return message_response(ctx, message)
 
 
@@ -103,7 +119,9 @@ def crosspost_message(ctx: RequestContext) -> Any:
     if channel.type != ChannelType.NEWS:
         # Only announcement (news) channels can crosspost; real Discord 50024s.
         raise errors.cannot_execute_on_channel_type()
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
+    if message.author_id != backend.bot_user.id:
+        ctx.require_channel_permissions(channel_id, "manage_messages")
     return message_response(ctx, backend.crosspost_message(channel_id, message.id))
 
 
@@ -111,7 +129,7 @@ def crosspost_message(ctx: RequestContext) -> Any:
 def delete_message(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
     channel = backend.get_channel(channel_id)
     if message.author_id != backend.bot_user.id and channel.guild_id is not None:
         ctx.require_channel_permissions(channel_id, "manage_messages")
@@ -124,12 +142,14 @@ def delete_message(ctx: RequestContext) -> Any:
 @route("PUT", "/channels/{channel_id}/messages/pins/{message_id}")
 def pin_message(ctx: RequestContext) -> Any:
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ctx.require_message(channel.id, ctx.int_arg("message_id"))
     ctx.backend.set_pinned(channel.id, ctx.int_arg("message_id"), True)
 
 
 @route("DELETE", "/channels/{channel_id}/messages/pins/{message_id}")
 def unpin_message(ctx: RequestContext) -> Any:
     channel = ctx.require_channel_permissions(ctx.int_arg("channel_id"), "manage_messages")
+    ctx.require_message(channel.id, ctx.int_arg("message_id"))
     ctx.backend.set_pinned(channel.id, ctx.int_arg("message_id"), False)
 
 
@@ -137,7 +157,7 @@ def unpin_message(ctx: RequestContext) -> Any:
 def expire_poll(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    message = backend.get_message(channel_id, ctx.int_arg("message_id"))
+    message = ctx.require_message(channel_id, ctx.int_arg("message_id"))
     if message.author_id != backend.bot_user.id:
         raise errors.cannot_edit_other_user()
     message = backend.expire_poll(channel_id, message.id)
@@ -147,7 +167,9 @@ def expire_poll(ctx: RequestContext) -> Any:
 @route("GET", "/channels/{channel_id}/polls/{message_id}/answers/{answer_id}")
 def get_poll_answer_voters(ctx: RequestContext) -> Any:
     backend = ctx.backend
-    message = backend.get_message(ctx.int_arg("channel_id"), ctx.int_arg("message_id"))
+    message = ctx.require_message(
+        ctx.int_arg("channel_id"), ctx.int_arg("message_id"), "read_message_history"
+    )
     answer_id = ctx.int_arg("answer_id")
     voters = message.poll.votes.get(answer_id, set()) if message.poll else set()
     limit = int(ctx.params.get("limit", 25))
@@ -159,10 +181,11 @@ def get_poll_answer_voters(ctx: RequestContext) -> Any:
 def get_pins(ctx: RequestContext) -> Any:
     backend = ctx.backend
     channel_id = ctx.int_arg("channel_id")
-    backend.get_channel(channel_id)
+    ctx.require_channel_permissions(channel_id, "read_message_history")
     items = [
         {"message": message_response(ctx, m), "pinned_at": backend.now_iso()}
-        for m in backend.messages[channel_id].values()
-        if m.pinned and not m.is_ephemeral
+        for m in sorted(
+            backend.iter_messages(channel_id, pinned=True), key=lambda m: backend._message_order[m.id]
+        )
     ]
     return {"items": items, "has_more": False}

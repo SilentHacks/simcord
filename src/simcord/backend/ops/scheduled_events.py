@@ -7,11 +7,28 @@ from collections.abc import Mapping
 from typing import Any
 
 from .. import errors, serializers
+from .._deadlines import parse_deadline
 from ..models import ScheduledEvent
 from .base import BackendBase
 
 
 class ScheduledEventMixin(BackendBase):
+    def _schedule_event(self, event: ScheduledEvent) -> None:
+        value = (
+            event.scheduled_start_time
+            if event.status == 1
+            else event.scheduled_end_time
+            if event.status == 2
+            else None
+        )
+        self._event_deadlines.set(
+            (event.guild_id, event.id),
+            parse_deadline(value, naive_utc=True) if value is not None or event.status == 1 else None,
+            (self._guild_order[event.guild_id], self._event_order[event.id]),
+            # A missing start has historically failed during processing, not lookup.
+            process_only_error=event.status == 1 and value is None,
+        )
+
     def create_scheduled_event(
         self,
         guild_id: int,
@@ -39,6 +56,8 @@ class ScheduledEventMixin(BackendBase):
             entity_metadata=entity_metadata,
         )
         guild.scheduled_events[event.id] = event
+        self._event_order[event.id] = self._registration_order()
+        self._schedule_event(event)
         self.emit("GUILD_SCHEDULED_EVENT_CREATE", serializers.scheduled_event_payload(self, event))
         return event
 
@@ -54,6 +73,7 @@ class ScheduledEventMixin(BackendBase):
         event = self.get_scheduled_event(guild_id, event_id)
         for attr, value in changes.items():
             setattr(event, attr, value)
+        self._schedule_event(event)
         self.emit("GUILD_SCHEDULED_EVENT_UPDATE", serializers.scheduled_event_payload(self, event))
         return event
 
@@ -61,25 +81,12 @@ class ScheduledEventMixin(BackendBase):
         guild = self.get_guild(guild_id)
         event = self.get_scheduled_event(guild_id, event_id)
         del guild.scheduled_events[event_id]
+        self._event_deadlines.set((guild_id, event_id), None, ())
+        self._event_order.pop(event_id, None)
         self.emit("GUILD_SCHEDULED_EVENT_DELETE", serializers.scheduled_event_payload(self, event))
 
     def next_scheduled_event_deadline(self) -> datetime.datetime | None:
-        moments = []
-        for guild in self.guilds.values():
-            for event in guild.scheduled_events.values():
-                value = (
-                    event.scheduled_start_time
-                    if event.status == 1
-                    else event.scheduled_end_time
-                    if event.status == 2
-                    else None
-                )
-                if value is not None:
-                    moment = datetime.datetime.fromisoformat(value)
-                    moments.append(
-                        moment if moment.tzinfo is not None else moment.replace(tzinfo=datetime.UTC)
-                    )
-        return min(moments, default=None)
+        return self._event_deadlines.next()
 
     def activate_due_scheduled_events(self) -> None:
         """Auto-transition scheduled events whose start/end times have passed.
@@ -90,16 +97,30 @@ class ScheduledEventMixin(BackendBase):
         like real time. Manual status edits via ``PATCH`` still work too.
         """
         now = datetime.datetime.fromisoformat(self.now_iso())
-        for guild in list(self.guilds.values()):
-            for event in list(guild.scheduled_events.values()):
+        guild_cutoff = self._order_serial
+        event_cutoffs: dict[int, int] = {}
+
+        def eligible(order: tuple[int, ...]) -> bool:
+            guild_order, event_order = order
+            # Snapshot guild membership now, but event membership upon entering each guild.
+            return guild_order <= guild_cutoff and event_order <= event_cutoffs.setdefault(
+                guild_order, self._order_serial
+            )
+
+        with self._event_deadlines.due(now, eligible=eligible) as due:
+            for guild_id, event_id in due:
+                guild = self.guilds.get(guild_id)
+                event = guild.scheduled_events.get(event_id) if guild is not None else None
+                if event is None:
+                    continue
                 if event.status == 1 and self._event_time_passed(event.scheduled_start_time, now):
-                    self.edit_scheduled_event(guild.id, event.id, {"status": 2})
+                    self.edit_scheduled_event(guild_id, event.id, {"status": 2})
                 if (
                     event.status == 2
                     and event.scheduled_end_time is not None
                     and self._event_time_passed(event.scheduled_end_time, now)
                 ):
-                    self.edit_scheduled_event(guild.id, event.id, {"status": 3})
+                    self.edit_scheduled_event(guild_id, event.id, {"status": 3})
 
     @staticmethod
     def _event_time_passed(iso: str, now: datetime.datetime) -> bool:

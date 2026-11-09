@@ -14,6 +14,7 @@ from typing import Any
 import discord
 from discord.http import HTTPClient, Route
 
+from .. import _dpy_internals
 from ..backend import Backend, serializers
 from ..backend.errors import BackendError
 from . import router
@@ -60,8 +61,7 @@ class FakeHTTPClient(HTTPClient):
         super().__init__(loop)
         self.backend = backend
         self.message_content_access = message_content_access
-        # Interaction.__init__ reads the (name-mangled) session attribute.
-        self._HTTPClient__session = None  # type: ignore[assignment]
+        _dpy_internals.initialize_http_session(self)
 
     async def static_login(self, token: str) -> Any:
         self.token = token
@@ -128,10 +128,7 @@ class FakeWebhookAdapter:
         self.message_content_access = message_content_access
 
     def __getattr__(self, name: str) -> Any:
-        from discord.webhook.async_ import AsyncWebhookAdapter
-
-        real = getattr(AsyncWebhookAdapter, name)
-        return real.__get__(self, FakeWebhookAdapter)
+        return _dpy_internals.bind_webhook_helper(self, name)
 
     async def request(
         self,

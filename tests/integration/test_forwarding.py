@@ -1,5 +1,6 @@
 """Native actor and SDK forwards share authoritative, immutable snapshots."""
 
+from copy import deepcopy
 from datetime import timedelta
 
 import discord
@@ -339,6 +340,148 @@ async def test_private_thread_forwarding_honors_moderator_access_without_members
     outsider = env.guild.add_member(env.create_user("outsider"))
     with pytest.raises(simcord.BackendError):
         await outsider.forward(source, channel)
+
+
+async def test_forwarding_cannot_read_or_write_another_members_dm(env, channel, alice):
+    bob = env.guild.add_member(env.create_user("bob"))
+    private_source = await alice.send_dm("private evidence")
+    public_source = await alice.send(channel, "public evidence")
+    private = alice.user.dm_channel
+    outward = await alice.forward(private_source, channel)
+    inward = await alice.forward(public_source, private)
+    assert outward.message_snapshots[0].content == "private evidence"
+    assert inward.message_snapshots[0].content == "public evidence"
+    before = {target.id: deepcopy(env.backend.messages[target.id]) for target in (channel, private)}
+    seen = []
+
+    @env.bot.listen("on_message")
+    async def capture(message):
+        seen.append(message.id)
+
+    with pytest.raises(simcord.BackendError) as error:
+        await bob.forward(private_source, channel)
+    assert error.value.code == 50001
+    with pytest.raises(simcord.BackendError) as error:
+        await bob.forward(public_source, private)
+    assert error.value.code == 50001
+    await env.settle()
+    assert seen == []
+    for channel_id, messages in before.items():
+        assert env.backend.messages[channel_id] == messages
+
+
+async def test_sdk_forward_only_reads_registered_bot_dm_conversations(env, channel, alice):
+    own_dm_source = await alice.send_dm("bot conversation")
+    native_destination = env.bot.get_channel(channel.id)
+    legitimate = await own_dm_source.forward(native_destination)
+    assert legitimate.message_snapshots[0].content == "bot conversation"
+    # A valid imported DM channel is not automatically a conversation with this bot.
+    unregistered = env.backend.create_channel(
+        None, None, type=discord.ChannelType.private.value, recipient_ids=[alice.id]
+    )
+    source = env.backend.create_message(unregistered.id, alice.id, "unrelated conversation", broadcast=False)
+    before = deepcopy(env.backend.messages[channel.id])
+    conversations = dict(env.backend.dm_channels)
+    await env.settle()
+    seen = []
+
+    @env.bot.listen("on_message")
+    async def capture(message):
+        seen.append(message.id)
+
+    with pytest.raises(discord.Forbidden) as error:
+        await _post(
+            env,
+            channel,
+            {
+                "message_reference": {
+                    "type": 1,
+                    "channel_id": str(unregistered.id),
+                    "message_id": str(source.id),
+                }
+            },
+        )
+    assert error.value.code == 50001
+    await env.settle()
+    assert env.backend.messages[channel.id] == before
+    assert env.backend.dm_channels == conversations
+    assert seen == []
+
+
+async def test_private_thread_forwarding_requires_membership_in_both_directions(env, channel, alice):
+    parent = env.guild.create_text_channel("private-parent")
+    thread = await env.bot.get_channel(parent.id).create_thread(
+        name="private", type=discord.ChannelType.private_thread
+    )
+    private = simcord.ChannelHandle(env, env.guild, env.backend.get_channel(thread.id))
+    private_source = await thread.send("private evidence")
+    public_source = await alice.send(channel, "public evidence")
+    ordinary = discord.Permissions(env.backend.compute_permissions(env.guild.id, alice.id, thread.id))
+    assert ordinary.view_channel and ordinary.read_message_history and ordinary.send_messages_in_threads
+    assert not ordinary.manage_threads and not ordinary.administrator
+    before = {target.id: deepcopy(env.backend.messages[target.id]) for target in (channel, private)}
+    seen = []
+
+    @env.bot.listen("on_message")
+    async def capture(message):
+        seen.append(message.id)
+
+    with pytest.raises(simcord.BackendError) as error:
+        await alice.forward(private_source, channel)
+    assert error.value.code == 50001
+    with pytest.raises(simcord.BackendError) as error:
+        await alice.forward(public_source, private)
+    assert error.value.code == 50001
+    await env.settle()
+    for channel_id, messages in before.items():
+        assert env.backend.messages[channel_id] == messages
+    assert seen == []
+
+    await thread.add_user(discord.Object(id=alice.id))
+    outward = await alice.forward(private_source, channel)
+    inward = await alice.forward(public_source, private)
+    assert outward.message_snapshots[0].content == "private evidence"
+    assert inward.message_snapshots[0].content == "public evidence"
+    assert seen == [outward.id, inward.id]
+
+
+async def test_forward_reference_rejects_inconsistent_source_guild_without_orphan(env, channel, alice):
+    source = await alice.send(channel, "source evidence")
+    other = env.create_guild("destination guild")
+    destination = other.create_text_channel("forwarded")
+    native_destination = env.bot.get_channel(destination.id)
+    legitimate = await native_destination.send(
+        reference=discord.MessageReference(
+            message_id=source.id,
+            channel_id=channel.id,
+            guild_id=env.guild.id,
+            type=discord.MessageReferenceType.forward,
+        )
+    )
+    assert legitimate.message_snapshots[0].content == "source evidence"
+    assert legitimate.reference.guild_id == env.guild.id
+    await env.settle()
+    before = deepcopy(env.backend.messages[destination.id])
+    seen = []
+
+    @env.bot.listen("on_message")
+    async def capture(message):
+        seen.append(message.id)
+
+    with pytest.raises(discord.HTTPException) as error:
+        await native_destination.send(
+            "must not be stored",
+            reference=discord.MessageReference(
+                message_id=source.id,
+                channel_id=channel.id,
+                guild_id=other.id,
+                type=discord.MessageReferenceType.forward,
+            ),
+        )
+    assert error.value.code == 50035
+    await env.settle()
+    assert env.backend.messages[destination.id] == before
+    assert seen == []
 
 
 @pytest.mark.parametrize("handle_type", ["sdk", "response"])

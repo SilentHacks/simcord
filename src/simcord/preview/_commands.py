@@ -117,11 +117,12 @@ def visible_leaf(
     return None
 
 
+def _schema_fingerprint(root_id: str, path: list[str], leaf: Mapping[str, Any]) -> str:
+    return "sf_" + hashlib.sha256(_canonical({"id": root_id, "path": path, "leaf": leaf})).hexdigest()[:32]
+
+
 def entry_for_leaf(command: Mapping[str, Any], path: list[str], leaf: Mapping[str, Any]) -> dict[str, Any]:
     root_id = str(command["id"])
-    fingerprint = (
-        "sf_" + hashlib.sha256(_canonical({"id": root_id, "path": path, "leaf": leaf})).hexdigest()[:32]
-    )
     return {
         "key": f"{root_id}:{'.'.join(path)}",
         "commandId": root_id,
@@ -129,16 +130,14 @@ def entry_for_leaf(command: Mapping[str, Any], path: list[str], leaf: Mapping[st
         "invocation": " ".join(path),
         "description": str(leaf.get("description", "")),
         "scope": "guild" if command.get("guild_id") is not None else "global",
-        "schemaFingerprint": fingerprint,
+        "schemaFingerprint": _schema_fingerprint(root_id, path, leaf),
         "options": [_option_wire(option) for option in leaf.get("options") or []],
     }
 
 
 def build_catalog(preview: Preview, page: _Page) -> dict[str, Any]:
     """Build a viewer-authorized, bounded wire catalog for one published page."""
-    if page.status == "access_denied" or not can_access_channel(
-        preview.env, page.channel_id, page.viewer, history=True
-    ):
+    if page.status == "access_denied" or not command_permission(preview, page):
         return unavailable_catalog()
 
     identity = resolve_identity(preview, page, preview.env.backend.bot_user.id)
@@ -173,7 +172,7 @@ def _available_catalog(
     application: dict[str, Any], entries: list[dict[str, Any]], *, truncated: bool
 ) -> dict[str, Any]:
     fingerprints = [entry["schemaFingerprint"] for entry in entries]
-    fingerprint = "cf_" + hashlib.sha256(_canonical(fingerprints)).hexdigest()[:32]
+    fingerprint = "cf_" + hashlib.sha256(_canonical([application, fingerprints, truncated])).hexdigest()[:32]
     return {
         "protocolVersion": 3,
         "fingerprint": fingerprint,
@@ -182,6 +181,39 @@ def _available_catalog(
         "application": application,
         "entries": entries,
     }
+
+
+def _authorized_catalog(preview: Preview, page: _Page) -> dict[str, Any]:
+    """Filter published entries without publishing newly registered content."""
+    if not command_permission(preview, page):
+        return unavailable_catalog()
+    try:
+        visible = preview.env.backend.visible_commands(user_id=page.viewer.id, channel_id=page.channel_id)
+    except (BackendError, KeyError, SetupError):
+        return unavailable_catalog()
+    catalog = page.command_catalog
+    published_keys = {entry["key"] for entry in catalog.get("entries", [])}
+    current = {
+        key: _schema_fingerprint(str(command["id"]), path, leaf)
+        for command in visible
+        for path, leaf in command_leaves(command)
+        if (key := f"{command['id']}:{'.'.join(path)}") in published_keys
+    }
+    entries = [
+        entry
+        for entry in catalog.get("entries", [])
+        if current.get(entry["key"]) == entry["schemaFingerprint"]
+    ]
+    application = catalog.get("application")
+    if application is None:
+        return unavailable_catalog()
+    application = dict(application)
+    if avatar := application.get("avatarAssetId"):
+        try:
+            preview._authorize_asset(page, avatar, content=False)
+        except SetupError:
+            application["avatarAssetId"] = None
+    return _available_catalog(application, entries, truncated=catalog.get("truncated", False))
 
 
 def unsynced_commands(preview: Preview, page: _Page) -> bool:

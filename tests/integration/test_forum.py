@@ -199,3 +199,72 @@ def test_forum_subscribers_see_complete_contentless_starter(env, starter):
     assert seen == ["THREAD_CREATE", "MESSAGE_CREATE"]
     assert result["message"]["channel_id"] == result["id"]
     assert result["message"]["content"] == ""
+
+
+def test_forum_reply_starter_is_rejected_before_thread_or_upload_commit(env):
+    forum = env.guild.create_forum_channel("help")
+    backend = env.backend
+    before = _forum_state(backend, forum.id)
+    audit = list(env.guild.audit_log())
+    upload = discord.File(io.BytesIO(b"must not leak"), filename="private.bin")
+    with pytest.raises(simcord.BackendError) as exc:
+        router.dispatch(
+            backend,
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={
+                "name": "invalid reply",
+                "message": {
+                    "content": "reply",
+                    "message_reference": {"message_id": "123", "channel_id": str(forum.id)},
+                },
+            },
+            files=[upload],
+        )
+    assert exc.value.code == 50035
+    assert _forum_state(backend, forum.id) == before
+    assert env.guild.audit_log() == audit
+
+
+@pytest.mark.parametrize("name", ["", "x" * 101, 123])
+def test_invalid_forum_name_never_installs_compound_state(env, name):
+    forum = env.guild.create_forum_channel("help")
+    before = _forum_state(env.backend, forum.id)
+    with pytest.raises(simcord.BackendError) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={"name": name, "message": {"content": "valid starter"}},
+            files=[discord.File(io.BytesIO(b"unused"), filename="unused.bin")],
+        )
+    assert exc.value.code == 50035
+    assert _forum_state(env.backend, forum.id) == before
+
+
+def test_forwarded_forum_starter_keeps_inherited_thread_send_gate(env):
+    source = env.guild.create_text_channel("source")
+    message = env.backend.create_message(source.id, env.backend.bot_user.id, "forward source")
+    forum = env.guild.create_forum_channel("help")
+    mask = ~discord.Permissions(send_messages_in_threads=True).value
+    for role in env.backend.get_guild(env.guild.id).roles.values():
+        role.permissions &= mask
+    before = _forum_state(env.backend, forum.id)
+    with pytest.raises(simcord.BackendError) as exc:
+        router.dispatch(
+            env.backend,
+            "POST",
+            f"/channels/{forum.id}/threads",
+            json={
+                "name": "not allowed",
+                "message": {
+                    "message_reference": {
+                        "type": 1,
+                        "message_id": str(message.id),
+                        "channel_id": str(source.id),
+                    },
+                },
+            },
+        )
+    assert exc.value.code == 50013
+    assert _forum_state(env.backend, forum.id) == before

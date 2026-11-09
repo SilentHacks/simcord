@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+from sortedcontainers import SortedList
 
 from .. import errors, serializers
 from ..models import SKU, Entitlement
@@ -147,7 +150,36 @@ class MonetizationMixin(BackendBase):
             source_type=10 if type == 4 else 9 if type == 1 and sku.type == 5 else None,
         )
         self.entitlements[entitlement.id] = entitlement
+        self._entitlement_ids.add(entitlement.id)
+        self._entitlement_order[entitlement.id] = self._registration_order()
+        if user_id is not None:
+            self._entitlement_users.setdefault(user_id, {})[entitlement.id] = entitlement
+        if guild_id is not None:
+            self._entitlement_guilds.setdefault(guild_id, {})[entitlement.id] = entitlement
+        self._schedule_entitlement(entitlement)
         return entitlement
+
+    def iter_entitlements(
+        self,
+        *,
+        user_id: int | None = None,
+        guild_id: int | None = None,
+        before: int | None = None,
+        after: int | None = None,
+        newest_first: bool = True,
+    ) -> Iterator[Entitlement]:
+        if user_id is not None:
+            ids = SortedList(self._entitlement_users.get(user_id, {}))
+        elif guild_id is not None:
+            ids = SortedList(self._entitlement_guilds.get(guild_id, {}))
+        else:
+            ids = self._entitlement_ids
+        return (
+            self.entitlements[entitlement_id]
+            for entitlement_id in ids.irange(after, before, inclusive=(False, False), reverse=newest_first)
+            if (user_id is None or self.entitlements[entitlement_id].user_id == user_id)
+            and (guild_id is None or self.entitlements[entitlement_id].guild_id == guild_id)
+        )
 
     def seed_entitlement(
         self,
@@ -236,6 +268,7 @@ class MonetizationMixin(BackendBase):
                 at,
             )
         entitlement.scheduled_end_at = at
+        self._schedule_entitlement(entitlement)
 
     def end_entitlement(self, entitlement_id: int) -> None:
         entitlement = self.get_entitlement(entitlement_id)
@@ -245,6 +278,7 @@ class MonetizationMixin(BackendBase):
         if entitlement.deleted or (entitlement.starts_at is not None and entitlement.starts_at > now):
             raise errors.SetupError("only started, nondeleted subscription grants can end")
         entitlement.scheduled_end_at = None
+        self._schedule_entitlement(entitlement)
         if entitlement.ends_at is not None and entitlement.ends_at <= now:
             return
         prior_status = entitlement.fulfillment_status
@@ -257,6 +291,7 @@ class MonetizationMixin(BackendBase):
     def revoke_entitlement(self, entitlement_id: int) -> None:
         entitlement = self.get_entitlement(entitlement_id)
         entitlement.scheduled_end_at = None
+        self._schedule_entitlement(entitlement)
         if entitlement.deleted:
             return
         entitlement.deleted = True
@@ -269,17 +304,25 @@ class MonetizationMixin(BackendBase):
             raise errors.SetupError("seeded entitlements have no original CREATE event to replay")
         self.emit("ENTITLEMENT_CREATE", deepcopy(original))
 
-    def next_entitlement_deadline(self) -> datetime | None:
-        return min(
-            (e.scheduled_end_at for e in self.entitlements.values() if e.scheduled_end_at is not None),
-            default=None,
+    def _schedule_entitlement(self, entitlement: Entitlement) -> None:
+        self._entitlement_deadlines.set(
+            entitlement.id, entitlement.scheduled_end_at, (self._entitlement_order[entitlement.id],)
         )
+
+    def next_entitlement_deadline(self) -> datetime | None:
+        return self._entitlement_deadlines.next()
 
     def process_entitlement_deadlines(self) -> None:
         now = self.clock.now()
-        for entitlement in list(self.entitlements.values()):
-            if entitlement.scheduled_end_at is not None and entitlement.scheduled_end_at <= now:
-                self.end_entitlement(entitlement.id)
+        with self._entitlement_deadlines.due(now) as due:
+            for entitlement_id in due:
+                entitlement = self.entitlements.get(entitlement_id)
+                if (
+                    entitlement is not None
+                    and entitlement.scheduled_end_at is not None
+                    and entitlement.scheduled_end_at <= now
+                ):
+                    self.end_entitlement(entitlement.id)
 
     def interaction_entitlements(
         self,
@@ -292,7 +335,10 @@ class MonetizationMixin(BackendBase):
         now = self.clock.now()
         return [
             serializers.entitlement_payload(e, interaction=True)
-            for e in sorted(self.entitlements.values(), key=lambda e: e.guild_id is None)
+            for e in (
+                *(self._entitlement_guilds.get(guild_id, {}).values() if guild_id is not None else ()),
+                *(e for e in self._entitlement_users.get(user_id, {}).values() if e.guild_id is None),
+            )
             if (e.guild_id == guild_id if e.guild_id is not None else e.user_id == user_id)
             and not e.deleted
             and not e.consumed
@@ -316,7 +362,11 @@ class MonetizationMixin(BackendBase):
             and not e.deleted
             and (e.ends_at is None or e.ends_at > self.clock.now())
             and (e.guild_id == owner_id if owner_type == 1 else e.guild_id is None and e.user_id == owner_id)
-            for e in self.entitlements.values()
+            for e in (
+                self._entitlement_guilds.get(owner_id, {})
+                if owner_type == 1
+                else self._entitlement_users.get(owner_id, {})
+            ).values()
         ):
             raise errors.entitlement_already_granted()
         entitlement = self._insert_entitlement(

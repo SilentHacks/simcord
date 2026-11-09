@@ -7,6 +7,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+from simcord.preview._server import PreviewServer
+
 _PREVIEW = Path(__file__).resolve().parents[1] / "src" / "simcord" / "preview"
 _FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "preview"
 _TOOLS = (
@@ -27,6 +29,17 @@ def source_files(directory: Path) -> set[str]:
 
 def wheel_requirements() -> set[str]:
     static = source_files(_PREVIEW / "static")
+    served = set(PreviewServer._STATIC_FILES.values())
+    modules = {path.name for path in (_PREVIEW / "static").glob("*.js")}
+    served_modules = {name for name in served if "/" not in name and name.endswith(".js")}
+    if modules != served_modules:
+        raise SystemExit(
+            f"Preview module serving mismatch: unserved={sorted(modules - served_modules)}, "
+            f"missing={sorted(served_modules - modules)}"
+        )
+    missing_served = served - static - {"protocol.schema.json"}
+    if missing_served:
+        raise SystemExit(f"served Preview assets missing from source: {sorted(missing_served)}")
     if not {"index.html", "app.js", "preview.css", "fonts/manifest.json"} <= static:
         raise SystemExit(f"required Preview assets missing from source: {sorted(static)}")
     return {

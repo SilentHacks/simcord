@@ -14,16 +14,34 @@ import json
 import os
 import sys
 import tempfile
-import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import aiohttp
 import discord
+from monetization_reference_config import (
+    CaptureConfig,
+    CaptureIdentity,
+    ProbeConfig,
+    PurchaseCaptureConfig,
+    RequestPolicy,
+    SubscriptionCaptureConfig,
+)
+from monetization_reference_journal import (
+    begin_write,
+    require_command_ownership,
+    require_entitlement_ownership,
+)
+from monetization_reference_transport import (
+    REDACTED,
+    Evidence,
+    Rest,
+    await_gateway_ready,
+    redact,
+    require_capture_transport,
+)
 
 COMMAND = "simcord_parity_probe"
-REDACTED = "[REDACTED]"
 
 
 def select_user_subscription(skus, name):
@@ -79,177 +97,37 @@ def validate_test_create(row, sku, application_id, user_id):
         not isinstance(row, dict)
         or not isinstance(row.get("id"), str)
         or not row["id"].isdigit()
+        or int(row["id"]) <= 0
         or type(row.get("type")) is not int
         or row["type"] != discord.EntitlementType.application_subscription.value
         or row.get("application_id") != application_id
         or row.get("sku_id") != sku["id"]
         or row.get("user_id") != str(user_id)
         or row.get("guild_id") is not None
+        or row.get("deleted", False) is not False
     ):
         raise RuntimeError(
             "Create receipt did not verify the requested user test grant; no cleanup ownership inferred. Inspect evidence before retrying."
         )
 
 
-def redact(value, secret=""):
-    if isinstance(value, dict):
-        return {
-            key: REDACTED
-            if key.lower()
-            in {"token", "authorization", "session_id", "access_token", "refresh_token", "client_secret"}
-            else redact(item, secret)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [redact(item, secret) for item in value]
-    if isinstance(value, str) and secret:
-        return value.replace(secret, REDACTED)
-    return value
-
-
-class Evidence:
-    def __init__(self, directory, secret, *, resume=False):
-        directory.mkdir(mode=0o700, parents=True, exist_ok=resume)
-        self.directory = directory
-        self.secret = secret
-        self.action = "setup"
-        self.counts = {}
-        for stream in ("requests", "rest", "gateway", "interactions", "health", "actions"):
-            path = directory / f"{stream}.jsonl"
-            if path.exists():
-                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-                for line in lines:
-                    if not line.endswith("\n"):
-                        raise RuntimeError(
-                            f"Truncated evidence in {stream}.jsonl; preserve it before recovery."
-                        )
-                    json.loads(line)
-                self.counts[stream] = len(lines)
-        self.revision = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-
-    def record(self, stream, **data):
-        row = {
-            "utc": datetime.now(UTC).isoformat(),
-            "monotonic_ns": time.monotonic_ns(),
-            "action": self.action,
-            **data,
-        }
-        with (self.directory / f"{stream}.jsonl").open("a", encoding="utf-8") as output:
-            output.write(json.dumps(redact(row, self.secret), ensure_ascii=False) + "\n")
-            output.flush()
-            os.fsync(output.fileno())
-        self.counts[stream] = self.counts.get(stream, 0) + 1
-        return f"{stream}.jsonl:{self.counts[stream]}"
-
-    def mark(self, action):
-        self.action = action
-        self.record("actions", event="begin")
-        print(action, flush=True)
-
-    def manifest(self, **data):
-        target = self.directory / "manifest.json"
-        temporary = target.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as output:
-            output.write(json.dumps(redact(data, self.secret), indent=2) + "\n")
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(target)
-        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-
-
-class Rest:
-    def __init__(self, session, evidence, base="https://discord.com/api/v10"):
-        self.session = session
-        self.evidence = evidence
-        self.base = base
-
-    async def request(self, method, path, *, query=None, body=None) -> tuple[int, Any]:
-        for attempt in range(6):
-            started = datetime.now(UTC).isoformat()
-            request_id = f"requests.jsonl:{self.evidence.counts.get('requests', 0) + 1}"
-            self.evidence.record(
-                "requests",
-                request_id=request_id,
-                method=method,
-                path=path,
-                query=query,
-                body=body,
-                attempt=attempt + 1,
-            )
-            # Never replay a write on a transport error: its outcome may be unknown.
-            try:
-                async with self.session.request(
-                    method, self.base + path, params=query, json=body, allow_redirects=False
-                ) as response:
-                    text = await response.text()
-                    try:
-                        data = json.loads(text) if text else None
-                    except ValueError:
-                        data = text
-                    self.evidence.record(
-                        "rest",
-                        request_id=request_id,
-                        started_utc=started,
-                        method=method,
-                        path_query=response.url.raw_path_qs,
-                        body=body,
-                        status=response.status,
-                        response=data,
-                        attempt=attempt + 1,
-                        rate_limit={
-                            key: value
-                            for key, value in response.headers.items()
-                            if key.lower().startswith("x-ratelimit") or key.lower() in {"retry-after", "date"}
-                        },
-                    )
-                    if response.status != 429:
-                        return response.status, data
-                    if not isinstance(data, dict) or not isinstance(data.get("retry_after"), (int, float)):
-                        raise RuntimeError("Rate limit response lacked retry_after; stopped.")
-            except (aiohttp.ClientError, TimeoutError, asyncio.CancelledError) as error:
-                self.evidence.record(
-                    "rest",
-                    request_id=request_id,
-                    started_utc=started,
-                    method=method,
-                    path_query=path,
-                    body=body,
-                    status=None,
-                    response=None,
-                    error=type(error).__name__,
-                    outcome_unknown=method != "GET",
-                )
-                raise
-            await asyncio.sleep(max(0.1, data["retry_after"]))
-        raise RuntimeError("Repeated rate limits; stopped. See rest.jsonl.")
-
-    async def require(self, method, path, **kwargs):
-        status, data = await self.request(method, path, **kwargs)
-        if not 200 <= status < 300:
-            raise RuntimeError(f"{method} {path}: HTTP {status}; see rest.jsonl. Nothing was published.")
-        return data
-
-
 class Recorder(discord.Client):
-    def __init__(self, args, evidence):
+    def __init__(self, config: ProbeConfig, evidence):
         super().__init__(intents=discord.Intents(guilds=True), enable_debug_events=True)
-        self.args = args
+        self.identity = config.identity
+        self.probe_config = config
         self.evidence = evidence
         self.command_id: str | None = None
         self.channel_id: str | None = None
         self.waiting = False
         self.probes = asyncio.Queue(maxsize=1)
         self.capture_failed = asyncio.Event()
-        self.authorized_users = {str(args.user)}
-        if getattr(args, "other_user", None):
-            self.authorized_users.add(str(args.other_user))
-        self.probe_actor = str(args.user)
-        self.probe_guild = str(args.guild)
-        self.probe_guild_label = str(args.guild)
+        self.authorized_users = {str(self.identity.user)}
+        if self.identity.other_user:
+            self.authorized_users.add(str(self.identity.other_user))
+        self.probe_actor = str(self.identity.user)
+        self.probe_guild = str(self.identity.guild)
+        self.probe_guild_label = str(self.identity.guild)
         self.last_probe_payload = None
         self.last_sequence = None
         self.connection_epoch = 0
@@ -337,16 +215,16 @@ class Recorder(discord.Client):
             )
 
     async def probe(self, stage, *, actor_id=None):
-        self.probe_actor = str(actor_id or self.args.user)
+        self.probe_actor = str(actor_id or self.identity.user)
         if self.probe_actor not in self.authorized_users:
             raise RuntimeError("Probe actor is not an explicitly authorized user.")
         self.evidence.mark(stage)
         while not self.probes.empty():
             self.probes.get_nowait()
         self.waiting = True
-        timeout = getattr(self.args, "probe_timeout", 900)
+        timeout = self.probe_config.probe_timeout
         print(
-            f"User {self.probe_actor}: in server {self.probe_guild_label}, reload Discord, then in #{self.args.channel} invoke /{COMMAND}. Waiting up to {timeout / 60:g} minutes.",
+            f"User {self.probe_actor}: in server {self.probe_guild_label}, reload Discord, then in #{self.probe_config.channel} invoke /{COMMAND}. Waiting up to {timeout / 60:g} minutes.",
             flush=True,
         )
         try:
@@ -362,276 +240,393 @@ class Recorder(discord.Client):
             self.waiting = False
 
 
-async def session(args, token, evidence):
-    client = Recorder(args, evidence)
-    created = set()
-    deleted = set()
-    command_id = None
-    gateway = None
-    base = None
-    cleanup_errors = []
-    status = "incomplete"
-    purchase_baselines = {}
-    metadata = {
-        "schema_version": 1,
-        "guild_id": str(args.guild),
-        "user_id": str(args.user),
-        "discord_py": discord.__version__,
-        "recorder_sha256": evidence.revision,
-        "scope": "user subscription sandbox"
-        if args.mode == "subscriptions"
-        else "manual application-test-mode purchases",
-        "mode": args.mode,
-        "application_test_mode_confirmed_by_operator": args.test_mode_confirmed,
-        "purchase_entitlement_ids": [],
-        "limitations": [
-            "No guild subscription, natural expiry, future start, or >100-row calibration.",
-            "No consume of historical/deleted consumables or non-sandbox DELETE rejection probes.",
-            "No-event conclusions apply only to connected observation windows.",
-            "IDs and user/member metadata are retained; review before sharing.",
-        ],
-    }
+class LegacyCapture:
+    """Own one schema-1 session's durable writes and Gateway observations."""
 
-    def save():
-        evidence.manifest(
-            **metadata,
-            status=status,
-            created_entitlement_ids=sorted(created),
-            deleted_entitlement_ids=sorted(deleted),
-            cleanup_errors=cleanup_errors,
+    def __init__(self, config, evidence, rest):
+        self.identity = config.identity
+        self.probe_config = config.probe
+        self.policy = config.policy
+        self.evidence = evidence
+        self.rest = rest
+        self.client = Recorder(config.probe, evidence)
+        self.gateway = None
+        self.app = {}
+        self.base = None
+        self.commands_path = None
+        self.cleaning = False
+        self.state = {
+            "schema_version": 1,
+            "guild_id": str(config.identity.guild),
+            "user_id": str(config.identity.user),
+            "discord_py": discord.__version__,
+            "recorder_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "recorder_sources_sha256": {
+                name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                for name in (
+                    "capture_monetization_reference.py",
+                    "monetization_reference_config.py",
+                    "monetization_reference_journal.py",
+                    "monetization_reference_transport.py",
+                )
+            },
+            "scope": "user subscription sandbox"
+            if config.mode == "subscriptions"
+            else "manual application-test-mode purchases",
+            "mode": config.mode,
+            "application_test_mode_confirmed_by_operator": config.mode == "purchases",
+            "purchase_entitlement_ids": [],
+            "limitations": [
+                "No guild subscription, natural expiry, future start, or >100-row calibration.",
+                "No consume of historical/deleted consumables or non-sandbox DELETE rejection probes.",
+                "No-event conclusions apply only to connected observation windows.",
+                "IDs and user/member metadata are retained; review before sharing.",
+            ],
+        }
+        self.state.update(
+            status="incomplete",
+            created_entitlement_ids=[],
+            deleted_entitlement_ids=[],
+            owned_entitlements={},
+            temporary_commands={},
+            cleanup_errors=[],
+            pending_write=None,
+            baseline_ids=[],
         )
+        self.save()
 
-    save()
+    def save(self):
+        self.evidence.manifest(**self.state)
+
+    async def request(self, method, path, *, query=None, body=None):
+        if method == "DELETE":
+            if path.startswith(self.base + "/"):
+                require_entitlement_ownership(
+                    self.evidence.directory, self.state, self.app["id"], path.rsplit("/", 1)[-1]
+                )
+            else:
+                require_command_ownership(
+                    self.evidence.directory,
+                    self.app["id"],
+                    str(self.identity.guild),
+                    self.state["temporary_commands"][str(self.identity.guild)],
+                )
+        if method != "GET":
+            begin_write(
+                self.evidence,
+                self.state,
+                {
+                    "case": self.evidence.action,
+                    "method": method,
+                    "path": path,
+                    "body": body,
+                    "query": query,
+                    "request_start_line": self.evidence.counts.get("requests", 0) + 1,
+                },
+                cleaning=self.cleaning,
+            )
+        status, data = await self.rest.request(method, path, query=query, body=body)
+        if method != "GET":
+            receipt = f"rest.jsonl:{self.evidence.counts['rest']}"
+            if method == "POST" and path == self.base and 200 <= status < 300:
+                validate_test_create(data, {"id": body["sku_id"]}, self.app["id"], self.identity.user)
+                eid = data["id"]
+                if eid in self.state["baseline_ids"] or eid in self.state["created_entitlement_ids"]:
+                    raise RuntimeError("Create returned a preexisting ID; no cleanup ownership inferred.")
+                self.state["owned_entitlements"][eid] = {
+                    "sku_id": body["sku_id"],
+                    "owner_id": str(self.identity.user),
+                    "owner_type": 2,
+                    "deleted": False,
+                    "create_ref": receipt,
+                }
+                self.state["created_entitlement_ids"].append(eid)
+            elif method == "POST" and path == self.commands_path and 200 <= status < 300:
+                command = {
+                    "id": data.get("id") if isinstance(data, dict) else None,
+                    "create_ref": receipt,
+                    "deleted": False,
+                }
+                require_command_ownership(
+                    self.evidence.directory, self.app["id"], str(self.identity.guild), command
+                )
+                self.state["temporary_commands"][str(self.identity.guild)] = command
+                self.state["temporary_command_id"] = command["id"]
+                self.client.command_id = command["id"]
+            elif (
+                method == "DELETE"
+                and (
+                    status == 204 or (status == 404 and isinstance(data, dict) and data.get("code") == 10029)
+                )
+                and path.startswith(self.base + "/")
+            ):
+                eid = path.rsplit("/", 1)[-1]
+                self.state["owned_entitlements"][eid]["deleted"] = True
+                if eid not in self.state["deleted_entitlement_ids"]:
+                    self.state["deleted_entitlement_ids"].append(eid)
+            self.state["pending_write"] = None
+            self.save()
+        return status, data
+
+    async def require(self, method, path, **kwargs):
+        status, data = await self.request(method, path, **kwargs)
+        if not 200 <= status < 300:
+            raise RuntimeError(f"{method} {path}: HTTP {status}; inspect rest.jsonl.")
+        return data
+
+    async def create(self, sku, label, required=False):
+        self.evidence.mark(label)
+        status, data = await self.request(
+            "POST",
+            self.base,
+            body={
+                "sku_id": sku["id"],
+                "owner_id": str(self.identity.user),
+                "owner_type": 2,
+            },
+        )
+        if 200 <= status < 300:
+            return data["id"]
+        if required:
+            raise RuntimeError(f"Test create returned HTTP {status}; inspect rest.jsonl.")
+        return None
+
+    async def observe(self, label):
+        self.evidence.mark(label)
+        self.evidence.record("health", event="observation_start", connected=self.client.is_ready())
+        await asyncio.sleep(self.policy.observe)
+        if self.gateway.done():
+            await self.gateway
+            raise RuntimeError("Gateway closed during observation.")
+        if self.client.capture_failed.is_set():
+            raise RuntimeError("Raw capture failed.")
+        self.evidence.record("health", event="observation_end", connected=self.client.is_ready())
+
+    async def inspect(self, entitlement, sku, label):
+        self.evidence.mark(label)
+        await self.request("GET", f"{self.base}/{entitlement}")
+        query = {"user_id": str(self.identity.user), "sku_ids": sku["id"], "limit": "100"}
+        await self.request("GET", self.base, query=query)
+        await self.request("GET", self.base, query={**query, "exclude_deleted": "false"})
+
+    async def close(self):
+        self.cleaning = True
+        self.evidence.mark("cleanup")
+        try:
+            for eid, owned in self.state["owned_entitlements"].items():
+                if not owned["deleted"]:
+                    try:
+                        await self.require("DELETE", f"{self.base}/{eid}")
+                    except Exception:
+                        self.state["cleanup_errors"].append(f"Unresolved owned entitlement {eid}")
+            command = self.state.get("temporary_command_id")
+            known = self.state["temporary_commands"].get(str(self.identity.guild))
+            if command and known and not known["deleted"]:
+                try:
+                    await self.require("DELETE", f"{self.commands_path}/{command}")
+                    self.state["temporary_commands"][str(self.identity.guild)]["deleted"] = True
+                except Exception:
+                    self.state["cleanup_errors"].append(f"Unresolved temporary command {command}")
+        finally:
+            if self.state.get("pending_write") or self.state.get("uncertain_writes"):
+                self.state["status"] = "uncertain_write"
+            elif self.state["cleanup_errors"]:
+                self.state["status"] = "cleanup_required"
+            self.save()
+            await self.client.close()
+            if self.gateway:
+                self.gateway.cancel()
+                await asyncio.gather(self.gateway, return_exceptions=True)
+            print(
+                f"Session: {self.state['status']}. Evidence: {self.evidence.directory.resolve()}", flush=True
+            )
+
+
+async def prepare_legacy_catalog(capture, config):
+    app = await capture.require("GET", "/oauth2/applications/@me")
+    capture.app = app
+    purchase_baselines = {}
+    baseline_ids = set()
+    capture.state.update(application_id=app["id"], application_name=app["name"])
+    if app.get("interactions_endpoint_url"):
+        raise RuntimeError("App has an interactions endpoint; stopped without changing it.")
+    capture.base = f"/applications/{app['id']}/entitlements"
+    skus = await capture.require("GET", f"/applications/{app['id']}/skus")
+    if config.mode == "subscriptions":
+        selected = [select_user_subscription(skus, name) for name in config.sku_names]
+        if selected[0]["id"] == selected[1]["id"]:
+            raise RuntimeError("Choose two different subscription SKUs.")
+    else:
+        selected = [
+            select_purchase_sku(skus, config.consumable, discord.SKUType.consumable),
+            select_purchase_sku(skus, config.durable, discord.SKUType.durable),
+        ]
+    capture.state["skus"] = selected
+    capture.save()
+    print(
+        f"Reference app: {app['name']} ({app['id']}). SKUs: {', '.join(sku['name'] for sku in selected)}.",
+        flush=True,
+    )
+    for sku in selected:
+        rows = await capture.require(
+            "GET",
+            capture.base,
+            query={
+                "user_id": str(config.identity.user),
+                "sku_ids": sku["id"],
+                "limit": "100",
+                "exclude_deleted": "false",
+                "exclude_ended": "false",
+            },
+        )
+        if not isinstance(rows, list) or len(rows) >= 100:
+            raise RuntimeError(
+                "Baseline is unreadable or reached a full page; stopped rather than guess at history."
+            )
+        baseline_ids.update(row["id"] for row in rows)
+        if config.mode == "purchases":
+            purchase_baselines[sku["id"]] = {row["id"] for row in rows}
+        elif any(row.get("deleted") is not True for row in rows):
+            raise RuntimeError(
+                "Existing nondeleted grant found for a selected SKU/user; stopped without changing it."
+            )
+    if config.mode == "purchases":
+        capture.state["preexisting_purchase_ids"] = {
+            sku_id: sorted(ids) for sku_id, ids in purchase_baselines.items()
+        }
+        capture.save()
+    capture.state["baseline_ids"] = sorted(baseline_ids)
+    capture.save()
+    return selected, purchase_baselines
+
+
+async def connect_legacy(capture):
+    await capture.client.login(capture.evidence.secret)
+    capture.gateway = asyncio.create_task(capture.client.connect(reconnect=True))
+    await await_gateway_ready(capture.client, capture.gateway)
+    guild = capture.client.get_guild(capture.identity.guild)
+    if guild is None:
+        raise RuntimeError("Bot is not installed in the specified server.")
+    channels = [channel for channel in guild.text_channels if channel.name == capture.probe_config.channel]
+    if len(channels) != 1:
+        raise RuntimeError("Need exactly one text channel with the selected name.")
+    capture.state["channel_id"] = str(channels[0].id)
+    capture.client.channel_id = capture.state["channel_id"]
+    member = await capture.require("GET", f"/guilds/{capture.identity.guild}/members/{capture.identity.user}")
+    if (
+        not isinstance(member, dict)
+        or member.get("user", {}).get("id") != str(capture.identity.user)
+        or member["user"].get("bot")
+    ):
+        raise RuntimeError("Consenting probe user must be a human member of the authorized server.")
+    capture.commands_path = f"/applications/{capture.app['id']}/guilds/{capture.identity.guild}/commands"
+    commands = await capture.require("GET", capture.commands_path)
+    if any(command["name"] == COMMAND for command in commands):
+        raise RuntimeError(f"Command /{COMMAND} already exists; stopped rather than overwrite it.")
+    command = await capture.require(
+        "POST",
+        capture.commands_path,
+        body={
+            "name": COMMAND,
+            "description": "Record an authorized SimCord entitlement parity observation",
+            "type": 1,
+        },
+    )
+    command_id = command["id"]
+    capture.client.command_id = command_id
+    capture.state["temporary_command_id"] = command_id
+    capture.save()
+
+
+async def capture_purchases(capture, selected, purchase_baselines):
+    print(f"Store: https://discord.com/application-directory/{capture.app['id']}/store", flush=True)
+    print(
+        "No purchases yet. Confirm the orange Application Test Mode banner names this app after every reload.",
+        flush=True,
+    )
+    await capture.client.probe("P01 baseline interaction (no purchases yet)")
+    for number, sku in enumerate(selected, start=2):
+        prefix = f"P{number:02}"
+        print(
+            f"MANUAL ACTION: Verify the orange test-mode banner, buy exactly ONE {sku['name']} in the Store, then run /{COMMAND} in #{capture.probe_config.channel}. Stop if test mode is unclear or the item is unavailable. Do not send payment screenshots or buy anything else.",
+            flush=True,
+        )
+        await capture.client.probe(f"{prefix} purchased {sku['name']}, before consume")
+        capture.evidence.mark(f"{prefix} identify new test purchase")
+        rows = await capture.require(
+            "GET",
+            capture.base,
+            query={"user_id": str(capture.identity.user), "sku_ids": sku["id"], "limit": "100"},
+        )
+        row = select_new_test_purchase(
+            rows, purchase_baselines[sku["id"]], sku, capture.app["id"], capture.identity.user
+        )
+        entitlement = row["id"]
+        capture.state["purchase_entitlement_ids"].append(entitlement)
+        capture.save()
+        fetched = await capture.require("GET", f"{capture.base}/{entitlement}")
+        checked = select_new_test_purchase(
+            [fetched], purchase_baselines[sku["id"]], sku, capture.app["id"], capture.identity.user
+        )
+        if checked["id"] != entitlement:
+            raise RuntimeError("GET returned a different purchase ID; stopped without consuming.")
+        await capture.observe(f"{prefix} observe purchase")
+        await capture.inspect(entitlement, sku, f"{prefix} before consume GET and list")
+        attempts = 2 if sku["type"] == discord.SKUType.consumable.value else 1
+        for attempt in range(1, attempts + 1):
+            label = f"{prefix}.{attempt} consume request"
+            capture.evidence.mark(label)
+            await capture.request("POST", f"{capture.base}/{entitlement}/consume")
+            await capture.observe(f"{label} observe")
+            await capture.inspect(entitlement, sku, f"{label} GET and list")
+            await capture.client.probe(f"{label} interaction")
+    print(
+        "Test-mode purchase rows are retained, not deleted by cleanup. Their IDs are in manifest.json.",
+        flush=True,
+    )
+
+
+async def capture_subscriptions(capture, selected):
+    await capture.client.probe("S01 baseline interaction")
+    first = await capture.create(selected[0], "S02 create A", required=True)
+    await capture.observe("S03 observe A create")
+    await capture.inspect(first, selected[0], "S04 active GET and list")
+    await capture.client.probe("S05 active interaction")
+    await capture.create(selected[0], "S06 duplicate A")
+    await capture.observe("S07 observe duplicate")
+    await capture.create(selected[1], "S08 same owner different SKU B")
+    await capture.observe("S09 observe B create")
+    capture.evidence.mark("S10 delete all session-created active grants")
+    for entitlement in sorted(capture.state["created_entitlement_ids"]):
+        await capture.require("DELETE", f"{capture.base}/{entitlement}")
+        capture.save()
+    await capture.observe("S11 observe deletion")
+    await capture.inspect(first, selected[0], "S12 deleted GET and both list modes")
+    capture.evidence.mark("S13 repeat DELETE A")
+    await capture.request("DELETE", f"{capture.base}/{first}")
+    await capture.observe("S14 observe repeat DELETE")
+    await capture.client.probe("S15 deleted interaction")
+    await capture.create(selected[0], "S16 recreate A after deletion")
+    await capture.observe("S17 observe recreated grant")
+
+
+async def session(config: SubscriptionCaptureConfig | PurchaseCaptureConfig, token, evidence):
+    require_capture_transport()
     async with aiohttp.ClientSession(
         headers={"Authorization": f"Bot {token}", "User-Agent": "SimCord authorized parity recorder"},
         timeout=aiohttp.ClientTimeout(total=60),
     ) as http:
-        rest = Rest(http, evidence)
+        capture = LegacyCapture(config, evidence, Rest(http, evidence))
         try:
-            app = await rest.require("GET", "/oauth2/applications/@me")
-            metadata.update(application_id=app["id"], application_name=app["name"])
-            if app.get("interactions_endpoint_url"):
-                raise RuntimeError("App has an interactions endpoint; stopped without changing it.")
-            base = f"/applications/{app['id']}/entitlements"
-            skus = await rest.require("GET", f"/applications/{app['id']}/skus")
-            if args.mode == "subscriptions":
-                selected = [select_user_subscription(skus, name) for name in (args.sku_a, args.sku_b)]
-                if selected[0]["id"] == selected[1]["id"]:
-                    raise RuntimeError("Choose two different subscription SKUs.")
+            selected, baselines = await prepare_legacy_catalog(capture, config)
+            await connect_legacy(capture)
+            if config.mode == "purchases":
+                await capture_purchases(capture, selected, baselines)
             else:
-                selected = [
-                    select_purchase_sku(skus, args.consumable, discord.SKUType.consumable),
-                    select_purchase_sku(skus, args.durable, discord.SKUType.durable),
-                ]
-            metadata["skus"] = selected
-            save()
-            print(
-                f"Reference app: {app['name']} ({app['id']}). SKUs: {', '.join(sku['name'] for sku in selected)}.",
-                flush=True,
-            )
-            for sku in selected:
-                rows = await rest.require(
-                    "GET", base, query={"user_id": str(args.user), "sku_ids": sku["id"], "limit": "100"}
-                )
-                if args.mode == "purchases":
-                    if len(rows) >= 100:
-                        raise RuntimeError(
-                            "Purchase baseline reached a full page; stopped rather than guess at history."
-                        )
-                    purchase_baselines[sku["id"]] = {row["id"] for row in rows}
-                elif rows:
-                    raise RuntimeError(
-                        "Existing nondeleted grant found for a selected SKU/user; stopped without changing it."
-                    )
-            if args.mode == "purchases":
-                metadata["preexisting_purchase_ids"] = {
-                    sku_id: sorted(ids) for sku_id, ids in purchase_baselines.items()
-                }
-                save()
-            await client.login(token)
-            gateway = asyncio.create_task(client.connect(reconnect=True))
-            ready = asyncio.create_task(client.wait_until_ready())
-            try:
-                done, _ = await asyncio.wait(
-                    {ready, gateway}, timeout=60, return_when=asyncio.FIRST_COMPLETED
-                )
-                if gateway in done:
-                    await gateway
-                    raise RuntimeError("Gateway closed before READY.")
-                if ready not in done:
-                    raise RuntimeError("Gateway READY timed out.")
-                await ready
-            finally:
-                ready.cancel()
-            guild = client.get_guild(args.guild)
-            if guild is None:
-                raise RuntimeError("Bot is not installed in the specified server.")
-            channels = [channel for channel in guild.text_channels if channel.name == args.channel]
-            if len(channels) != 1:
-                raise RuntimeError("Need exactly one text channel with the selected name.")
-            metadata["channel_id"] = str(channels[0].id)
-            client.channel_id = metadata["channel_id"]
-            commands_path = f"/applications/{app['id']}/guilds/{args.guild}/commands"
-            commands = await rest.require("GET", commands_path)
-            if any(command["name"] == COMMAND for command in commands):
-                raise RuntimeError(f"Command /{COMMAND} already exists; stopped rather than overwrite it.")
-            command = await rest.require(
-                "POST",
-                commands_path,
-                body={
-                    "name": COMMAND,
-                    "description": "Record an authorized SimCord entitlement parity observation",
-                    "type": 1,
-                },
-            )
-            command_id = command["id"]
-            client.command_id = command_id
-            metadata["temporary_command_id"] = command_id
-            save()
-
-            async def create(sku, label, required=False):
-                evidence.mark(label)
-                response_status, data = await rest.request(
-                    "POST",
-                    base,
-                    body={
-                        "sku_id": sku["id"],
-                        "owner_id": str(args.user),
-                        "owner_type": 2,
-                    },
-                )
-                if 200 <= response_status < 300:
-                    validate_test_create(data, sku, app["id"], args.user)
-                    created.add(data["id"])
-                    save()  # Durable journal before any later await or mutation.
-                    return data["id"]
-                if required:
-                    raise RuntimeError(
-                        f"Test create returned HTTP {response_status}; inspect rest.jsonl. Leave SKUs unpublished."
-                    )
-                return None
-
-            async def observe(label):
-                evidence.mark(label)
-                evidence.record("health", event="observation_start", connected=client.is_ready())
-                await asyncio.sleep(args.observe)
-                if gateway.done():
-                    await gateway
-                    raise RuntimeError("Gateway closed during observation.")
-                if client.capture_failed.is_set():
-                    raise RuntimeError("Raw capture failed.")
-                evidence.record("health", event="observation_end", connected=client.is_ready())
-
-            async def inspect(entitlement, sku, label):
-                evidence.mark(label)
-                await rest.request("GET", f"{base}/{entitlement}")
-                query = {"user_id": str(args.user), "sku_ids": sku["id"], "limit": "100"}
-                await rest.request("GET", base, query=query)
-                await rest.request("GET", base, query={**query, "exclude_deleted": "false"})
-
-            if args.mode == "purchases":
-                print(f"Store: https://discord.com/application-directory/{app['id']}/store", flush=True)
-                print(
-                    "No purchases yet. Confirm the orange Application Test Mode banner names this app after every reload.",
-                    flush=True,
-                )
-                await client.probe("P01 baseline interaction (no purchases yet)")
-                for number, sku in enumerate(selected, start=2):
-                    prefix = f"P{number:02}"
-                    print(
-                        f"MANUAL ACTION: Verify the orange test-mode banner, buy exactly ONE {sku['name']} in the Store, "
-                        f"then run /{COMMAND} in #{args.channel}. Stop if test mode is unclear or the item is unavailable. "
-                        "Do not send payment screenshots or buy anything else.",
-                        flush=True,
-                    )
-                    await client.probe(f"{prefix} purchased {sku['name']}, before consume")
-                    evidence.mark(f"{prefix} identify new test purchase")
-                    rows = await rest.require(
-                        "GET",
-                        base,
-                        query={
-                            "user_id": str(args.user),
-                            "sku_ids": sku["id"],
-                            "limit": "100",
-                        },
-                    )
-                    row = select_new_test_purchase(
-                        rows, purchase_baselines[sku["id"]], sku, app["id"], args.user
-                    )
-                    entitlement = row["id"]
-                    metadata["purchase_entitlement_ids"].append(entitlement)
-                    save()
-                    # Re-read before the first write: never act on a live, preexisting or already-consumed row.
-                    fetched = await rest.require("GET", f"{base}/{entitlement}")
-                    checked = select_new_test_purchase(
-                        [fetched], purchase_baselines[sku["id"]], sku, app["id"], args.user
-                    )
-                    if checked["id"] != entitlement:
-                        raise RuntimeError("GET returned a different purchase ID; stopped without consuming.")
-                    await observe(f"{prefix} observe purchase")
-                    await inspect(entitlement, sku, f"{prefix} before consume GET and list")
-                    attempts = 2 if sku["type"] == discord.SKUType.consumable.value else 1
-                    for attempt in range(1, attempts + 1):
-                        label = f"{prefix}.{attempt} consume request"
-                        evidence.mark(label)
-                        await rest.request("POST", f"{base}/{entitlement}/consume")
-                        await observe(f"{label} observe")
-                        await inspect(entitlement, sku, f"{label} GET and list")
-                        await client.probe(f"{label} interaction")
-                print(
-                    "Test-mode purchase rows are retained, not deleted by cleanup. Their IDs are in manifest.json.",
-                    flush=True,
-                )
-            else:
-                await client.probe("S01 baseline interaction")
-                first = await create(selected[0], "S02 create A", required=True)
-                await observe("S03 observe A create")
-                await inspect(first, selected[0], "S04 active GET and list")
-                await client.probe("S05 active interaction")
-                await create(selected[0], "S06 duplicate A")
-                await observe("S07 observe duplicate")
-                await create(selected[1], "S08 same owner different SKU B")
-                await observe("S09 observe B create")
-                evidence.mark("S10 delete all session-created active grants")
-                for entitlement in sorted(created):
-                    await rest.require("DELETE", f"{base}/{entitlement}")
-                    deleted.add(entitlement)
-                    save()
-                await observe("S11 observe deletion")
-                await inspect(first, selected[0], "S12 deleted GET and both list modes")
-                evidence.mark("S13 repeat DELETE A")
-                await rest.request("DELETE", f"{base}/{first}")
-                await observe("S14 observe repeat DELETE")
-                await client.probe("S15 deleted interaction")
-                await create(selected[0], "S16 recreate A after deletion")
-                await observe("S17 observe recreated grant")
-            status = "completed"
+                await capture_subscriptions(capture, selected)
+            capture.state["status"] = "completed"
         finally:
-            evidence.mark("cleanup")
-            if base:
-                for entitlement in sorted(created - deleted):
-                    try:
-                        await rest.require("DELETE", f"{base}/{entitlement}")
-                        deleted.add(entitlement)
-                    except Exception:
-                        cleanup_errors.append(
-                            f"Delete test entitlement {entitlement}; consult REST evidence before retrying."
-                        )
-            if command_id:
-                try:
-                    await rest.require("DELETE", f"{commands_path}/{command_id}")
-                except Exception:
-                    cleanup_errors.append(f"Remove temporary guild command {command_id}.")
-            if cleanup_errors:
-                status = "cleanup_required"
-            save()
-            await client.close()
-            if gateway:
-                gateway.cancel()
-                await asyncio.gather(gateway, return_exceptions=True)
-            print(f"Session: {status}. Evidence: {evidence.directory.resolve()}", flush=True)
-            for error in cleanup_errors:
-                print(error, flush=True)
+            await capture.close()
 
 
 async def self_test():
@@ -799,7 +794,10 @@ async def self_test():
             assert rows[1]["response"]["ends_at"] is None and "starts_at" not in rows[1]["response"]
             assert rows[1]["response"]["token"] == REDACTED
             assert rows[1]["response"]["nested"]["authorization"] == REDACTED
-            client = Recorder(argparse.Namespace(guild=1, user=2, channel="parity"), evidence)
+            client = Recorder(
+                CaptureConfig.from_namespace(argparse.Namespace(guild=1, user=2, channel="parity")).probe,
+                evidence,
+            )
             client.command_id, client.channel_id = "3", "4"
             async with client, aiohttp.ClientSession() as http:
                 async with http.ws_connect(f"http://127.0.0.1:{port}/gateway") as socket:
@@ -878,6 +876,10 @@ def main():
     )
     args = parser.parse_args()
     os.umask(0o077)
+    try:
+        require_capture_transport()
+    except RuntimeError as error:
+        parser.error(str(error))
     if args.self_test:
         asyncio.run(self_test())
         return
@@ -887,6 +889,16 @@ def main():
         parser.error(
             "Enable Application Test Mode, verify its orange banner, then supply --test-mode-confirmed. No live purchases."
         )
+    identity = CaptureIdentity(args.user, args.guild)
+    probe = ProbeConfig(identity, args.channel)
+    policy = RequestPolicy(observe=args.observe)
+    config = (
+        SubscriptionCaptureConfig(identity, probe, policy, (args.sku_a, args.sku_b))
+        if args.mode == "subscriptions"
+        else PurchaseCaptureConfig(identity, probe, policy, args.consumable, args.durable)
+    )
+    if args.output and args.output.exists():
+        parser.error("Output already exists; preserve the original capture.")
     if not sys.stdin.isatty():
         parser.error("Run in your own interactive terminal for the hidden token prompt.")
     token = getpass.getpass("KaruMart bot token (hidden; never saved): ").strip()
@@ -897,7 +909,7 @@ def main():
     )
     evidence = Evidence(directory, token)
     try:
-        asyncio.run(session(args, token, evidence))
+        asyncio.run(session(config, token, evidence))
     except KeyboardInterrupt:
         print("Interrupted. Check manifest.json for cleanup status before restarting.")
         raise SystemExit(130) from None

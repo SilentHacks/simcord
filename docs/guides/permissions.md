@@ -38,8 +38,10 @@ locked = guild.create_text_channel(
 )
 ```
 
-Overwrite targets can be roles (`guild.default_role`, any `RoleHandle`) or members
-(`MemberActor`).
+Overwrite targets can be `RoleHandle`, `MemberActor` or `UserHandle` objects, or native
+`discord.Role`, `discord.Member`, `discord.User` and `discord.ClientUser` objects from the
+same Env's SDK state. Roles and members must belong to the target guild. Foreign SDK
+state and cross-guild role/member targets are rejected before channel creation.
 
 !!! info "The bot's default permissions"
     By default the bot gets a managed integration role with broad permissions but **not**
@@ -59,6 +61,8 @@ Overwrite targets can be roles (`guild.default_role`, any `RoleHandle`) or membe
   (`50013`). It also can't delete the `@everyone` role.
 - **Editing others' messages** — the bot can't edit another user's message (`50005`).
 - **Timeouts** — a timed-out member loses everything except viewing and reading history.
+- **Reactions** — `add_reactions` is required to introduce a new emoji, not to join an
+  existing reaction. Both require access to the message and its history.
 
 ```python
 async def test_cannot_ban_higher_role(simcord_env):

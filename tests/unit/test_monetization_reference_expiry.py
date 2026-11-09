@@ -110,9 +110,9 @@ async def test_expiry_requires_only_one_post_end_probe_and_never_replays_grant(
     ctx.state["watch_baselines"] = {"500": copy.deepcopy(proof["baseline"])}
     ctx.state["baseline_ids"] = ["500"]
     ctx.skus = bundle.manifest["skus"]
-    ctx.args.mode, ctx.args.watch_seconds, ctx.args.poll_seconds = "watch", 1, 0.01
-    ctx.args.watch_entitlement, ctx.args.consume_history = ["500"], []
-    ctx.args.live_lifecycle_confirmed = True
+    ctx.mode, ctx.lifecycle.watch_seconds, ctx.lifecycle.poll_seconds = "watch", 1, 0.01
+    ctx.lifecycle.watch_entitlement, ctx.lifecycle.consume_history = ["500"], []
+    ctx.lifecycle.live_lifecycle_confirmed = True
     ctx.owner_id, ctx.owner_type = "200", 2
     ended = {**ACTIVE, "ends_at": END.isoformat()}
     grant = {**ACTIVE, "id": "501", "type": 8, "starts_at": None}
@@ -244,3 +244,19 @@ async def test_missing_reporting_preserves_capture_and_inactive_can_clear_grant_
         assert await module.check_expiry_subscription(ctx, "expiry.preflight")
     assert ctx.state["expiry_billing_verified"] is verified
     assert not ctx.state["owned_entitlements"]
+
+
+def test_expired_source_only_authorizes_watch_or_cancellation_not_checkout(source, monkeypatch):
+    module, bundle = source
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return END + timedelta(seconds=1)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    with pytest.raises(RuntimeError, match="Expired"):
+        module.load_upgrade_source(bundle.directory)
+    recovery = module.load_upgrade_source(bundle.directory, cancellation_only=True)
+    assert recovery["entitlement_id"] == "500"
+    assert module.load_expiry_source(bundle.directory) == recovery

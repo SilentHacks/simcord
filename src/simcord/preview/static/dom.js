@@ -1,3 +1,10 @@
+/**
+ * @template {keyof HTMLElementTagNameMap} K
+ * @param {K} tag
+ * @param {string} [className]
+ * @param {unknown} [text]
+ * @returns {HTMLElementTagNameMap[K]}
+ */
 export function node(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -5,8 +12,17 @@ export function node(tag, className, text) {
   return element;
 }
 
+/** @param {import('./preview-types').RenderOptions} options @param {Element | null | undefined} element */
 export function current(options, element) {
-  return Boolean(element?.isConnected) || !options.isCurrent || options.isCurrent();
+  return options.isCurrent ? options.isCurrent() : Boolean(element?.isConnected);
+}
+
+/** @param {HTMLElement | null | undefined} root */
+export function disposeSurface(root) {
+  root?._previewDispose?.();
+  root?.querySelectorAll(".media-player").forEach((player) => {
+    if (player instanceof HTMLElement) player._previewMediaPlayer?.dispose();
+  });
 }
 
 const ICON_PATHS = {
@@ -30,13 +46,14 @@ const ICON_PATHS = {
   pin: "m9 3 12 12-3 1-3 4-4-4-7-1 4-3 1-3ZM3 21l5-5",
 };
 
+/** @param {keyof typeof ICON_PATHS} name */
 export function icon(name) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
   svg.classList.add("ui-icon");
-  const path = document.createElementNS(svg.namespaceURI, "path");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.setAttribute("d", ICON_PATHS[name]);
   path.setAttribute("fill", "none");
   path.setAttribute("stroke", "currentColor");
@@ -47,6 +64,7 @@ export function icon(name) {
   return svg;
 }
 
+/** @param {keyof typeof ICON_PATHS} name @param {string} label @param {string} [className] */
 export function iconButton(name, label, className) {
   const button = node("button", className);
   button.type = "button";
@@ -58,6 +76,7 @@ export function iconButton(name, label, className) {
 
 const PERSON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"/></svg>';
 
+/** @param {import('./preview-types').Identity | null | undefined} identity @param {import('./preview-types').RenderOptions} [options] @param {string} [className] */
 export function renderIdentityAvatar(identity, options = {}, className = "entity-avatar") {
   const classes = [className];
   if (identity?.bot) classes.push("avatar-bot");
@@ -91,6 +110,7 @@ export function renderIdentityAvatar(identity, options = {}, className = "entity
   return { element: avatar, pending };
 }
 
+/** @param {import('./preview-types').Identity | null | undefined} identity @param {string} [className] */
 export function presenceDot(identity, className = "entity-presence") {
   const presence = identity?.presence;
   if (!presence || !["online", "idle", "dnd", "offline"].includes(presence)) return null;
@@ -99,6 +119,7 @@ export function presenceDot(identity, className = "entity-presence") {
   return dot;
 }
 
+/** @template {HTMLElement} T @param {T} element @param {import('./preview-types').Identity | null | undefined} identity @returns {T} */
 export function applyRoleColor(element, identity) {
   const color = Number(identity?.role_color ?? 0) >>> 0;
   if (color) element.style.color = `#${color.toString(16).padStart(6, "0")}`;

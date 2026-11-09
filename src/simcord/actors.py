@@ -14,12 +14,20 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from . import interactions as _interactions
-from ._dpy_internals import message_belongs_to_states
+from ._dpy_internals import message_belongs_to_states, resource_belongs_to_states
 from .backend import serializers
-from .backend.access import can_access_message
+from .backend.access import can_access_channel, can_access_message, reaction_permissions
 from .backend.command_access import command_access
 from .backend.errors import BackendError, SetupError
-from .builders import ChannelHandle, GuildHandle, RoleHandle, UserHandle, _guard_builder_operation
+from .backend.models import ScheduledEvent
+from .builders import (
+    ChannelHandle,
+    GuildHandle,
+    RoleHandle,
+    UserHandle,
+    _guard_builder_operation,
+    _require_handle,
+)
 from .components import walk_components
 from .enums import SELECT_TYPES, AppCommandType, ComponentType, InteractionType
 from .http.router import dispatch
@@ -35,6 +43,8 @@ class MemberActor:
     """A guild member that acts like a real human user."""
 
     def __init__(self, env: Env, guild: GuildHandle, user: UserHandle) -> None:
+        _require_handle(env, guild)
+        _require_handle(env, user)
         self._env = env
         self.guild = guild
         self.user = user
@@ -57,6 +67,9 @@ class MemberActor:
         return cached.get_member(self.id) if cached else None
 
     def _check(self, channel: ChannelHandle, *permissions: str) -> None:
+        _require_handle(self._env, channel)
+        _check_user_dm_channel(self, channel.id)
+        _require_handle(self._env, channel, guild_id=self.guild.id)
         self._env.backend.require_permissions(self.guild.id, self.id, channel.id, *permissions)
 
     def _message(self, message: MessageLike) -> Any:
@@ -80,19 +93,22 @@ class MemberActor:
         self._check(channel, perm)
         reference = None
         if reply_to is not None:
+            _visible_message(self, reply_to)
             reference = {
                 "channel_id": str(_channel_id_of(reply_to, self._env)),
                 "message_id": str(reply_to.id),
             }
             reference = backend.normalize_message_reference(channel.id, reference)
-        attachment_payloads = backend.store_attachments(channel.id, attachments)
-        message = backend.create_message(
+        uploads = backend.stage_attachments(channel.id, attachments)
+        message = backend.prepare_message(
             channel.id,
             self.id,
             content,
             reference=reference,
-            attachments=attachment_payloads,
+            attachments=[attachment for attachment, _ in uploads],
         )
+        backend.cdn.install_attachments(uploads)
+        message = backend.commit_message(message)
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.send")
         return to_discord_message(self._env, message)
@@ -143,7 +159,7 @@ class MemberActor:
         await self._env._settle_internal(dispatch="MEMBER.set_pinned")
 
     async def typing(self, channel: ChannelHandle) -> None:
-        self._check(channel, "send_messages")
+        self._check(channel, "send_messages_in_threads" if channel.is_thread else "send_messages")
         backend = self._env.backend
         guild = backend.get_guild(self.guild.id)
         payload = {
@@ -158,21 +174,25 @@ class MemberActor:
 
     async def react(self, message: MessageLike, emoji: str) -> None:
         stored = self._message(message)
-        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
+        permissions = reaction_permissions(stored, emoji)
+        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, *permissions)
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, True)
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.react")
 
     async def unreact(self, message: MessageLike, emoji: str) -> None:
         stored = self._message(message)
+        self._env.backend.require_permissions(
+            self.guild.id, self.id, stored.channel_id, "read_message_history"
+        )
         self._env.backend.remove_reaction(stored.channel_id, stored.id, emoji, self.id)
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.unreact")
 
     async def set_reaction(self, message: MessageLike, emoji: str, *, reacted: bool) -> None:
         stored = self._message(message)
-        if reacted:
-            self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, "add_reactions")
+        permissions = reaction_permissions(stored, emoji, reacted=reacted)
+        self._env.backend.require_permissions(self.guild.id, self.id, stored.channel_id, *permissions)
         self._env.backend.set_reaction(stored.channel_id, stored.id, emoji, self.id, reacted)
         self._env._mark_mutation()
         await self._env._settle_internal(dispatch="MEMBER.set_reaction")
@@ -213,8 +233,11 @@ class MemberActor:
         self._check(channel, "view_channel")
         backend = self._env.backend
         if isinstance(target, MemberActor):
+            _require_handle(self._env, target, guild_id=self.guild.id)
             command_type = AppCommandType.USER
             guild = backend.get_guild(self.guild.id)
+            if target.id not in guild.members:
+                raise SetupError("That target is no longer a member of this guild")
             resolved: dict[str, Any] = {
                 "users": {str(target.id): dict(serializers.user_payload(backend.get_user(target.id)))},
                 "members": {
@@ -225,7 +248,9 @@ class MemberActor:
             }
         else:
             command_type = AppCommandType.MESSAGE
-            stored = backend.get_message(_channel_id_of(target, self._env), target.id)
+            stored = self._message(target)
+            if stored.channel_id != channel.id:
+                raise SetupError("Context-menu targets must belong to the invocation channel")
             resolved = {"messages": {str(target.id): dict(serializers.message_payload(backend, stored))}}
         # Context-menu names contain spaces and never nest, so resolve the full
         # name directly rather than treating words as a subcommand path.
@@ -337,14 +362,29 @@ class MemberActor:
 
     # -------------------------------------------------------- scheduled events
 
+    def _event_id(self, event: Any) -> int:
+        if isinstance(event, int):
+            return event
+        if isinstance(event, discord.ScheduledEvent):
+            if not resource_belongs_to_states(event, self._env._message_states):
+                raise SetupError("That event must belong to this environment")
+            if event.guild_id != self.guild.id:
+                raise SetupError("That event must belong to this guild")
+        elif isinstance(event, ScheduledEvent):
+            if self._env.backend.get_guild(self.guild.id).scheduled_events.get(event.id) is not event:
+                raise SetupError("That event must belong to this guild and environment")
+        elif hasattr(event, "_env"):
+            _require_handle(self._env, event, guild_id=self.guild.id)
+        return event.id
+
     async def subscribe_event(self, event: Any) -> None:
         """Mark interest in a scheduled event (accepts an id or a handle with ``.id``)."""
-        event_id = event if isinstance(event, int) else event.id
+        event_id = self._event_id(event)
         self._env.backend.set_scheduled_event_subscription(self.guild.id, event_id, self.id, True)
         await self._env._settle_internal(dispatch="MEMBER.subscribe_event")
 
     async def unsubscribe_event(self, event: Any) -> None:
-        event_id = event if isinstance(event, int) else event.id
+        event_id = self._event_id(event)
         self._env.backend.set_scheduled_event_subscription(self.guild.id, event_id, self.id, False)
         await self._env._settle_internal(dispatch="MEMBER.unsubscribe_event")
 
@@ -451,6 +491,7 @@ async def _slash(
     *,
     root: dict[str, Any] | None = None,
 ) -> InteractionResult:
+    _check_actor_channel(actor, channel)
     parts = name.split()
     if root is None:
         root = _resolve_visible_command(actor, channel.id, parts[0], AppCommandType.CHAT_INPUT)
@@ -508,6 +549,7 @@ async def _autocomplete_result(
     root: dict[str, Any] | None = None,
 ) -> InteractionResult:
     """Dispatch autocomplete while retaining answered-versus-unanswered state."""
+    _check_actor_channel(actor, channel)
     _check_user_dm_channel(actor, channel.id)
     parts = name.split()
     if root is None:
@@ -584,12 +626,31 @@ _ENTITY_SELECT_HANDLES: dict[ComponentType, tuple[type, ...]] = {
 }
 
 
+def _check_actor_channel(actor: Any, channel: ChannelHandle) -> None:
+    guild = getattr(actor, "guild", None)
+    _require_handle(actor._env, channel)
+    _check_user_dm_channel(actor, channel.id)
+    _require_handle(actor._env, channel, guild_id=guild.id if guild is not None else None)
+    if not can_access_channel(actor._env, channel.id, actor):
+        raise SetupError("That channel is not accessible to this user")
+
+
 def _check_user_dm_channel(actor: Any, channel_id: int) -> None:
-    if isinstance(actor, UserHandle) and actor._env.backend.dm_channels.get(actor.id) != channel_id:
+    if isinstance(actor, MemberActor) and actor._env.backend.dm_channels.get(actor.id) == channel_id:
         raise SetupError(
-            "UserHandle interaction operations are restricted to this user's DM channel — "
-            "a real user could not interact with guild messages"
+            "MemberActor is scoped to its guild, not this user's bot DM — "
+            "use member.user.send_dm(...) for messages or member.user for "
+            "slash, autocomplete, click, select, and submit_modal. "
+            "member.send_dm(...) remains supported"
         )
+    if isinstance(actor, UserHandle) and actor._env.backend.dm_channels.get(actor.id) != channel_id:
+        channel = actor._env.backend.channels.get(channel_id)
+        if channel is not None and channel.guild_id is not None:
+            raise SetupError(
+                "UserHandle operations are DM-scoped — use a MemberActor belonging to "
+                "the target guild for guild messages and interactions"
+            )
+        raise SetupError("UserHandle operations are restricted to this user's DM channel")
 
 
 def _visible_message(actor: Any, message: MessageLike) -> Any:
@@ -598,6 +659,9 @@ def _visible_message(actor: Any, message: MessageLike) -> Any:
         message, actor._env, dm_user_id=actor.id if isinstance(actor, UserHandle) else None
     )
     _check_user_dm_channel(actor, channel_id)
+    guild = getattr(actor, "guild", None)
+    if guild is not None and backend.get_channel(channel_id).guild_id != guild.id:
+        raise SetupError("That message is outside this member's guild")
     stored = backend.get_message(channel_id, message.id)
     if not can_access_message(actor._env, channel_id, stored, actor):
         raise SetupError("That message is not visible to this user — a real user could not interact with it")
@@ -711,7 +775,7 @@ async def _component_select(
         _check_select_handles(menu_type, chosen)
         resolved: dict[str, dict[str, Any]] = {}
         for value in chosen:
-            _interactions.resolve_handle(actor._env.backend, value, resolved, user_id=actor.id)
+            _interactions.resolve_handle(actor, value, resolved, channel_id=stored.channel_id)
         data["values"] = [str(value.id) for value in chosen]
         data["resolved"] = resolved
     return await _component_interaction(actor, stored, data)
@@ -739,6 +803,7 @@ async def _dispatch_actor_interaction(
     extra: dict[str, Any] | None = None,
     source_message_id: int | None = None,
 ) -> InteractionResult:
+    _check_actor_channel(actor, channel)
     backend = actor._env.backend
     guild = getattr(actor, "guild", None)
     guild_id = guild.id if guild is not None else None

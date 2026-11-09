@@ -176,10 +176,23 @@ class _AssetOps:
             self._release_blob(record.digest, normalized=record.normalizedRetained)
 
     def _reconcile_assets(self, page: _Page) -> None:
-        """Drop records the latest projection no longer references."""
-        for asset_id in [asset for asset in page.assets if asset not in page.referenced_assets]:
+        """Retain only current-publication and latest-result asset sources."""
+        retained = page.latest_action.result_assets if page.latest_action is not None else set()
+        for asset_id in [
+            asset for asset in page.assets if asset not in page.referenced_assets and asset not in retained
+        ]:
             self._release_asset_record(page.assets.pop(asset_id))
         page.referenced_assets.clear()
+
+    def _release_result_assets(self, page: _Page) -> None:
+        action = page.latest_action
+        if action is None:
+            return
+        published = page.snapshot.get("assets", {})
+        for asset_id in action.result_assets:
+            if asset_id not in published and (record := page.assets.pop(asset_id, None)) is not None:
+                self._release_asset_record(record)
+        action.result_assets.clear()
 
     def _clear_page_assets(self, page: _Page) -> None:
         for record in page.assets.values():
@@ -189,17 +202,20 @@ class _AssetOps:
 
     def _authorize_attachment_source(self, page: _Page, source: tuple[Any, ...], digest: str | None) -> None:
         """Authorize attachment membership independently of retained bytes."""
-        _, channel_id, message_id, attachment_id = source
+        _, channel_id, message_id, attachment_id, *snapshot_index = source
         try:
             message = self.env.backend.get_message(channel_id, message_id)
         except BackendError as exc:
             raise SetupError("asset is unavailable") from exc
         if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
             raise SetupError("asset access denied")
-        attachments = chain(
-            message.attachments,
-            *(snapshot["message"].get("attachments", []) for snapshot in message.snapshots),
-        )
+        if snapshot_index:
+            index = snapshot_index[0]
+            if not isinstance(index, int) or not 0 <= index < len(message.snapshots):
+                raise SetupError("asset is unavailable")
+            attachments = message.snapshots[index]["message"].get("attachments", [])
+        else:
+            attachments = message.attachments
         item = next((item for item in attachments if str(item.get("id", "")) == attachment_id), None)
         if item is None:
             raise SetupError("asset is unavailable")
@@ -213,21 +229,21 @@ class _AssetOps:
         if current is not None and hashlib.sha256(current).hexdigest() != digest:
             raise SetupError("asset was replaced")
 
-    def _authorize_asset(self, page: _Page, asset_id: str) -> _Asset:
+    def _authorize_asset(self, page: _Page, asset_id: str, *, content: bool = True) -> _Asset:
         """Reauthorize one asset at serve time against live backend state."""
         record = page.assets.get(asset_id)
         if record is None:
             raise SetupError("asset is unavailable")
         if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
             raise SetupError("asset access denied")
-        if not record.available or record.digest is None:
+        if content and (not record.available or record.digest is None):
             raise SetupError("asset is unavailable")
         source = record.source
         if not isinstance(source, tuple) or not source:
             return record
         owner = source[0]
         if owner == "attachment":
-            self._authorize_attachment_source(page, source, record.digest)
+            self._authorize_attachment_source(page, source, record.digest if content else None)
         elif owner == "message":
             _, channel_id, message_id = source
             try:
@@ -303,9 +319,9 @@ class _AssetOps:
             if current is None:
                 supplied = self._explicit_assets.get(url)
                 current = supplied[1] if supplied is not None else None
-            if current is None:
+            if content and current is None:
                 raise SetupError("asset is unavailable")
-            if hashlib.sha256(current).hexdigest() != record.digest:
+            if content and current is not None and hashlib.sha256(current).hexdigest() != record.digest:
                 raise SetupError("asset was replaced")
         elif owner == "emoji":
             _, emoji_id = source
@@ -334,9 +350,9 @@ class _AssetOps:
             current = backend.cdn.get(url)
             if current is None and (supplied := self._explicit_assets.get(url)) is not None:
                 current = supplied[1]
-            if current is None:
+            if content and current is None:
                 raise SetupError("asset is unavailable")
-            if hashlib.sha256(current).hexdigest() != record.digest:
+            if content and current is not None and hashlib.sha256(current).hexdigest() != record.digest:
                 raise SetupError("asset was replaced")
         elif owner == "sticker":
             _, guild_id, sticker_id = source
@@ -346,7 +362,7 @@ class _AssetOps:
                 raise SetupError("asset is unavailable")
             url = sticker.url or sticker_url(sticker.id, sticker.format_type)
             current = self.env.backend.cdn.get(url)
-            if current is not None and hashlib.sha256(current).hexdigest() != record.digest:
+            if content and current is not None and hashlib.sha256(current).hexdigest() != record.digest:
                 raise SetupError("asset was replaced")
         elif owner in {"user_avatar", "default_avatar"}:
             _, user_id, avatar_key = source
@@ -356,7 +372,7 @@ class _AssetOps:
             except BackendError as exc:
                 raise SetupError("asset is unavailable") from exc
             if channel.guild_id is None:
-                member_allowed = user_id in channel.recipient_ids
+                member_allowed = user_id == self.env.backend.bot_user.id or user_id in channel.recipient_ids
             else:
                 guild = self.env.backend.guilds.get(channel.guild_id)
                 member_allowed = guild is not None and user_id in guild.members
@@ -364,7 +380,9 @@ class _AssetOps:
                 member_allowed = any(
                     item.author_id == user_id
                     and can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
-                    for item in self.env.backend.messages.get(page.channel_id, {}).values()
+                    for identity in page.snapshot.get("messages", {})
+                    if (item := self.env.backend.messages.get(page.channel_id, {}).get(int(identity)))
+                    is not None
                 )
             if not member_allowed:
                 raise SetupError("asset access denied")
@@ -388,7 +406,7 @@ class _AssetOps:
         elif owner == "explicit":
             _, url = source
             supplied = self._explicit_assets.get(url)
-            if supplied is None or hashlib.sha256(supplied[1]).hexdigest() != record.digest:
+            if supplied is None or (content and hashlib.sha256(supplied[1]).hexdigest() != record.digest):
                 raise SetupError("asset is unavailable")
         elif owner == "application_avatar":
             _, user_id, avatar_key = source

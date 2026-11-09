@@ -346,6 +346,7 @@ button.component-button[aria-disabled="true"] { cursor: not-allowed; opacity: .4
 .preview-app {
   position: relative;
   flex: none;
+  container: preview / inline-size;
   --preview-width: 960px;
   --preview-height: 720px;
   width: var(--preview-width);
@@ -389,15 +390,18 @@ button.component-button[aria-disabled="true"] { cursor: not-allowed; opacity: .4
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .section-heading h3 { margin: 0; }
 .section-heading select { min-width: 90px; }
-.diagnostics { margin: 14px 0 0; padding: 0; border: 0; font-size: 12px; }
+.inspector-panel .diagnostics { margin: 14px 0 0; padding: 0; border: 0; border-radius: 0; font-size: 12px; }
 .diagnostics > p { color: var(--discord-muted); }
-.diagnostics ul { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.inspector-panel .diagnostics ul { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
 .diagnostics li { padding: 10px; background: #35373d; border-radius: 7px; }
 .diagnostic-message { margin: 0 0 6px; color: var(--discord-text) !important; font-weight: 600; }
 .diagnostic-remediation { margin: 0 0 8px; color: var(--discord-subtle) !important; }
 .diagnostics details { margin-top: 8px; color: var(--discord-muted); font-size: 11px; }
 .diagnostics details summary { cursor: pointer; }
 .diagnostics details p { overflow-wrap: anywhere; }
+.diagnostics h2 { display: none; }
+.diagnostic-error { color: #fa7777; }
+.diagnostic-warning { color: #faa61a; }
 .capture-settings, .capture-handoff { display: grid; gap: 9px; padding: 12px 0; border-bottom: 1px solid #3b3d43; }
 .capture-settings .toolbar-field select, .capture-settings .toolbar-field input,
 .capture-handoff textarea { width: 100%; max-width: none; }
@@ -424,16 +428,6 @@ body[data-managed-capture="true"] .preview-app.presentation-fixed {
 }
 @media (forced-colors: active) {
   :focus-visible, .focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
-}
-.diagnostics {
-  flex: 1 1 240px;
-  min-width: 200px;
-  max-width: 360px;
-  margin: 0;
-  padding: 10px;
-  border: 1px solid var(--component-border);
-  border-radius: 4px;
-  font-size: 13px;
 }
 .channel-layout {
   display: flex;
@@ -772,7 +766,7 @@ figure.embed-thumbnail { margin: 0; }
 img.embed-thumbnail { display: block; width: 80px; height: auto; max-width: 100%; max-height: 80px; border-radius: 4px; object-fit: contain; }
 img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; border-radius: 4px; object-fit: contain; }
 .embed-footer { display: flex; align-items: center; gap: 4px; margin-top: 8px; color: var(--discord-text); line-height: 16px; }
-@media (max-width: 480px) {
+@container preview (max-width: 480px) {
   .embed-main-with-thumbnail, .embed-field-row { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -979,7 +973,7 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
   border: 1px solid var(--component-border);
   border-radius: 8px;
 }
-.media-player-native { display: block; width: 100%; max-height: min(55vh, 420px); background: #111214; }
+.media-player-native { display: block; width: 100%; max-height: min(calc(var(--preview-height) * .55), 420px); background: #111214; }
 .audio-player .media-player-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .media-player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .media-player-button {
@@ -1019,6 +1013,7 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
 .media-lottie { display: inline-grid; place-items: center; max-width: min(100%, 220px); max-height: 220px; }
 .media-lottie-canvas, .media-lottie-canvas canvas { display: block; max-width: min(100%, 220px); max-height: 220px; }
 .media-lightbox {
+  container: lightbox / inline-size;
   position: fixed;
   inset: auto;
   max-width: none;
@@ -1056,7 +1051,7 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
 .media-lightbox-previous, .media-lightbox-next { position: absolute; top: calc(50% - 16px); }
 .media-lightbox-previous { left: 8px; }
 .media-lightbox-next { right: 8px; }
-@container (max-width: 480px) {
+@container lightbox (max-width: 480px) {
   .media-lightbox-header { inset: 12px 8px auto; gap: 6px; }
   .media-lightbox-identity { gap: 6px; }
   .media-lightbox-avatar { display: none; }
@@ -1106,7 +1101,7 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
 }
 .file-name { color: var(--link-text); }
 .file-name, .attachment-name { overflow-wrap: anywhere; }
-.attachment-image { width: auto; height: auto; max-width: 100%; max-height: min(80vh, 720px); object-fit: contain; }
+.attachment-image { width: auto; height: auto; max-width: 100%; max-height: min(calc(var(--preview-height) * .8), 720px); object-fit: contain; }
 /* No measured multi-image attachment mosaic is available; keep every image undistorted and bounded. */
 .attachment-footer { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 56px; padding: 8px 12px; border-top: 1px solid var(--discord-hover); font-size: 13px; }
 .attachment-preview { width: 100%; min-height: 120px; max-height: 320px; overflow: auto; margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-family: var(--preview-font-mono); font-size: 13px; font-variant-ligatures: none; background: var(--discord-bg); }
@@ -1302,9 +1297,6 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
 .select-draft-actions span { flex: 1 1 auto; color: var(--discord-subtle); font-size: 11px; }
 .select-draft-actions button { min-height: 30px; padding: 2px 9px; font-size: 12px; }
 .select-draft-actions .select-apply { background: var(--discord-brand); }
-.inspector-panel .diagnostics { margin: 14px 0 0; padding: 0; border: 0; border-radius: 0; font-size: 12px; }
-.inspector-panel .diagnostics ul { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
-.inspector-panel .diagnostics h2 { display: none; }
 @media (max-width: 760px) {
   .preview-shell { --toolbar-height: 112px; }
   .preview-toolbar { height: var(--toolbar-height); align-content: center; gap: 5px; padding: 6px; }
@@ -1485,11 +1477,6 @@ img.embed-image { display: block; width: 100%; height: auto; max-height: 280px; 
   pointer-events: none;
 }
 .preview-empty[hidden] { display: none; }
-.diagnostics { margin: 16px 8px 0; padding: 10px; border: 1px solid var(--component-border); border-radius: 4px; font-size: 13px; }
-.diagnostics h2 { margin: 0 0 6px; font-size: 14px; }
-.diagnostics ul { margin: 0; padding-left: 20px; }
-.diagnostic-error { color: #fa7777; }
-.diagnostic-warning { color: #faa61a; }
 
 .modal-root { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
 .modal-backdrop { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; background: #000b; pointer-events: auto; }
@@ -1681,7 +1668,7 @@ textarea.modal-input { min-height: 90px; resize: none; }
 .modal-actions .button-secondary:hover:not(:disabled) { background: var(--button-alt-hover); }
 .modal-actions .button-secondary:active:not(:disabled) { background: var(--button-alt-active); }
 
-@media (max-width: 600px) {
+@container preview (max-width: 600px) {
   .message-surface { width: 100%; }
   .message-header, .message-content, .message-components, .message-attachments,
   .message-system, .message-stickers { width: calc(100% - 88px); margin-left: 72px; }
@@ -1808,7 +1795,7 @@ textarea.modal-input { min-height: 90px; resize: none; }
 .channel-composer:has(.command-row) .composer-row { align-items: center; }
 .channel-composer:has(.command-row) .send-message { margin-bottom: 0; margin-left: 8px; padding-left: 8px; color: #959cff; border-left: 1px solid var(--discord-border); border-radius: 0; }
 
-@media (max-width: 440px) {
+@container preview (max-width: 440px) {
   .channel-composer { margin-inline: 8px; padding-inline: 7px; }
   .command-entry { gap: 7px; padding-inline: 5px; }
   .command-entry-app { display: none; }

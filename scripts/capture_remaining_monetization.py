@@ -18,14 +18,35 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import aiohttp
 import discord
-from capture_monetization_reference import COMMAND, Evidence, Recorder, Rest, redact
+from capture_monetization_reference import COMMAND, Recorder
 from monetization_reference_checkout import capture_checkouts
-from monetization_reference_expiry import load_expiry_source, prepare_expiry
+from monetization_reference_config import (
+    CaptureConfig,
+    CaptureIdentity,
+    CleanupConfig,
+    ProbeConfig,
+    RequestPolicy,
+)
+from monetization_reference_expiry import load_expiry_source, load_upgrade_source, prepare_expiry
+from monetization_reference_journal import (
+    begin_write,
+    receipt_pair,
+    recover_receipt,
+    require_command_ownership,
+    require_entitlement_ownership,
+)
 from monetization_reference_lifecycle import capture_guild, capture_lifecycle
+from monetization_reference_transport import (
+    Evidence,
+    Rest,
+    await_gateway_ready,
+    redact,
+    require_capture_transport,
+    stream_counts,
+)
 from validate_monetization_reference import validate_bundle
 
 
@@ -65,27 +86,43 @@ def subscription_catalog(skus, names, scope):
 
 
 class Capture:
-    def __init__(self, args, evidence, state):
-        self.args, self.evidence, self.state = args, evidence, state
+    def __init__(self, config: CaptureConfig | CleanupConfig, evidence, state):
+        for name in ("user", "guild"):
+            if state.get(name + "_id") != str(getattr(config.identity, name)):
+                raise RuntimeError("Capture configuration does not match the recovery journal identity.")
+        self.evidence, self.state = evidence, state
+        self.identity = config.identity
+        self.policy = config.policy
+        self.probe_config = (
+            config.probe if isinstance(config, CaptureConfig) else ProbeConfig(config.identity)
+        )
+        if isinstance(config, CaptureConfig):
+            self.sandbox = config.operation.sandbox
+            if config.operation.mode != "upgrade":
+                self.lifecycle = config.operation.lifecycle
+            self.checkout = config.operation.checkout
+            self.mode = config.operation.mode
+        else:
+            self.mode = "cleanup"
         self.app = {}
         self.skus = []
         self.subscriptions = []
         self.owner_type = state.get("owner_type", 2)
-        self.owner_id = state.get("owner_id", str(args.user))
+        self.owner_id = state.get("owner_id", str(self.identity.user))
         self.base = ""
         self.rest: Any = None
-        self.client = Recorder(args, evidence)
+        self.client = Recorder(self.probe_config, evidence)
         self.client.connection_epoch = state.get("last_connection_epoch", 0)
         self.gateway: Any = None
         self.last_request = 0.0
         self.cleaning = False
         commands = self.state.setdefault("temporary_commands", {})
-        if state.get("temporary_command_id") and str(args.guild) not in commands:
+        if state.get("temporary_command_id") and str(self.identity.guild) not in commands:
             if not state.get("command_create_ref"):
                 raise RuntimeError(
                     "Legacy command journal lacks a positive create receipt; inspect it before cleanup."
                 )
-            commands[str(args.guild)] = {
+            commands[str(self.identity.guild)] = {
                 "id": state["temporary_command_id"],
                 "create_ref": state["command_create_ref"],
                 "deleted": False,
@@ -105,7 +142,12 @@ class Capture:
         self.save()
 
     def received_create(self, body, data, receipt):
-        if not isinstance(data, dict) or not str(data.get("id", "")).isdigit():
+        if (
+            not isinstance(data, dict)
+            or type(data.get("id")) is not str
+            or not data["id"].isdigit()
+            or int(data["id"]) <= 0
+        ):
             raise RuntimeError("Successful create lacked a usable ID; preserve evidence, do not retry.")
         eid = str(data["id"])
         if eid in self.state.get("manual_live_entitlement_ids", []) or eid in self.state.get(
@@ -116,14 +158,16 @@ class Capture:
             raise RuntimeError(
                 "Create did not identify the requested API test grant; no cleanup ownership inferred."
             )
-        if eid in self.state["owned_entitlements"]:
-            return
-        if eid in self.state.get("baseline_ids", []):
+        if data.get("deleted", False) is not False or (
+            body.get("owner_type") == 2 and data.get("guild_id") is not None
+        ):
+            raise RuntimeError("Create returned an invalid owner/state; no cleanup ownership inferred.")
+        if eid in self.state.get("baseline_ids", []) or eid in self.state["owned_entitlements"]:
             raise RuntimeError(
                 "Create returned a preexisting ID; no cleanup ownership inferred. Inspect the write before resuming."
             )
-        users = {str(self.args.user), str(self.args.other_user)} - {"None"}
-        guilds = {str(self.args.guild), str(self.args.other_guild)} - {"None"}
+        users = {str(self.identity.user), str(self.identity.other_user)} - {"None"}
+        guilds = {str(self.identity.guild), str(self.identity.other_guild)} - {"None"}
         if data.get("application_id") != self.app["id"]:
             raise RuntimeError("Created row's app cannot be verified; preserve the uncertain mutation.")
         if str(data.get("guild_id")) in guilds:
@@ -134,7 +178,11 @@ class Capture:
             raise RuntimeError(
                 "Created row's owner is not authorized; stopped rather than delete an unverified row."
             )
-        if owner_type != body.get("owner_type") or owner != str(body.get("owner_id")):
+        if (
+            type(body.get("owner_type")) is not int
+            or owner_type != body.get("owner_type")
+            or owner != str(body.get("owner_id"))
+        ):
             raise RuntimeError(
                 "Create returned a different owner than requested; no cleanup ownership inferred."
             )
@@ -150,18 +198,31 @@ class Capture:
         path, method = intent["path"], intent["method"]
         if status is None:
             return
+        if method == "POST" and 200 <= status < 300:
+            request, response = receipt_pair(self.evidence.directory, receipt)
+            if request.get("body") != intent.get("body") or response.get("response") != data:
+                raise RuntimeError("Create receipt does not match its durable request intent.")
         if method == "POST" and path == self.base and 200 <= status < 300:
             self.received_create(intent.get("body") or {}, data, receipt)
         elif method == "POST" and path.endswith("/commands") and 200 <= status < 300:
-            if not isinstance(data, dict) or not data.get("id"):
-                raise RuntimeError("Command create returned no ID; inspect evidence before retrying.")
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("id"), str)
+                or not data["id"].isdigit()
+                or data.get("name") != COMMAND
+                or type(data.get("type")) is not int
+                or data["type"] != 1
+            ):
+                raise RuntimeError(
+                    "Command create lacked positive identity proof; inspect evidence before retrying."
+                )
             guild = path.split("/")[-2]
             self.state["temporary_commands"][guild] = {
                 "id": data["id"],
                 "create_ref": receipt,
                 "deleted": False,
             }
-            if guild == str(self.args.guild):
+            if guild == str(self.identity.guild):
                 self.state["temporary_command_id"] = data["id"]
                 self.state["created_command_id"] = data["id"]
                 self.state["command_create_ref"] = receipt
@@ -176,7 +237,7 @@ class Capture:
             known = self.state["temporary_commands"].get(guild)
             if known and known["id"] == command:
                 known["deleted"] = True
-            if guild == str(self.args.guild):
+            if guild == str(self.identity.guild):
                 self.state["temporary_command_id"] = None
         self.state["pending_write"] = None
 
@@ -195,16 +256,10 @@ class Capture:
             "request_start_line": before.get("requests", 0) + 1,
         }
         if method != "GET":
-            if self.state.get("uncertain_writes") and not self.cleaning:
-                raise RuntimeError("An unresolved mutation exists; do not replay it.")
-            if self.state.get("pending_write"):
-                if not self.cleaning:
-                    raise RuntimeError("An unresolved mutation exists; do not replay it.")
-                self.state.setdefault("uncertain_writes", []).append(self.state["pending_write"])
-            self.state["pending_write"] = intent
-            self.save()
+            self.state["last_connection_epoch"] = self.client.connection_epoch
+            begin_write(self.evidence, self.state, intent, cleaning=self.cleaning)
         try:
-            await asyncio.sleep(max(0, self.args.request_interval - (time.monotonic() - self.last_request)))
+            await asyncio.sleep(max(0, self.policy.request_interval - (time.monotonic() - self.last_request)))
             self.last_request = time.monotonic()
             status, data = await self.rest.request(method, path, query=query, body=body)
             refs = references(self.evidence, before)
@@ -244,8 +299,7 @@ class Capture:
         return str(data["id"]) if 200 <= status < 300 else None
 
     async def remove(self, case, entitlement_id):
-        if entitlement_id not in self.state["owned_entitlements"]:
-            raise RuntimeError("Refusing cleanup without a positive create receipt.")
+        require_entitlement_ownership(self.evidence.directory, self.state, self.app["id"], entitlement_id)
         return await self.request(case, "DELETE", f"{self.base}/{entitlement_id}")
 
     def owner_query(self, owner_id=None, owner_type=None):
@@ -271,26 +325,26 @@ class Capture:
 
     async def observe(self, case):
         self.evidence.mark(case)
-        print(f"Observing Gateway for {self.args.observe:g} seconds; no action needed.", flush=True)
+        print(f"Observing Gateway for {self.policy.observe:g} seconds; no action needed.", flush=True)
         before = dict(self.evidence.counts)
         errors, epoch = self.client.health_errors, self.client.connection_epoch
         start = self.evidence.record(
             "health",
             event="observation_start",
-            requested_seconds=self.args.observe,
+            requested_seconds=self.policy.observe,
             connected=self.client.is_ready(),
             sequence=self.client.last_sequence,
             connection_epoch=epoch,
             health_errors=errors,
             sequence_contiguous=True,
         )
-        await asyncio.sleep(self.args.observe)
+        await asyncio.sleep(self.policy.observe)
         connected = self.client.is_ready() and not self.gateway.done()
         continuous = errors == self.client.health_errors and epoch == self.client.connection_epoch
         end = self.evidence.record(
             "health",
             event="observation_end",
-            requested_seconds=self.args.observe,
+            requested_seconds=self.policy.observe,
             connected=connected,
             sequence=self.client.last_sequence,
             connection_epoch=self.client.connection_epoch,
@@ -309,7 +363,7 @@ class Capture:
             raise RuntimeError("Gateway capture failed; preserve evidence before recovery.")
 
     async def probe(self, case, *, actor_id=None, guild_id=None):
-        guild_id = str(guild_id or self.args.guild)
+        guild_id = str(guild_id or self.identity.guild)
         target = self.state.get("probe_channels", {}).get(guild_id)
         command = self.state.get("temporary_commands", {}).get(guild_id)
         if not target or not command or command["deleted"]:
@@ -323,7 +377,7 @@ class Capture:
         )
         self.client.probe_guild, self.client.probe_guild_label = guild_id, target["label"]
         self.client.channel_id, self.client.command_id = target["channel_id"], command["id"]
-        expected = {"expected_actor_id": str(actor_id or self.args.user), "expected_guild_id": guild_id}
+        expected = {"expected_actor_id": str(actor_id or self.identity.user), "expected_guild_id": guild_id}
         try:
             payload = await self.client.probe(case, actor_id=actor_id)
             self.state["cases"][case] = {
@@ -359,7 +413,7 @@ class Capture:
         # Explore both cursor directions; do not assume ascending or descending server order.
         for cursor, choose in (("before", min), ("after", max)):
             page = rows
-            for number in range(1, self.args.max_pages + 1):
+            for number in range(1, self.policy.max_pages + 1):
                 boundary = str(choose(int(row["id"]) for row in page))
                 page = await self.list_rows(f"{case}.{cursor}.{number:03}", query={**query, cursor: boundary})
                 if page is None:
@@ -385,31 +439,34 @@ class Capture:
     async def cleanup(self):
         self.cleaning = True
         errors = []
-        for eid, owned in list(self.state["owned_entitlements"].items()):
-            if not owned["deleted"]:
-                try:
-                    status, data = await self.remove(f"cleanup.entitlement.{eid}", eid)
-                    if not (
-                        status == 204
-                        or (status == 404 and isinstance(data, dict) and data.get("code") == 10029)
-                    ):
+        try:
+            for eid, owned in list(self.state["owned_entitlements"].items()):
+                if not owned["deleted"]:
+                    try:
+                        status, data = await self.remove(f"cleanup.entitlement.{eid}", eid)
+                        if not (
+                            status == 204
+                            or (status == 404 and isinstance(data, dict) and data.get("code") == 10029)
+                        ):
+                            errors.append(f"Unresolved owned entitlement {eid}")
+                    except Exception:
                         errors.append(f"Unresolved owned entitlement {eid}")
+            for guild, known in self.state["temporary_commands"].items():
+                command = known["id"]
+                if known["deleted"]:
+                    continue
+                try:
+                    require_command_ownership(self.evidence.directory, self.app["id"], guild, known)
+                    path = f"/applications/{self.app['id']}/guilds/{guild}/commands/{command}"
+                    status, _ = await self.request(f"cleanup.command.{guild}", "DELETE", path)
+                    if status not in (204, 404):
+                        errors.append(f"Temporary command {command} in guild {guild} remains")
                 except Exception:
-                    errors.append(f"Unresolved owned entitlement {eid}")
-        for guild, known in self.state["temporary_commands"].items():
-            command = known["id"]
-            if known["deleted"]:
-                continue
-            try:
-                path = f"/applications/{self.app['id']}/guilds/{guild}/commands/{command}"
-                status, _ = await self.request(f"cleanup.command.{guild}", "DELETE", path)
-                if status not in (204, 404):
                     errors.append(f"Temporary command {command} in guild {guild} remains")
-            except Exception:
-                errors.append(f"Temporary command {command} in guild {guild} remains")
-        self.state["cleanup_errors"] = errors
-        self.cleaning = False
-        self.save()
+        finally:
+            self.state["cleanup_errors"] = errors
+            self.cleaning = False
+            self.save()
 
 
 def source_purchases(ctx):
@@ -422,7 +479,7 @@ def source_purchases(ctx):
             continue
         if (
             data.get("application_id") == ctx.app["id"]
-            and data.get("user_id") == str(ctx.args.user)
+            and data.get("user_id") == str(ctx.identity.user)
             and data.get("status") == "completed"
         ):
             source = str(path.parent.resolve())
@@ -491,14 +548,14 @@ async def rejection_matrix(ctx):
             "reject.unknown_entitlement.mutations",
             "Sentinel was not positively confirmed unknown; no mutation attempted.",
         )
-    for name, kind in ((ctx.args.consumable, 3), (ctx.args.durable, 2)):
+    for name, kind in ((ctx.checkout.consumable, 3), (ctx.checkout.durable, 2)):
         candidates = [item for item in ctx.skus if item["name"] == name and item["type"] == kind]
         if len(candidates) == 1:
             case = f"reject.one_time_test_create.{kind}"
-            await negative(case, candidates[0], owner_id=ctx.args.user, owner_type=2)
-            if ctx.args.other_user:
+            await negative(case, candidates[0], owner_id=ctx.identity.user, owner_type=2)
+            if ctx.identity.other_user:
                 await negative(
-                    case + ".second_owner", candidates[0], owner_id=ctx.args.other_user, owner_type=2
+                    case + ".second_owner", candidates[0], owner_id=ctx.identity.other_user, owner_type=2
                 )
             elif ctx.state["cases"][case].get("error_code") == 40074:
                 ctx.block(
@@ -534,7 +591,7 @@ async def rejection_matrix(ctx):
             or not isinstance(row, dict)
             or row.get("type") != 4
             or row.get("application_id") != ctx.app["id"]
-            or row.get("user_id") != str(ctx.args.user)
+            or row.get("user_id") != str(ctx.identity.user)
         ):
             ctx.block(case, "Source test-mode purchase could not be revalidated; no DELETE sent.")
             continue
@@ -553,13 +610,13 @@ async def rejection_matrix(ctx):
         ctx.save()
         status, _ = await ctx.request(case, "DELETE", f"{ctx.base}/{eid}")
         await ctx.observe(case + ".observation")
-        await ctx.inspect(case + ".after", eid, sku, owner_id=ctx.args.user, owner_type=2)
+        await ctx.inspect(case + ".after", eid, sku, owner_id=ctx.identity.user, owner_type=2)
         if status == 204 or row.get("deleted") is True:
             await ctx.probe(case + ".interaction")
             if sku["type"] == 3:
                 await ctx.request(case + ".deleted_consumable_consume", "POST", f"{ctx.base}/{eid}/consume")
                 await ctx.observe(case + ".consume_observation")
-                await ctx.inspect(case + ".after_consume", eid, sku, owner_id=ctx.args.user, owner_type=2)
+                await ctx.inspect(case + ".after_consume", eid, sku, owner_id=ctx.identity.user, owner_type=2)
                 ctx.block(
                     "consume.deleted_unconsumed",
                     "DELETE probe used a previously consumed purchase; it does not establish the unconsumed-deleted case.",
@@ -576,7 +633,7 @@ async def duplicate_matrix(ctx):
     await ctx.inspect("duplicate.initial_projection", first, a)
     await ctx.create("duplicate.same_owner_same_sku", a)
     await ctx.create("duplicate.same_owner_different_sku", b)
-    other = ctx.args.other_user if ctx.owner_type == 2 else ctx.args.other_guild
+    other = ctx.identity.other_user if ctx.owner_type == 2 else ctx.identity.other_guild
     if other:
         await ctx.create("duplicate.different_owner_same_sku", a, owner_id=other)
         await ctx.create("duplicate.different_owner_different_sku", b, owner_id=other)
@@ -609,7 +666,7 @@ async def cross_scope(ctx):
     matches = [
         sku
         for sku in ctx.skus
-        if sku["name"] == ctx.args.user_sku_a
+        if sku["name"] == ctx.checkout.user_sku_a
         and sku["type"] == 5
         and sku.get("flags", 0) & discord.SKUFlags.user_subscription.flag
     ]
@@ -622,7 +679,7 @@ async def cross_scope(ctx):
     existing = await ctx.list_rows(
         "cross_scope.personal_baseline",
         query={
-            "user_id": str(ctx.args.user),
+            "user_id": str(ctx.identity.user),
             "sku_ids": personal["id"],
             "exclude_ended": "true",
         },
@@ -635,7 +692,7 @@ async def cross_scope(ctx):
         return
     for first_kind in ("guild", "user"):
         phase = f"cross_scope.{first_kind}_first"
-        fixtures = ((guild_sku, ctx.args.guild, 1), (personal, ctx.args.user, 2))
+        fixtures = ((guild_sku, ctx.identity.guild, 1), (personal, ctx.identity.user, 2))
         if first_kind == "user":
             fixtures = fixtures[::-1]
         created = []
@@ -651,17 +708,17 @@ async def cross_scope(ctx):
                     )
             await ctx.observe(phase + ".window")
             await ctx.probe(phase + ".primary")
-            if ctx.args.other_user:
-                await ctx.probe(phase + ".second_member", actor_id=ctx.args.other_user)
-            if ctx.args.other_guild:
-                await ctx.probe(phase + ".other_guild", guild_id=ctx.args.other_guild)
+            if ctx.identity.other_user:
+                await ctx.probe(phase + ".second_member", actor_id=ctx.identity.other_user)
+            if ctx.identity.other_guild:
+                await ctx.probe(phase + ".other_guild", guild_id=ctx.identity.other_guild)
         finally:
             for eid in dict.fromkeys(created):
                 if not ctx.state["owned_entitlements"][eid]["deleted"]:
                     await ctx.remove(f"{phase}.remove.{eid}", eid)
     for label, sku, owner, owner_type in (
-        ("guild_sku_user_owner", guild_sku, ctx.args.user, 2),
-        ("user_sku_guild_owner", personal, ctx.args.guild, 1),
+        ("guild_sku_user_owner", guild_sku, ctx.identity.user, 2),
+        ("user_sku_guild_owner", personal, ctx.identity.guild, 1),
     ):
         eid = await ctx.create(f"cross_scope.mismatched.{label}", sku, owner_id=owner, owner_type=owner_type)
         if eid:
@@ -683,7 +740,7 @@ async def pagination(ctx):
     if known is None:
         ctx.block("pagination.large", "Could not safely enumerate history; no bulk population attempted.")
         return
-    target = ctx.args.pagination_target
+    target = ctx.sandbox.pagination_target
     if len(known) < target:
         first = await ctx.create("pagination.populate.proof.create", sku)
         if not first:
@@ -736,8 +793,8 @@ async def pagination(ctx):
             "exclude_deleted": "false",
         },
         "user_and_guild": {
-            "user_id": str(ctx.args.user),
-            "guild_id": str(ctx.args.guild),
+            "user_id": str(ctx.identity.user),
+            "guild_id": str(ctx.identity.guild),
             "exclude_deleted": "false",
         },
     }
@@ -757,46 +814,36 @@ async def pagination(ctx):
 async def connect(ctx):
     await ctx.client.login(ctx.evidence.secret)
     ctx.gateway = asyncio.create_task(ctx.client.connect(reconnect=True))
-    ready = asyncio.create_task(ctx.client.wait_until_ready())
-    try:
-        done, _ = await asyncio.wait({ready, ctx.gateway}, timeout=60, return_when=asyncio.FIRST_COMPLETED)
-        if ctx.gateway in done:
-            await ctx.gateway
-            raise RuntimeError("Gateway ended before READY.")
-        if ready not in done:
-            raise RuntimeError("Gateway READY timed out.")
-        await ready
-    finally:
-        ready.cancel()
-        await asyncio.gather(ready, return_exceptions=True)
+    await await_gateway_ready(ctx.client, ctx.gateway)
     ctx.state["probe_channels"] = {}
-    targets = [ctx.args.guild] + ([ctx.args.other_guild] if ctx.args.other_guild else [])
+    targets = [ctx.identity.guild] + ([ctx.identity.other_guild] if ctx.identity.other_guild else [])
     for guild_id in targets:
         guild = ctx.client.get_guild(guild_id)
         if guild is None:
             raise RuntimeError(f"Bot is not installed in authorized server {guild_id}.")
-        channels = [channel for channel in guild.text_channels if channel.name == ctx.args.channel]
+        channels = [channel for channel in guild.text_channels if channel.name == ctx.probe_config.channel]
         if len(channels) != 1:
-            raise RuntimeError(f"Need exactly one #{ctx.args.channel} text channel in server {guild_id}.")
+            raise RuntimeError(
+                f"Need exactly one #{ctx.probe_config.channel} text channel in server {guild_id}."
+            )
         ctx.state["probe_channels"][str(guild_id)] = {
             "channel_id": str(channels[0].id),
             "label": f"{getattr(guild, 'name', guild_id)} ({guild_id})",
         }
-        if ctx.args.mode == "guild":
-            for actor in (ctx.args.user, ctx.args.other_user):
-                if actor:
-                    status, member = await ctx.request(
-                        f"setup.member.{guild_id}.{actor}", "GET", f"/guilds/{guild_id}/members/{actor}"
+        for actor in (ctx.identity.user, ctx.identity.other_user):
+            if actor:
+                status, member = await ctx.request(
+                    f"setup.member.{guild_id}.{actor}", "GET", f"/guilds/{guild_id}/members/{actor}"
+                )
+                if (
+                    status != 200
+                    or not isinstance(member, dict)
+                    or member.get("user", {}).get("id") != str(actor)
+                    or member["user"].get("bot")
+                ):
+                    raise RuntimeError(
+                        f"Consenting user {actor} must be a human member of server {guild_id}."
                     )
-                    if (
-                        status != 200
-                        or not isinstance(member, dict)
-                        or member.get("user", {}).get("id") != str(actor)
-                        or member["user"].get("bot")
-                    ):
-                        raise RuntimeError(
-                            f"Consenting user {actor} must be a human member of server {guild_id}."
-                        )
     for guild_id in targets:
         commands_path = f"/applications/{ctx.app['id']}/guilds/{guild_id}/commands"
         status, commands = await ctx.request(f"setup.commands.{guild_id}", "GET", commands_path)
@@ -818,68 +865,228 @@ async def connect(ctx):
         )
         if not 200 <= status < 300:
             raise RuntimeError("Could not create the temporary command; HTTP evidence retained.")
-    primary = ctx.state["probe_channels"][str(ctx.args.guild)]
+    primary = ctx.state["probe_channels"][str(ctx.identity.guild)]
     ctx.state["channel_id"] = primary["channel_id"]
     ctx.client.channel_id = primary["channel_id"]
-    ctx.client.command_id = ctx.state["temporary_commands"][str(ctx.args.guild)]["id"]
+    ctx.client.command_id = ctx.state["temporary_commands"][str(ctx.identity.guild)]["id"]
 
 
 def reconcile(ctx):
-    """Only recorded HTTP receipts may resolve an interrupted write; never infer provenance from a list."""
-    intents = ctx.state.get("uncertain_writes", []) + (
-        [ctx.state["pending_write"]] if ctx.state.get("pending_write") else []
-    )
-    ctx.state["uncertain_writes"] = []
-    path = ctx.evidence.directory / "rest.jsonl"
-    rows = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    request_path = ctx.evidence.directory / "requests.jsonl"
-    sent = (
-        [json.loads(line) for line in request_path.read_text(encoding="utf-8").splitlines()]
-        if request_path.exists()
-        else []
-    )
+    """Resolve only the last correlated recorded attempt; never replay unknown writes."""
+    intents = list(ctx.state.get("uncertain_writes", []))
+    if ctx.state.get("pending_write"):
+        intents.append(ctx.state["pending_write"])
+    ctx.state["uncertain_writes"] = list(intents)
+    ctx.state["pending_write"] = None
+    ctx.save()
     for intent in intents:
-        receipts = [
-            (index, read)
-            for index, line in enumerate(rows, 1)
-            if (read := json.loads(line)).get("action") == intent["case"]
-            and read.get("method") == intent["method"]
-            and urlsplit(read.get("path_query", "")).path.removeprefix("/api/v10") == intent["path"]
-            and int(read.get("request_id", "requests.jsonl:0").rsplit(":", 1)[-1])
-            >= intent["request_start_line"]
-        ]
-        if receipts and receipts[-1][1].get("status") is not None:
-            index, receipt = receipts[-1]
-            ctx.settle_write(intent, receipt["status"], receipt.get("response"), f"rest.jsonl:{index}")
+        sent, receipt, reference = recover_receipt(ctx.evidence.directory, intent)
+        if receipt is not None and type(receipt.get("status")) is int:
+            ctx.settle_write(intent, receipt["status"], receipt.get("response"), reference)
             ctx.state["cases"][intent["case"]] = {
                 **ctx.state["cases"].get(intent["case"], {}),
                 "status": "observed",
-                "rest": [f"rest.jsonl:{index}"],
+                "rest": [reference],
                 "requests": [receipt["request_id"]],
                 "mutation_complete": True,
+                "http_status": receipt["status"],
             }
             if intent["method"] == "POST" and intent["path"] == ctx.base and 200 <= receipt["status"] < 300:
                 ctx.state["cases"][intent["case"]]["created_id"] = str(receipt["response"]["id"])
-        elif not any(
-            row.get("action") == intent["case"]
-            and row.get("method") == intent["method"]
-            and row.get("path") == intent["path"]
-            and int(row.get("request_id", "requests.jsonl:0").rsplit(":", 1)[-1])
-            >= intent["request_start_line"]
-            for row in sent
-        ):
+        elif not sent:
             ctx.block(
                 intent["case"],
                 "Interrupted before HTTP I/O; no write was sent. Only this unfinished section needs recovery.",
             )
         else:
-            ctx.state["uncertain_writes"].append(intent)
-    ctx.state["pending_write"] = None
+            continue
+        ctx.state["uncertain_writes"].remove(intent)
+        ctx.save()
+
+
+async def authenticate_application(ctx):
+    state = ctx.state
+    status, app = await ctx.request("setup.application", "GET", "/oauth2/applications/@me")
+    if status != 200 or not isinstance(app, dict):
+        raise RuntimeError("Application authentication failed; inspect setup evidence.")
+    if state.get("application_id") and state["application_id"] != app["id"]:
+        raise RuntimeError("Token belongs to a different application than this recovery journal.")
+    ctx.app, ctx.base = app, f"/applications/{app['id']}/entitlements"
+    state.update(application_id=app["id"], application_name=app["name"])
     ctx.save()
+    reconcile(ctx)
 
 
-async def run(args, evidence, state):
-    ctx = Capture(args, evidence, state)
+async def prepare_capture(ctx):
+    state = ctx.state
+    app = ctx.app
+    if app.get("interactions_endpoint_url"):
+        raise RuntimeError("App has an interactions endpoint; no settings changed.")
+    status, skus = await ctx.request("setup.skus", "GET", f"/applications/{app['id']}/skus")
+    if status != 200 or not isinstance(skus, list):
+        raise RuntimeError("Could not inspect the SKU catalog.")
+    ctx.skus = skus
+    ctx.subscriptions, ctx.owner_type = subscription_catalog(
+        skus, (ctx.sandbox.sku_a, ctx.sandbox.sku_b), ctx.sandbox.scope
+    )
+    ctx.owner_id = str(ctx.identity.user if ctx.owner_type == 2 else ctx.identity.guild)
+    state.update(owner_id=ctx.owner_id, owner_type=ctx.owner_type, skus=skus)
+    if state.get("expiry_source") and not await prepare_expiry(ctx):
+        state["status"] = "completed_with_blockers"
+        return False
+    baseline = await ctx.walk("setup.baseline", {"exclude_deleted": "false", "exclude_ended": "false"})
+    if baseline is None:
+        raise RuntimeError("Cannot establish preexisting IDs safely; no mutation attempted.")
+    owned_ids = state["owned_entitlements"]
+    for eid in owned_ids:
+        require_entitlement_ownership(ctx.evidence.directory, state, app["id"], eid)
+    # Deleted session grants remain owned history, not preexisting resources on resume.
+    state["baseline_ids"] = sorted(
+        set(state.get("baseline_ids", [])) | {row["id"] for row in baseline if row["id"] not in owned_ids}
+    )
+    ctx.save()
+    for owner in (
+        ()
+        if ctx.mode in ("watch", "upgrade")
+        else (ctx.owner_id, str(ctx.identity.other_user if ctx.owner_type == 2 else ctx.identity.other_guild))
+    ):
+        if owner == "None":
+            continue
+        active = await ctx.list_rows(
+            f"setup.active.{owner}",
+            query={
+                **ctx.owner_query(owner),
+                "sku_ids": ",".join(sku["id"] for sku in ctx.subscriptions),
+                "exclude_ended": "true",
+            },
+        )
+        if active is None or active:
+            raise RuntimeError(
+                "Preexisting active grant or unreadable baseline; it will not be modified. Resolve this prerequisite before proceeding."
+            )
+    return True
+
+
+async def capture_mode(ctx):
+    state = ctx.state
+    if state.get("expiry_source"):
+        print(
+            "Connected. EXPIRY-ONLY: reusing your saved before interaction. No checkout, upgrade, or repeat purchase. After the entitlement ends, one probe command is needed; other requests and sandbox cleanup are automatic.",
+            flush=True,
+        )
+    elif ctx.mode == "upgrade":
+        print(
+            "Connected. UPGRADE SESSION: reuse/resume A or start a free A if needed, upgrade to B, record scheduled downgrade, then cancel. Follow each prompt; do not buy anything beforehand.",
+            flush=True,
+        )
+    else:
+        print(
+            "Connected. HTTP rejections are captured outcomes, not failures. Observation windows show their duration; bulk population needs no manual action.",
+            flush=True,
+        )
+    if ctx.mode == "guild":
+        jobs = [
+            ("guild", capture_guild),
+            ("guild_duplicates", duplicate_matrix),
+            ("cross_scope", cross_scope),
+            ("guild_pagination", pagination),
+        ]
+    elif ctx.mode == "remaining":
+        jobs = [
+            ("rejections", rejection_matrix),
+            ("duplicates", duplicate_matrix),
+            ("pagination", pagination),
+            ("guild", capture_guild),
+        ]
+    else:
+        jobs = []
+    if ctx.checkout.deleted_purchase or ctx.checkout.live_upgrade:
+        jobs.append(("checkouts", capture_checkouts))
+    if ctx.mode != "upgrade":
+        jobs.append(("lifecycle", capture_lifecycle))
+    for name, job in jobs:
+        if name == "checkouts":
+            stages = state.get("checkout", {})
+            if any(
+                getattr(ctx.checkout, flag, False) and not stages.get(flag, {}).get("done")
+                for flag in ("deleted_purchase", "live_upgrade")
+            ):
+                state["sections"].setdefault(name, {})["done"] = False
+        if state["sections"].get(name, {}).get("done") and not (ctx.mode == "watch" and name == "lifecycle"):
+            print(f"Already captured: {name}; preserving prior evidence.", flush=True)
+            continue
+        state["sections"].setdefault(name, {})["done"] = False
+        ctx.save()
+        await job(ctx)
+        live = state.get("checkout", {}).get("live_upgrade", {})
+        if live.get("cancellation_required") and not live.get("cancellation_verified"):
+            raise RuntimeError(
+                "Real subscription cancellation remains unverified. Cancel in Discord and resume this capture without purchasing again."
+            )
+        if any(case["status"] == "capture_failed" for case in state["cases"].values()):
+            raise RuntimeError(
+                "A capture failed; this section is not checkpointed complete. Preserve the journal for recovery."
+            )
+        ctx.finish_section(name)
+    state["status"] = (
+        "completed_with_blockers"
+        if any(case["status"] == "blocked" for case in state["cases"].values())
+        else "completed"
+    )
+
+
+async def finalize_capture(ctx):
+    state = ctx.state
+    evidence = ctx.evidence
+    if state.get("uncertain_writes") or state.get("pending_write"):
+        state["status"] = "uncertain_write"
+    elif state["cleanup_errors"]:
+        state["status"] = "cleanup_required"
+    live = state.get("checkout", {}).get("live_upgrade", {})
+    if live.get("cancellation_required") and not live.get("cancellation_verified"):
+        print(
+            "ACTION REQUIRED: a REAL KaruMart subscription may still renew. Cancel every subscription started here in Discord User Settings -> Subscriptions. Resume this directory; DO NOT purchase again.",
+            flush=True,
+        )
+        if state["status"] not in ("uncertain_write", "cleanup_required"):
+            state["status"] = "cancellation_required"
+    ctx.save()
+    ctx.evidence.action = "cleanup"
+    await ctx.client.close()
+    if ctx.gateway:
+        ctx.gateway.cancel()
+        await asyncio.gather(ctx.gateway, return_exceptions=True)
+    report = validate_bundle(evidence.directory)
+    report["prior_bundles"] = [
+        {"path": item["path"], "report": validate_bundle(Path(item["path"]))}
+        for item in state["source_bundles"]
+    ]
+    evidence.directory.joinpath("validation.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"Session: {state['status']}. Evidence: {evidence.directory.resolve()}", flush=True)
+    print(
+        f"Evidence valid: {report['valid']}. Pending prerequisites: {len(report.get('pending_prerequisites', []))}.",
+        flush=True,
+    )
+    if not report["valid"]:
+        print(
+            "Preserve this directory. Do not start a new capture; inspect validation.json before recovery.",
+            flush=True,
+        )
+
+
+async def close_capture(ctx):
+    try:
+        if ctx.app:
+            await ctx.cleanup()
+    finally:
+        await finalize_capture(ctx)
+
+
+async def run(config: CaptureConfig | CleanupConfig, evidence, state):
+    require_capture_transport()
+    ctx = Capture(config, evidence, state)
     async with aiohttp.ClientSession(
         headers={
             "Authorization": f"Bot {evidence.secret}",
@@ -889,139 +1096,26 @@ async def run(args, evidence, state):
     ) as http:
         ctx.rest = Rest(http, evidence)
         try:
-            status, app = await ctx.request("setup.application", "GET", "/oauth2/applications/@me")
-            if status != 200 or not isinstance(app, dict):
-                raise RuntimeError("Application authentication failed; inspect setup evidence.")
-            if state.get("application_id") and state["application_id"] != app["id"]:
-                raise RuntimeError("Token belongs to a different application than this recovery journal.")
-            ctx.app, ctx.base = app, f"/applications/{app['id']}/entitlements"
-            state.update(application_id=app["id"], application_name=app["name"])
-            ctx.save()
-            reconcile(ctx)
-            if state.get("uncertain_writes") and not args.cleanup_only:
+            await authenticate_application(ctx)
+            if state.get("uncertain_writes") and not config.cleanup_only:
                 raise RuntimeError(
                     "An unacknowledged write remains. No mutation will be replayed. Preserve the directory; use --cleanup-only for positively owned resources."
                 )
-            if args.resume:
+            if config.resume:
                 await ctx.cleanup()
                 if state["cleanup_errors"]:
                     raise RuntimeError("Recovery cleanup is incomplete.")
-            if args.cleanup_only:
+            if config.cleanup_only:
                 state["status"] = "completed_with_blockers"
                 ctx.block(
                     "recovery.cleanup_only",
                     "Only positive-provenance cleanup requested; remaining evidence was not captured.",
                 )
                 return
-            if app.get("interactions_endpoint_url"):
-                raise RuntimeError("App has an interactions endpoint; no settings changed.")
-            status, skus = await ctx.request("setup.skus", "GET", f"/applications/{app['id']}/skus")
-            if status != 200 or not isinstance(skus, list):
-                raise RuntimeError("Could not inspect the SKU catalog.")
-            ctx.skus = skus
-            ctx.subscriptions, ctx.owner_type = subscription_catalog(
-                skus, (args.sku_a, args.sku_b), args.scope
-            )
-            ctx.owner_id = str(args.user if ctx.owner_type == 2 else args.guild)
-            state.update(owner_id=ctx.owner_id, owner_type=ctx.owner_type, skus=skus)
-            if state.get("expiry_source") and not await prepare_expiry(ctx):
-                state["status"] = "completed_with_blockers"
+            if not await prepare_capture(ctx):
                 return
-            baseline = await ctx.walk(
-                "setup.baseline", {"exclude_deleted": "false", "exclude_ended": "false"}
-            )
-            if baseline is None:
-                raise RuntimeError("Cannot establish preexisting IDs safely; no mutation attempted.")
-            state["baseline_ids"] = sorted(
-                set(state.get("baseline_ids", [])) | {row["id"] for row in baseline}
-            )
-            ctx.save()
-            for owner in (
-                ()
-                if args.mode in ("watch", "upgrade")
-                else (ctx.owner_id, str(args.other_user if ctx.owner_type == 2 else args.other_guild))
-            ):
-                if owner == "None":
-                    continue
-                active = await ctx.list_rows(
-                    f"setup.active.{owner}",
-                    query={
-                        **ctx.owner_query(owner),
-                        "sku_ids": ",".join(sku["id"] for sku in ctx.subscriptions),
-                        "exclude_ended": "true",
-                    },
-                )
-                if active is None or active:
-                    raise RuntimeError(
-                        "Preexisting active grant or unreadable baseline; it will not be modified. Resolve this prerequisite before proceeding."
-                    )
             await connect(ctx)
-            if state.get("expiry_source"):
-                print(
-                    "Connected. EXPIRY-ONLY: reusing your saved before interaction. No checkout, upgrade, or repeat purchase. After the entitlement ends, one probe command is needed; other requests and sandbox cleanup are automatic.",
-                    flush=True,
-                )
-            elif args.mode == "upgrade":
-                print(
-                    "Connected. UPGRADE SESSION: reuse/resume A or start a free A if needed, upgrade to B, record scheduled downgrade, then cancel. Follow each prompt; do not buy anything beforehand.",
-                    flush=True,
-                )
-            else:
-                print(
-                    "Connected. HTTP rejections are captured outcomes, not failures. Observation windows show their duration; bulk population needs no manual action.",
-                    flush=True,
-                )
-            if args.mode == "guild":
-                jobs = [
-                    ("guild", capture_guild),
-                    ("guild_duplicates", duplicate_matrix),
-                    ("cross_scope", cross_scope),
-                    ("guild_pagination", pagination),
-                ]
-            elif args.mode == "remaining":
-                jobs = [
-                    ("rejections", rejection_matrix),
-                    ("duplicates", duplicate_matrix),
-                    ("pagination", pagination),
-                    ("guild", capture_guild),
-                ]
-            else:
-                jobs = []
-            if getattr(args, "deleted_purchase", False) or getattr(args, "live_upgrade", False):
-                jobs.append(("checkouts", capture_checkouts))
-            if args.mode != "upgrade":
-                jobs.append(("lifecycle", capture_lifecycle))
-            for name, job in jobs:
-                if name == "checkouts":
-                    stages = state.get("checkout", {})
-                    if any(
-                        getattr(args, flag, False) and not stages.get(flag, {}).get("done")
-                        for flag in ("deleted_purchase", "live_upgrade")
-                    ):
-                        state["sections"].setdefault(name, {})["done"] = False
-                if state["sections"].get(name, {}).get("done") and not (
-                    args.mode == "watch" and name == "lifecycle"
-                ):
-                    print(f"Already captured: {name}; preserving prior evidence.", flush=True)
-                    continue
-                state["sections"].setdefault(name, {})["done"] = False
-                ctx.save()
-                await job(ctx)
-                live = state.get("checkout", {}).get("live_upgrade", {})
-                if live.get("cancellation_required") and not live.get("cancellation_verified"):
-                    raise RuntimeError(
-                        "Real subscription cancellation remains unverified. Cancel in Discord and resume this capture without purchasing again."
-                    )
-                if any(case["status"] == "capture_failed" for case in state["cases"].values()):
-                    raise RuntimeError(
-                        "A capture failed; this section is not checkpointed complete. Preserve the journal for recovery."
-                    )
-                ctx.finish_section(name)
-            state["status"] = (
-                "completed_with_blockers"
-                if any(case["status"] == "blocked" for case in state["cases"].values())
-                else "completed"
-            )
+            await capture_mode(ctx)
         except asyncio.CancelledError:
             if state["status"] != "uncertain_write":
                 state["status"] = "interrupted"
@@ -1031,133 +1125,84 @@ async def run(args, evidence, state):
                 state["status"] = "incomplete"
             raise
         finally:
-            if ctx.app:
-                await ctx.cleanup()
-            if state.get("uncertain_writes") or state.get("pending_write"):
-                state["status"] = "uncertain_write"
-            elif state["cleanup_errors"]:
-                state["status"] = "cleanup_required"
-            live = state.get("checkout", {}).get("live_upgrade", {})
-            if live.get("cancellation_required") and not live.get("cancellation_verified"):
-                print(
-                    "ACTION REQUIRED: a REAL KaruMart subscription may still renew. Cancel every subscription started here in Discord User Settings -> Subscriptions. Resume this directory; DO NOT purchase again.",
-                    flush=True,
-                )
-                if state["status"] not in ("uncertain_write", "cleanup_required"):
-                    state["status"] = "cancellation_required"
-            ctx.save()
-            ctx.evidence.action = "cleanup"
-            await ctx.client.close()
-            if ctx.gateway:
-                ctx.gateway.cancel()
-                await asyncio.gather(ctx.gateway, return_exceptions=True)
-            report = validate_bundle(evidence.directory)
-            report["prior_bundles"] = [
-                {"path": item["path"], "report": validate_bundle(Path(item["path"]))}
-                for item in state["source_bundles"]
-            ]
-            evidence.directory.joinpath("validation.json").write_text(
-                json.dumps(report, indent=2) + "\n", encoding="utf-8"
-            )
-            print(f"Session: {state['status']}. Evidence: {evidence.directory.resolve()}", flush=True)
-            print(
-                f"Evidence valid: {report['valid']}. Pending prerequisites: {len(report.get('pending_prerequisites', []))}.",
-                flush=True,
-            )
-            if not report["valid"]:
-                print(
-                    "Preserve this directory. Do not start a new capture; inspect validation.json before recovery.",
-                    flush=True,
-                )
+            await close_capture(ctx)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--guild", type=int)
-    parser.add_argument("--user", type=int)
-    parser.add_argument("--other-user", type=int, help="Consenting second test user; optional")
-    parser.add_argument(
-        "--other-guild", type=int, help="Second authorized guild for guild duplicate comparisons"
-    )
-    parser.add_argument("--scope", choices=("auto", "user", "guild"), default="auto")
-    parser.add_argument("--mode", choices=("remaining", "watch", "guild", "upgrade"))
-    parser.add_argument("--sku-a", default="Parity Subscription A")
-    parser.add_argument("--sku-b", default="Parity Subscription B")
-    parser.add_argument("--user-sku-a", default="Parity Subscription A")
-    parser.add_argument("--user-sku-b", default="Parity Subscription B")
-    parser.add_argument(
-        "--deleted-purchase",
-        action="store_true",
-        help="Manually buy one new type-4 consumable and delete it before consumption",
-    )
-    parser.add_argument("--test-mode-confirmed", action="store_true")
-    parser.add_argument(
-        "--live-upgrade",
-        action="store_true",
-        help="Operator-only zero-total team subscription upgrade and cancellation capture",
-    )
-    parser.add_argument("--team-discount-confirmed", action="store_true")
-    parser.add_argument("--consumable", default="Parity Consumable")
-    parser.add_argument("--durable", default="Parity Durable")
-    parser.add_argument("--channel", default="parity")
-    parser.add_argument("--observe", type=float, default=60)
-    parser.add_argument("--request-interval", type=float, default=0.25)
-    parser.add_argument(
-        "--settle-seconds",
-        type=float,
-        default=120,
-        help="Read-only propagation window after subscription UI actions",
-    )
-    parser.add_argument(
-        "--pagination-target", type=int, default=101, help="Controlled history target, at least 101"
-    )
-    parser.add_argument("--max-pages", type=int, default=100)
-    parser.add_argument("--watch-entitlement", action="append", default=[])
-    parser.add_argument(
-        "--expiry-from",
-        help="Expiry-only follow-up using a completed canceled-subscription capture; no checkout",
-    )
-    parser.add_argument(
-        "--upgrade-from",
-        help="Immediate upgrade/downgrade session bound to a previous verified-canceled A capture",
-    )
-    parser.add_argument(
-        "--probe-timeout", type=float, default=900, help="Seconds allowed for each manual interaction"
-    )
-    parser.add_argument("--consume-history", action="append", default=[])
-    parser.add_argument(
-        "--live-lifecycle-confirmed",
-        action="store_true",
-        help="Attest watched subscriptions are legitimate lifecycle fixtures, not API test grants",
-    )
-    parser.add_argument("--watch-seconds", type=float, default=3600)
-    parser.add_argument("--poll-seconds", type=float, default=15)
-    parser.add_argument("--resume", type=Path)
-    parser.add_argument("--cleanup-only", action="store_true")
-    parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-    os.umask(0o077)
+def prepare_local(parser, args, supplied):
     state = None
-    supplied = {argument.split("=", 1)[0] for argument in sys.argv[1:] if argument.startswith("--")}
     if args.resume:
-        state = read_json(args.resume / "manifest.json")
+        try:
+            state = read_json(args.resume / "manifest.json")
+            stream_counts(args.resume)
+        except (OSError, ValueError, RuntimeError):
+            parser.error("Cannot read intact recovery evidence; preserve the directory for review.")
+        if not isinstance(state, dict) or not isinstance(state.get("config"), dict):
+            parser.error("Recovery journal must contain a concrete saved configuration.")
         if state.get("schema_version") != 2:
             parser.error("Only the remaining-evidence runner's schema-2 journals can be resumed.")
         for name in ("guild", "user", "other_user", "other_guild"):
             old = state["config"].get(name)
             new = getattr(args, name)
-            if new is not None and old is not None and new != old:
+            if new is not None and new != old:
                 parser.error(
                     "Recovery owner/server identities cannot change; use the original IDs or a separate capture."
                 )
+        for name in ("user", "guild", "other_user", "other_guild"):
+            value = state["config"].get(name)
+            expected = str(value) if value is not None else None
+            if expected != state.get(name + "_id"):
+                parser.error("Recovery journal identity disagrees with its configuration.")
         for name, value in state["config"].items():
+            if name not in vars(args) or name in {"resume", "output", "cleanup_only"}:
+                parser.error("Recovery journal contains an unsupported configuration field.")
             if "--" + name.replace("_", "-") in supplied:
                 continue
             setattr(args, name, value)
+        try:
+            for eid in state.get("owned_entitlements", {}):
+                require_entitlement_ownership(args.resume, state, state["application_id"], eid)
+            for guild_id, command in state.get("temporary_commands", {}).items():
+                if guild_id not in {state.get("guild_id"), state.get("other_guild_id")}:
+                    raise RuntimeError("Temporary command is outside the authorized recovery guilds.")
+                require_command_ownership(args.resume, state["application_id"], guild_id, command)
+            if state.get("temporary_command_id") and state["guild_id"] not in state.get(
+                "temporary_commands", {}
+            ):
+                require_command_ownership(
+                    args.resume,
+                    state["application_id"],
+                    state["guild_id"],
+                    {"id": state["temporary_command_id"], "create_ref": state.get("command_create_ref", "")},
+                )
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+            parser.error("Recovery journal lacks positive resource ownership; preserve it for review.")
+    if args.cleanup_only:
+        if state is None:
+            parser.error("--cleanup-only requires --resume DIRECTORY.")
+        for name in ("user", "guild"):
+            value = getattr(args, name)
+            if type(value) is not int or value <= 0 or state.get(name + "_id") != str(value):
+                parser.error("Cleanup journal owner/server identity is invalid.")
+        if not str(state.get("application_id", "")).isdigit():
+            parser.error("Cleanup journal has no application identity.")
+        if not math.isfinite(args.request_interval) or args.request_interval < 0.1:
+            parser.error("Cleanup request interval must be finite and at least 0.1s.")
+        identity = CaptureIdentity(args.user, args.guild, args.other_user, args.other_guild)
+        return (
+            state,
+            None,
+            None,
+            CleanupConfig(identity, RequestPolicy(request_interval=args.request_interval)),
+        )
     try:
         if args.expiry_from and args.upgrade_from:
             parser.error("--expiry-from and --upgrade-from are separate sessions.")
-        upgrade = load_expiry_source(args.upgrade_from) if args.upgrade_from else None
+        live = (state or {}).get("checkout", {}).get("live_upgrade", {})
+        upgrade = (
+            load_upgrade_source(args.upgrade_from, cancellation_only=bool(live.get("cancellation_required")))
+            if args.upgrade_from
+            else None
+        )
         expiry = load_expiry_source(args.expiry_from) if args.expiry_from else None
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
         parser.error(f"Cannot prepare subscription source: {error}")
@@ -1277,18 +1322,10 @@ def main():
         )
     if args.output and args.output.exists() and not args.resume:
         parser.error(f"Output already exists. Preserve it and use --resume {args.output} instead.")
-    if not sys.stdin.isatty():
-        parser.error("Run in your own terminal for the hidden bot-token prompt.")
-    token = getpass.getpass("Bot token (hidden; never saved): ").strip()
-    if not token:
-        parser.error("Empty bot token.")
-    directory = (
-        args.resume
-        or args.output
-        or Path(".discord-reference-captures")
-        / ("remaining-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
-    )
-    evidence = Evidence(directory, token, resume=bool(args.resume))
+    return state, expiry, upgrade, CaptureConfig.from_namespace(args)
+
+
+def prepare_journal(args, state, expiry, upgrade):
     if state is None:
         config = {
             key: value for key, value in vars(args).items() if key not in {"output", "resume", "cleanup_only"}
@@ -1346,15 +1383,112 @@ def main():
                     "monetization_reference_checkout.py",
                     "monetization_reference_expiry.py",
                     "monetization_reference_upgrade.py",
+                    "monetization_reference_config.py",
+                    "monetization_reference_journal.py",
+                    "monetization_reference_transport.py",
                     "validate_monetization_reference.py",
                 )
             },
         }
     )
     state["status"] = "running"
+    return state
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--guild", type=int)
+    parser.add_argument("--user", type=int)
+    parser.add_argument("--other-user", type=int, help="Consenting second test user; optional")
+    parser.add_argument(
+        "--other-guild", type=int, help="Second authorized guild for guild duplicate comparisons"
+    )
+    parser.add_argument("--scope", choices=("auto", "user", "guild"), default="auto")
+    parser.add_argument("--mode", choices=("remaining", "watch", "guild", "upgrade"))
+    parser.add_argument("--sku-a", default="Parity Subscription A")
+    parser.add_argument("--sku-b", default="Parity Subscription B")
+    parser.add_argument("--user-sku-a", default="Parity Subscription A")
+    parser.add_argument("--user-sku-b", default="Parity Subscription B")
+    parser.add_argument(
+        "--deleted-purchase",
+        action="store_true",
+        help="Manually buy one new type-4 consumable and delete it before consumption",
+    )
+    parser.add_argument("--test-mode-confirmed", action="store_true")
+    parser.add_argument(
+        "--live-upgrade",
+        action="store_true",
+        help="Operator-only zero-total team subscription upgrade and cancellation capture",
+    )
+    parser.add_argument("--team-discount-confirmed", action="store_true")
+    parser.add_argument("--consumable", default="Parity Consumable")
+    parser.add_argument("--durable", default="Parity Durable")
+    parser.add_argument("--channel", default="parity")
+    parser.add_argument("--observe", type=float, default=60)
+    parser.add_argument("--request-interval", type=float, default=0.25)
+    parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=120,
+        help="Read-only propagation window after subscription UI actions",
+    )
+    parser.add_argument(
+        "--pagination-target", type=int, default=101, help="Controlled history target, at least 101"
+    )
+    parser.add_argument("--max-pages", type=int, default=100)
+    parser.add_argument("--watch-entitlement", action="append", default=[])
+    parser.add_argument(
+        "--expiry-from",
+        help="Expiry-only follow-up using a completed canceled-subscription capture; no checkout",
+    )
+    parser.add_argument(
+        "--upgrade-from",
+        help="Immediate upgrade/downgrade session bound to a previous verified-canceled A capture",
+    )
+    parser.add_argument(
+        "--probe-timeout", type=float, default=900, help="Seconds allowed for each manual interaction"
+    )
+    parser.add_argument("--consume-history", action="append", default=[])
+    parser.add_argument(
+        "--live-lifecycle-confirmed",
+        action="store_true",
+        help="Attest watched subscriptions are legitimate lifecycle fixtures, not API test grants",
+    )
+    parser.add_argument("--watch-seconds", type=float, default=3600)
+    parser.add_argument("--poll-seconds", type=float, default=15)
+    parser.add_argument("--resume", type=Path)
+    parser.add_argument("--cleanup-only", action="store_true")
+    parser.add_argument("--output", type=Path)
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    os.umask(0o077)
+    supplied = {argument.split("=", 1)[0] for argument in sys.argv[1:] if argument.startswith("--")}
+    state, expiry, upgrade, config = prepare_local(parser, args, supplied)
+    try:
+        require_capture_transport()
+    except RuntimeError as error:
+        parser.error(str(error))
+    if not sys.stdin.isatty():
+        parser.error("Run in your own terminal for the hidden bot-token prompt.")
+    token = getpass.getpass("Bot token (hidden; never saved): ").strip()
+    if not token:
+        parser.error("Empty bot token.")
+    directory = (
+        args.resume
+        or args.output
+        or Path(".discord-reference-captures")
+        / ("remaining-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
+    )
+    evidence = Evidence(directory, token, resume=bool(args.resume))
+    if not config.cleanup_only:
+        state = prepare_journal(args, state, expiry, upgrade)
     evidence.manifest(**state)
     try:
-        asyncio.run(run(args, evidence, state))
+        asyncio.run(run(config, evidence, state))
     except KeyboardInterrupt:
         print("Interrupted. Evidence and positive ownership journal preserved; do not restart from scratch.")
         raise SystemExit(130) from None

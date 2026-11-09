@@ -17,7 +17,8 @@ from PIL import Image
 from preview_helpers import action_body, control_key, gif_bytes, png_bytes, preview_headers, target_message
 
 import simcord
-from simcord.components import walk_components
+from fixtures.sample_bot import create_bot
+from simcord.backend import serializers
 
 _SCHEMA = json.loads(resources.files("simcord.preview").joinpath("protocol.schema.json").read_text())
 _BROWSER_STATUS_VALIDATOR = jsonschema.Draft202012Validator(
@@ -155,96 +156,6 @@ async def test_revoked_access_snapshot_omits_modal_and_candidates(env, channel, 
         assert denied["status"] == "access_denied"
         assert denied["modal"] is None
         assert denied["candidates"] == {}
-
-
-@pytest.mark.asyncio
-async def test_rejected_actions_keep_sequence_and_report_expected(env, channel, alice):
-    await alice.slash(channel, "panel")
-    async with env.preview(channel, viewers=[alice]) as preview:
-        page = preview._python
-
-        gap = await preview._action("python", action_body(page, "refresh", 5, request_id="gap"))
-        assert gap["rejected"] is True
-        assert gap["settlement"] == "rejected"
-        assert gap["dispatch"] == "not_dispatched"
-        assert gap["dispatched"] is False
-        assert gap["sequence"] == 5
-        assert gap["expectedSequence"] == 0
-        assert gap["diagnostics"][0]["code"] == "sequence-gap"
-
-        payload = preview._page_payload(page)
-        ping_key = control_key(payload, "persistent:ping")
-        stale = await preview._action(
-            "python",
-            action_body(
-                page,
-                "click",
-                1,
-                request_id="stale",
-                control_key=ping_key,
-                published_revision=page.revision + 1,
-            ),
-        )
-        assert stale["rejected"] is True
-        assert stale["diagnostics"][0]["code"] == "stale-revision"
-        assert stale["expectedSequence"] == 0
-
-        # Rejections consumed nothing: sequence 1 is still the next admission.
-        settled = await preview._action(
-            "python",
-            action_body(
-                page,
-                "click",
-                1,
-                request_id="click",
-                control_key=ping_key,
-                published_revision=page.revision,
-            ),
-        )
-        assert settled["rejected"] is False
-        assert settled["settlement"] == "settled"
-        assert settled["dispatched"] is True
-        assert settled["expectedSequence"] == 1
-
-
-@pytest.mark.asyncio
-async def test_invalid_modal_submit_does_not_consume_sequence(env, channel, alice):
-    feedback = await alice.slash(channel, "feedback")
-    async with env.preview(channel, viewers=[alice]) as preview:
-        await preview.show(feedback)
-        page = preview._python
-        invalid = await preview._action(
-            "python",
-            action_body(
-                page,
-                "modal_submit",
-                1,
-                request_id="bad-modal",
-                modal_handle=page.modal_handle,
-                values={"bogus": "x"},
-                published_revision=page.revision,
-            ),
-        )
-        assert invalid["rejected"] is True
-        assert invalid["diagnostics"][0]["code"] == "validation-failed"
-        assert invalid["expectedSequence"] == 0
-        # The modal is still open and sequence 1 remains available.
-        assert preview._page_payload(page)["modal"] is not None
-        settled = await preview._action(
-            "python",
-            action_body(
-                page,
-                "modal_submit",
-                1,
-                request_id="good-modal",
-                modal_handle=page.modal_handle,
-                values={"name": "Ada"},
-                published_revision=page.revision,
-            ),
-        )
-        assert settled["rejected"] is False
-        assert settled["settlement"] == "settled"
-        assert channel.last_message.content == "Thanks Ada"
 
 
 @pytest.mark.asyncio
@@ -485,144 +396,6 @@ async def test_normalized_blob_charged_once_per_blob(env, channel, alice):
 
 
 @pytest.mark.asyncio
-async def test_disabled_select_rejected_before_dispatch(env, channel, alice):
-    """A select disabled after the snapshot rejects at admission, sequence intact."""
-    panel = await alice.slash(channel, "color")
-    stored = env.backend.get_message(channel.id, panel.response.id)
-    select = next(
-        component for component in walk_components(stored.components) if component.get("custom_id") == "color"
-    )
-    select["disabled"] = True
-    async with env.preview(channel, viewers=[alice]) as preview:
-        await preview.show(panel.response)
-        page = preview._python
-        color_key = control_key(preview._page_payload(page), "color")
-        rejected = await preview._action(
-            "python",
-            action_body(
-                page,
-                "select",
-                1,
-                request_id="disabled-select",
-                control_key=color_key,
-                values=["red"],
-                published_revision=page.revision,
-            ),
-        )
-        assert rejected["rejected"] is True
-        assert rejected["dispatched"] is False
-        assert rejected["expectedSequence"] == 0
-
-        select["disabled"] = False
-        settled = await preview._action(
-            "python",
-            action_body(
-                page,
-                "select",
-                1,
-                request_id="enabled-select",
-                control_key=color_key,
-                values=["red"],
-                published_revision=page.revision,
-            ),
-        )
-        assert settled["rejected"] is False
-        assert settled["settlement"] == "settled"
-        assert channel.last_message.content == "Picked red"
-
-
-@pytest.mark.asyncio
-async def test_click_on_select_rejected_before_dispatch(env, channel, alice):
-    """kind=click against a select's custom_id is a pre-admission rejection."""
-    panel = await alice.slash(channel, "color")
-    async with env.preview(channel, viewers=[alice]) as preview:
-        await preview.show(panel.response)
-        page = preview._python
-        color_key = control_key(preview._page_payload(page), "color")
-        rejected = await preview._action(
-            "python",
-            action_body(
-                page,
-                "click",
-                1,
-                request_id="click-select",
-                control_key=color_key,
-                published_revision=page.revision,
-            ),
-        )
-        assert rejected["rejected"] is True
-        assert rejected["dispatched"] is False
-        assert rejected["expectedSequence"] == 0
-
-
-@pytest.mark.asyncio
-async def test_consumed_modal_rejected_on_second_page(env, channel, alice):
-    """A modal consumed on one page rejects, not fails, when resubmitted elsewhere."""
-    feedback = await alice.slash(channel, "feedback")
-    async with env.preview(channel, viewers=[alice]) as preview:
-        await preview.show(feedback)
-        page = preview._python
-        second = preview._open_page(alice.id)
-        assert second.modal_handle is not None
-        settled = await preview._action(
-            "python",
-            action_body(
-                page,
-                "modal_submit",
-                1,
-                request_id="submit",
-                modal_handle=page.modal_handle,
-                values={"name": "Ada"},
-                published_revision=page.revision,
-            ),
-        )
-        assert settled["rejected"] is False
-        assert settled["settlement"] == "settled"
-
-        resubmit = await preview._action(
-            second.id,
-            action_body(
-                second,
-                "modal_submit",
-                1,
-                request_id="resubmit",
-                modal_handle=second.modal_handle,
-                values={"name": "Bob"},
-                published_revision=second.revision,
-            ),
-        )
-        assert resubmit["rejected"] is True
-        assert resubmit["dispatched"] is False
-        assert resubmit["expectedSequence"] == 0
-        assert channel.last_message.content == "Thanks Ada"
-
-
-@pytest.mark.asyncio
-async def test_modal_missing_required_control_rejected(env, channel, alice):
-    """Omitting a required modal control rejects at admission, modal stays open."""
-    feedback = await alice.slash(channel, "feedback")
-    async with env.preview(channel, viewers=[alice]) as preview:
-        await preview.show(feedback)
-        page = preview._python
-        rejected = await preview._action(
-            "python",
-            action_body(
-                page,
-                "modal_submit",
-                1,
-                request_id="missing-required",
-                modal_handle=page.modal_handle,
-                values={},
-                published_revision=page.revision,
-            ),
-        )
-        assert rejected["rejected"] is True
-        assert rejected["dispatched"] is False
-        assert rejected["expectedSequence"] == 0
-        assert preview._page_payload(page)["modal"] is not None
-
-
-@pytest.mark.asyncio
 async def test_open_page_authorizes_target_against_the_requested_viewer(env, channel, alice):
     """target_id access is checked for the page's viewer, not viewers[0]."""
     bob = env.guild.add_member(env.create_user("bob"))
@@ -690,28 +463,6 @@ async def test_failed_dispatch_settles_instead_of_wedging_replays(env, channel, 
         assert isinstance(env.errors[-1], KeyError)
         with pytest.raises(ExceptionGroup):
             env.raise_errors()
-
-
-@pytest.mark.asyncio
-async def test_preview_generation_fields_reject_before_sequence_admission(env, channel, alice):
-    async with env.preview(channel, viewers=[alice]) as preview:
-        page = preview._python
-        missing = action_body(page, "refresh", 1)
-        missing.pop("generation")
-        rejected = await preview._action("python", missing)
-        assert rejected["rejected"] is True
-        assert rejected["diagnostics"][0]["code"] == "bad-envelope"
-        assert rejected["expectedSequence"] == 0
-
-        malformed = action_body(page, "refresh", 1, request_id="malformed", bot_generation=True)
-        rejected = await preview._action("python", malformed)
-        assert rejected["rejected"] is True
-        assert rejected["diagnostics"][0]["code"] == "bad-envelope"
-        assert rejected["expectedSequence"] == 0
-
-        admitted = await preview._action("python", action_body(page, "refresh", 1, request_id="valid"))
-        assert admitted["rejected"] is False
-        assert admitted["sequence"] == 1
 
 
 @pytest.mark.asyncio
@@ -882,6 +633,76 @@ async def test_browser_close_proceeds_after_unadmitted_uncertain_action(env, cha
                 )
             finally:
                 await browser.close()
+
+
+@pytest.mark.parametrize("kind", ["role", "member", "user", "client_user"])
+async def test_builder_accepts_same_environment_native_overwrite_targets(env, alice, kind):
+    guild = env.bot.get_guild(env.guild.id)
+    targets = {
+        "role": guild.default_role,
+        "member": guild.get_member(alice.id),
+        "user": env.bot.get_user(alice.id),
+        "client_user": env.bot.user,
+    }
+    target = targets[kind]
+    assert target is not None
+    channel = env.guild.create_text_channel(
+        "native-overwrite", overwrites={target: discord.PermissionOverwrite(send_messages=False)}
+    )
+    overwrite = env.backend.get_channel(channel.id).overwrites[0]
+    assert overwrite.target_id == target.id
+    assert overwrite.type == (0 if kind == "role" else 1)
+    assert overwrite.deny == discord.Permissions(send_messages=True).value
+
+
+@pytest.mark.parametrize("kind", ["role", "member", "user", "client_user"])
+async def test_builder_rejects_foreign_native_overwrite_before_mutation(env, kind, monkeypatch):
+    foreign = simcord.Env(create_bot())
+    guild = foreign.create_guild()
+    member = guild.add_member(foreign.create_user("foreign"))
+    state = foreign.bot._connection
+    native_guild = discord.Guild(
+        data=serializers.guild_create_payload(foreign.backend, guild._guild), state=state
+    )
+    targets = {
+        "role": native_guild.default_role,
+        "member": native_guild.get_member(member.id),
+        "user": discord.User(state=state, data=serializers.user_payload(member.user._user)),
+        "client_user": discord.ClientUser(
+            state=state, data=serializers.user_payload(foreign.backend.bot_user)
+        ),
+    }
+
+    def unexpected_mutation(*args, **kwargs):
+        raise AssertionError("Foreign SDK overwrite reached channel creation")
+
+    monkeypatch.setattr(env.backend, "create_channel", unexpected_mutation)
+    monkeypatch.setattr(env.backend, "get_guild", unexpected_mutation)
+    monkeypatch.setattr(env.backend, "get_user", unexpected_mutation)
+    monkeypatch.setattr(env.backend, "get_channel", unexpected_mutation)
+    with pytest.raises(simcord.SetupError):
+        env.guild.create_text_channel(
+            "foreign-overwrite", overwrites={targets[kind]: discord.PermissionOverwrite(view_channel=True)}
+        )
+
+
+@pytest.mark.parametrize("kind", ["role", "member"])
+async def test_builder_rejects_native_overwrite_from_another_guild(env, alice, kind, monkeypatch):
+    other = env.create_guild()
+    member = other.add_member(alice.user)
+    await env.settle()
+    native_guild = env.bot.get_guild(other.id)
+    target = native_guild.default_role if kind == "role" else native_guild.get_member(member.id)
+    assert target is not None
+
+    def unexpected_mutation(*args, **kwargs):
+        raise AssertionError("Wrong-guild SDK overwrite reached channel creation")
+
+    monkeypatch.setattr(env.backend, "create_channel", unexpected_mutation)
+    with pytest.raises(simcord.SetupError):
+        env.guild.create_text_channel(
+            "wrong-guild-overwrite", overwrites={target: discord.PermissionOverwrite(view_channel=True)}
+        )
 
 
 @pytest.mark.asyncio

@@ -192,19 +192,43 @@ async def test_preview_reaction_actions_are_desired_idempotent_and_permission_gu
     )
     denied_message = await bob.send(locked, "No reaction permission for Alice")
     await bob.react(denied_message, "🔥")
+    with pytest.raises(simcord.BackendError):
+        await alice.set_reaction(denied_message, "❄️", reacted=True)
     async with env.preview(locked, layout="channel", viewers=[alice]) as preview:
         page = preview._python
         projection = preview._page_payload(page)["messages"][str(denied_message.id)]
         assert "set_reaction" not in projection["allowed_actions"]
-        assert projection["reactions"][0]["can_toggle"] is False
-        denied = await _action(preview, page, "set_reaction", 1, denied_message.id, emoji="🔥", reacted=True)
-        assert denied["settlement"] == "failed"
+        assert projection["reactions"][0]["can_toggle"] is True
+        denied = await _action(preview, page, "set_reaction", 1, denied_message.id, emoji="❄️", reacted=True)
+        assert denied["rejected"] is True
         assert denied["dispatch"] == "not_dispatched"
-        assert denied["uncertain"] is False
-        assert denied["acknowledgement"] == "not_applicable"
         assert (
             alice.id not in env.backend.get_message(locked.id, denied_message.id).reaction_for("🔥").user_ids
         )
+        stored = env.backend.get_message(locked.id, denied_message.id)
+        assert stored.reaction_for("❄️") is None
+
+        joined = await _action(preview, page, "set_reaction", 1, denied_message.id, emoji="🔥", reacted=True)
+        assert joined["settlement"] == "settled"
+        assert alice.id in stored.reaction_for("🔥").user_ids
+        projection = preview._page_payload(page)["messages"][str(denied_message.id)]
+        assert projection["reactions"][0]["viewer_reacted"] is True
+        assert projection["reactions"][0]["can_toggle"] is True
+
+        removed = await _action(
+            preview, page, "set_reaction", 2, denied_message.id, emoji="🔥", reacted=False
+        )
+        assert removed["settlement"] == "settled"
+        assert alice.id not in stored.reaction_for("🔥").user_ids
+        assert bob.id in stored.reaction_for("🔥").user_ids
+
+        await env.bot.get_channel(locked.id).set_permissions(alice.member, read_message_history=False)
+        with pytest.raises(simcord.BackendError):
+            await alice.set_reaction(denied_message, "🔥", reacted=True)
+        revoked = await _action(preview, page, "set_reaction", 3, denied_message.id, emoji="🔥", reacted=True)
+        assert revoked["rejected"] is True
+        assert revoked["dispatch"] == "not_dispatched"
+        assert alice.id not in stored.reaction_for("🔥").user_ids
 
 
 @pytest.mark.asyncio

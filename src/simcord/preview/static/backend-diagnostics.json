@@ -1,0 +1,219 @@
+{
+  "bad-envelope": [
+    "protocol",
+    "error",
+    true,
+    "The action envelope is invalid.",
+    "Reload the preview and retry the action."
+  ],
+  "unsupported-protocol": [
+    "protocol",
+    "error",
+    true,
+    "This action uses an unsupported preview protocol.",
+    "Reload with a protocol 3 consumer."
+  ],
+  "stale-sequence": [
+    "protocol",
+    "warning",
+    true,
+    "The action sequence is stale.",
+    "Use the current page action sequence."
+  ],
+  "sequence-gap": [
+    "protocol",
+    "warning",
+    true,
+    "The action sequence has a gap.",
+    "Use the next expected page action sequence."
+  ],
+  "conflicting-request": [
+    "protocol",
+    "error",
+    true,
+    "This request conflicts with an admitted action.",
+    "Do not reuse a request ID with different content."
+  ],
+  "busy": [
+    "action",
+    "warning",
+    true,
+    "Another preview action is in progress.",
+    "Wait for the current action to settle."
+  ],
+  "stale-context": [
+    "authorization",
+    "warning",
+    true,
+    "The preview page generation is stale.",
+    "Use the current page state."
+  ],
+  "stale-generation": [
+    "authorization",
+    "warning",
+    true,
+    "The bot generation is stale.",
+    "Reload the preview after the bot restarts."
+  ],
+  "stale-revision": [
+    "protocol",
+    "warning",
+    true,
+    "The published preview revision is stale.",
+    "Read the current page before acting."
+  ],
+  "unknown-kind": [
+    "protocol",
+    "error",
+    true,
+    "This preview action is unavailable.",
+    "Use a supported protocol 3 action."
+  ],
+  "validation-failed": [
+    "action",
+    "warning",
+    true,
+    "The requested action is unavailable for this page.",
+    "Check the current authorized control and its values."
+  ],
+  "query-invalid": [
+    "navigation",
+    "warning",
+    true,
+    "The navigation query is invalid.",
+    "Use plain text of at most 128 Unicode code points."
+  ],
+  "stale-cursor": [
+    "navigation",
+    "warning",
+    true,
+    "This result cursor is stale or unavailable.",
+    "Start a new query from the current page."
+  ],
+  "control-unavailable": [
+    "authorization",
+    "warning",
+    true,
+    "This control is unavailable.",
+    "Use a control in the current authorized page."
+  ],
+  "context-unavailable": [
+    "authorization",
+    "warning",
+    true,
+    "This preview context is unavailable.",
+    "Open a current authorized preview page."
+  ],
+  "asset-unavailable": [
+    "asset",
+    "warning",
+    true,
+    "This preview asset is unavailable.",
+    "Reload the page and check its current authorization."
+  ],
+  "commands-unsynced": [
+    "command",
+    "warning",
+    true,
+    "Application commands in the command tree have not been synced to SimCord.",
+    "Call `await bot.tree.sync()`."
+  ],
+  "command-unavailable": [
+    "command",
+    "warning",
+    true,
+    "This command is unavailable in the current page.",
+    "Refresh the command catalog and choose a command visible to this viewer."
+  ],
+  "command-changed": [
+    "command",
+    "warning",
+    true,
+    "This command schema changed after it was selected.",
+    "Refresh the command catalog and review the current options."
+  ],
+  "command-option-invalid": [
+    "command",
+    "warning",
+    true,
+    "A command option does not match its declared type or constraints.",
+    "Correct the indicated command option and retry."
+  ],
+  "autocomplete-unanswered": [
+    "command",
+    "warning",
+    true,
+    "The command did not answer the autocomplete request.",
+    "Review the command's autocomplete callback and try again."
+  ],
+  "access-denied": [
+    "authorization",
+    "error",
+    false,
+    "This page is no longer authorized.",
+    "Reopen the preview with an authorized viewer."
+  ],
+  "action-callback-error": [
+    "action",
+    "error",
+    false,
+    "The bot action failed; inspect the local Env error log for details.",
+    "Review the underlying exception in Env.errors."
+  ],
+  "action-timeout": [
+    "action",
+    "error",
+    false,
+    "The bot action did not settle before its deadline.",
+    "Inspect the page before attempting another action."
+  ],
+  "action-cancelled": [
+    "action",
+    "warning",
+    false,
+    "The bot action was cancelled during shutdown.",
+    "Inspect the page before attempting another action."
+  ],
+  "message-type-unknown": [
+    "content",
+    "warning",
+    false,
+    "This message type is not classified in the preview.",
+    "Review the supported message type documentation."
+  ],
+  "premium-sku-metadata-missing": [
+    "component",
+    "warning",
+    false,
+    "Premium button presentation metadata is unavailable.",
+    "Supply an offline SKU name, price, and locale."
+  ],
+  "sticker-asset-unavailable": [
+    "asset",
+    "warning",
+    false,
+    "A sticker media asset is unavailable offline.",
+    "Supply the required sticker asset."
+  ],
+  "target-unavailable": [
+    "authorization",
+    "warning",
+    false,
+    "The requested target is unavailable.",
+    "Choose a currently authorized target."
+  ],
+  "font-platform-inspection": [
+    "runtime",
+    "warning",
+    false,
+    "Platform font inspection is unavailable.",
+    "Use a supported Chromium runtime for font inspection."
+  ],
+  "internal-error": [
+    "runtime",
+    "error",
+    false,
+    "The preview could not complete this operation.",
+    "Inspect the local Env error log for details."
+  ]
+}

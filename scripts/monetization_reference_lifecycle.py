@@ -161,23 +161,23 @@ async def capture_guild(ctx):
         _done(ctx, "guild")
         return
     sku = skus[0]
-    owner = str(ctx.args.guild)
-    other = getattr(ctx.args, "other_user", None)
+    owner = str(ctx.identity.guild)
+    other = getattr(ctx.identity, "other_user", None)
     if not other:
         ctx.block(
             "guild.second_member",
             "A second consenting authorized guild member (--other-user) is unavailable.",
         )
-    if not getattr(ctx.args, "other_guild", None):
+    if not getattr(ctx.identity, "other_guild", None):
         ctx.block(
             "guild.other_guild", "A second authorized guild is required to establish cross-guild isolation."
         )
 
     async def projections(stage):
-        for guild_id in (ctx.args.guild, getattr(ctx.args, "other_guild", None)):
+        for guild_id in (ctx.identity.guild, getattr(ctx.identity, "other_guild", None)):
             if not guild_id:
                 continue
-            suffix = "" if guild_id == ctx.args.guild else ".other_guild"
+            suffix = "" if guild_id == ctx.identity.guild else ".other_guild"
             await ctx.probe(f"guild.{stage}{suffix}.interaction", guild_id=guild_id)
             if other:
                 await ctx.probe(f"guild.{stage}{suffix}.second_member", actor_id=other, guild_id=guild_id)
@@ -217,15 +217,125 @@ async def capture_guild(ctx):
     _done(ctx, "guild")
 
 
+async def _record_transition(ctx, entitlement_id, sku, baseline, row, sample_time, transition):
+    prefix = f"lifecycle.watch.{entitlement_id}"
+    expiry = ctx.state.get("expiry_source")
+    classification = transition
+    if expiry and not ctx.state.get("expiry_billing_verified"):
+        classification = "end_with_unverified_billing"
+    if expiry and transition == "natural_end":
+        observed_end, expected_end = _instant(row["ends_at"]), _instant(expiry["period_end"])
+        if observed_end is None or expected_end is None or observed_end < expected_end:
+            ctx.block(
+                prefix + ".billing_boundary",
+                "Entitlement ended before its recorded billing boundary; post-end evidence is captured but not classified as natural billing expiry.",
+            )
+            classification = "ended_before_billing_boundary"
+    await _inspect(ctx, prefix + ".after", row, sku)
+    boundary = _instant(
+        row.get("ends_at") if transition == "natural_end" else baseline["row"].get("starts_at")
+    )
+    probe_time = _instant(baseline.get("probe_completed_utc"))
+    if probe_time is None or boundary is None or probe_time >= boundary:
+        ctx.block(
+            prefix + ".before_projection",
+            "Before interaction was not captured strictly before the temporal boundary; only REST transition evidence is available.",
+        )
+    after_case = prefix + ".after.interaction"
+    if ctx.state["cases"].get(after_case, {}).get("status") != "observed":
+        print(
+            "EXPIRY OBSERVED: reload Discord and run the probe once when prompted. No checkout is needed.",
+            flush=True,
+        )
+        await ctx.probe(after_case)
+    await ctx.observe(prefix + ".transition.window")
+    _note(
+        ctx,
+        prefix,
+        status="observed",
+        transition=classification,
+        before_utc=baseline["utc"],
+        after_utc=sample_time.isoformat(),
+        before_probe_complete=baseline.get("before_probe_complete", False),
+        reused_before_source=baseline.get("source_bundle"),
+        reused_before_interaction=baseline.get("source_interaction_ref"),
+        limitation="REST timestamps bracket a temporal transition; not an atomic eligibility boundary. Gateway absence applies only to connected observation windows.",
+    )
+    if transition == "natural_end" and sku.get("type") == 5:
+        await _duplicate_after_end(ctx, prefix, row, sku)
+    healthy = not any(
+        name.startswith(prefix + ".") and item.get("status") == "capture_failed"
+        for name, item in ctx.state["cases"].items()
+    )
+    baseline.update(
+        transition_complete=healthy and classification in ("natural_end", "natural_start"),
+        transition=classification,
+    )
+    ctx.save()
+    return classification
+
+
+async def _poll_watch(ctx, entitlement_id, sku, baseline, before_time):
+    prefix = f"lifecycle.watch.{entitlement_id}"
+    expiry = ctx.state.get("expiry_source")
+    deadline = time.monotonic() + max(0, ctx.lifecycle.watch_seconds)
+    while True:
+        if ctx.client.capture_failed.is_set() or (ctx.gateway is not None and ctx.gateway.done()):
+            raise RuntimeError("Gateway capture stopped; preserve this directory and resume, not checkout.")
+        if expiry:
+            from monetization_reference_expiry import check_expiry_subscription
+
+            if not await check_expiry_subscription(ctx, prefix + ".subscription.poll"):
+                return
+            ctx.evidence.record(
+                "health",
+                event="expiry_poll",
+                connected=ctx.client.is_ready(),
+                connection_epoch=ctx.client.connection_epoch,
+                sequence=ctx.client.last_sequence,
+                health_errors=ctx.client.health_errors,
+            )
+        status, row = await ctx.request(prefix + ".poll", "GET", f"{ctx.base}/{entitlement_id}")
+        if status != 200 or not isinstance(row, dict):
+            ctx.block(
+                prefix, "Polled entitlement is unavailable; disappearance is not proof of natural expiry."
+            )
+            return
+        sample_time = datetime.now(UTC)
+        reason = validate_fixture(row, ctx.app["id"], sku, ctx.identity.user, ctx.identity.guild)
+        if reason or str(row.get("id")) != entitlement_id:
+            ctx.block(prefix, reason or "Polled response changed entitlement identity")
+            return
+        transition = classify_transition(baseline["row"], row, before_time, sample_time)
+        if transition:
+            return await _record_transition(ctx, entitlement_id, sku, baseline, row, sample_time, transition)
+        if classify_temporal(row, sample_time) in ("deleted", "unknown"):
+            ctx.block(
+                prefix,
+                "Entitlement is deleted or its temporal state is unverifiable; deletion is not natural expiry.",
+            )
+            return
+        if time.monotonic() >= deadline:
+            await _inspect(ctx, prefix + ".timeout", row, sku)
+            if not expiry:
+                await ctx.probe(prefix + ".timeout.interaction")
+            await ctx.observe(prefix + ".timeout.window")
+            ctx.block(
+                prefix,
+                "No unchanged-schedule natural start/end transition was established within the real polling window; ended-at-entry or rewritten/cancelled schedules do not prove expiry.",
+            )
+            return
+        await asyncio.sleep(min(max(0.1, ctx.lifecycle.poll_seconds), max(0, deadline - time.monotonic())))
+
+
 async def _watch(ctx, entitlement_id):
     prefix = f"lifecycle.watch.{entitlement_id}"
     baselines = ctx.state.setdefault("watch_baselines", {})
     if baselines.get(entitlement_id, {}).get("transition_complete"):
         return baselines[entitlement_id]["transition"]
-    expiry = ctx.state.get("expiry_source")
     status, row = await ctx.request(prefix + ".verify", "GET", f"{ctx.base}/{entitlement_id}")
     sku = _sku(ctx, row) if isinstance(row, dict) else None
-    reason = validate_fixture(row, ctx.app["id"], sku, ctx.args.user, ctx.args.guild)
+    reason = validate_fixture(row, ctx.app["id"], sku, ctx.identity.user, ctx.identity.guild)
     if (
         not 200 <= status < 300
         or not isinstance(row, dict)
@@ -281,106 +391,7 @@ async def _watch(ctx, entitlement_id):
             limitation="Offline gap; no continuous gateway/no-event claim across resume.",
         )
         _note(ctx, prefix, health=[ref], resumed_with_gap=True)
-    deadline = time.monotonic() + max(0, ctx.args.watch_seconds)
-    while True:
-        if ctx.client.capture_failed.is_set() or (ctx.gateway is not None and ctx.gateway.done()):
-            raise RuntimeError("Gateway capture stopped; preserve this directory and resume, not checkout.")
-        if expiry:
-            from monetization_reference_expiry import check_expiry_subscription
-
-            if not await check_expiry_subscription(ctx, prefix + ".subscription.poll"):
-                return
-            ctx.evidence.record(
-                "health",
-                event="expiry_poll",
-                connected=ctx.client.is_ready(),
-                connection_epoch=ctx.client.connection_epoch,
-                sequence=ctx.client.last_sequence,
-                health_errors=ctx.client.health_errors,
-            )
-        status, row = await ctx.request(prefix + ".poll", "GET", f"{ctx.base}/{entitlement_id}")
-        if status != 200 or not isinstance(row, dict):
-            ctx.block(
-                prefix, "Polled entitlement is unavailable; disappearance is not proof of natural expiry."
-            )
-            return
-        sample_time = datetime.now(UTC)
-        reason = validate_fixture(row, ctx.app["id"], sku, ctx.args.user, ctx.args.guild)
-        if reason or str(row.get("id")) != entitlement_id:
-            ctx.block(prefix, reason or "Polled response changed entitlement identity")
-            return
-        transition = classify_transition(baseline["row"], row, before_time, sample_time)
-        if transition:
-            classification = transition
-            if expiry and not ctx.state.get("expiry_billing_verified"):
-                classification = "end_with_unverified_billing"
-            if expiry and transition == "natural_end":
-                observed_end, expected_end = _instant(row["ends_at"]), _instant(expiry["period_end"])
-                if observed_end is None or expected_end is None or observed_end < expected_end:
-                    ctx.block(
-                        prefix + ".billing_boundary",
-                        "Entitlement ended before its recorded billing boundary; post-end evidence is captured but not classified as natural billing expiry.",
-                    )
-                    classification = "ended_before_billing_boundary"
-            await _inspect(ctx, prefix + ".after", row, sku)
-            boundary = _instant(
-                row.get("ends_at") if transition == "natural_end" else baseline["row"].get("starts_at")
-            )
-            probe_time = _instant(baseline.get("probe_completed_utc"))
-            if probe_time is None or boundary is None or probe_time >= boundary:
-                ctx.block(
-                    prefix + ".before_projection",
-                    "Before interaction was not captured strictly before the temporal boundary; only REST transition evidence is available.",
-                )
-            after_case = prefix + ".after.interaction"
-            if ctx.state["cases"].get(after_case, {}).get("status") != "observed":
-                print(
-                    "EXPIRY OBSERVED: reload Discord and run the probe once when prompted. No checkout is needed.",
-                    flush=True,
-                )
-                await ctx.probe(after_case)
-            await ctx.observe(prefix + ".transition.window")
-            _note(
-                ctx,
-                prefix,
-                status="observed",
-                transition=classification,
-                before_utc=baseline["utc"],
-                after_utc=sample_time.isoformat(),
-                before_probe_complete=baseline.get("before_probe_complete", False),
-                reused_before_source=baseline.get("source_bundle"),
-                reused_before_interaction=baseline.get("source_interaction_ref"),
-                limitation="REST timestamps bracket a temporal transition; not an atomic eligibility boundary. Gateway absence applies only to connected observation windows.",
-            )
-            if transition == "natural_end" and sku.get("type") == 5:
-                await _duplicate_after_end(ctx, prefix, row, sku)
-            healthy = not any(
-                name.startswith(prefix + ".") and item.get("status") == "capture_failed"
-                for name, item in ctx.state["cases"].items()
-            )
-            baseline.update(
-                transition_complete=healthy and classification in ("natural_end", "natural_start"),
-                transition=classification,
-            )
-            ctx.save()
-            return classification
-        if classify_temporal(row, sample_time) in ("deleted", "unknown"):
-            ctx.block(
-                prefix,
-                "Entitlement is deleted or its temporal state is unverifiable; deletion is not natural expiry.",
-            )
-            return
-        if time.monotonic() >= deadline:
-            await _inspect(ctx, prefix + ".timeout", row, sku)
-            if not expiry:
-                await ctx.probe(prefix + ".timeout.interaction")
-            await ctx.observe(prefix + ".timeout.window")
-            ctx.block(
-                prefix,
-                "No unchanged-schedule natural start/end transition was established within the real polling window; ended-at-entry or rewritten/cancelled schedules do not prove expiry.",
-            )
-            return
-        await asyncio.sleep(min(max(0.1, ctx.args.poll_seconds), max(0, deadline - time.monotonic())))
+    return await _poll_watch(ctx, entitlement_id, sku, baseline, before_time)
 
 
 async def _duplicate_after_end(ctx, prefix, row, sku):
@@ -396,7 +407,7 @@ async def _duplicate_after_end(ctx, prefix, row, sku):
             status, current = await ctx.request(case + ".reverify", "GET", f"{ctx.base}/{row['id']}")
             if (
                 status != 200
-                or validate_fixture(current, ctx.app["id"], sku, ctx.args.user, ctx.args.guild)
+                or validate_fixture(current, ctx.app["id"], sku, ctx.identity.user, ctx.identity.guild)
                 or any(
                     current.get(key) != row.get(key)
                     for key in ("application_id", "user_id", "guild_id", "sku_id", "type", "starts_at")
@@ -444,7 +455,7 @@ async def _consume(ctx, entitlement_id):
     prefix = f"lifecycle.consume.{entitlement_id}"
     status, row = await ctx.request(prefix + ".verify", "GET", f"{ctx.base}/{entitlement_id}")
     sku = _sku(ctx, row) if isinstance(row, dict) else None
-    reason = validate_fixture(row, ctx.app["id"], sku, ctx.args.user, ctx.args.guild, consume=True)
+    reason = validate_fixture(row, ctx.app["id"], sku, ctx.identity.user, ctx.identity.guild, consume=True)
     if not 200 <= status < 300 or not isinstance(row, dict) or str(row.get("id")) != entitlement_id or reason:
         ctx.block(prefix, reason or "GET did not verify the requested historical entitlement")
         return
@@ -463,7 +474,9 @@ async def _consume(ctx, entitlement_id):
         status, current = await ctx.request(
             prefix + f".{suffix}.verify", "GET", f"{ctx.base}/{entitlement_id}"
         )
-        reason = validate_fixture(current, ctx.app["id"], sku, ctx.args.user, ctx.args.guild, consume=True)
+        reason = validate_fixture(
+            current, ctx.app["id"], sku, ctx.identity.user, ctx.identity.guild, consume=True
+        )
         if (
             not 200 <= status < 300
             or not isinstance(current, dict)
@@ -496,10 +509,10 @@ async def _consume(ctx, entitlement_id):
 
 async def capture_lifecycle(ctx):
     """Capture only supplied legitimate fixtures; no fixture fabrication or CLI IO."""
-    if _complete(ctx, "lifecycle") and getattr(ctx.args, "mode", None) != "watch":
+    if _complete(ctx, "lifecycle") and getattr(ctx, "mode", None) != "watch":
         return
-    watch = list(dict.fromkeys(str(value) for value in getattr(ctx.args, "watch_entitlement", []) or []))
-    consume = list(dict.fromkeys(str(value) for value in getattr(ctx.args, "consume_history", []) or []))
+    watch = list(dict.fromkeys(str(value) for value in getattr(ctx.lifecycle, "watch_entitlement", []) or []))
+    consume = list(dict.fromkeys(str(value) for value in getattr(ctx.lifecycle, "consume_history", []) or []))
     ctx.block(
         "lifecycle.exact_boundary",
         "Exact ends_at<=now atomic interaction eligibility is unproven: REST samples and later interactions are not simultaneous server-clock evidence.",
@@ -533,7 +546,7 @@ async def capture_lifecycle(ctx):
             ),
         ):
             ctx.block("lifecycle." + case, reason)
-    elif not getattr(ctx.args, "live_lifecycle_confirmed", False):
+    elif not getattr(ctx.lifecycle, "live_lifecycle_confirmed", False):
         ctx.block(
             "lifecycle.watch.authorization",
             "Watching live lifecycle fixtures requires --live-lifecycle-confirmed; IDs were not polled.",

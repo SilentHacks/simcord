@@ -7,6 +7,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Callable, Coroutine, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from ..results import InteractionResult
     from . import Preview
     from ._pages import _Page
+    from ._queries import _SummarySource
 
 _ACTIVITY_LIMIT = 20
 
@@ -101,6 +103,11 @@ class _Action:
     dispatched: bool = False
     uncertain: bool = False
     outcomes: list[dict[str, Any]] = field(default_factory=list)
+    scope: tuple[Any, ...] = ()
+    summary_sources: dict[str, _SummarySource] = field(default_factory=dict)
+    candidate_handle: str | None = None
+    candidate_schema: str | None = None
+    result_assets: set[str] = field(default_factory=set)
 
 
 class _ActionOps:
@@ -120,11 +127,12 @@ class _ActionOps:
     _viewer: Callable[[Any], Any]
     _initial_target: Callable[[Any, int], int | None]
     _target_id: Callable[..., int | None]
+    _release_result_assets: Callable[[_Page], None]
     _clear_page_assets: Callable[[_Page], None]
     _redact_page_receipts: Callable[[_Page], None]
     _publish: Callable[..., None]
     _pages: dict[str, _Page]
-    _receipt_payload: Callable[..., Any]
+    _filter_receipt: Callable[..., dict[str, Any]]
     _advance_presentation_time: Callable[[], None]
 
     _MUTATING_KINDS: ClassVar[frozenset[str]] = frozenset(
@@ -244,57 +252,71 @@ class _ActionOps:
         self._append_activity(page, result, None)
         return result
 
+    def _action_scope_current(self, page: _Page, action: _Action) -> bool:
+        if not action.scope or action.scope[:4] != (
+            page.viewer.id,
+            page.generation,
+            self.env._generation,
+            page.channel_id,
+        ):
+            return False
+        if not can_access_channel(self.env, page.channel_id, page.viewer, history=True):
+            return False
+        if len(action.scope) > 4:
+            from ._commands import command_permission, entry_for_leaf, visible_leaf
+
+            command_id, path, schema = action.scope[4:]
+            resolved = visible_leaf(cast("Preview", self), page, command_id, list(path))
+            if not command_permission(cast("Preview", self), page) or resolved is None:
+                return False
+            return entry_for_leaf(*resolved)["schemaFingerprint"] == schema
+        return True
+
     def _replay_response(self, page: _Page, action: _Action) -> dict[str, Any]:
         response = json.loads(json.dumps(action.response or {}))
         allowed = can_access_channel(self.env, page.channel_id, page.viewer, history=True)
-        response.update(self._receipt_payload(page, response, allowed=allowed))
+        self._filter_receipt(page, response, allowed=allowed)
         result = response.get("result")
-        if not isinstance(result, Mapping):
+        if not isinstance(result, dict):
             return response
-        if not allowed:
+        if not allowed or (
+            action.kind == "autocomplete_command" and not self._action_scope_current(page, action)
+        ):
             response.pop("result", None)
         elif action.kind == "browse_messages":
-            result = dict(result)
-            rows = []
-            for summary in result.get("messageIndex", []):
-                if not isinstance(summary, Mapping):
-                    continue
-                message_id = summary.get("id")
-                if not isinstance(message_id, str):
-                    continue
-                try:
-                    message = self.env.backend.get_message(page.channel_id, int(message_id))
-                except (BackendError, TypeError, ValueError):
-                    continue
-                if can_access_message(self.env, page.channel_id, message, page.viewer, history=True):
-                    rows.append(dict(summary))
-            result["messageIndex"] = rows
-            response["result"] = result
-        elif action.kind == "browse_candidates":
-            from ._queries import _candidate_descriptor, candidate_control
+            from ._dependencies import _DependencyRead
+            from ._queries import _filter_summaries
 
-            control_key = result.get("control_key")
-            state = page.candidate_queries.get(control_key) if isinstance(control_key, str) else None
-            if state is None or not isinstance(control_key, str):
+            read = _DependencyRead(cast("Preview", self), page)
+            result["messageIndex"] = _filter_summaries(
+                cast("Preview", self),
+                page,
+                result.get("messageIndex", []),
+                action.summary_sources,
+                read,
+            )
+        elif action.kind == "browse_candidates":
+            from ._dependencies import _DependencyRead
+            from ._queries import _filter_candidates
+
+            read = _DependencyRead(cast("Preview", self), page)
+            key, candidate = result["control_key"], result.get("candidate")
+            schema_current = True
+            if action.candidate_schema is not None:
+                entry_key = ":".join(key.split(":")[1:3])
+                schema_current = any(
+                    entry.get("key") == entry_key
+                    and entry.get("schemaFingerprint") == action.candidate_schema
+                    for entry in page.command_catalog.get("entries", [])
+                )
+            if (
+                not isinstance(candidate, dict)
+                or not schema_current
+                or not _filter_candidates(
+                    cast("Preview", self), page, key, candidate, action.candidate_handle, read
+                )
+            ):
                 response.pop("result", None)
-            else:
-                try:
-                    component, modal_handle = candidate_control(
-                        cast("Preview", self), page, control_key, state.get("modal_handle")
-                    )
-                except SetupError:
-                    response.pop("result", None)
-                else:
-                    response["result"] = {
-                        "control_key": control_key,
-                        "candidate": _candidate_descriptor(
-                            cast("Preview", self),
-                            page,
-                            component,
-                            control_key,
-                            modal_handle=modal_handle,
-                        ),
-                    }
         return response
 
     async def _action(self, context_id: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -394,8 +416,18 @@ class _ActionOps:
                     subject=subject,
                 )
             action = _Action(sequence, request_id, fingerprint, kind)
+            action.scope = (page.viewer.id, page.generation, self.env._generation, page.channel_id)
             if kind in {"autocomplete_command", "run_command"}:
                 path = cast(list[str], body["path"])
+                from ._commands import entry_for_leaf, visible_leaf
+
+                resolved = visible_leaf(cast("Preview", self), page, body["command_id"], path)
+                if resolved is not None:
+                    action.scope += (
+                        body["command_id"],
+                        tuple(path),
+                        entry_for_leaf(*resolved)["schemaFingerprint"],
+                    )
                 action.command = {
                     "commandId": cast(str, body["command_id"]),
                     "invocation": " ".join(path),
@@ -414,6 +446,14 @@ class _ActionOps:
                 # Redact the previous latest action before admission replaces it.
                 self._redact_page_receipts(page)
             page.last_sequence = sequence  # consumed only after full admission
+            previous = page.latest_action
+            if previous is not None:
+                previous.summary_sources.clear()
+                previous.candidate_handle = None
+                self._release_result_assets(page)
+                previous.candidate_schema = None
+                if previous.response is not None:
+                    previous.response.pop("result", None)
             page.latest_action = action
             self._active_action = action
             self._active_task = asyncio.current_task()
@@ -443,7 +483,7 @@ class _ActionOps:
                 page.status = "stale"
                 result = self._finish_action(page, action, "failed", cursor, exc)
             action.response = result
-            return dict(result)
+            return deepcopy(result)
         finally:
             self.env._end_operation()
             self._active_action = None

@@ -115,6 +115,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
         self.capability = secrets.token_urlsafe(32)
         self._server = PreviewServer(self, port)
         self._pages: dict[str, _Page] = {}
+        self._markdown_parsers: dict[tuple[bool | str, ...], Any] = {}
         self._python: _Page | None = None
         self._active = False
         self._closed = False
@@ -265,6 +266,9 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 raise SetupError("managed capture projected message is unavailable") from exc
             if not can_access_message(self.env, channel_id, message, page.viewer, history=True):
                 raise SetupError("managed capture projected message access was revoked")
+        authorized = json.loads(json.dumps(page.pinned_snapshot))
+        if self._filter_dependencies(page, authorized):
+            raise SetupError("managed capture published dependency access was revoked")
         for asset_id, record in page.assets.items():
             try:
                 source = record.source
@@ -380,6 +384,7 @@ class Preview(_PageOps, _AssetOps, _ActionOps, _CaptureOps):
                 self._redact_page_receipts(page)
                 self._clear_page_assets(page)
             self._pages.clear()
+            self._markdown_parsers.clear()
             self._pending_page_closes.clear()
             self._blobs.clear()
             self._retained_media_bytes = 0

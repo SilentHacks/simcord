@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from bisect import bisect_right
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from ..actors import MemberActor, _autocomplete_result, _slash_resolved
-from ..backend.access import can_access_channel, can_access_message
+from ..backend.access import can_access_channel
 from ..backend.errors import BackendError, SetupError
 from ..builders import UserHandle
 from ..enums import SELECT_TYPES, ComponentType, OptionType
@@ -121,6 +120,12 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
             page.navigation_cursor = cursor_value
             result = self._finish_action(page, action, "settled", cursor)
             self._publish(page, reason="query")
+            action.summary_sources = dict(page.summary_sources)
+            action.result_assets = {
+                avatar
+                for row in page.snapshot["messageIndex"]
+                if isinstance(avatar := row["author"].get("avatar"), str)
+            }
             result["result"] = {
                 "navigation": page.snapshot["navigation"],
                 "messageIndex": page.snapshot["messageIndex"],
@@ -157,6 +162,17 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
             raise _QueryError("query-invalid")
 
         async def run_browse_candidates(action: _Action, cursor: int) -> dict[str, Any]:
+            action.candidate_handle = modal_handle
+            if control_key.startswith("command:"):
+                entry_key = ":".join(control_key.split(":")[1:3])
+                action.candidate_schema = next(
+                    (
+                        entry["schemaFingerprint"]
+                        for entry in page.command_catalog.get("entries", [])
+                        if entry.get("key") == entry_key
+                    ),
+                    None,
+                )
             page.candidate_queries[control_key] = {
                 "query": query,
                 "cursor": cursor_value,
@@ -168,6 +184,13 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
                 action.target = {"messageId": target_id, "controlKey": control_key}
             result = self._finish_action(page, action, "settled", cursor)
             self._publish(page, reason="query")
+            descriptor = page.snapshot["candidates"].get(control_key) or {}
+            action.result_assets = {
+                avatar
+                for field in ("entries", "selected")
+                for item in descriptor.get(field, [])
+                if isinstance(avatar := item.get("avatar"), str)
+            }
             result["result"] = {
                 "control_key": control_key,
                 "candidate": page.snapshot["candidates"].get(control_key),
@@ -237,27 +260,40 @@ def _prepare_page_action(self: Preview, page: _Page, kind: str, body: Mapping[st
         direction = body.get("direction")
         if not isinstance(direction, str) or direction not in {"older", "newer", "latest"}:
             raise SetupError("history direction is unavailable")
-        visible = [
-            item
-            for item in sorted(
-                self.env.backend.messages.get(page.channel_id, {}).values(), key=lambda item: item.id
-            )
-            if can_access_message(self.env, page.channel_id, item, page.viewer, history=True)
-        ]
-        ids = [item.id for item in visible]
-        end = len(ids) if page.window_end_id is None else bisect_right(ids, page.window_end_id)
+        backend = self.env.backend
+        total = backend.message_count(page.channel_id, viewer_id=page.viewer.id)
+        end = (
+            total
+            if page.window_end_id is None
+            else backend.message_position(page.channel_id, page.window_end_id + 1, viewer_id=page.viewer.id)
+        )
         start = max(0, end - HISTORY_WINDOW_SIZE)
         if direction == "older":
             if start == 0:
                 raise SetupError("there is no earlier authorized history")
             next_end = min(end, start + HISTORY_STEP)
-            next_anchor = ids[next_end - 1]
+            next_anchor = backend.select_messages(
+                page.channel_id,
+                viewer_id=page.viewer.id,
+                before=page.window_end_id + 1 if page.window_end_id is not None else None,
+                newest_first=True,
+                limit=end - next_end + 1,
+            )[-1].id
         elif direction == "newer":
-            if end == len(ids):
+            if end == total:
                 raise SetupError("there is no newer authorized history")
-            next_start = min(len(ids) - 1, start + HISTORY_STEP)
-            next_end = min(len(ids), next_start + HISTORY_WINDOW_SIZE)
-            next_anchor = None if next_end == len(ids) else ids[next_end - 1]
+            next_start = min(total - 1, start + HISTORY_STEP)
+            next_end = min(total, next_start + HISTORY_WINDOW_SIZE)
+            next_anchor = (
+                None
+                if next_end == total
+                else backend.select_messages(
+                    page.channel_id,
+                    viewer_id=page.viewer.id,
+                    after=page.window_end_id,
+                    limit=next_end - end,
+                )[-1].id
+            )
         else:
             next_anchor = None
 

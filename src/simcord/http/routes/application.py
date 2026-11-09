@@ -26,8 +26,7 @@ def edit_profile(ctx: RequestContext) -> Any:
     backend = ctx.backend
     body = ctx.fields("username")
     if "username" in body:
-        backend.bot_user.name = body["username"]
-        backend.emit("USER_UPDATE", dict(serializers.user_payload(backend.bot_user)))
+        backend.edit_bot_profile(body["username"])
     return dict(serializers.user_payload(backend.bot_user))
 
 

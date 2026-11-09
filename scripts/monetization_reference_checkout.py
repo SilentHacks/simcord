@@ -119,7 +119,7 @@ def _stage(ctx, name, skus):
     stage = ctx.state.setdefault("checkout", {}).setdefault(name, {})
     identity = {
         "application_id": str(ctx.app["id"]),
-        "user_id": str(ctx.args.user),
+        "user_id": str(ctx.identity.user),
         "sku_ids": [str(sku["id"]) for sku in skus],
     }
     if stage.get("identity", identity) != identity:
@@ -135,7 +135,7 @@ async def _rows(ctx, case, sku):
     rows = await ctx.walk(
         case,
         query={
-            "user_id": str(ctx.args.user),
+            "user_id": str(ctx.identity.user),
             "sku_ids": str(sku["id"]),
             "exclude_deleted": "false",
             "exclude_ended": "false",
@@ -161,6 +161,17 @@ async def _baseline(ctx, prefix, stage, sku, key):
 
 
 async def _manual(ctx, prefix, stage, key, instructions, *, zero=False, allow_no_checkout=False):
+    state = getattr(ctx, "state", {})
+    if state.get("expiry_source"):
+        raise RuntimeError("Expiry-only evidence cannot authorize checkout.")
+    if not stage.get(key):
+        if stage.get("cancellation_started") or stage.get("cancellation_verified"):
+            raise RuntimeError("Cancellation recovery cannot reopen checkout.")
+        source = state.get("upgrade_source")
+        if source and zero:
+            end = datetime.fromisoformat(source["period_end"])
+            if end.tzinfo is None or datetime.now(UTC) >= end:
+                raise RuntimeError("Expired upgrade source cannot authorize a new checkout.")
     if not stage.get(key):
         # Persist before instructions: interrupted checkout must never be reissued.
         stage[key] = True
@@ -191,13 +202,15 @@ async def _manual(ctx, prefix, stage, key, instructions, *, zero=False, allow_no
 async def _select(ctx, prefix, stage, sku, key, baseline_key, kind):
     if key not in stage:
         rows = await _rows(ctx, prefix + "." + key + ".selection", sku)
-        row = select_new_purchase(rows, stage[baseline_key], ctx.app["id"], ctx.args.user, sku["id"], kind)
+        row = select_new_purchase(
+            rows, stage[baseline_key], ctx.app["id"], ctx.identity.user, sku["id"], kind
+        )
         stage[key] = str(row["id"])
         ctx.save()
     status, row = await ctx.request(prefix + "." + key + ".verify", "GET", f"{ctx.base}/{stage[key]}")
     if status != 200:
         raise RuntimeError("Selected manual entitlement could not be re-read. Do not purchase again.")
-    validate_purchase(row, ctx.app["id"], ctx.args.user, sku["id"], kind)
+    validate_purchase(row, ctx.app["id"], ctx.identity.user, sku["id"], kind)
     if kind == 4 and row.get("consumed") is not False:
         raise RuntimeError("Selected fresh entitlement was already consumed; no deletion authorized.")
     stage.setdefault(key + "_initial", row)
@@ -214,7 +227,7 @@ async def _select(ctx, prefix, stage, sku, key, baseline_key, kind):
 
 
 async def _snapshot(ctx, prefix, eid, sku):
-    row = await ctx.inspect(prefix + ".rest", eid, sku, owner_id=ctx.args.user, owner_type=2)
+    row = await ctx.inspect(prefix + ".rest", eid, sku, owner_id=ctx.identity.user, owner_type=2)
     await ctx.observe(prefix + ".events")
     await ctx.probe(prefix + ".interaction")
     return row
@@ -222,7 +235,7 @@ async def _snapshot(ctx, prefix, eid, sku):
 
 async def _deleted_purchase(ctx):
     prefix = "checkout.deleted_purchase"
-    sku = select_purchase_sku(ctx.skus, ctx.args.consumable, discord.SKUType.consumable)
+    sku = select_purchase_sku(ctx.skus, ctx.checkout.consumable, discord.SKUType.consumable)
     stage = _stage(ctx, "deleted_purchase", [sku])
     if stage.get("done"):
         return
@@ -261,7 +274,9 @@ async def _deleted_purchase(ctx):
             status, current = await ctx.request(case + ".verify", "GET", f"{ctx.base}/{eid}")
             if status != 200:
                 raise RuntimeError("Manual fixture GET failed; no mutation attempted.")
-            validate_purchase(current, ctx.app["id"], ctx.args.user, sku["id"], 4, deleted=step != "delete")
+            validate_purchase(
+                current, ctx.app["id"], ctx.identity.user, sku["id"], 4, deleted=step != "delete"
+            )
             if step == "delete" and current.get("consumed") is not False:
                 raise RuntimeError("Delete-before-consume requires a positively unconsumed purchase.")
             if step == "consume" and current.get("consumed") is not False:
@@ -278,7 +293,7 @@ async def _deleted_purchase(ctx):
             stage[step + "_capture_complete"] = True
             ctx.save()
             if step == "delete":
-                validate_purchase(current, ctx.app["id"], ctx.args.user, sku["id"], 4, deleted=True)
+                validate_purchase(current, ctx.app["id"], ctx.identity.user, sku["id"], 4, deleted=True)
                 if current.get("consumed") is not False:
                     raise RuntimeError("Deleted-unconsumed state not established; no consume authorized.")
     stage["done"] = True
@@ -297,7 +312,7 @@ async def _subscription_reports(ctx, prefix, sku):
         prefix + ".list",
         "GET",
         f"/skus/{sku['id']}/subscriptions",
-        query={"user_id": str(ctx.args.user), "limit": "100"},
+        query={"user_id": str(ctx.identity.user), "limit": "100"},
     )
     if status != 200 or not isinstance(rows, list) or len(rows) >= 100:
         ctx.block(prefix, "Subscription reporting unavailable or incomplete; cancellation is NOT verified.")
@@ -308,7 +323,7 @@ async def _subscription_reports(ctx, prefix, sku):
         row
         for row in rows
         if isinstance(row, dict)
-        and row.get("user_id") == str(ctx.args.user)
+        and row.get("user_id") == str(ctx.identity.user)
         and str(sku["id"]) in row.get("sku_ids", [])
         and str(row.get("id", "")).isdigit()
     ]
@@ -336,7 +351,7 @@ async def _cancel(ctx, prefix, stage, a, b):
                 and type(row.get("type")) is int
                 and row["type"] in LIVE_TYPES
                 and row.get("application_id") == str(ctx.app["id"])
-                and row.get("user_id") == str(ctx.args.user)
+                and row.get("user_id") == str(ctx.identity.user)
                 and row.get("sku_id") == sku["id"]
                 and row.get("guild_id") is None
             ]
@@ -359,14 +374,14 @@ async def _cancel(ctx, prefix, stage, a, b):
             and isinstance(row, dict)
             and row.get("id") == eid
             and row.get("application_id") == str(ctx.app["id"])
-            and row.get("user_id") == str(ctx.args.user)
+            and row.get("user_id") == str(ctx.identity.user)
             and row.get("sku_id") == sku["id"]
             and type(row.get("type")) is int
             and row["type"] in LIVE_TYPES
             and classify_temporal(row, datetime.now(UTC)) == "ended"
         )
         reports = await _subscription_reports(ctx, prefix + f".cancellation.{key}", sku)
-        canceled = any(cancellation_verified(report, ctx.args.user, sku["id"], eid) for report in reports)
+        canceled = any(cancellation_verified(report, ctx.identity.user, sku["id"], eid) for report in reports)
         resolved.append(ended or canceled)
     stage["cancellation_verified"] = bool(resolved) and all(resolved)
     ctx.save()
@@ -387,8 +402,8 @@ async def _cancel(ctx, prefix, stage, a, b):
 
 async def _live_upgrade(ctx):
     prefix = "checkout.live_upgrade"
-    a = select_user_subscription(ctx.skus, ctx.args.user_sku_a)
-    b = select_user_subscription(ctx.skus, ctx.args.user_sku_b)
+    a = select_user_subscription(ctx.skus, ctx.checkout.user_sku_a)
+    b = select_user_subscription(ctx.skus, ctx.checkout.user_sku_b)
     if a["id"] == b["id"]:
         raise RuntimeError("Live upgrade requires distinct user A/B SKUs.")
     stage = _stage(ctx, "live_upgrade", [a, b])
@@ -450,7 +465,7 @@ async def _live_upgrade(ctx):
                     )
                     if status != 200:
                         raise RuntimeError("Cannot verify A before upgrade; cancel it instead.")
-                    validate_purchase(current, ctx.app["id"], ctx.args.user, a["id"], LIVE_TYPES)
+                    validate_purchase(current, ctx.app["id"], ctx.identity.user, a["id"], LIVE_TYPES)
                     if classify_temporal(current, datetime.now(UTC)) != "active":
                         raise RuntimeError("A is not active; do not start another subscription.")
                 await _manual(
@@ -470,8 +485,8 @@ async def _live_upgrade(ctx):
             ended = await _snapshot(ctx, prefix + ".a.after_upgrade", stage["a"], a)
             replacement = await _snapshot(ctx, prefix + ".b.after_upgrade", stage["b"], b)
             await _subscription_reports(ctx, prefix + ".b.subscription", b)
-            if getattr(ctx.args, "other_user", None):
-                await ctx.probe(prefix + ".other_user.interaction", actor_id=ctx.args.other_user)
+            if getattr(ctx.identity, "other_user", None):
+                await ctx.probe(prefix + ".other_user.interaction", actor_id=ctx.identity.other_user)
             if not isinstance(ended, dict) or not isinstance(replacement, dict):
                 raise RuntimeError("Upgrade endpoints not readable; no transition claimed.")
             classification = classify_upgrade(stage["a_initial"], ended, replacement, datetime.now(UTC))
@@ -501,10 +516,10 @@ async def _live_upgrade(ctx):
 
 async def capture_checkouts(ctx):
     """No flags means no prompts or IO; attestations gate independent stages."""
-    if getattr(ctx.args, "mode", None) == "upgrade":
+    if getattr(ctx, "mode", None) == "upgrade":
         from monetization_reference_upgrade import capture_upgrade
 
-        if not getattr(ctx.args, "team_discount_confirmed", False):
+        if not getattr(ctx.checkout, "team_discount_confirmed", False):
             ctx.block("checkout.live_upgrade", "--team-discount-confirmed is required; no checkout prompted.")
             return
         await capture_upgrade(ctx)
@@ -513,10 +528,10 @@ async def capture_checkouts(ctx):
         ("deleted_purchase", "test_mode_confirmed", _deleted_purchase),
         ("live_upgrade", "team_discount_confirmed", _live_upgrade),
     ):
-        if not getattr(ctx.args, flag, False):
+        if not getattr(ctx.checkout, flag, False):
             continue
         prefix = "checkout." + flag
-        if not getattr(ctx.args, attestation, False):
+        if not getattr(ctx.checkout, attestation, False):
             ctx.block(
                 prefix,
                 "Explicit --"

@@ -1,8 +1,12 @@
 import { icon } from "./dom.js";
 
-/**
- * Wire a conversation composer. The app remains the owner of state and action
- * dispatch; inputContainer exposes the composer row for picker integrations.
+/** @import {Snapshot, ActionBody, AdmittedAction, Receipt} from "./preview-types" */
+/** Composer owns text drafts, versions, reply/edit mode, and native input lifecycle.
+ * @param {{form: HTMLFormElement, input: HTMLTextAreaElement, inputContainer?: HTMLElement | null,
+ * sendButton: HTMLButtonElement, replyContext: HTMLElement, replyLabel: HTMLElement, replyCancel: HTMLButtonElement,
+ * channelLabel: (snapshot: Snapshot) => {name: string, glyph: string}, onDispatch: (kind: string, body: ActionBody) => void,
+ * onModeChange?: () => void, onBeforeEdit?: () => void, rememberFocus?: () => void,
+ * setFocusKey?: (key: string | null) => void, onBeforeKey?: (event: KeyboardEvent, input: HTMLElement) => boolean}} options
  */
 export function initComposer({
   form,
@@ -12,7 +16,6 @@ export function initComposer({
   replyContext,
   replyLabel,
   replyCancel,
-  state,
   channelLabel,
   onDispatch,
   onModeChange,
@@ -21,15 +24,28 @@ export function initComposer({
   setFocusKey,
   onBeforeKey,
 }) {
+  /** @type {{contextId: string | null, targetId: string | null, authorized: boolean, pinnedCapture: boolean,
+   * pendingAction: boolean, replyToId: string | null, editTargetId: string | null,
+   * drafts: Map<string, string>, draftVersions: Map<string, number>}} */
+  const state = {
+    contextId: null, targetId: null, authorized: false, pinnedCapture: false,
+    pendingAction: false, replyToId: null, editTargetId: null,
+    drafts: new Map(), draftVersions: new Map(),
+  };
+  /** @type {HTMLElement} */
   let currentInput = input;
   let keyInterceptor = onBeforeKey || null;
   let composing = false;
-  const row = inputContainer || input.parentElement;
+  let modeVersion = 0;
+  const row = inputContainer || input.parentElement || form;
+  /** @type {Snapshot | null} */
+  let lastSnapshot = null;
 
   function value() {
-    return typeof currentInput.value === "string" ? currentInput.value : currentInput.textContent || "";
+    return currentInput instanceof HTMLTextAreaElement ? currentInput.value : currentInput.textContent || "";
   }
 
+  /** @param {string} next */
   function setValue(next) {
     if ("value" in currentInput) currentInput.value = next;
     else currentInput.textContent = next;
@@ -45,12 +61,14 @@ export function initComposer({
   function onInput() {
     if (currentInput.dataset.commandMode === "true") return;
     const key = currentInput.dataset.controlKey;
+    if (!key) return;
     state.drafts.set(key, value());
     state.draftVersions.set(key, (state.draftVersions.get(key) || 0) + 1);
     resizeComposer();
     rememberFocus?.();
   }
 
+  /** @param {KeyboardEvent} event */
   function onKeydown(event) {
     if (keyInterceptor?.(event, currentInput) === true) {
       event.preventDefault();
@@ -71,6 +89,7 @@ export function initComposer({
     composing = false;
   }
 
+  /** @param {HTMLElement} element */
   function attachInput(element) {
     element.addEventListener("input", onInput);
     element.addEventListener("keydown", onKeydown);
@@ -78,6 +97,7 @@ export function initComposer({
     element.addEventListener("compositionend", onCompositionEnd);
   }
 
+  /** @param {HTMLElement} element */
   function detachInput(element) {
     element.removeEventListener("input", onInput);
     element.removeEventListener("keydown", onKeydown);
@@ -85,15 +105,17 @@ export function initComposer({
     element.removeEventListener("compositionend", onCompositionEnd);
   }
 
+  /** @param {Snapshot} snapshot */
   function update(snapshot) {
+    lastSnapshot = snapshot;
     if (snapshot.layout !== "channel") return;
     const editKey = state.editTargetId ? `edit:${state.contextId}:${state.editTargetId}` : null;
     const key = editKey || `composer:${state.contextId}`;
     currentInput.dataset.controlKey = key;
     const editMessage = state.editTargetId ? snapshot.messages?.[state.editTargetId] : null;
     if (!state.drafts.has(key)) state.drafts.set(key, editMessage?.content || "");
-    if (currentInput.dataset.commandMode !== "true" && value() !== state.drafts.get(key)) setValue(state.drafts.get(key));
-    sendButton.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture
+    if (currentInput.dataset.commandMode !== "true" && value() !== state.drafts.get(key)) setValue(state.drafts.get(key) || "");
+    sendButton.disabled = Boolean(state.pendingAction) || !state.authorized || state.pinnedCapture || form.hidden
       || (!state.editTargetId && !(currentInput.dataset.commandMode === "true"
         ? snapshot.channel?.canUseApplicationCommands : snapshot.channel?.canSendMessages));
     const sendLabel = state.editTargetId ? "Save" : "Send";
@@ -128,28 +150,36 @@ export function initComposer({
 
   function focusAtEnd() {
     currentInput.focus();
-    if (typeof currentInput.setSelectionRange === "function") {
+    if (currentInput instanceof HTMLTextAreaElement) {
       const end = value().length;
       currentInput.setSelectionRange(end, end);
     }
   }
 
+  function modeChanged() {
+    modeVersion += 1;
+    if (lastSnapshot) update(lastSnapshot);
+    onModeChange?.();
+  }
+
+  /** @param {{id: string | number}} message */
   function setReplyTo(message) {
     state.editTargetId = null;
     state.replyToId = String(message.id);
-    onModeChange?.();
+    modeChanged();
     const key = `composer:${state.contextId}`;
     setFocusKey?.(key);
     focusAtEnd();
   }
 
+  /** @param {{id: string | number, content?: string}} message */
   function setEditMessage(message) {
     onBeforeEdit?.();
     state.replyToId = null;
     state.editTargetId = String(message.id);
     const key = `edit:${state.contextId}:${state.editTargetId}`;
     if (!state.drafts.has(key)) state.drafts.set(key, String(message.content || ""));
-    onModeChange?.();
+    modeChanged();
     setFocusKey?.(key);
     focusAtEnd();
   }
@@ -157,27 +187,30 @@ export function initComposer({
   function cancelMode() {
     state.replyToId = null;
     state.editTargetId = null;
-    onModeChange?.();
+    modeChanged();
     currentInput.focus();
   }
 
+  /** @param {AdmittedAction | null} action @param {Receipt} receipt */
   function completeActionDrafts(action, receipt) {
     if (!action || receipt.rejected || receipt.settlement !== "settled") return;
     const { kind, contextId, targetId } = action;
     const draftKey = kind === "send_message" ? `composer:${contextId}` : `edit:${contextId}:${targetId}`;
     const unchanged = (state.draftVersions.get(draftKey) || 0) === action.draftVersion;
+    const sameMode = modeVersion === action.composerModeVersion;
     if ((["send_message", "edit_message"].includes(kind) && unchanged) || kind === "delete_message") {
       state.drafts.delete(draftKey);
     }
     if (contextId !== state.contextId) return;
-    if ((kind === "send_message" && unchanged) || (kind === "delete_message" && state.replyToId === String(targetId))) {
+    if ((kind === "send_message" && unchanged && sameMode) || (kind === "delete_message" && state.replyToId === String(targetId))) {
       state.replyToId = null;
     }
-    if (((kind === "edit_message" && unchanged) || kind === "delete_message") && state.editTargetId === String(targetId)) {
+    if (((kind === "edit_message" && unchanged && sameMode) || kind === "delete_message") && state.editTargetId === String(targetId)) {
       state.editTargetId = null;
     }
   }
 
+  /** @param {SubmitEvent} event */
   function onSubmit(event) {
     event.preventDefault();
     const content = value();
@@ -196,6 +229,7 @@ export function initComposer({
   replyCancel.addEventListener("click", cancelMode);
   form.addEventListener("submit", onSubmit);
 
+  /** @param {HTMLElement} element */
   function replaceInput(element) {
     if (!(element instanceof HTMLElement)) throw new TypeError("composer input must be an HTMLElement");
     if (element === currentInput) return currentInput;
@@ -203,7 +237,7 @@ export function initComposer({
     detachInput(previous);
     if (previous.parentNode) previous.replaceWith(element);
     if (element.dataset && previous.dataset?.controlKey) element.dataset.controlKey = previous.dataset.controlKey;
-    if (typeof element.value === "string" && typeof previous.value === "string") element.value = previous.value;
+    if (element instanceof HTMLTextAreaElement && previous instanceof HTMLTextAreaElement) element.value = previous.value;
     currentInput = element;
     composing = false;
     attachInput(currentInput);
@@ -212,11 +246,49 @@ export function initComposer({
   }
 
   return {
+    /** @param {{blocked: boolean, authorized: boolean, pinnedCapture: boolean}} admission */
+    setAdmission: ({blocked, authorized, pinnedCapture}) => {
+      state.pendingAction = blocked; state.authorized = authorized; state.pinnedCapture = pinnedCapture;
+      if (lastSnapshot) update(lastSnapshot); else sendButton.disabled = true;
+    },
+    /** @param {{contextId: string | null, targetId: string | null, authorized: boolean, pinnedCapture: boolean, pending: boolean}} context */
+    setContext: ({ contextId, targetId, authorized, pinnedCapture, pending }) => {
+      Object.assign(state, { contextId, targetId, authorized, pinnedCapture, pendingAction: pending });
+    },
+    report: () => Object.freeze({ editTargetId: state.editTargetId, replyToId: state.replyToId }),
+    modeVersion: () => modeVersion,
+    /** @param {string} kind @param {string | null} contextId @param {string | null | undefined} targetId */
+    draftVersion: (kind, contextId, targetId) => state.draftVersions.get(
+      kind === "send_message" ? `composer:${contextId}` : `edit:${contextId}:${targetId}`,
+    ) || 0,
+    /** @param {boolean} enabled @param {string | null | undefined} replyToId */
+    commandMode: (enabled, replyToId) => {
+      state.replyToId = enabled ? null : replyToId || null;
+      modeVersion += 1;
+    },
+    reset: () => {
+      modeVersion += 1;
+      state.drafts.clear();
+      state.draftVersions.clear();
+      state.replyToId = null;
+      state.editTargetId = null;
+    },
+    clear: () => {
+      lastSnapshot = null;
+      composing = false;
+      setValue("");
+      delete currentInput.dataset.controlKey;
+      if ("placeholder" in currentInput) currentInput.placeholder = "";
+      replyLabel.textContent = "";
+      replyContext.hidden = true;
+      resizeComposer();
+    },
     update,
     resize: resizeComposer,
     input: () => currentInput,
     inputContainer: row,
     replaceInput,
+    /** @param {((event: KeyboardEvent, input: HTMLElement) => boolean) | null} interceptor */
     setKeyInterceptor: (interceptor) => { keyInterceptor = interceptor; },
     setReplyTo,
     setEditMessage,

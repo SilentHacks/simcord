@@ -63,10 +63,38 @@ test ──► builders/actors ──► virtual backend (single source of truth
   discord.py's master branch to catch drift early.
 - **Deterministic snowflakes** with valid embedded timestamps, from a fixed virtual epoch.
 
-`Env` remains the lifecycle and state owner. Private runtime hooks live in `_runtime.py`;
-`_settlement.py` classifies tracked work and manages virtual timer bookkeeping against that
-same state. `_modal.py` handles modal validation and serialization through the existing actor
-permission checks and interaction dispatch.
+`Env` remains the lifecycle and world owner. `_runtime.py` pairs hook installation
+with restoration and owns task, callback, executor and external-wait records.
+`_settlement.py` classifies those records through a narrow settlement view.
+Executor completion is separate from cancellation of the caller's Future;
+paired hooks observe actual owned standard-library pool submissions and are
+restored after the last Env detaches.
+Each Env synchronizes callback publication and retirement with a small reentrant
+lock and takes settlement snapshots under it; user callbacks and error reporting
+run after release. Executor work continues to use the native scheduling hooks.
+`_WorkState` alone mutates callback indexes and selects each live native Handle;
+settlement executes outside the lock and reselects after every callback.
+`_modal.py` handles modal validation and serialization through the existing actor
+permission checks and interaction dispatch. Backend/ID access facts are shared
+below Env-bound viewer adapters; bot, human, fixture and token authority remain
+distinct. Compound Backend mutations validate all inputs before committing model
+state and gateway events; HTTP routes retain caller, reason and audit context.
+Message edits use the Backend's prepare/commit boundary too: HTTP parses and
+stages uploads, preparation owns effective validation and changed payloads, and
+commit updates the existing Message. Attachment binding finishes before CDN
+installation; postcommit delivery failures do not roll state back.
+
+Backend-owned ordered identity indexes serve bounded message reads, while
+resource scheduling tracks actionable poll, event and entitlement deadlines
+rather than scanning historical state. Canonical mutations update derived indexes
+before publishing events. Indexes never replace the authoritative models.
+Explicit finalization of a backend Poll shared by live messages scans those aliases
+to retire every deadline before publication. Automatic expiry stays index-driven;
+the rare explicit scan does not add another alias index.
+Scheduled-event passes freeze guild admission at entry and event admission upon
+entering each eligible guild, using registration order rather than deadline
+revision. Existing later events made due remain eligible; newly inserted events
+in the current guild wait for the next pass.
 
 ## Optional browser presentation
 
@@ -83,10 +111,31 @@ Optional Pillow media work is bounded and outside Env's loop. Optional Playwrigh
 settled projection and reports geometry, readiness, completeness, calibration, and diagnostics.
 Base imports do not allocate any preview server, worker, or browser.
 
-Preview keeps session/page state in its existing owners. `_action_plans.py` prepares lazy
-actions; identity, component/message projection, and query modules feed `_snapshot.py`'s
-assembly. In the browser, `app.js` retains shared state and action sequencing, with focused
-workbench, select-draft, timeline, and transport modules handling presentation responsibilities.
+Preview keeps session/page state in its existing owners. `_action_plans.py` prepares
+lazy actions; identity, component/message projection and query modules feed
+`_snapshot.py`'s assembly. Publications and the latest retained result each keep
+their own frozen dependencies. Request-local authorization removes lost dependencies
+without publishing unrelated edits. Capture pins check actual dependency loss before
+and after PNG creation, not arbitrary differences between serialized snapshots.
+
+In the browser, `app.js` composes owners and wires events. `actions.js` sequences
+admitted POSTs, including browse/autocomplete; `session.js` owns validated state reads,
+checkpoints, cancellation and polling. Catalog observations and versioned File-bearing
+drafts have separate owners from the native command-picker view. `assets.js` owns
+shared URLs and derived metadata without mutating published manifests; rendered
+surfaces own DOM/player disposal. Composer, select, modal, timeline, diagnostics,
+presentation and workbench records retain their focused responsibilities. Status is
+assembled from read-only owner reports, with protocol 3 and schema 1 unchanged.
+
+`geometry.js` supplies live status and capture measurements. Managed captures round
+inside their visible intersection; complete control/menu captures round outward and
+reject off-host bounds. These intentionally different policies share measurement
+primitives, not forced identical crops. Python and browser diagnostics share the
+packaged vocabulary. These remain native ES modules, without a bundler or framework.
+
+Contributor checks use Node 24: `npm ci --ignore-scripts` and `npm run check:preview`
+strictly check every first-party JavaScript module and its composing callers.
+Python consumers and installed-wheel captures do not need Node.
 
 ## What it will never do
 

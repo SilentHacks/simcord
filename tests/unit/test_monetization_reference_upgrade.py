@@ -91,7 +91,11 @@ class Session:
             "0.00"
         ]
         self.ctx.state["baseline_ids"] = list(self.rows)
-        self.ctx.state["upgrade_source"] = {"entitlement_id": "500", "subscription_id": "900"}
+        self.ctx.state["upgrade_source"] = {
+            "entitlement_id": "500",
+            "subscription_id": "900",
+            "period_end": (NOW + timedelta(days=30)).isoformat(),
+        }
         self.ctx.save()
 
     def confirm(self, _prompt):
@@ -226,10 +230,10 @@ def upgrade_context(context, monkeypatch):
         target = importlib.import_module(name)
         if hasattr(target, "datetime"):
             monkeypatch.setattr(target, "datetime", Clock)
-    ctx.args.mode = "upgrade"
-    ctx.args.user_sku_a, ctx.args.user_sku_b = "A", "B"
-    ctx.args.live_upgrade = ctx.args.team_discount_confirmed = True
-    ctx.args.observe = ctx.args.poll_seconds = ctx.args.settle_seconds = 0
+    ctx.mode = "upgrade"
+    ctx.checkout.user_sku_a, ctx.checkout.user_sku_b = "A", "B"
+    ctx.checkout.live_upgrade = ctx.checkout.team_discount_confirmed = True
+    ctx.policy.observe = ctx.lifecycle.poll_seconds = ctx.checkout.settle_seconds = 0
     ctx.skus = [
         {"id": "400", "name": "A", "type": 5, "flags": 256},
         {"id": "401", "name": "B", "type": 5, "flags": 256},
@@ -509,3 +513,31 @@ async def test_nonzero_attestation_never_advances_checkout_and_still_cancels_man
     assert session.actions == ["cancel"] and not session.writes
     assert "501" not in session.rows
     assert not ctx.state["owned_entitlements"]
+
+
+async def test_expired_source_cannot_start_or_reopen_checkout(upgrade_context):
+    _, module, session = upgrade_context
+    session.seed("missing")
+    session.ctx.state["upgrade_source"]["period_end"] = (NOW - timedelta(seconds=1)).isoformat()
+    await module.capture_upgrade(session.ctx)
+    assert not session.confirmed and not session.probes and not session.writes
+    assert session.ctx.state["cases"][PREFIX]["status"] == "blocked"
+
+
+async def test_expired_source_preserves_cancellation_only_recovery(upgrade_context):
+    _, module, session = upgrade_context
+    session.seed("active")
+    ctx = session.ctx
+    ctx.state["upgrade_source"]["period_end"] = (NOW - timedelta(seconds=1)).isoformat()
+    stage = module._stage(ctx, "live_upgrade", ctx.skus)
+    stage.update(
+        a="500",
+        cancellation_required=True,
+        managed_entitlements={"500": {"sku_id": "400"}},
+    )
+    async with capture_fixtures.server(session.endpoint) as base:
+        ctx.rest.base = base
+        await module.capture_upgrade(ctx)
+    assert stage["cancellation_started"] and stage["cancellation_verified"]
+    assert not session.confirmed and not session.writes
+    assert session.actions == ["cancel"]

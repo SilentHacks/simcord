@@ -26,9 +26,25 @@ inspect remote media dimensions or contents.
 
 Nested buttons and selects dispatch through their real discord.py callbacks. The same
 `click`, `select`, and `submit_modal` methods are available on `UserHandle` for component
-flows in DMs. Use `component_text=` and `component_custom_id=` with `assert_message`,
-`assert_sent`, or `assert_responded` to inspect layouts without treating TextDisplay text
-as legacy message content.
+flows in DMs. Since 3.2.1, use `member.user` for these DM actions rather than the
+guild-scoped `MemberActor`:
+
+```python
+opened = await alice.user.click(dm_message, custom_id="feedback:open")
+submitted = await alice.user.submit_modal(opened, {"comment": "Great bot"})
+# For a DM select menu:
+selected = await alice.user.select(dm_menu, ["green"], custom_id="color")
+```
+
+DM callbacks receive SDK interactions with `interaction.guild is None`. Keep using
+`alice.click(...)`, `alice.select(...)`, and `alice.submit_modal(...)` for interactions in
+`alice`'s guild. A `UserHandle` cannot act on guild messages; use a `MemberActor` belonging
+to the target guild instead. These are SimCord handle scopes, not limitations on what the
+same human can do in Discord.
+
+Use `component_text=` and `component_custom_id=` with `assert_message`, `assert_sent`,
+or `assert_responded` to inspect layouts without treating TextDisplay text as legacy
+message content.
 
 ## Clicking buttons
 

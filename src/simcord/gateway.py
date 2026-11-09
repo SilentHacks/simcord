@@ -16,7 +16,6 @@ real gateway would inline — the rest arrives via member chunking, served by
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
@@ -25,6 +24,7 @@ import discord
 
 from . import _dpy_internals
 from . import intents as _intents
+from ._payload import detach
 from .backend import serializers
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ class FakeGateway:
         # Deep copy: discord.py may mutate the payload, the original is
         # backend state shared with other subscribers — and the intent
         # shaping below must not leak back into the backend either.
-        mutable: dict[str, Any] = copy.deepcopy(dict(payload))
+        mutable: dict[str, Any] = detach(dict(payload))
         bot_id = self._backend.bot_user.id
         if not self.intents.message_content:
             censored = False
@@ -107,7 +107,7 @@ class FakeGateway:
         self._backend.transcript.append(("GATEWAY", event, payload))
         parser = self._state.parsers.get(event)
         if parser is not None:
-            parser(copy.deepcopy(dict(payload)))
+            parser(detach(dict(payload)))
 
 
 class FakeWebSocket:
