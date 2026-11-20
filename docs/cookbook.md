@@ -77,6 +77,63 @@ async def test_other_user_cannot_click(simcord_env):
         await bob.click(prompt, label="Confirm")           # not bob's message
 ```
 
+## A command waits for its own prompt
+
+A command that sends a button prompt and then awaits the answer keeps running after
+its response. `alice.slash()` returns once that wait is recognized. A View's own
+completion is recognized, so the simplest bot shape needs nothing from the test:
+
+```python
+class Consent(discord.ui.View):
+    agreed = False
+
+    @discord.ui.button(label="Agree")
+    async def agree(self, interaction, button):
+        await interaction.response.defer()
+        self.agreed = True
+        self.stop()
+
+@bot.tree.command()
+async def consent(interaction):
+    view = Consent()
+    await interaction.response.send_message("Store your account?", view=view, ephemeral=True)
+    await view.wait()
+    if view.agreed:
+        await store_account(interaction.user)
+```
+
+If the bot instead awaits its own future, event or queue, SimCord cannot tell that wait
+from in-flight I/O, so the actor call times out with `unknown wait`. Keep the wait
+behind a function and declare it from the test. The bot code stays free of SimCord:
+
+```python
+# bot code
+class ConsentScreen:
+    async def wait_for_decision(self, decision):
+        return await asyncio.shield(decision)
+
+# test
+async def test_consent(simcord_env, monkeypatch):
+    original = bot.consent_screen.wait_for_decision
+    monkeypatch.setattr(
+        bot.consent_screen,
+        "wait_for_decision",
+        lambda *args, **kwargs: simcord_env.external_wait(
+            original(*args, **kwargs), reason="member consent"
+        ),
+    )
+    guild = simcord_env.create_guild()
+    channel = guild.create_text_channel("general")
+    alice = guild.add_member(simcord_env.create_user("alice"))
+
+    opened = await alice.slash(channel, "consent")
+    await alice.click(opened.response.message, label="Agree")   # the command resumes
+```
+
+The patched function runs inside the command's task, which is where `external_wait`
+must be declared. Patch only the specific wait: other unknown waits keep timing out
+with diagnostics.
+
 ## A modal collects input
 
 ```python

@@ -4,6 +4,17 @@ This changelog is generated with [towncrier](https://towncrier.readthedocs.io/).
 
 <!-- towncrier release notes start -->
 
+## 4.0.1 (2026-11-20)
+
+### Bug fixes
+
+- Settlement timeout diagnostics for an unknown wait now explain that `env.external_wait(...)` must wrap the awaited input inside the bot task, how to declare it from a test without SimCord-specific bot code, and that a component prompt can await `view.wait()` instead. Settlement semantics are unchanged: application-owned futures still time out unless declared. ([#47](https://github.com/SilentHacks/simcord/issues/47))
+
+### Documentation
+
+- Add the "A command waits for its own prompt" recipe, covering a slash command that sends a button prompt and resumes after the click, either through `view.wait()` or a test-side `external_wait` patch of the bot's wait function, and link it from the components, interactions and stability guides. ([#47](https://github.com/SilentHacks/simcord/issues/47))
+
+
 ## 4.0.0 (2026-11-09)
 
 ### Features

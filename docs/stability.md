@@ -92,7 +92,8 @@ external-input declaration:
 To keep production code independent of SimCord, inject the test environment's
 `external_wait` adapter only in tests and use the normal awaitable in production,
 or keep an indefinite wait outside a dispatched handler in the application's
-own supervisor.
+own supervisor. The [prompt recipe](cookbook.md#a-command-waits-for-its-own-prompt)
+shows the test-side patch.
 
 SimCord follows [semantic versioning](https://semver.org/). The
 **public API** below is covered by that promise: no breaking change to it without

@@ -197,3 +197,6 @@ presentations independent, and labels stale, incomplete, and uncalibrated output
 View/Modal completion waits are recognized by settlement. If a component flow waits on a
 different external source, declare that one dependency explicitly with
 `await env.external_wait(awaitable, reason="...")`; arbitrary unresolved futures remain active.
+The declaration must run inside the bot task. To keep bot code independent of SimCord,
+patch the bot's wait function from the test, or await `view.wait()` instead; see
+[A command waits for its own prompt](../cookbook.md#a-command-waits-for-its-own-prompt).

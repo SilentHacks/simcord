@@ -307,6 +307,7 @@ def _settle_timeout_message(
     callbacks: list[_CallbackRecord],
 ) -> str:
     lines = ["bot did not settle"]
+    unknown = False
     if self.last_dispatch:
         lines[0] += f" after {self.last_dispatch}"
     lines[0] += (
@@ -328,6 +329,7 @@ def _settle_timeout_message(
                 reason = "runnable continuation"
             else:
                 reason = f"unknown wait ({type(waiter).__name__})"
+                unknown = True
         generation = record.generation if record is not None else self.generation
         lines.append(f"  bot-owned generation {generation} {label}: {reason}")
     for executor_record in self.work.executors.values():
@@ -344,6 +346,13 @@ def _settle_timeout_message(
         "  use await env.external_wait(...) for intentional external input; "
         "use await env.advance_time(...) for virtual timers"
     )
+    if unknown:
+        lines.append(
+            "  external_wait must wrap the awaited input inside the bot task; to keep bot code "
+            "independent of SimCord, patch the bot's wait function from the test to wrap it, "
+            "or await view.wait() for a component prompt "
+            "(https://simcord.readthedocs.io/en/latest/cookbook/#a-command-waits-for-its-own-prompt)"
+        )
     if self.work.external_waits and stuck:
         lines.append(
             "  external_wait is task-scoped; declare framework orchestration/lifecycle waits "
