@@ -732,6 +732,106 @@ async def test_external_wait_in_app_command_parks_and_resumes():
         assert channel.last_message.content == "command resumed"
 
 
+class _ConsentScreen:
+    """Application-owned prompt wait with no SimCord dependency (issue #47)."""
+
+    def __init__(self) -> None:
+        self.outcomes: list[bool] = []
+
+    async def wait_for_decision(self, decision: asyncio.Future[bool]) -> bool:
+        return await asyncio.shield(decision)
+
+    def install(self, bot: Any) -> None:
+        @bot.tree.command(name="consent")
+        async def consent(interaction: discord.Interaction) -> None:
+            decision = asyncio.get_running_loop().create_future()
+            view = discord.ui.View()
+            button = discord.ui.Button(label="Agree")
+
+            async def agree(click: discord.Interaction) -> None:
+                await click.response.defer()
+                decision.set_result(True)
+
+            button.callback = agree
+            view.add_item(button)
+            await interaction.response.send_message("Store your account?", view=view, ephemeral=True)
+            self.outcomes.append(await self.wait_for_decision(decision))
+
+
+@pytest.mark.asyncio
+async def test_app_owned_prompt_future_times_out_with_test_side_guidance():
+    bot = create_bot()
+    screen = _ConsentScreen()
+    screen.install(bot)
+    async with simcord.run(bot, settle_timeout=0.2) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        with pytest.raises(TimeoutError) as caught:
+            await alice.slash(channel, "consent")
+        text = str(caught.value)
+        assert "unknown wait (Future)" in text
+        assert "patch the bot's wait function from the test" in text
+        assert "view.wait()" in text
+        (prompt,) = channel.history(viewer=alice)
+        await alice.click(prompt, label="Agree")
+        assert screen.outcomes == [True]
+
+
+@pytest.mark.asyncio
+async def test_test_side_external_wait_patch_resumes_app_owned_prompt(monkeypatch: pytest.MonkeyPatch):
+    bot = create_bot()
+    screen = _ConsentScreen()
+    screen.install(bot)
+    async with simcord.run(bot, settle_timeout=1) as env:
+        original = screen.wait_for_decision
+        monkeypatch.setattr(
+            screen,
+            "wait_for_decision",
+            lambda decision: env.external_wait(original(decision), reason="member consent"),
+        )
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        opened = await alice.slash(channel, "consent")
+        assert opened.response is not None and opened.response.message is not None
+        assert screen.outcomes == []
+        await alice.click(opened.response.message, label="Agree")
+        assert screen.outcomes == [True]
+
+
+@pytest.mark.asyncio
+async def test_view_wait_prompt_parks_without_declaration():
+    bot = create_bot()
+    outcomes: list[bool | None] = []
+
+    class Consent(discord.ui.View):
+        value: bool | None = None
+
+        @discord.ui.button(label="Agree")
+        async def agree(self, click: discord.Interaction, _button: discord.ui.Button[Any]) -> None:
+            await click.response.defer()
+            self.value = True
+            self.stop()
+
+    @bot.tree.command(name="consent")
+    async def consent(interaction: discord.Interaction) -> None:
+        view = Consent()
+        await interaction.response.send_message("Store your account?", view=view, ephemeral=True)
+        await view.wait()
+        outcomes.append(view.value)
+
+    async with simcord.run(bot, settle_timeout=1) as env:
+        guild = env.create_guild()
+        alice = guild.add_member(env.create_user("alice"))
+        channel = guild.create_text_channel("general")
+        opened = await alice.slash(channel, "consent")
+        assert opened.response is not None and opened.response.message is not None
+        assert outcomes == []
+        await alice.click(opened.response.message, label="Agree")
+        assert outcomes == [True]
+
+
 @pytest.mark.asyncio
 async def test_startup_owned_sleep_parks_and_is_cancelled_on_teardown():
     bot = create_bot()

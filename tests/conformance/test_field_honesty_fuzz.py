@@ -224,6 +224,8 @@ EXEMPT: dict[tuple[str, str], str] = {
 
 _GARBAGE_KEYS = st.text(max_size=8).map(lambda s: "zzfuzz_" + s)
 _VALUES = st.one_of(st.none(), st.booleans(), st.integers(), st.text(max_size=12))
+# Declared keys whose other values are deliberately rejected as UnsupportedField.
+_VALUE_GATED = {"nsfw": st.just(False)}
 
 
 def _ids(route: tuple[str, str]) -> str:
@@ -261,7 +263,7 @@ def test_declared_field_not_rejected(route: tuple[str, str], data: st.DataObject
     if not contract.handled:
         pytest.skip("route declares no handled fields")
     key = data.draw(st.sampled_from(sorted(contract.handled)))
-    value = data.draw(_VALUES)
+    value = data.draw(_VALUE_GATED.get(key, _VALUES))
     try:
         _dispatch(contract.method, contract.template, _wrap(contract.kind, key, value))
     except UnsupportedField as exc:  # must precede BackendError — it is a subclass
